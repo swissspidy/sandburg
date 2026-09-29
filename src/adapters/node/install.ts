@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import type { Project } from '../../types.ts';
 
@@ -29,6 +29,12 @@ export interface InstallInfo {
 
 /** Path (relative to node_modules' parent) → size; directories are implied. */
 export type FileIndex = Record<string, number>;
+
+/** The install cache shared by the adapters that install npm dependencies on the host (node, esbuild). */
+export function sharedInstaller(): Installer {
+  return (shared ??= new Installer(resolve(process.env.SANDBURG_INSTALL_DIR ?? '.sandburg/installs')));
+}
+let shared: Installer | undefined;
 
 export class Installer {
   readonly root: string;

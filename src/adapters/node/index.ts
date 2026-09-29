@@ -4,16 +4,15 @@
  * (--ignore-scripts: no package code runs outside the browser) and served
  * lazily; the app itself, Next.js included, runs in a Web Worker.
  */
-import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundleNodeRuntime } from '../../node-runtime/bundle.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, type CompileKind } from './compile.ts';
-import { Installer } from './install.ts';
+import { sharedInstaller } from './install.ts';
 import type { HostInstall } from './browser.ts';
 
-const installer = new Installer(resolve(process.env.SANDBURG_INSTALL_DIR ?? '.sandburg/installs'));
+const installer = sharedInstaller();
 
 /** Extra packages a framework needs in the browser: WebAssembly builds of native tools. */
 function extraDependencies(project: Project): Record<string, string> {

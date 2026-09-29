@@ -6,6 +6,7 @@
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, InstallReport } from '../../types.ts';
 import type { FromWorker } from '../../node-runtime/worker.ts';
+import { connectServiceWorker } from '../sw-bridge.ts';
 
 export interface HostInstall {
   key: string;
@@ -170,31 +171,6 @@ export function createAdapter(): RuntimeAdapter {
       worker = null;
     },
   };
-}
-
-interface BridgedRequest {
-  method: string;
-  url: string;
-  headers: [string, string][];
-  body: ArrayBuffer | null;
-}
-
-/** Registers the service worker and keeps handing it a port for app requests. */
-async function connectServiceWorker(onRequest: (r: BridgedRequest, port: MessagePort) => void): Promise<void> {
-  const registration = await navigator.serviceWorker.register('/__sw__.js', { scope: '/' });
-  await navigator.serviceWorker.ready;
-  if (!navigator.serviceWorker.controller) {
-    await new Promise<void>((resolve) => navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true }));
-  }
-  const give = () => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = (e) => onRequest(e.data as BridgedRequest, e.ports[0]);
-    (navigator.serviceWorker.controller ?? registration.active)!.postMessage({ type: 'sandburg-port' }, [channel.port2]);
-  };
-  navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data?.type === 'sandburg-need-port') give();
-  });
-  give();
 }
 
 /** Applies a Set-Cookie header to the sandbox origin (a service worker cannot). HttpOnly cannot be honored. */
