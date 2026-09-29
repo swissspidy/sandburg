@@ -134,7 +134,8 @@ export function createAdapter(): RuntimeAdapter {
       worker.postMessage({
         type: 'init',
         cwd: '/app',
-        env: { NEXT_TELEMETRY_DISABLED: '1', PORT: '3000', CI: '1' },
+        // NEXT_TEST_WASM: load SWC's WebAssembly build (there is no native SWC in the browser).
+        env: { NEXT_TELEMETRY_DISABLED: '1', PORT: '3000', CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
         files,
         installKey: host.key,
         nodeModules: host.index,
@@ -154,7 +155,8 @@ export function createAdapter(): RuntimeAdapter {
       await connectServiceWorker((request, port) => {
         const id = nextId++;
         pending.set(id, port);
-        const headers: [string, string][] = request.headers.filter(([k]) => k.toLowerCase() !== 'cookie');
+        // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
+        const headers: [string, string][] = request.headers.filter(([k]) => !/^(cookie|accept-encoding)$/i.test(k));
         if (document.cookie) headers.push(['cookie', document.cookie]);
         worker!.postMessage({ type: 'request', id, port: listeningPort, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
       });

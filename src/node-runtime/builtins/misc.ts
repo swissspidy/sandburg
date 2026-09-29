@@ -211,11 +211,23 @@ export const cluster = { isPrimary: true, isMaster: true, isWorker: false, worke
 // --- vm -------------------------------------------------------------------------------------
 
 const contexts = new WeakSet<object>();
-/** Runs code with the context object's properties as globals (a `with` scope over a proxy). */
+/**
+ * Runs code with the context object as its global (a `with` scope over a proxy):
+ * reads fall back to the real globals, and `globalThis`/`global`/`self` are the
+ * context itself, so `globalThis.x = …` lands on the context object as in Node.
+ */
 function runInContext(code: string, ctx: Record<string, unknown>): unknown {
-  const scope = new Proxy(ctx, {
-    has: () => true,
-    get: (t, k) => (k === Symbol.unscopables ? undefined : k in t ? t[k as string] : (globalThis as Record<string | symbol, unknown>)[k]),
+  const scope: Record<string, unknown> = new Proxy(ctx, {
+    has: (t, k) => k !== 'eval' && k !== '__scope',
+    get: (t, k) => {
+      if (k === Symbol.unscopables) return undefined;
+      if (k === 'globalThis' || k === 'global' || k === 'self') return scope;
+      return k in t ? t[k as string] : (globalThis as Record<string | symbol, unknown>)[k];
+    },
+    set: (t, k, v) => {
+      t[k as string] = v;
+      return true;
+    },
   });
   // eslint-disable-next-line no-new-func
   return new Function('__scope', `with (__scope) { return eval(${JSON.stringify(code)}); }`)(scope);

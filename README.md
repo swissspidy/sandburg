@@ -8,8 +8,9 @@ per run. Think of it as WordPress Playground, generalized to JavaScript apps,
 with WordPress itself as one of the runtimes.
 
 - **One tab = one sandbox = one origin.** Many run in parallel in one browser.
-- **Pluggable runtimes** behind one interface: almostnode (Vite, Next.js),
-  WordPress Playground (plugins and themes), and optionally Nodebox.
+- **Pluggable runtimes** behind one interface: Sandburg's own Node.js 24
+  runtime (real Next.js, Express), almostnode (Vite, Next.js), WordPress
+  Playground (plugins and themes), and optionally Nodebox.
 - **Honest about fidelity:** `sandburg compare` runs the same apps in a Docker
   reference and reports how often the two agree, and why they disagree.
 - **Nothing leaves the browser** except through a caching egress gateway and a
@@ -25,6 +26,7 @@ with WordPress itself as one of the runtimes.
 | 3. Next.js on almostnode; Nodebox adapter | done ([ADR 0003](docs/adr/0003-nextjs-and-nodebox.md)) |
 | 4. Fidelity study vs Docker | done ([ADR 0004](docs/adr/0004-docker-reference-and-fidelity-study.md), [report](docs/fidelity/almostnode-vs-docker.md)) |
 | 5. WordPress Playground | done ([ADR 0005](docs/adr/0005-wordpress-playground.md)) |
+| 6. Own Node.js runtime: real Next.js in the browser | done ([ADR 0006](docs/adr/0006-node-runtime.md)) |
 
 ## Try it
 
@@ -40,7 +42,7 @@ npm run spike                      # the Vite + React fixture
 ## CLI
 
 ```sh
-sandburg run <project> [--runtime almostnode|wordpress|nodebox] [--checks checks.spec.ts]
+sandburg run <project> [--runtime almostnode|node|wordpress|nodebox] [--checks checks.spec.ts]
 sandburg batch <dir> [--parallel 8]                    # each subdirectory is a project
 sandburg compare <dir> --reference docker [--report path]
 sandburg snapshot <project>                            # store it, print its snapshot id
@@ -99,6 +101,7 @@ the rule that decided it (`src/classify.ts`).
 | Runtime | Runs | Notes |
 |---|---|---|
 | `almostnode` (default) | Vite, Next.js (App and Pages Router) | MIT. Dependencies load from esm.sh. Sandburg patches several gaps (ADR 0003). No Vite plugins or PostCSS, so Tailwind v4 does not apply. |
+| `node` | Next.js (real `next dev`, webpack, SWC wasm), Node.js servers (`node server.js`) | Sandburg's own Node.js 24 runtime in a Web Worker (ADR 0006). Dependencies are installed with npm on the host, cached, and fetched lazily. No WebSockets (so no HMR), child processes or native addons. |
 | `wordpress` | WordPress plugins and themes | WordPress Playground, loaded at run time from `SANDBURG_PLAYGROUND_URL` (default: playground.wordpress.net, which rate-limits heavy use, so self-host it for batches). |
 | `nodebox` | Next.js ≤ 13, in theory | Optional. You must install `@codesandbox/nodebox` yourself (Sustainable Use License). It emulates Node.js 16, so current stacks are rejected. |
 | Docker reference | Vite, Next.js | `npm ci` or `npm install` plus the real dev server in `node:22-slim`. The same checks run in the same browser. |
@@ -115,6 +118,7 @@ seeded faults whose expected outcome is known.
 
 ```sh
 npm test            # unit tests
+npm run test:runtime # the node runtime's loader and built-ins, in Chromium
 npm run test:e2e    # real Chromium; the first run needs network access to the allowlisted CDNs.
                     # Docker tests skip without Docker; WordPress tests need SANDBURG_E2E_WORDPRESS=1.
 npm run typecheck

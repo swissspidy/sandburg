@@ -43,6 +43,8 @@ export interface ChecksInput {
   app: Frame;
   checks: Checks | null;
   checkTimeoutMs: number;
+  /** Default timeout of expect() assertions. */
+  expectTimeoutMs?: number;
   artifactsDir: string;
   /** Read at the end so errors raised during functional checks count. */
   appErrors: () => PageError[];
@@ -83,7 +85,7 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   for (const [name, fn] of Object.entries(input.checks ?? {})) {
     results.push(
       await timed(`functional:${slug(name)}`, 'functional', name, true, async () => {
-        await withTimeout(Promise.resolve(fn({ app, page, expect, appUrl })), input.checkTimeoutMs, `check "${name}" timed out`);
+        await withTimeout(Promise.resolve(fn({ app, page, expect: input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect, appUrl })), input.checkTimeoutMs, `check "${name}" timed out`);
         return { status: 'passed' };
       }),
     );

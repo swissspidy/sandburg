@@ -81,14 +81,14 @@ export interface RunOptions {
   outDir?: string;
   /** CSS selector that must match a rendered element before checks start. */
   readySelector?: string;
-  timeouts?: Partial<Record<PhaseName | 'check', number>>;
+  timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
   /** Re-run a project whose run failed as infra (a flaky download, a crashed tab) this many times. Default 1. */
   infraRetries?: number;
   /** Keep the tab open after checks until it is closed (for `sandburg open`, with a headed browser). */
   hold?: boolean;
 }
 
-export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check', number> = {
+export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
   probe: 5_000,
   load: 30_000,
   mount: 30_000,
@@ -97,6 +97,8 @@ export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check', number> = {
   ready: 90_000,
   checks: 180_000,
   check: 30_000,
+  /** Default timeout of expect() assertions in checks (Playwright's default). */
+  expect: 5_000,
   dispose: 10_000,
 };
 
@@ -174,7 +176,7 @@ export class Session {
     const project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
     await this.store.put(project.files, project.name);
     const checks = typeof options.checks === 'string' ? await loadChecks(options.checks) : (options.checks ?? null);
-    const timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+    const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
     let context: BrowserContext | null = null;
@@ -256,7 +258,7 @@ export class Session {
     project: Project,
     runId: string,
     outDir: string,
-    timeouts: Record<PhaseName | 'check', number>,
+    timeouts: Record<PhaseName | 'check' | 'expect', number>,
     checks: Checks | null,
     options: RunOptions,
   ): Promise<void> {
@@ -290,7 +292,7 @@ async function runChecksPhase(
   page: Page,
   app: Frame,
   checks: Checks | null,
-  timeouts: Record<PhaseName | 'check', number>,
+  timeouts: Record<PhaseName | 'check' | 'expect', number>,
   outDir: string,
   options: RunOptions,
 ): Promise<void> {
@@ -300,6 +302,7 @@ async function runChecksPhase(
       app,
       checks,
       checkTimeoutMs: timeouts.check,
+      expectTimeoutMs: timeouts.expect,
       artifactsDir: outDir,
       appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
       appConsole: () => run.console.filter((c) => c.source === 'app'),
@@ -339,7 +342,7 @@ async function failFastOnRuntimeFetch<T>(work: Promise<T>, run: RunState, allow:
     let reason = '';
     const poll = () => {
       if (!deadline) {
-        const f = run.network?.failed.find((e) => e.reason.startsWith('browser:') && allow(new URL(e.url).origin));
+        const f = run.network?.failed.find((e) => e.reason.startsWith('browser:') && URL.canParse(e.url) && allow(new URL(e.url).origin));
         // Also: a rate limit or server error on a script, e.g. a runtime's service worker registration.
         const limited = run.console.find((c) => c.type === 'error' && /bad HTTP response code \((429|5\d\d)\)/.test(c.text));
         if (f) [deadline, reason] = [Date.now() + RUNTIME_FETCH_GRACE_MS, `runtime asset failed to load: ${f.url} (${f.reason})`];

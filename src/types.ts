@@ -50,6 +50,8 @@ export interface AdapterDescriptor {
    * the app renders in (e.g. WordPress Playground renders inside remote.html's #wp).
    */
   appFrameSelectors?: string[];
+  /** Default phase deadlines for this runtime (user options still win). */
+  timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
   /** Compile-time constants for the browser bundle (esbuild `define`): identifier → JSON value. */
   bundleDefines?: Record<string, string>;
   /** Module path aliases for bundling the browser entry. */

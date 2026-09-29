@@ -390,6 +390,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // Uncaught errors and rejections go through process events, as in Node.
   self.addEventListener('error', (e) => {
     if (e.error instanceof ExitError) return e.preventDefault();
+    if ((proc.env as Record<string, string>).SANDBURG_DEBUG_ERRORS) write('stderr', `[sandburg] uncaught: ${e.error?.stack ?? e.message}\n`);
     if (proc.listenerCount('uncaughtException')) {
       e.preventDefault();
       proc.emit('uncaughtException', e.error, 'uncaughtException');

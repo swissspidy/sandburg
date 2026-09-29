@@ -10,13 +10,13 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-const TRANSFORM_VERSION = 1;
+const TRANSFORM_VERSION = 2;
 
 export interface InstallInfo {
   key: string;
@@ -75,6 +75,7 @@ export class Installer {
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
       // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
+      await placeNextSwcWasm(tmp);
       await writeFile(join(tmp, '.sandburg-complete'), new Date().toISOString());
       await rm(dir, { recursive: true, force: true });
       await rename(tmp, dir);
@@ -151,7 +152,8 @@ export const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.Transform
   format: esm ? 'cjs' : undefined,
   sourcefile: path,
   target: 'es2022',
-  supported: { 'async-await': false, 'async-generator': false, 'for-await': false },
+  // import() goes through the runtime's loader (require), like everything else.
+  supported: { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false },
   define: esm ? { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' } : undefined,
   logLevel: 'silent',
 });
@@ -174,6 +176,17 @@ async function packageType(installDir: string, rel: string): Promise<'module' | 
     }
   }
   return 'commonjs';
+}
+
+/**
+ * Next.js looks for its SWC WebAssembly build in next/wasm/@next/swc-wasm-nodejs
+ * (where its own on-demand download would extract it). Put the installed copy there.
+ */
+async function placeNextSwcWasm(dir: string): Promise<void> {
+  const from = join(dir, 'node_modules', '@next', 'swc-wasm-nodejs');
+  const next = join(dir, 'node_modules', 'next');
+  if (!(await access(from).then(() => true, () => false)) || !(await access(next).then(() => true, () => false))) return;
+  await cp(from, join(next, 'wasm', '@next', 'swc-wasm-nodejs'), { recursive: true });
 }
 
 async function buildIndex(dir: string): Promise<FileIndex> {

@@ -211,6 +211,20 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     }
     return bytes.length;
   }
+  function writevSync(fd: number, buffers: Uint8Array[], position?: number | null): number {
+    let total = 0;
+    for (const b of buffers) total += writeSync(fd, b, 0, b.length, position === null || position === undefined ? undefined : position + total);
+    return total;
+  }
+  function readvSync(fd: number, buffers: Uint8Array[], position?: number | null): number {
+    let total = 0;
+    for (const b of buffers) {
+      const n = readSync(fd, b, 0, b.length, position === null || position === undefined ? null : position + total);
+      total += n;
+      if (n < b.length) break;
+    }
+    return total;
+  }
   function fstatSync(fd: number): Stats {
     return new Stats(vfs.stat(fdPath(fd)));
   }
@@ -248,6 +262,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     writeSync,
     fstatSync,
     ftruncateSync,
+    writevSync,
+    readvSync,
     truncateSync: (p: PathLike, len = 0) => vfs.write(abs(p), new Uint8Array(vfs.read(abs(p)).subarray(0, len))),
     fsyncSync: () => {},
     fdatasyncSync: () => {},
@@ -333,45 +349,87 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   promisified.exists = async (p) => sync.existsSync(p as PathLike);
 
   // --- streams and watchers --------------------------------------------------------
-  function createReadStream(p: PathLike, o?: EncOpt & { start?: number; end?: number; highWaterMark?: number }) {
-    const opts = typeof o === 'object' && o ? o : {};
-    let data: Uint8Array | null = null;
-    let pos = (opts as { start?: number }).start ?? 0;
-    const end = (opts as { end?: number }).end;
-    const stream = new Readable({
-      encoding: enc(o) ?? undefined,
-      read(size) {
-        try {
-          data ??= vfs.read(abs(p));
-          const stop = Math.min(end === undefined ? data.length : end + 1, pos + size);
-          if (pos >= stop) return void this.push(null);
-          this.push(Buffer.from(data.subarray(pos, stop)));
-          pos = stop;
-        } catch (e) {
-          this.destroy(e as Error);
-        }
-      },
-    });
-    Object.assign(stream, { path: typeof p === 'string' ? p : abs(p), bytesRead: 0, close: (cb?: () => void) => { stream.destroy(); cb?.(); } });
-    return stream;
+  /**
+   * fs.ReadStream / fs.WriteStream. send and others check `instanceof`, and older
+   * code (graceful-fs, webpack's cache) calls them without `new` or via
+   * `.apply(this)`, so these are function constructors, as in Node.
+   */
+  type ReadOpts = EncOpt & { start?: number; end?: number; highWaterMark?: number };
+  interface ReadStream extends InstanceType<typeof Readable> {
+    path: string;
+    bytesRead: number;
+    pending: boolean;
+    _data: Uint8Array | null;
+    _pos: number;
+    _end?: number;
+    close(cb?: () => void): void;
   }
-  function createWriteStream(p: PathLike, o?: EncOpt) {
-    const path = abs(p);
+  interface WriteStream extends InstanceType<typeof Writable> {
+    path: string;
+    bytesWritten: number;
+    pending: boolean;
+    close(cb?: () => void): void;
+  }
+  const ReadStream = function (this: ReadStream | undefined, p: PathLike, o?: ReadOpts): ReadStream {
+    if (!(this instanceof ReadStream)) return new (ReadStream as unknown as new (p: PathLike, o?: ReadOpts) => ReadStream)(p, o);
+    const opts = (typeof o === 'object' && o ? o : {}) as { start?: number; end?: number; highWaterMark?: number };
+    (Readable as unknown as Function).call(this, { encoding: enc(o) ?? undefined, highWaterMark: opts.highWaterMark });
+    this.path = typeof p === 'string' ? p : abs(p);
+    this.bytesRead = 0;
+    this.pending = false;
+    this._data = null;
+    this._pos = opts.start ?? 0;
+    this._end = opts.end;
+    return this;
+  } as unknown as { new (p: PathLike, o?: ReadOpts): ReadStream; (p: PathLike, o?: ReadOpts): ReadStream; prototype: ReadStream };
+  Object.setPrototypeOf(ReadStream.prototype, Readable.prototype);
+  Object.setPrototypeOf(ReadStream, Readable);
+  ReadStream.prototype._read = function (this: ReadStream, size: number) {
+    try {
+      this._data ??= vfs.read(abs(this.path));
+      const stop = Math.min(this._end === undefined ? this._data.length : this._end + 1, this._pos + size);
+      if (this._pos >= stop) return void this.push(null);
+      const chunk = Buffer.from(this._data.subarray(this._pos, stop));
+      this.bytesRead += chunk.length;
+      this._pos = stop;
+      this.push(chunk);
+    } catch (e) {
+      this.destroy(e as Error);
+    }
+  };
+  ReadStream.prototype.close = function (this: ReadStream, cb?: () => void) {
+    this.destroy();
+    cb?.();
+  };
+
+  const WriteStream = function (this: WriteStream | undefined, p: PathLike, o?: EncOpt): WriteStream {
+    if (!(this instanceof WriteStream)) return new (WriteStream as unknown as new (p: PathLike, o?: EncOpt) => WriteStream)(p, o);
+    (Writable as unknown as Function).call(this);
+    this.path = abs(p);
+    this.bytesWritten = 0;
+    this.pending = false;
     const flag = typeof o === 'object' && o ? o.flag : undefined;
-    if (!flag?.startsWith('a')) vfs.write(path, new Uint8Array());
-    const stream = new Writable({
-      write(chunk, encoding, cb) {
-        try {
-          vfs.write(path, toBytes(chunk, encoding as Encoding), true);
-          cb();
-        } catch (e) {
-          cb(e as Error);
-        }
-      },
-    });
-    Object.assign(stream, { path, bytesWritten: 0, close: (cb?: () => void) => stream.end(cb) });
-    return stream;
-  }
+    if (!flag?.startsWith('a')) vfs.write(this.path, new Uint8Array());
+    return this;
+  } as unknown as { new (p: PathLike, o?: EncOpt): WriteStream; (p: PathLike, o?: EncOpt): WriteStream; prototype: WriteStream };
+  Object.setPrototypeOf(WriteStream.prototype, Writable.prototype);
+  Object.setPrototypeOf(WriteStream, Writable);
+  WriteStream.prototype._write = function (this: WriteStream, chunk: unknown, encoding: BufferEncoding, cb: (e?: Error | null) => void) {
+    try {
+      const bytes = toBytes(chunk, encoding as Encoding);
+      vfs.write(this.path, bytes, true);
+      this.bytesWritten += bytes.length;
+      cb();
+    } catch (e) {
+      cb(e as Error);
+    }
+  };
+  WriteStream.prototype.close = function (this: WriteStream, cb?: () => void) {
+    this.end(cb);
+  };
+
+  const createReadStream = (p: PathLike, o?: ReadOpts) => new ReadStream(p, o);
+  const createWriteStream = (p: PathLike, o?: EncOpt) => new WriteStream(p, o);
   function watch(p: PathLike, o?: unknown, listener?: (event: string, filename: string) => void) {
     const cb = typeof o === 'function' ? (o as typeof listener) : listener;
     const root = abs(p);
@@ -412,6 +470,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     exists,
     createReadStream,
     createWriteStream,
+    ReadStream,
+    WriteStream,
     watch,
     watchFile,
     unwatchFile: (p: PathLike) => {

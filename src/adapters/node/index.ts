@@ -51,6 +51,9 @@ export const node: AdapterDescriptor = {
   // The app's own server-side fetches (e.g. next/font/google) go through the gateway.
   egress: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'],
   crossOriginIsolation: false,
+  // A cold npm install of a Next.js app and its first webpack compile take a while.
+  // expect: routes compile on first request (next dev), which is slower in the browser.
+  timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000 },
   probe(project: Project) {
     if (project.framework === 'next') return { verdict: 'supported' };
     if (project.framework === 'vite') {

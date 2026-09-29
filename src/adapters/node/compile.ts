@@ -14,7 +14,7 @@ import * as esbuild from 'esbuild';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
-const LOWER = { 'async-await': false, 'async-generator': false, 'for-await': false } as const;
+const LOWER = { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false } as const;
 const cache = new Map<string, string>();
 
 export function compileForRuntime(code: string, path: string, kind: CompileKind): string {

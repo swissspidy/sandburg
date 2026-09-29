@@ -227,6 +227,8 @@ export function createModuleSystem(host: LoaderHost) {
 
   Module._resolveFilename = (request: string, parent: Mod | null, _isMain?: boolean, options?: { paths?: string[] }) => {
     if (isBuiltin(request)) return request;
+    // import() of file: URLs (lowered to require) resolves like the path.
+    if (request.startsWith('file://')) request = fileOf(request);
     if (request.startsWith('#')) {
       const scope = packageScope(parent?.filename ?? '/index.js');
       if (scope?.[1].imports) {

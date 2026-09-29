@@ -74,6 +74,8 @@ export function originMatcher(allow: string[]): OriginMatcher {
   }
   return (origin) => {
     if (exact.has(origin)) return true;
+    // Opaque origins ("null": data:, blob:, about:) never match.
+    if (!/^https?:\/\//.test(origin)) return false;
     const url = new URL(origin);
     return suffixes.some((s) => url.protocol === `${s.scheme}:` && url.hostname.endsWith(s.suffix) && url.port === '');
   };

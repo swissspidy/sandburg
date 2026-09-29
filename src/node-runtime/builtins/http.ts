@@ -136,6 +136,8 @@ export class ServerResponse extends Writable {
   hasHeader(name: string) { return this.headerMap.has(name.toLowerCase()); }
   removeHeader(name: string) { this.headerMap.delete(name.toLowerCase()); }
   flushHeaders() { this.sendHeaders(); }
+  /** Node internal that middleware (e.g. compression) calls to commit the status line and headers. */
+  _implicitHeader() { this.writeHead(this.statusCode); }
   writeHead(status: number, msgOrHeaders?: string | Record<string, unknown> | unknown[], maybeHeaders?: Record<string, unknown> | unknown[]) {
     this.statusCode = status;
     let headers = maybeHeaders;

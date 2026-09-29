@@ -17,7 +17,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --test-reporter=spec test/unit/*.test.ts",
     "test:e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.test.ts",
-    "spike": "node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts"
+    "spike": "node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts",
+    "test:runtime": "node --test --test-reporter=spec test/runtime/*.test.ts"
   },
   "dependencies": {
     "@playwright/test": "1.56.1",
