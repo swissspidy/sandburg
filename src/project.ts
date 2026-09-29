@@ -1,9 +1,10 @@
 /**
- * Project input: a directory or a JSON file tree. (Zip input is planned.)
+ * Project input: a directory, a JSON file tree, or a stored snapshot
+ * ("snapshot:<id or prefix>"). (Zip input is planned.)
  */
-import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
+import { isText, manifestOf, snapshotId, type SnapshotStore } from './store.ts';
 import type { FileTree, Framework, PackageJson, Project } from './types.ts';
 
 const IGNORED_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.sandburg', '.turbo', '.cache']);
@@ -11,7 +12,12 @@ const IGNORED_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 
 const IGNORED_FILES = /\.(spec|test)\.[cm]?[jt]sx?$/;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
-export async function loadProject(path: string): Promise<Project> {
+export async function loadProject(path: string, store?: SnapshotStore): Promise<Project> {
+  if (path.startsWith('snapshot:')) {
+    if (!store) throw new Error('loading a snapshot needs a snapshot store');
+    const { record, files } = await store.get(path.slice('snapshot:'.length));
+    return projectFromFiles(files, { name: record.name, path });
+  }
   const abs = resolve(path);
   const info = await stat(abs);
   let files: FileTree;
@@ -44,7 +50,7 @@ export function projectFromFiles(files: FileTree, meta: { name: string; path: st
     files,
     packageJson,
     framework: detectFramework(files, packageJson),
-    contentHash: hashFiles(files),
+    snapshotId: snapshotId(manifestOf(files)),
   };
 }
 
@@ -55,15 +61,6 @@ export function detectFramework(files: FileTree, pkg: PackageJson | null): Frame
   if ('vite' in deps || paths.some((p) => /^vite\.config\.[cm]?[jt]s$/.test(p))) return 'vite';
   if (!pkg && 'index.html' in files) return 'static';
   return 'unknown';
-}
-
-function hashFiles(files: FileTree): string {
-  const hash = createHash('sha256');
-  for (const path of Object.keys(files).sort()) {
-    const content = files[path];
-    hash.update(path).update('\0').update(typeof content === 'string' ? content : content.base64).update('\0');
-  }
-  return hash.digest('hex');
 }
 
 function parseFileTree(value: unknown): FileTree {
@@ -101,9 +98,4 @@ function normalize(path: string): string {
   const clean = path.replace(/\\/g, '/').replace(/^\.?\/+/, '');
   if (clean.split('/').includes('..')) throw new Error(`path escapes project root: ${path}`);
   return clean;
-}
-
-function isText(buf: Buffer): boolean {
-  if (buf.includes(0)) return false;
-  return Buffer.from(buf.toString('utf8'), 'utf8').equals(buf);
 }

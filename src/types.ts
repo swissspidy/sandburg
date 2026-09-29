@@ -16,8 +16,8 @@ export interface Project {
   files: FileTree;
   packageJson: PackageJson | null;
   framework: Framework;
-  /** sha256 over sorted paths and contents. */
-  contentHash: string;
+  /** Content-addressed id of the file tree (see src/store.ts). */
+  snapshotId: string;
 }
 
 export interface PackageJson {
@@ -134,7 +134,7 @@ export interface RunResult {
     name: string;
     path: string;
     framework: Framework;
-    contentHash: string;
+    snapshotId: string;
     fileCount: number;
   };
   runtime: { name: string; version: string };

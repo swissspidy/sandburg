@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
-import { chromium, type Browser, type BrowserContext, type Frame, type Page } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
 import { getAdapter } from '../adapters.ts';
 import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
@@ -27,15 +27,19 @@ import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.
 import { EgressGateway, type EgressStats } from './egress.ts';
 import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { SANDBURG_VERSION } from '../version.ts';
+import { SnapshotStore } from '../store.ts';
 
 export interface SessionOptions {
   /** Directory for the HTTP cache. Default: .sandburg/cache */
   cacheDir?: string;
+  /** Directory of the snapshot store. Default: .sandburg/store */
+  storeDir?: string;
   /** Fail on cache misses instead of fetching upstream. */
   offline?: boolean;
   headless?: boolean;
   /** Chromium binary; defaults to Playwright's, or $SANDBURG_CHROMIUM. */
   executablePath?: string;
+
 }
 
 export interface RunOptions {
@@ -47,6 +51,8 @@ export interface RunOptions {
   /** CSS selector that must match a rendered element before checks start. */
   readySelector?: string;
   timeouts?: Partial<Record<PhaseName | 'check', number>>;
+  /** Keep the tab open after checks until it is closed (for `sandburg open`, with a headed browser). */
+  hold?: boolean;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check', number> = {
@@ -86,9 +92,11 @@ export class Session {
   private browser: Browser | null = null;
   private host = new HostServer();
   private egress: EgressGateway;
+  readonly store: SnapshotStore;
 
   constructor(options: SessionOptions = {}) {
     this.options = options;
+    this.store = new SnapshotStore(resolve(options.storeDir ?? '.sandburg/store'));
     this.egress = new EgressGateway({
       cacheDir: resolve(options.cacheDir ?? '.sandburg/cache'),
       offline: options.offline ?? false,
@@ -97,13 +105,7 @@ export class Session {
 
   async open(): Promise<void> {
     await this.host.listen();
-    this.browser = await chromium.launch({
-      headless: this.options.headless ?? true,
-      executablePath: this.options.executablePath ?? process.env.SANDBURG_CHROMIUM,
-      // Only sandbox origins bypass the dead proxy. Leading "<-loopback>" is required for
-      // Chromium to honor the rule for *.localhost; it also keeps plain 127.0.0.1 blocked.
-      proxy: { server: DEAD_PROXY, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
-    });
+    this.browser = await chromium.launch(launchOptions(this.options));
   }
 
   async close(): Promise<void> {
@@ -118,7 +120,8 @@ export class Session {
     const outDir = resolve(options.outDir ?? '.sandburg/runs', runId);
     await mkdir(outDir, { recursive: true });
     const adapter = getAdapter(options.runtime ?? 'almostnode');
-    const project = typeof projectInput === 'string' ? await loadProject(projectInput) : projectInput;
+    const project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
+    await this.store.put(project.files, project.name);
     const checks = typeof options.checks === 'string' ? await loadChecks(options.checks) : (options.checks ?? null);
     const timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
 
@@ -172,6 +175,7 @@ export class Session {
             }),
           );
           run.checksOutput = output;
+          if (options.hold) await page.waitForEvent('close', { timeout: 0 });
         };
         await steps().catch(() => {}); // failures are recorded per phase
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
@@ -183,6 +187,17 @@ export class Session {
       this.host.unregister(runId.toLowerCase());
     }
   }
+}
+
+/** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
+export function launchOptions(options: SessionOptions): LaunchOptions {
+  return {
+    headless: options.headless ?? true,
+    executablePath: options.executablePath ?? process.env.SANDBURG_CHROMIUM,
+    // Only sandbox origins bypass the dead proxy. Leading "<-loopback>" is required for
+    // Chromium to honor the rule for *.localhost; it also keeps plain 127.0.0.1 blocked.
+    proxy: { server: DEAD_PROXY, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
+  };
 }
 
 /** Convenience: open a session, run one project, close. */
@@ -296,7 +311,7 @@ class RunState {
         name: this.project.name,
         path: this.project.path,
         framework: this.project.framework,
-        contentHash: this.project.contentHash,
+        snapshotId: this.project.snapshotId,
         fileCount: Object.keys(this.project.files).length,
       },
       runtime: { name: this.adapter.name, version: this.adapter.version },

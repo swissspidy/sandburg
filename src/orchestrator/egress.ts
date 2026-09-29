@@ -89,6 +89,17 @@ export class EgressGateway {
         return route.abort(err instanceof OfflineMissError ? 'internetdisconnected' : 'failed').catch(() => {});
       }
     });
+    // HTTP routing does not see WebSockets; without this they would only hit the dead proxy, unrecorded.
+    const localHost = new URL(localOrigin).host;
+    await context.routeWebSocket(/.*/, (ws) => {
+      stats.requests++;
+      if (new URL(ws.url()).host === localHost) {
+        ws.connectToServer();
+        return;
+      }
+      stats.blocked.push({ url: ws.url(), method: 'WEBSOCKET', reason: 'WebSockets may only reach the sandbox origin' });
+      ws.close({ code: 1008, reason: 'blocked by sandburg' }).catch(() => {});
+    });
     return stats;
   }
 

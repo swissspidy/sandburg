@@ -11,12 +11,12 @@
     "status": { "enum": ["passed", "failed", "error"] },
     "project": {
       "type": "object",
-      "required": ["name", "path", "framework", "contentHash", "fileCount"],
+      "required": ["name", "path", "framework", "snapshotId", "fileCount"],
       "properties": {
         "name": { "type": "string" },
         "path": { "type": "string" },
         "framework": { "enum": ["vite", "next", "static", "unknown"] },
-        "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "snapshotId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "fileCount": { "type": "integer", "minimum": 0 }
       }
     },

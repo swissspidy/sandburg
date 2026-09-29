@@ -11,7 +11,7 @@ test('loads a directory, skipping check files', async () => {
   assert.equal(project.framework, 'vite');
   assert.ok('src/App.tsx' in project.files);
   assert.ok(!('checks.spec.ts' in project.files));
-  assert.match(project.contentHash, /^[0-9a-f]{64}$/);
+  assert.match(project.snapshotId, /^[0-9a-f]{64}$/);
 });
 
 test('detects frameworks', () => {
@@ -25,6 +25,6 @@ test('content hash is stable and content-sensitive', () => {
   const a = projectFromFiles({ 'index.html': 'a', 'b.js': 'b' }, { name: 'x', path: 'x' });
   const b = projectFromFiles({ 'b.js': 'b', 'index.html': 'a' }, { name: 'x', path: 'x' });
   const c = projectFromFiles({ 'b.js': 'c', 'index.html': 'a' }, { name: 'x', path: 'x' });
-  assert.equal(a.contentHash, b.contentHash);
-  assert.notEqual(a.contentHash, c.contentHash);
+  assert.equal(a.snapshotId, b.snapshotId);
+  assert.notEqual(a.snapshotId, c.snapshotId);
 });

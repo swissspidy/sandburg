@@ -160,7 +160,7 @@ meaning bumps it.
   "schemaVersion": 1,
   "runId": "r-…",
   "status": "passed" | "failed" | "error",
-  "project": { "name", "path", "framework", "contentHash", "fileCount" },
+  "project": { "name", "path", "framework", "snapshotId", "fileCount" },
   "runtime": { "name", "version" },
   "environment": { "sandburgVersion", "browser", "platform", "offline" },
   "startedAt", "finishedAt",
