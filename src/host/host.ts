@@ -59,7 +59,7 @@ const api = {
       adapter = createAdapter();
       await adapter.mount(files, ctx());
     }),
-  install: () => call(() => current().install(ctx())),
+  install: (hostData?: unknown) => call(() => current().install(ctx(), hostData)),
   start: () => call(() => current().start(ctx())),
   /** Runtime readiness, then load the app URL into the frame and wait for its load event. */
   ready: (url: string, navigate = true) =>

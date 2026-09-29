@@ -122,6 +122,25 @@ export class HostServer {
       const js = await bundleHost(adapter);
       res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8' });
       res.end(js);
+    } else if (path.startsWith('/__sandburg/') && adapter.serve) {
+      const url = new URL(req.url ?? '/', 'http://x');
+      const out = await adapter.serve({
+        method: req.method ?? 'GET',
+        path,
+        query: url.searchParams,
+        body: async () => {
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          return Buffer.concat(chunks);
+        },
+      });
+      if (!out) {
+        res.writeHead(404, { ...headers, 'content-type': 'text/plain' });
+        res.end('not found');
+      } else {
+        res.writeHead(out.status, { ...headers, ...out.headers });
+        res.end(out.body);
+      }
     } else if (adapter.assets[path]) {
       const body = await readFile(adapter.assets[path]);
       res.writeHead(200, { ...headers, 'content-type': contentType(path) });

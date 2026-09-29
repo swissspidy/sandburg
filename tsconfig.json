@@ -3,8 +3,14 @@
     "target": "es2022",
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "lib": ["es2023", "dom", "dom.iterable"],
-    "types": ["node"],
+    "lib": [
+      "es2023",
+      "dom",
+      "dom.iterable"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
@@ -13,5 +19,12 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src", "test", "fixtures/vite-react-counter/checks.spec.ts"]
+  "include": [
+    "src",
+    "test",
+    "fixtures/vite-react-counter/checks.spec.ts"
+  ],
+  "exclude": [
+    "src/adapters/nodebox/browser.ts"
+  ]
 }

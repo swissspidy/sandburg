@@ -222,7 +222,10 @@ export class Session {
         const steps = async () => {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
           await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
-          run.install = (await run.phase('install', timeouts.install, () => watch(host('install')))) as InstallReport;
+          run.install = (await run.phase('install', timeouts.install, async () => {
+            const hostData = adapter!.hostInstall ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line)) : undefined;
+            return watch(host('install', hostData));
+          })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
           const app = await run.phase('ready', timeouts.ready, async () => {
             await host('ready', url, navigate ?? true);

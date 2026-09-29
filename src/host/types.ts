@@ -14,7 +14,8 @@ export interface AdapterContext {
 export interface RuntimeAdapter {
   readonly name: string;
   mount(files: FileTree, ctx: AdapterContext): Promise<void>;
-  install(ctx: AdapterContext): Promise<InstallReport>;
+  /** `hostData` is what the adapter's Node-side hostInstall() returned (if any). */
+  install(ctx: AdapterContext, hostData?: unknown): Promise<InstallReport>;
   /** Starts the app and returns the URL to load in the app frame (same-origin, or an allowlisted preview origin). */
   start(ctx: AdapterContext): Promise<StartResult>;
   ready?(ctx: AdapterContext): Promise<void>;

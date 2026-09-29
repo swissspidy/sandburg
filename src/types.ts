@@ -55,6 +55,27 @@ export interface AdapterDescriptor {
   /** Module path aliases for bundling the browser entry. */
   bundleAliases?: Record<string, string>;
   probe(project: Project): ProbeVerdict;
+  /**
+   * Host-side part of the install phase (e.g. npm install --ignore-scripts for the
+   * node runtime). Its result is passed to the browser adapter's install().
+   * Must not execute project code.
+   */
+  hostInstall?(project: Project, log: (line: string) => void): Promise<unknown>;
+  /** Extra routes under /__sandburg/ on the sandbox origin (worker bundles, file serving, compile). */
+  serve?(request: HostRequest): Promise<HostResponse | null>;
+}
+
+export interface HostRequest {
+  method: string;
+  path: string;
+  query: URLSearchParams;
+  body(): Promise<Buffer>;
+}
+
+export interface HostResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body: string | Uint8Array;
 }
 
 export type AdapterErrorCode = 'UNSUPPORTED' | 'APP' | 'INTERNAL';
