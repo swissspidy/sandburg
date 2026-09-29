@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src", "test", "fixtures/**/checks.spec.ts"]
+  "include": ["src", "test", "fixtures/vite-react-counter/checks.spec.ts"]
 }

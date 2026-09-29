@@ -43,6 +43,27 @@ const HOP_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-enc
 /** Request headers forwarded upstream; they can change what a CDN serves (esm.sh picks its build target by user agent). */
 const FORWARDED = ['user-agent', 'accept'];
 
+export type OriginMatcher = (origin: string) => boolean;
+
+/**
+ * Allowlist entries are origins ("https://esm.sh") or wildcard origins
+ * ("https://*.codesandbox.io", matching any subdomain but not the apex).
+ */
+export function originMatcher(allow: string[]): OriginMatcher {
+  const exact = new Set<string>();
+  const suffixes: { scheme: string; suffix: string }[] = [];
+  for (const entry of allow) {
+    const m = /^(https?):\/\/\*\.([a-z0-9.-]+)$/i.exec(entry);
+    if (m) suffixes.push({ scheme: m[1].toLowerCase(), suffix: `.${m[2].toLowerCase()}` });
+    else exact.add(new URL(entry).origin);
+  }
+  return (origin) => {
+    if (exact.has(origin)) return true;
+    const url = new URL(origin);
+    return suffixes.some((s) => url.protocol === `${s.scheme}:` && url.hostname.endsWith(s.suffix) && url.port === '');
+  };
+}
+
 export class OfflineMissError extends Error {
   constructor(url: string) {
     super(`offline mode: ${url} is not in the cache`);
@@ -65,13 +86,13 @@ export class EgressGateway {
    */
   async attach(context: BrowserContext, localOrigin: string, allow: string[]): Promise<EgressStats> {
     const stats: EgressStats = { requests: 0, cacheHits: 0, cacheMisses: 0, failed: [], blocked: [] };
-    const allowed = new Set(allow.map((o) => new URL(o).origin));
+    const allowed = originMatcher(allow);
     await context.route('**/*', async (route) => {
       const req = route.request();
       const url = new URL(req.url());
       stats.requests++;
       if (url.origin === localOrigin) return route.continue();
-      if (!allowed.has(url.origin)) {
+      if (!allowed(url.origin)) {
         stats.blocked.push({ url: req.url(), method: req.method(), reason: 'origin not allowlisted' });
         return route.abort('blockedbyclient');
       }
@@ -80,7 +101,7 @@ export class EgressGateway {
         return route.abort('blockedbyclient');
       }
       try {
-        const { response, hit } = await this.fetchCached(req);
+        const { response, hit } = await this.fetchCached(req, allowed);
         if (hit) stats.cacheHits++;
         else stats.cacheMisses++;
         return await route.fulfill({ status: response.status, headers: response.headers, body: response.body });
@@ -107,7 +128,7 @@ export class EgressGateway {
     if (this.upstream) await (await this.upstream).dispose();
   }
 
-  private async fetchCached(req: Request): Promise<{ response: CachedResponse; hit: boolean }> {
+  private async fetchCached(req: Request, allowed: OriginMatcher): Promise<{ response: CachedResponse; hit: boolean }> {
     const headers = await req.allHeaders();
     const forwarded: Record<string, string> = {};
     for (const name of FORWARDED) if (headers[name]) forwarded[name] = headers[name];
@@ -122,17 +143,34 @@ export class EgressGateway {
 
     let pending = this.inflight.get(key);
     if (!pending) {
-      pending = this.fetchUpstream(req.method(), req.url(), forwarded, path);
+      pending = this.fetchUpstream(req.method(), req.url(), forwarded, path, allowed);
       this.inflight.set(key, pending);
       pending.finally(() => this.inflight.delete(key)).catch(() => {});
     }
     return { response: await pending, hit: false };
   }
 
-  private async fetchUpstream(method: string, url: string, headers: Record<string, string>, path: string): Promise<CachedResponse> {
+  private async fetchUpstream(
+    method: string,
+    url: string,
+    headers: Record<string, string>,
+    path: string,
+    allowed: OriginMatcher,
+  ): Promise<CachedResponse> {
     const api = await this.upstreamContext();
-    // Redirects go back to the browser so ES module base URLs stay correct.
-    const res = await api.fetch(url, { method, headers, maxRedirects: 0, timeout: 60_000 });
+    // Redirects are followed here, not in the browser: Playwright does not
+    // intercept the follow-up request of a fulfilled redirect, so it would hit
+    // the dead proxy. Every hop must stay on an allowlisted origin. The browser
+    // sees the final body under the original URL; esm.sh and unpkg use
+    // root-relative imports, so module resolution is unaffected.
+    let target = url;
+    let res = await api.fetch(target, { method, headers, maxRedirects: 0, timeout: 60_000 });
+    for (let hop = 0; res.status() >= 300 && res.status() < 400 && res.headers().location; hop++) {
+      if (hop === 5) throw new Error(`too many redirects from ${url}`);
+      target = new URL(res.headers().location, target).href;
+      if (!allowed(new URL(target).origin)) throw new Error(`redirect to non-allowlisted origin: ${target}`);
+      res = await api.fetch(target, { method, headers, maxRedirects: 0, timeout: 60_000 });
+    }
     const response: CachedResponse = {
       status: res.status(),
       headers: Object.fromEntries(

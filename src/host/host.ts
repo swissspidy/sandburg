@@ -6,18 +6,20 @@
  */
 import { createAdapter } from 'sandburg:adapter';
 import type { AdapterContext, RuntimeAdapter } from './types.ts';
-import type { FileTree, PackageJson, SerializedError } from '../types.ts';
+import type { FileTree, Framework, PackageJson, SerializedError } from '../types.ts';
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: SerializedError };
 
 let adapter: RuntimeAdapter | null = null;
 let packageJson: PackageJson | null = null;
+let framework: Framework = 'unknown';
 const controller = new AbortController();
 
 function ctx(): AdapterContext {
   return {
     signal: controller.signal,
     packageJson,
+    framework,
     log(stream, line) {
       (stream === 'stderr' ? console.warn : console.log)(`[runtime:${stream}] ${line}`);
     },
@@ -50,9 +52,10 @@ function appFrame(): HTMLIFrameElement {
 }
 
 const api = {
-  mount: (files: FileTree, pkg: PackageJson | null) =>
+  mount: (files: FileTree, pkg: PackageJson | null, fw: Framework) =>
     call(async () => {
       packageJson = pkg;
+      framework = fw;
       adapter = createAdapter();
       await adapter.mount(files, ctx());
     }),

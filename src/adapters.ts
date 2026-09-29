@@ -1,12 +1,18 @@
 import { almostnode } from './adapters/almostnode/index.ts';
+import { nodebox } from './adapters/nodebox/index.ts';
 import type { AdapterDescriptor } from './types.ts';
 
-export const adapters: Record<string, AdapterDescriptor> = {
+/** Adapters by name. Optional adapters are factories, resolved on first use. */
+const registry: Record<string, AdapterDescriptor | (() => AdapterDescriptor)> = {
   almostnode,
+  nodebox,
 };
 
+export const adapterNames = Object.keys(registry);
+
 export function getAdapter(name: string): AdapterDescriptor {
-  const adapter = adapters[name];
-  if (!adapter) throw new Error(`unknown runtime "${name}" (available: ${Object.keys(adapters).join(', ')})`);
-  return adapter;
+  const entry = registry[name];
+  if (!entry) throw new Error(`unknown runtime "${name}" (available: ${adapterNames.join(', ')})`);
+  if (typeof entry === 'function') registry[name] = entry();
+  return registry[name] as AdapterDescriptor;
 }

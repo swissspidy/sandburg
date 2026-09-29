@@ -5,13 +5,25 @@
  */
 import type { CheckResult, Failure, PageError, PhaseName, PhaseRecord, ProbeVerdict } from './types.ts';
 
+const NODE_BUILTINS = [
+  'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'crypto', 'dgram', 'diagnostics_channel', 'dns', 'events',
+  'fs', 'http', 'http2', 'https', 'inspector', 'module', 'net', 'os', 'path', 'perf_hooks', 'process', 'querystring',
+  'readline', 'stream', 'string_decoder', 'timers', 'tls', 'tty', 'url', 'util', 'v8', 'vm', 'worker_threads', 'zlib',
+];
+
 /** Error texts that point at a limitation of the in-browser runtime, not the app. */
 export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
   { rule: 'signature:bare-specifier', pattern: /Failed to resolve module specifier|Relative references must start with/i },
   { rule: 'signature:cdn-transform', pattern: /esm\.sh.*(error|failed)|\[esm\.sh\]/i },
   { rule: 'signature:native-addon', pattern: /\.node['"]? (?:is not|cannot)|native (?:module|addon)|node-gyp|NODE_MODULE_VERSION/i },
   { rule: 'signature:stubbed-builtin', pattern: /\b(net|tls|dgram|dns|cluster|worker_threads|child_process)\b.*not (?:supported|implemented)/i },
-  { rule: 'signature:esbuild-wasm', pattern: /esbuild(-wasm)?.*(initialize|not available)/i },
+  // A Node.js built-in the runtime does not implement (e.g. Nodebox lacks dns/promises).
+  { rule: 'signature:missing-builtin', pattern: new RegExp(`Cannot find module ['"](?:node:)?(?:${NODE_BUILTINS.join('|')})(?:/[a-z_/]+)?['"]`) },
+  // The runtime's emulated Node.js is older than the framework requires.
+  { rule: 'signature:node-version', pattern: /Node\.js version >=? ?v?\d+[.\d]* is required|requires Node\.js/i },
+  { rule: 'signature:esbuild-wasm', pattern: /esbuild(-wasm)?.*(initialize|not available)|Cannot find module ['"]esbuild-wasm['"]/i },
+  // The runtime's own worker failed to boot (seen with Nodebox).
+  { rule: 'signature:runtime-worker', pattern: /Initializing node worker failed/i },
 ];
 
 export interface ClassifyInput {
@@ -26,7 +38,8 @@ export interface ClassifyInput {
 }
 
 export function classify(input: ClassifyInput): Failure | null {
-  const failedPhase = input.phases.find((p) => p.status === 'failed' || p.status === 'timeout');
+  // dispose is cleanup: a failure there is recorded but never decides the run's class.
+  const failedPhase = input.phases.find((p) => p.name !== 'dispose' && (p.status === 'failed' || p.status === 'timeout'));
   const failedChecks = input.checks.filter((c) => c.blocking && (c.status === 'failed' || c.status === 'error'));
   if (!failedPhase && failedChecks.length === 0 && input.probe?.verdict !== 'unsupported') return null;
 

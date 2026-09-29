@@ -58,6 +58,8 @@ export interface InstallReport {
   /** Package name → resolved version or range. */
   dependencies: Record<string, string>;
   buildMs?: number | null;
+  /** Modules the adapter replaced with Sandburg stand-ins (a fidelity risk). */
+  shims?: string[];
 }
 
 // ---------------------------------------------------------------------------

@@ -20,15 +20,15 @@ export const almostnode: AdapterDescriptor = {
     '/__sw__.js': fileURLToPath(new URL('./sw.js', import.meta.url)),
     '/__sandburg/almostnode-sw.js': join(pkgRoot, 'dist/__sw__.js'),
   },
-  egress: ['https://esm.sh', 'https://unpkg.com'],
+  // cdn.tailwindcss.com: NextDevServer injects the Tailwind Play CDN into every page.
+  egress: ['https://esm.sh', 'https://unpkg.com', 'https://cdn.tailwindcss.com'],
   crossOriginIsolation: false,
   bundleAliases: {
     'node:zlib': fileURLToPath(new URL('./zlib-stub.ts', import.meta.url)),
   },
   probe(project: Project) {
-    if (project.framework !== 'vite') {
-      // Next.js support lands in milestone 3.
-      return { verdict: 'unsupported', reason: `framework "${project.framework}" is not supported by the almostnode adapter yet` };
+    if (project.framework !== 'vite' && project.framework !== 'next') {
+      return { verdict: 'unsupported', reason: `framework "${project.framework}" is not supported by the almostnode adapter` };
     }
     const deps = project.packageJson?.dependencies ?? {};
     const native = NATIVE_OR_SERVER.filter((name) => name in deps);

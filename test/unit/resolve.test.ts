@@ -4,11 +4,13 @@ import { buildImportMap, injectImportMap, lockfileVersions } from '../../src/ada
 
 test('import map shares one React across packages', () => {
   const { imports } = buildImportMap({ react: '18.3.1', 'react-dom': '18.3.1', 'lucide-react': '^0.400.0' });
-  assert.equal(imports.react, 'https://esm.sh/react@18.3.1');
-  assert.equal(imports['react/'], 'https://esm.sh/react@18.3.1/');
-  assert.equal(imports['react-dom'], 'https://esm.sh/react-dom@18.3.1?external=react');
-  assert.equal(imports['react-dom/'], 'https://esm.sh/react-dom@18.3.1&external=react/');
-  assert.equal(imports['lucide-react'], 'https://esm.sh/lucide-react@%5E0.400.0?external=react,react-dom');
+  assert.equal(imports.react, 'https://esm.sh/react@18.3.1?dev');
+  assert.equal(imports['react/'], 'https://esm.sh/react@18.3.1&dev/');
+  assert.equal(imports['react/jsx-runtime'], 'https://esm.sh/react@18.3.1/jsx-runtime?dev');
+  assert.equal(imports['react-dom'], 'https://esm.sh/react-dom@18.3.1?dev&external=react');
+  assert.equal(imports['react-dom/'], 'https://esm.sh/react-dom@18.3.1&dev&external=react/');
+  assert.equal(imports['react-dom/client'], 'https://esm.sh/react-dom@18.3.1/client?dev&external=react');
+  assert.equal(imports['lucide-react'], 'https://esm.sh/lucide-react@%5E0.400.0?dev&external=react,react-dom');
 });
 
 test('lockfile v3 yields exact versions of top-level packages only', () => {

@@ -98,12 +98,48 @@ test('a ready deadline produces a timeout', async () => {
 });
 
 test('projects the adapter cannot run are rejected before a tab opens', async () => {
-  const next = projectFromFiles(
-    { 'package.json': JSON.stringify({ dependencies: { next: '15.0.0', react: '19.0.0' } }), 'app/page.tsx': 'export default () => null' },
-    { name: 'next-app', path: 'next-app' },
+  const server = projectFromFiles(
+    { 'package.json': JSON.stringify({ dependencies: { express: '^4.21.0' } }), 'server.js': 'require("express")().listen(3000)' },
+    { name: 'express-app', path: 'express-app' },
   );
-  const result = await session.run(next, { outDir });
+  const result = await session.run(server, { outDir });
   assert.equal(result.status, 'error');
   assert.deepEqual([result.failure?.class, result.failure?.rule], ['runtime-unsupported', 'probe-unsupported']);
   assert.equal(result.timings.loadMs, null);
+});
+
+const nextDir = fileURLToPath(new URL('../../fixtures/next-app-router', import.meta.url));
+
+test('milestone 3: the Next.js App Router fixture (React 19, API route) runs on almostnode', async () => {
+  const result = await session.run(nextDir, { checks: `${nextDir}/checks.spec.ts`, outDir });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  assert.equal(result.project.framework, 'next');
+  assert.deepEqual(result.install?.shims, ['next/server']);
+  assert.equal(result.checks.filter((c) => c.kind === 'functional' && c.status === 'passed').length, 3);
+});
+
+test('a broken Next.js API route is an app bug', async () => {
+  const next = await loadProject(nextDir);
+  const project = projectFromFiles(
+    { ...next.files, 'app/api/greeting/route.ts': `export async function GET() { throw new Error('database unavailable'); }` },
+    { name: 'next-broken-api', path: `${nextDir}#broken-api` },
+  );
+  const result = await session.run(project, { checks: `${nextDir}/checks.spec.ts`, outDir });
+  assert.equal(result.status, 'failed');
+  assert.deepEqual([result.failure?.class, result.failure?.rule], ['app-bug', 'blocking-check-failed']);
+  assert.equal(result.checks.find((c) => c.name === 'API route answers')?.status, 'failed');
+  assert.equal(result.checks.find((c) => c.name === 'a habit can be added')?.status, 'passed');
+});
+
+test('nodebox: Next.js 14+ is rejected up front (Nodebox emulates Node.js 16)', async (t) => {
+  let adapterAvailable = true;
+  try {
+    (await import('../../src/adapters.ts')).getAdapter('nodebox');
+  } catch {
+    adapterAvailable = false;
+  }
+  if (!adapterAvailable) return t.skip('@codesandbox/nodebox is not installed');
+  const result = await session.run(nextDir, { runtime: 'nodebox', outDir });
+  assert.deepEqual([result.failure?.class, result.failure?.rule], ['runtime-unsupported', 'probe-unsupported']);
+  assert.match(result.failure!.message, /Node\.js >= 18\.17/);
 });

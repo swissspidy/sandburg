@@ -151,7 +151,7 @@ export class Session {
 
       if (ok) {
         const steps = async () => {
-          await run.phase('mount', timeouts.mount, () => host('mount', project.files, project.packageJson));
+          await run.phase('mount', timeouts.mount, () => host('mount', project.files, project.packageJson, project.framework));
           run.install = (await run.phase('install', timeouts.install, () => host('install'))) as InstallReport;
           const { url } = (await run.phase('start', timeouts.start, () => host('start'))) as { url: string };
           const app = await run.phase('ready', timeouts.ready, async () => {

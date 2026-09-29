@@ -75,7 +75,8 @@
             "resolution": { "enum": ["lockfile", "range", "none"] },
             "lockfileHonored": { "type": "boolean" },
             "dependencies": { "type": "object", "additionalProperties": { "type": "string" } },
-            "buildMs": { "$ref": "#/$defs/msOrNull" }
+            "buildMs": { "$ref": "#/$defs/msOrNull" },
+            "shims": { "type": "array", "items": { "type": "string" } }
           }
         }
       ]

@@ -79,3 +79,16 @@ test('unexplained failures stay unknown', () => {
   const f = classify(input({ phases: failedAt('start', 'something odd') }));
   assert.deepEqual([f?.class, f?.rule], ['unknown', 'unmatched']);
 });
+
+test('a failing dispose never decides the classification', () => {
+  const phases: PhaseRecord[] = [...allOk, { name: 'dispose', status: 'timeout', durationMs: 10_000, error: { name: 'PhaseTimeout', message: 'dispose did not finish' } }];
+  assert.equal(classify(input({ phases })), null);
+  assert.equal(classify(input({ phases, checks: [failedCheck] }))?.rule, 'blocking-check-failed');
+});
+
+test('a missing Node.js built-in is a runtime limitation', () => {
+  const f = classify(input({ phases: failedAt('start', `"next dev" exited with code 1: Cannot find module 'dns/promises' from '/nodebox/x.js'`) }));
+  assert.deepEqual([f?.class, f?.rule], ['runtime-unsupported', 'signature:missing-builtin']);
+  const g = classify(input({ phases: failedAt('start', `Cannot find module 'left-pad' from '/x.js'`) }));
+  assert.equal(g?.class, 'unknown');
+});
