@@ -1,0 +1,33 @@
+{
+  "name": "sandburg",
+  "version": "0.1.0",
+  "description": "Run and test generated web apps inside the browser.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "sandburg": "./bin/sandburg.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=spec test/unit/*.test.ts",
+    "test:e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.test.ts",
+    "spike": "node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts"
+  },
+  "dependencies": {
+    "@playwright/test": "1.56.1",
+    "almostnode": "0.2.14",
+    "axe-core": "^4.13.0",
+    "esbuild": "^0.28.2",
+    "playwright-core": "1.56.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}
