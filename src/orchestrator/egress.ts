@@ -111,13 +111,12 @@ export class EgressGateway {
       }
     });
     // HTTP routing does not see WebSockets; without this they would only hit the dead proxy, unrecorded.
+    // Sockets to the sandbox origin (dev-server HMR) are not routed: the browser reaches the
+    // origin directly, whereas connectToServer() would connect from Node, which cannot resolve
+    // *.sandburg.localhost.
     const localHost = new URL(localOrigin).host;
-    await context.routeWebSocket(/.*/, (ws) => {
+    await context.routeWebSocket((url) => url.host !== localHost, (ws) => {
       stats.requests++;
-      if (new URL(ws.url()).host === localHost) {
-        ws.connectToServer();
-        return;
-      }
       stats.blocked.push({ url: ws.url(), method: 'WEBSOCKET', reason: 'WebSockets may only reach the sandbox origin' });
       ws.close({ code: 1008, reason: 'blocked by sandburg' }).catch(() => {});
     });
@@ -138,7 +137,8 @@ export class EgressGateway {
     const path = join(this.options.cacheDir, key.slice(0, 2), key);
 
     const cached = await readCache(path);
-    if (cached) return { response: cached, hit: true };
+    // Never serve a cached redirect: the browser would follow it outside the gateway.
+    if (cached && (cached.status < 300 || cached.status >= 400)) return { response: cached, hit: true };
     if (this.options.offline) throw new OfflineMissError(req.url());
 
     let pending = this.inflight.get(key);
@@ -181,7 +181,7 @@ export class EgressGateway {
       ),
       body: await res.body(),
     };
-    if (response.status < 500) await writeCache(path, url, response);
+    if (response.status < 300 || (response.status >= 400 && response.status < 500)) await writeCache(path, url, response);
     return response;
   }
 

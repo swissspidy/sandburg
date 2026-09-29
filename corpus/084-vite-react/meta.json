@@ -1,0 +1,14 @@
+{
+  "id": "084-vite-react",
+  "target": "vite-react",
+  "framework": "vite-react",
+  "features": [
+    "dates",
+    "router"
+  ],
+  "tailwind": false,
+  "react": "18.3.1",
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

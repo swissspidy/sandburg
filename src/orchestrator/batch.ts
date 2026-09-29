@@ -58,7 +58,7 @@ export interface BatchOptions extends RunOptions {
   onResult?: (result: RunResult, item: BatchItem, index: number) => void;
 }
 
-/** Each subdirectory (or .json file) of `dir` is a project; `checks.spec.ts` inside a project is its checks file. */
+/** Each subdirectory (or .json file, unless it starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project is its checks file. */
 export async function discoverProjects(dir: string): Promise<BatchItem[]> {
   const root = resolve(dir);
   const items: BatchItem[] = [];
@@ -67,7 +67,7 @@ export async function discoverProjects(dir: string): Promise<BatchItem[]> {
     if (entry.isDirectory() && !entry.name.startsWith('.')) {
       const checks = join(full, 'checks.spec.ts');
       items.push({ project: full, checks: (await exists(checks)) ? checks : undefined, label: entry.name });
-    } else if (entry.isFile() && entry.name.endsWith('.json')) {
+    } else if (entry.isFile() && entry.name.endsWith('.json') && !/^[._]/.test(entry.name)) {
       items.push({ project: full, label: entry.name });
     }
   }

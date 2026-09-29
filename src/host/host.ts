@@ -62,9 +62,10 @@ const api = {
   install: () => call(() => current().install(ctx())),
   start: () => call(() => current().start(ctx())),
   /** Runtime readiness, then load the app URL into the frame and wait for its load event. */
-  ready: (url: string) =>
+  ready: (url: string, navigate = true) =>
     call(async () => {
       await current().ready?.(ctx());
+      if (!navigate) return;
       const frame = appFrame();
       await new Promise<void>((resolve) => {
         frame.addEventListener('load', () => resolve(), { once: true });

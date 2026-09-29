@@ -11,7 +11,6 @@ import { getAdapter } from '../adapters.ts';
 import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
 import type {
-  AdapterDescriptor,
   ConsoleEntry,
   InstallReport,
   PageError,
@@ -42,8 +41,30 @@ export interface SessionOptions {
 
 }
 
+/**
+ * A runtime that runs outside the browser (for example the Docker reference):
+ * it serves the app on a loopback port, and the tab loads it directly.
+ */
+export interface NodeRuntime {
+  name: string;
+  version: string;
+  /** Origins the app page may reach besides its own (usually none). */
+  egress: string[];
+  probe(project: Project): ProbeVerdict;
+  /** Prepares, installs and starts the app; returns the loopback port it listens on. */
+  mount(project: Project, log: (line: string) => void): Promise<void>;
+  install(): Promise<InstallReport>;
+  start(): Promise<{ port: number }>;
+  /** Log lines (install and dev-server output), for results and classification. */
+  logs(): string[];
+  dispose(): Promise<void>;
+}
+
 export interface RunOptions {
+  /** In-browser runtime adapter name (default: almostnode). Ignored when nodeRuntime is set. */
   runtime?: string;
+  /** Run in an out-of-browser runtime instead (e.g. the Docker reference); called once per run. */
+  nodeRuntime?: () => NodeRuntime;
   /** Checks, or the path of a checks file whose default export maps names to check functions. */
   checks?: string | Checks;
   /** Results go to <outDir>/<runId>/. Default: .sandburg/runs */
@@ -119,30 +140,38 @@ export class Session {
     const runId = `r-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
     const outDir = resolve(options.outDir ?? '.sandburg/runs', runId);
     await mkdir(outDir, { recursive: true });
-    const adapter = getAdapter(options.runtime ?? 'almostnode');
+    const node = options.nodeRuntime?.() ?? null;
+    const adapter = node ? null : getAdapter(options.runtime ?? 'almostnode');
+    const runtimeInfo = node ?? adapter!;
     const project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
     await this.store.put(project.files, project.name);
     const checks = typeof options.checks === 'string' ? await loadChecks(options.checks) : (options.checks ?? null);
     const timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
 
-    const run = new RunState(runId, project, adapter, this.options.offline ?? false, this.browser.version());
+    const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
     let context: BrowserContext | null = null;
     try {
-      run.probe = await run.phase('probe', timeouts.probe, async () => adapter.probe(project));
+      run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
         run.skipRemaining();
         return await run.finish(outDir);
       }
 
-      const sandboxId = runId.toLowerCase();
-      const origin = this.host.register(sandboxId, adapter);
       context = await this.browser.newContext({ viewport: { width: 1280, height: 800 } });
-      run.network = await this.egress.attach(context, origin, adapter.egress);
       const page = await context.newPage();
+      if (node) {
+        await this.runNode(node, run, context, page, project, runId, outDir, timeouts, checks, options);
+        run.skipRemaining();
+        return await run.finish(outDir);
+      }
+      const sandboxId = runId.toLowerCase();
+      const origin = this.host.register(sandboxId, adapter!);
+      run.network = await this.egress.attach(context, origin, adapter!.egress);
       run.capture(page, origin);
 
       const ok = await run.phase('load', timeouts.load, async () => {
-        await page.goto(origin + '/');
+        // The host page lives under /__sandburg/ so the app can own "/" (ADR 0004).
+        await page.goto(origin + '/__sandburg/');
         await page.waitForSelector('html[data-sandburg="ready"]', { state: 'attached' });
         return true;
       }).catch(() => false);
@@ -153,29 +182,14 @@ export class Session {
         const steps = async () => {
           await run.phase('mount', timeouts.mount, () => host('mount', project.files, project.packageJson, project.framework));
           run.install = (await run.phase('install', timeouts.install, () => host('install'))) as InstallReport;
-          const { url } = (await run.phase('start', timeouts.start, () => host('start'))) as { url: string };
+          const { url, navigate } = (await run.phase('start', timeouts.start, () => host('start'))) as { url: string; navigate?: boolean };
           const app = await run.phase('ready', timeouts.ready, async () => {
-            await host('ready', url);
-            const frame = await appFrame(page);
-            await failFastOnAppError(waitForRender(frame, options.readySelector), () =>
-              run.pageErrors.find((e) => e.source === 'app'),
-            );
+            await host('ready', url, navigate ?? true);
+            const frame = await appFrame(page, adapter!.appFrameSelectors ?? []);
+            await failFastOnAppError(waitForRender(frame, options.readySelector), run);
             return frame;
           });
-          const output = await run.phase('checks', timeouts.checks, () =>
-            runChecks({
-              page,
-              app,
-              checks,
-              checkTimeoutMs: timeouts.check,
-              artifactsDir: outDir,
-              appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
-              appConsole: () => run.console.filter((c) => c.source === 'app'),
-              network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
-            }),
-          );
-          run.checksOutput = output;
-          if (options.hold) await page.waitForEvent('close', { timeout: 0 });
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
@@ -187,6 +201,67 @@ export class Session {
       this.host.unregister(runId.toLowerCase());
     }
   }
+
+  /** Lifecycle for an out-of-browser runtime: start it, load its port in the tab, check. */
+  private async runNode(
+    node: NodeRuntime,
+    run: RunState,
+    context: BrowserContext,
+    page: Page,
+    project: Project,
+    runId: string,
+    outDir: string,
+    timeouts: Record<PhaseName | 'check', number>,
+    checks: Checks | null,
+    options: RunOptions,
+  ): Promise<void> {
+    const logs: string[] = [];
+    try {
+      await run.phase('load', timeouts.load, async () => {}); // no host page
+      await run.phase('mount', timeouts.mount, () => node.mount(project, (l) => logs.push(l)));
+      run.install = await run.phase('install', timeouts.install, () => node.install());
+      const { port } = await run.phase('start', timeouts.start, () => node.start());
+      // *.sandburg.localhost resolves to loopback and bypasses the dead proxy.
+      const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
+      run.network = await this.egress.attach(context, origin, node.egress);
+      run.capture(page, origin);
+      const app = await run.phase('ready', timeouts.ready, async () => {
+        await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });
+        await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run);
+        return page.mainFrame();
+      });
+      await runChecksPhase(run, page, app, checks, timeouts, outDir, options);
+    } catch {
+      // failures are recorded per phase
+    } finally {
+      run.runtimeLogs = node.logs();
+      await run.phase('dispose', timeouts.dispose, () => node.dispose()).catch(() => {});
+    }
+  }
+}
+
+async function runChecksPhase(
+  run: RunState,
+  page: Page,
+  app: Frame,
+  checks: Checks | null,
+  timeouts: Record<PhaseName | 'check', number>,
+  outDir: string,
+  options: RunOptions,
+): Promise<void> {
+  run.checksOutput = await run.phase('checks', timeouts.checks, () =>
+    runChecks({
+      page,
+      app,
+      checks,
+      checkTimeoutMs: timeouts.check,
+      artifactsDir: outDir,
+      appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
+      appConsole: () => run.console.filter((c) => c.source === 'app'),
+      network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
+    }),
+  );
+  if (options.hold) await page.waitForEvent('close', { timeout: 0 });
 }
 
 /** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
@@ -220,18 +295,20 @@ class RunState {
   console: ConsoleEntry[] = [];
   pageErrors: PageError[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
+  /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
+  runtimeLogs: string[] = [];
   private startedAt = new Date();
   private t0 = performance.now();
   private runId: string;
   private project: Project;
-  private adapter: AdapterDescriptor;
+  private runtime: { name: string; version: string };
   private offline: boolean;
   private browserVersion: string;
 
-  constructor(runId: string, project: Project, adapter: AdapterDescriptor, offline: boolean, browserVersion: string) {
+  constructor(runId: string, project: Project, runtime: { name: string; version: string }, offline: boolean, browserVersion: string) {
     this.runId = runId;
     this.project = project;
-    this.adapter = adapter;
+    this.runtime = { name: runtime.name, version: runtime.version };
     this.offline = offline;
     this.browserVersion = browserVersion;
   }
@@ -298,6 +375,10 @@ class RunState {
       phases: this.phases,
       checks,
       pageErrors: [...this.pageErrors, ...appConsoleErrors],
+      runtimeErrors: [
+        ...this.console.filter((c) => c.source === 'host' && c.type === 'error').map((c) => c.text),
+        ...this.runtimeLogs,
+      ],
       infraError: this.infraError,
       declaredDependencies: Object.keys({ ...this.project.packageJson?.dependencies, ...this.project.packageJson?.devDependencies }),
     });
@@ -314,7 +395,7 @@ class RunState {
         snapshotId: this.project.snapshotId,
         fileCount: Object.keys(this.project.files).length,
       },
-      runtime: { name: this.adapter.name, version: this.adapter.version },
+      runtime: this.runtime,
       environment: {
         sandburgVersion: SANDBURG_VERSION,
         browser: `chromium ${this.browserVersion}`,
@@ -343,6 +424,10 @@ class RunState {
       network: this.network ?? { requests: 0, cacheHits: 0, cacheMisses: 0, failed: [], blocked: [] },
       artifacts: this.checksOutput?.artifacts ?? {},
     };
+    if (this.runtimeLogs.length) {
+      result.artifacts.runtimeLog = join(outDir, 'runtime.log');
+      await writeFile(result.artifacts.runtimeLog, this.runtimeLogs.join('\n') + '\n');
+    }
     await writeFile(join(outDir, 'result.json'), JSON.stringify(result, null, 2) + '\n');
     return result;
   }
@@ -353,9 +438,13 @@ function unwrap<T>(result: RpcResult<T>): T {
   return result.value;
 }
 
-async function appFrame(page: Page): Promise<Frame> {
-  const handle = await page.waitForSelector('#app');
-  const frame = await handle.contentFrame();
+/** The frame the app renders in: the host's #app iframe, then any nested iframes the adapter names. */
+async function appFrame(page: Page, nested: string[]): Promise<Frame> {
+  let frame: Frame | null = await (await page.waitForSelector('#app')).contentFrame();
+  for (const selector of nested) {
+    if (!frame) break;
+    frame = await (await frame.waitForSelector(selector, { state: 'attached', timeout: 0 })).contentFrame();
+  }
   if (!frame) throw new Error('app frame is not attached');
   return frame;
 }
@@ -376,18 +465,33 @@ async function waitForRender(frame: Frame, selector?: string): Promise<void> {
 
 /** How long the app may keep trying to render after an uncaught error. */
 const RENDER_GRACE_MS = 2_000;
+/** Console errors (a 404'd module, a failed import) are weaker evidence: wait longer. */
+const CONSOLE_GRACE_MS = 8_000;
+/** Console noise that says nothing about whether the app can render. */
+const BENIGN_CONSOLE = /favicon\.ico|Download the React DevTools/i;
 
 /**
- * Rejects if the app throws and still has not rendered after a grace period,
- * so a broken app fails `ready` with its own error instead of timing out.
+ * Rejects if the app throws (or logs a console error) and still has not
+ * rendered after a grace period, so a broken app fails `ready` with its own
+ * error instead of timing out. A module that 404s, for example, fails
+ * silently except for a console error.
  */
-async function failFastOnAppError(render: Promise<void>, firstError: () => PageError | undefined): Promise<void> {
+async function failFastOnAppError(render: Promise<void>, run: RunState): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const watch = new Promise<never>((_, reject) => {
+    let deadline = 0;
+    let reason = '';
     const poll = () => {
-      const err = firstError();
-      if (err) timer = setTimeout(() => reject(new Error(`app threw before rendering: ${err.message}`)), RENDER_GRACE_MS);
-      else timer = setTimeout(poll, 100);
+      if (!deadline) {
+        const err = run.pageErrors.find((e) => e.source === 'app');
+        const logged = run.console.find((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`));
+        if (err) [deadline, reason] = [Date.now() + RENDER_GRACE_MS, `app threw before rendering: ${err.message}`];
+        else if (logged) [deadline, reason] = [Date.now() + CONSOLE_GRACE_MS, `app did not render after a console error: ${logged.text}${logged.url ? ` (${logged.url})` : ''}`];
+      } else if (Date.now() >= deadline) {
+        reject(new Error(reason));
+        return;
+      }
+      timer = setTimeout(poll, 100);
     };
     poll();
   });
@@ -400,7 +504,7 @@ async function failFastOnAppError(render: Promise<void>, firstError: () => PageE
 
 function isInfra(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return /Target (page|crashed|closed)|Browser has been closed|browser has disconnected|offline mode:/i.test(msg);
+  return /Target (page|crashed|closed)|Browser has been closed|browser has disconnected|offline mode:|Cannot connect to the Docker daemon/i.test(msg);
 }
 
 function serialize(err: unknown): SerializedError {

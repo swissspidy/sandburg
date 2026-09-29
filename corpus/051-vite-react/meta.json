@@ -1,0 +1,14 @@
+{
+  "id": "051-vite-react",
+  "target": "vite-react",
+  "framework": "vite-react",
+  "features": [
+    "converter",
+    "search"
+  ],
+  "tailwind": false,
+  "react": "18.3.1",
+  "fault": "logic",
+  "buggyFeature": "converter",
+  "expected": "fail"
+}

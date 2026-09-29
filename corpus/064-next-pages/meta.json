@@ -1,0 +1,15 @@
+{
+  "id": "064-next-pages",
+  "target": "next-pages",
+  "framework": "nextjs",
+  "features": [
+    "fetch",
+    "todo",
+    "tailwind-modal"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "crash",
+  "buggyFeature": null,
+  "expected": "fail"
+}

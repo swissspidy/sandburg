@@ -1,0 +1,15 @@
+{
+  "id": "007-next-pages",
+  "target": "next-pages",
+  "framework": "nextjs",
+  "features": [
+    "modal",
+    "search",
+    "tailwind-modal"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

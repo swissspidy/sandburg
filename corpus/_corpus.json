@@ -1,0 +1,1526 @@
+{
+  "seed": 1,
+  "count": 100,
+  "apps": [
+    {
+      "id": "000-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "icons",
+        "counter",
+        "modal",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "001-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "form",
+        "converter"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "002-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "form",
+        "tabs",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "003-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "router",
+        "persist",
+        "icons",
+        "modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "004-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "converter",
+        "persist",
+        "counter"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "005-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "persist",
+        "form",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "persist",
+      "expected": "fail"
+    },
+    {
+      "id": "006-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "router",
+        "icons",
+        "search",
+        "modal",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "007-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "modal",
+        "search",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "008-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "persist",
+        "form",
+        "converter",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "009-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "modal",
+        "dates",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "010-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "form",
+        "search",
+        "tabs",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "011-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "persist",
+        "fetch",
+        "converter",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "012-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "fetch",
+        "icons",
+        "form"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "013-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "fetch",
+        "todo",
+        "store",
+        "modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "store",
+      "expected": "fail"
+    },
+    {
+      "id": "014-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "converter",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "015-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "store",
+        "tabs",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "016-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "tabs",
+        "icons"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "icons",
+      "expected": "fail"
+    },
+    {
+      "id": "017-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "todo",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "018-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "converter",
+        "store",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "019-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "tabs",
+        "todo",
+        "store",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "020-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "fetch",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "021-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "store",
+        "icons"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "icons",
+      "expected": "fail"
+    },
+    {
+      "id": "022-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "store",
+        "fetch",
+        "converter"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "converter",
+      "expected": "fail"
+    },
+    {
+      "id": "023-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "fetch",
+        "search",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "form",
+      "expected": "fail"
+    },
+    {
+      "id": "024-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "modal",
+        "dates",
+        "tabs",
+        "todo"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "025-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "converter",
+        "counter",
+        "tabs"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "026-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "modal",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "027-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "icons",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "028-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "modal",
+        "search",
+        "converter",
+        "store",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "029-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "tabs",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "030-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "todo",
+        "router",
+        "store",
+        "search",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "search",
+      "expected": "fail"
+    },
+    {
+      "id": "031-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "store",
+        "todo",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "032-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "modal",
+        "search",
+        "converter",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "033-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "tabs",
+        "todo",
+        "store",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "034-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "icons",
+        "converter",
+        "persist",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "persist",
+      "expected": "fail"
+    },
+    {
+      "id": "035-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "fetch",
+        "search",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "036-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "dates",
+        "converter",
+        "router"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "037-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "store",
+        "form",
+        "todo",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "038-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "modal",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "039-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "dates",
+        "router",
+        "search",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "040-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "search",
+        "icons"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "041-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "tabs",
+        "form",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "042-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "todo",
+        "icons",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "043-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "modal",
+        "icons",
+        "persist",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "044-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "todo",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "045-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "router",
+        "todo",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "046-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "counter",
+        "store",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "047-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "converter",
+        "modal",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "048-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "search",
+        "dates",
+        "tabs",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "049-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "store",
+        "todo",
+        "search",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "050-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "persist",
+        "form",
+        "todo",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "051-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "converter",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "logic",
+      "buggyFeature": "converter",
+      "expected": "fail"
+    },
+    {
+      "id": "052-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "modal",
+        "search",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "053-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "modal",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "054-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "tabs",
+        "search",
+        "converter",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "055-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "modal",
+        "store",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "056-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "tabs",
+        "modal",
+        "persist",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "057-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "tabs",
+        "todo",
+        "icons",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "058-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "converter",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "059-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "tabs",
+        "fetch",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "060-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "modal",
+        "converter",
+        "todo",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "061-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "counter",
+        "fetch",
+        "modal",
+        "icons"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "062-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "form",
+        "modal",
+        "fetch",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "tabs",
+      "expected": "fail"
+    },
+    {
+      "id": "063-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "icons",
+        "tabs",
+        "form"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "064-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "fetch",
+        "todo",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "065-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "tabs",
+        "converter",
+        "form",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "066-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "fetch",
+        "modal",
+        "tabs",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "18.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "067-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "icons",
+        "todo",
+        "counter"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "counter",
+      "expected": "fail"
+    },
+    {
+      "id": "068-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "counter",
+        "form",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "069-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "form",
+        "converter",
+        "counter",
+        "router"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "070-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "todo",
+        "converter",
+        "store",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "071-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "form",
+        "counter",
+        "tabs",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "072-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "converter",
+        "modal",
+        "fetch",
+        "todo"
+      ],
+      "tailwind": true,
+      "react": "18.3.1",
+      "fault": "logic",
+      "buggyFeature": "converter",
+      "expected": "fail"
+    },
+    {
+      "id": "073-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "fetch",
+        "dates"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "074-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "todo",
+        "persist",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "075-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "todo",
+        "icons",
+        "converter"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "076-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "todo",
+        "icons",
+        "search",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "077-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "modal",
+        "todo",
+        "search",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "078-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "search",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "079-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "persist",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "dates",
+      "expected": "fail"
+    },
+    {
+      "id": "080-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "modal",
+        "form",
+        "persist",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "form",
+      "expected": "fail"
+    },
+    {
+      "id": "081-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "todo",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "082-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "persist",
+        "modal",
+        "todo"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "logic",
+      "buggyFeature": "todo",
+      "expected": "fail"
+    },
+    {
+      "id": "083-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "tabs",
+        "todo",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "084-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "dates",
+        "router"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "085-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "tailwind-modal",
+        "fetch",
+        "todo"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "086-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "tabs",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "087-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "modal",
+        "icons",
+        "form"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "088-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "todo",
+        "search",
+        "tabs",
+        "persist"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "089-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "search",
+        "persist",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "090-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "router",
+        "converter",
+        "form",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "18.3.1",
+      "fault": "logic",
+      "buggyFeature": "converter",
+      "expected": "fail"
+    },
+    {
+      "id": "091-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "tabs",
+        "search"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "092-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "form",
+        "todo",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "093-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "tabs",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": "18.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "094-next-app",
+      "target": "next-app",
+      "framework": "nextjs",
+      "features": [
+        "form",
+        "fetch",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "095-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "fetch",
+        "counter",
+        "persist",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "096-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "icons",
+        "tabs",
+        "dates",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "097-next-pages",
+      "target": "next-pages",
+      "framework": "nextjs",
+      "features": [
+        "modal",
+        "tabs",
+        "converter",
+        "tailwind-modal"
+      ],
+      "tailwind": true,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "098-vite-vanilla",
+      "target": "vite-vanilla",
+      "framework": "vite-vanilla",
+      "features": [
+        "search",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "099-vite-react",
+      "target": "vite-react",
+      "framework": "vite-react",
+      "features": [
+        "fetch",
+        "icons",
+        "search",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    }
+  ]
+}

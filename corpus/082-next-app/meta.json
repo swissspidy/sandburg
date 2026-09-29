@@ -1,0 +1,15 @@
+{
+  "id": "082-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "persist",
+    "modal",
+    "todo"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "logic",
+  "buggyFeature": "todo",
+  "expected": "fail"
+}

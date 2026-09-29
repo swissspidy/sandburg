@@ -1,0 +1,14 @@
+{
+  "id": "081-vite-react",
+  "target": "vite-react",
+  "framework": "vite-react",
+  "features": [
+    "todo",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": "18.3.1",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "083-vite-vanilla",
+  "target": "vite-vanilla",
+  "framework": "vite-vanilla",
+  "features": [
+    "tabs",
+    "todo",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

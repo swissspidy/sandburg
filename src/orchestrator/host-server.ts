@@ -114,7 +114,7 @@ export class HostServer {
       headers['cross-origin-embedder-policy'] = 'require-corp';
     }
     const path = new URL(req.url ?? '/', 'http://x').pathname;
-    if (path === '/' || path === '/index.html') {
+    if (path === '/' || path === '/index.html' || path === '/__sandburg/') {
       res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8' });
       res.end(HOST_HTML);
     } else if (path === '/__sandburg/host.js') {

@@ -16,9 +16,15 @@ export interface RuntimeAdapter {
   mount(files: FileTree, ctx: AdapterContext): Promise<void>;
   install(ctx: AdapterContext): Promise<InstallReport>;
   /** Starts the app and returns the URL to load in the app frame (same-origin, or an allowlisted preview origin). */
-  start(ctx: AdapterContext): Promise<{ url: string }>;
+  start(ctx: AdapterContext): Promise<StartResult>;
   ready?(ctx: AdapterContext): Promise<void>;
   dispose(): Promise<void>;
+}
+
+export interface StartResult {
+  url: string;
+  /** False when start() already loaded the app into the frame (default: true, the host navigates to url). */
+  navigate?: boolean;
 }
 
 export class AdapterError extends Error {

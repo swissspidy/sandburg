@@ -1,0 +1,263 @@
+browser   passed    4.6s  002-vite-vanilla
+browser   passed    4.7s  000-vite-react
+browser   passed    5.6s  001-next-app
+browser   passed    4.1s  004-next-app
+browser   failed   10.3s  003-vite-react  [app-bug: blocking-check-failed]
+browser   passed    2.7s  007-next-pages
+browser   passed    2.9s  008-vite-vanilla
+browser   passed    7.9s  009-vite-react
+browser   failed   14.5s  006-vite-react  [app-bug: blocking-check-failed]
+browser   failed   17.9s  005-vite-vanilla  [app-bug: blocking-check-failed]
+browser   failed    7.4s  011-vite-vanilla  [app-bug: blocking-check-failed]
+browser   error    13.8s  010-next-app  [app-bug: compile-error]
+browser   failed    8.3s  012-vite-react  [app-bug: blocking-check-failed]
+browser   failed    8.0s  013-next-app  [app-bug: blocking-check-failed]
+browser   passed    3.9s  015-vite-react
+browser   passed    2.8s  018-vite-react
+browser   failed    7.3s  014-vite-vanilla  [app-bug: blocking-check-failed]
+browser   error     3.6s  017-vite-vanilla  [app-bug: compile-error]
+browser   failed    8.7s  016-next-pages  [app-bug: blocking-check-failed]
+browser   passed    3.6s  019-next-app
+browser   failed    8.1s  020-vite-vanilla  [app-bug: blocking-check-failed]
+browser   failed    9.5s  021-vite-react  [app-bug: blocking-check-failed]
+browser   passed    3.1s  024-vite-react
+browser   failed    8.2s  022-next-pages  [app-bug: blocking-check-failed]
+browser   passed    3.5s  025-next-pages
+browser   passed    3.7s  026-vite-vanilla
+browser   failed   12.6s  023-vite-vanilla  [app-bug: blocking-check-failed]
+browser   error     5.1s  027-vite-react  [app-bug: compile-error]
+browser   passed    4.4s  028-next-app
+browser   passed    3.3s  029-vite-vanilla
+browser   passed    5.1s  031-next-pages
+browser   passed    4.1s  032-vite-vanilla
+browser   passed    4.8s  033-vite-react
+browser   failed    8.9s  035-vite-vanilla  [app-bug: blocking-check-failed]
+browser   failed    8.2s  036-vite-react  [app-bug: blocking-check-failed]
+browser   passed    3.1s  037-next-app
+browser   failed   19.5s  030-vite-react  [app-bug: blocking-check-failed]
+browser   passed    2.5s  040-next-app
+browser   failed    7.9s  038-vite-vanilla  [app-bug: blocking-check-failed]
+browser   failed   18.7s  034-next-pages  [app-bug: blocking-check-failed]
+browser   passed    2.4s  041-vite-vanilla
+browser   passed    2.9s  044-vite-vanilla
+browser   error     4.6s  042-vite-react  [unknown: unmatched]
+browser   passed    4.3s  043-next-app
+browser   failed   12.9s  039-vite-react  [app-bug: blocking-check-failed]
+browser   passed    2.9s  047-vite-vanilla
+browser   passed    4.2s  046-next-app
+browser   passed    4.4s  048-vite-react
+browser   passed    5.1s  049-next-pages
+browser   passed    6.2s  050-vite-vanilla
+browser   failed   13.4s  045-vite-react  [app-bug: blocking-check-failed]
+browser   failed    9.0s  051-vite-react  [app-bug: blocking-check-failed]
+browser   passed    6.3s  053-vite-vanilla
+browser   passed   10.7s  052-next-pages
+browser   error     7.8s  054-vite-react  [app-bug: undeclared-import]
+browser   passed    5.6s  056-vite-vanilla
+browser   passed    6.7s  055-next-app
+browser   passed    5.8s  057-vite-react
+browser   passed    4.7s  058-next-app
+browser   passed    5.1s  060-vite-react
+browser   passed    4.7s  061-next-pages
+browser   failed    9.9s  059-vite-vanilla  [app-bug: blocking-check-failed]
+browser   error     4.8s  063-vite-react  [unknown: unmatched]
+browser   passed    2.7s  065-vite-vanilla
+browser   error     8.8s  064-next-pages  [app-bug: app-error-before-ready]
+browser   failed   14.2s  062-vite-vanilla  [app-bug: blocking-check-failed]
+browser   passed    2.6s  068-vite-vanilla
+browser   failed    7.8s  067-next-app  [app-bug: blocking-check-failed]
+browser   passed    3.4s  070-next-pages
+browser   failed   13.0s  066-vite-react  [app-bug: blocking-check-failed]
+browser   failed    8.3s  069-vite-react  [app-bug: blocking-check-failed]
+browser   passed    3.5s  073-next-app
+browser   failed    8.0s  071-vite-vanilla  [app-bug: blocking-check-failed]
+browser   passed    3.3s  074-vite-vanilla
+browser   passed    4.0s  075-vite-react
+browser   passed    4.7s  076-next-app
+browser   failed   13.6s  072-vite-react  [app-bug: blocking-check-failed]
+browser   error     4.7s  078-vite-react  [app-bug: undeclared-import]
+browser   failed    9.5s  077-vite-vanilla  [app-bug: blocking-check-failed]
+browser   passed    4.1s  081-vite-react
+browser   failed    3.6s  082-next-app  [app-bug: blocking-check-failed]
+browser   passed    3.1s  083-vite-vanilla
+browser   failed   10.1s  079-next-app  [app-bug: blocking-check-failed]
+browser   failed    9.0s  080-vite-vanilla  [app-bug: blocking-check-failed]
+browser   passed    3.6s  086-vite-vanilla
+browser   error     4.7s  084-vite-react  [app-bug: undeclared-import]
+browser   passed    5.9s  085-next-app
+browser   passed    5.4s  087-vite-react
+browser   error     4.7s  089-vite-vanilla  [unknown: unmatched]
+browser   passed    6.5s  088-next-app
+browser   passed    4.4s  091-next-app
+browser   error     4.9s  092-vite-vanilla  [app-bug: compile-error]
+browser   passed    3.2s  093-vite-react
+browser   passed    3.9s  094-next-app
+browser   passed    4.4s  096-vite-react
+browser   passed    3.8s  097-next-pages
+browser   error     3.4s  098-vite-vanilla  [unknown: unmatched]
+browser   failed    9.1s  095-vite-vanilla  [app-bug: blocking-check-failed]
+browser   failed   19.7s  090-vite-react  [app-bug: blocking-check-failed]
+browser   failed    7.5s  099-vite-react  [app-bug: blocking-check-failed]
+reference passed    7.2s  002-vite-vanilla
+reference passed   13.3s  000-vite-react
+reference passed   12.5s  003-vite-react
+reference passed   28.6s  001-next-app
+reference passed   23.1s  004-next-app
+reference passed   10.2s  006-vite-react
+reference failed   20.0s  005-vite-vanilla  [app-bug: blocking-check-failed]
+reference passed    5.2s  008-vite-vanilla
+reference passed   10.8s  009-vite-react
+reference passed    5.3s  011-vite-vanilla
+reference passed   21.4s  007-next-pages
+reference passed   11.8s  012-vite-react
+reference passed    5.6s  014-vite-vanilla
+reference error    37.5s  010-next-app  [app-bug: compile-error]
+reference passed   12.3s  015-vite-react
+reference failed   29.8s  013-next-app  [app-bug: blocking-check-failed]
+reference passed    7.5s  018-vite-react
+reference error    12.7s  017-vite-vanilla  [unknown: unmatched]
+reference passed    5.0s  020-vite-vanilla
+reference failed   31.5s  016-next-pages  [app-bug: blocking-check-failed]
+reference failed   13.9s  021-vite-react  [app-bug: blocking-check-failed]
+reference passed   24.2s  019-next-app
+reference failed   11.1s  023-vite-vanilla  [app-bug: blocking-check-failed]
+reference passed    9.6s  024-vite-react
+reference passed    5.3s  026-vite-vanilla
+reference failed   27.3s  022-next-pages  [app-bug: blocking-check-failed]
+reference passed   22.5s  025-next-pages
+reference error    18.2s  027-vite-react  [unknown: unmatched]
+reference passed    4.7s  029-vite-vanilla
+reference failed   14.7s  030-vite-react  [app-bug: blocking-check-failed]
+reference passed   29.9s  028-next-app
+reference passed    5.7s  032-vite-vanilla
+reference passed   23.1s  031-next-pages
+reference passed    9.7s  033-vite-react
+reference passed    6.0s  035-vite-vanilla
+reference error     4.5s  037-next-app  [app-bug: adapter-code:APP]
+reference passed   12.5s  036-vite-react
+reference passed    4.6s  038-vite-vanilla
+reference passed   10.9s  039-vite-react
+reference passed    4.7s  041-vite-vanilla
+reference passed   22.9s  040-next-app
+reference failed   45.4s  034-next-pages  [app-bug: blocking-check-failed]
+reference error    12.4s  042-vite-react  [unknown: unmatched]
+reference passed    4.8s  044-vite-vanilla
+reference passed   10.2s  045-vite-react
+reference passed    4.9s  047-vite-vanilla
+reference passed   29.2s  043-next-app
+reference passed   10.6s  048-vite-react
+reference passed   25.4s  046-next-app
+reference passed    6.1s  050-vite-vanilla
+reference failed   14.0s  051-vite-react  [app-bug: blocking-check-failed]
+reference passed    5.5s  053-vite-vanilla
+reference passed   22.4s  049-next-pages
+reference passed   21.0s  052-next-pages
+reference passed    7.7s  054-vite-react
+reference error     3.3s  056-vite-vanilla  [app-bug: adapter-code:APP]
+reference passed   10.0s  057-vite-react
+reference passed    6.3s  059-vite-vanilla
+reference passed   23.6s  055-next-app
+reference passed   23.2s  058-next-app
+reference passed   12.4s  060-vite-react
+reference failed   10.3s  062-vite-vanilla  [app-bug: blocking-check-failed]
+reference passed   22.7s  061-next-pages
+reference passed    5.5s  065-vite-vanilla
+reference error    16.0s  063-vite-react  [unknown: unmatched]
+reference passed   10.5s  066-vite-react
+reference passed    4.8s  068-vite-vanilla
+reference passed    7.6s  069-vite-react
+reference error    36.3s  064-next-pages  [unknown: unmatched]
+reference failed   28.3s  067-next-app  [app-bug: blocking-check-failed]
+reference passed    5.4s  071-vite-vanilla
+reference failed   14.8s  072-vite-react  [app-bug: blocking-check-failed]
+reference passed   20.5s  070-next-pages
+reference passed    5.1s  074-vite-vanilla
+reference passed   14.2s  075-vite-react
+reference passed   28.4s  073-next-app
+reference passed    5.3s  077-vite-vanilla
+reference passed    8.1s  078-vite-react
+reference passed   27.0s  076-next-app
+reference failed   11.1s  080-vite-vanilla  [app-bug: blocking-check-failed]
+reference passed    8.9s  081-vite-react
+reference passed    5.6s  083-vite-vanilla
+reference failed   37.8s  079-next-app  [app-bug: blocking-check-failed]
+reference passed   11.7s  084-vite-react
+reference passed    5.4s  086-vite-vanilla
+reference failed   28.3s  082-next-app  [app-bug: blocking-check-failed]
+reference passed   14.0s  087-vite-react
+reference error     6.2s  089-vite-vanilla  [unknown: unmatched]
+reference passed   30.7s  085-next-app
+reference passed   31.0s  088-next-app
+reference failed   14.8s  090-vite-react  [app-bug: blocking-check-failed]
+reference passed    9.1s  093-vite-react
+reference error    13.2s  092-vite-vanilla  [unknown: unmatched]
+reference passed    8.3s  095-vite-vanilla
+reference passed   30.0s  091-next-app
+reference passed   15.8s  096-vite-react
+reference error     8.9s  098-vite-vanilla  [unknown: unmatched]
+reference passed   34.3s  094-next-app
+reference passed   27.3s  097-next-pages
+reference passed   10.0s  099-vite-react
+# Sandburg fidelity report
+
+Generated 2026-09-29T15:39:44.576Z. Browser runtime: almostnode 0.2.14. Reference: docker node:22-slim.
+
+## Agreement (pass/fail per app)
+
+| Framework | Apps | Agreement | Both pass | Both fail | Browser stricter | Browser lenient |
+|---|---|---|---|---|---|---|
+| nextjs | 33 | **97.0%** | 23 | 9 | 0 | 1 |
+| vite-react | 34 | **64.7%** | 14 | 8 | 12 | 0 |
+| vite-vanilla | 33 | **69.7%** | 15 | 8 | 9 | 1 |
+| **All** | 100 | **77.0%** | 52 | 25 | 21 | 2 |
+
+"Browser stricter": the browser run failed and the reference passed (a false alarm if the browser is used as a pre-filter). "Browser lenient": the browser run passed and the reference failed (a missed failure).
+
+## Against ground truth
+
+For 100 apps with a known expected outcome (seeded faults), the browser run was right in **80.0%** of apps and the Docker reference in **97.0%**.
+
+## Disagreements by cause
+
+| Cause | Apps |
+|---|---|
+| `blocking-check-failed` | 18 |
+| `undeclared-import` | 3 |
+| `lenient:bad-version` | 2 |
+
+| App | Direction | Cause | Browser failure | Reference failure |
+|---|---|---|---|---|
+| 003-vite-react | browser-stricter | `blocking-check-failed` | checks: router |  |
+| 006-vite-react | browser-stricter | `blocking-check-failed` | checks: router, tailwind-modal |  |
+| 011-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 012-vite-react | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 014-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 020-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 035-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 036-vite-react | browser-stricter | `blocking-check-failed` | checks: router |  |
+| 037-next-app | browser-lenient | `lenient:bad-version` |  | npm install failed: docker exec sandburg-ref-mumu72a6-1ea277 npm exited with 1 |
+| 038-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 039-vite-react | browser-stricter | `blocking-check-failed` | checks: router, fetch |  |
+| 045-vite-react | browser-stricter | `blocking-check-failed` | checks: router, tailwind-modal |  |
+| 054-vite-react | browser-stricter | `undeclared-import` | imports undeclared package "nanoid" |  |
+| 056-vite-vanilla | browser-lenient | `lenient:bad-version` |  | npm install failed: docker exec sandburg-ref-mumu8yjo-2c4026 npm exited with 1 |
+| 059-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 066-vite-react | browser-stricter | `blocking-check-failed` | checks: fetch, tailwind-modal |  |
+| 069-vite-react | browser-stricter | `blocking-check-failed` | checks: router |  |
+| 071-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 077-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 078-vite-react | browser-stricter | `undeclared-import` | imports undeclared package "nanoid" |  |
+| 084-vite-react | browser-stricter | `undeclared-import` | imports undeclared package "nanoid" |  |
+| 095-vite-vanilla | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+| 099-vite-react | browser-stricter | `blocking-check-failed` | checks: fetch |  |
+
+## Time and cost per run
+
+Measured on one 4-vCPU machine. Cost assumes $0.0504/vCPU-hour and charges the whole machine for the batch's wall time.
+
+| | Parallel | Median run | p90 run | Batch wall time | Machine time per app | Cost per app |
+|---|---|---|---|---|---|---|
+| Browser (almostnode 0.2.14) | 4 | 5.1 s | 13.0 s | 170.7 s | 1.7 s | $0.000096 |
+| Reference (docker node:22-slim) | 3 | 12.4 s | 29.9 s | 515.5 s | 5.2 s | $0.000289 |
+
+report: /home/user/sandburg/docs/fidelity/almostnode-vs-docker.md, /home/user/sandburg/docs/fidelity/almostnode-vs-docker.json

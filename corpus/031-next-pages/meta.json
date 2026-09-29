@@ -1,0 +1,15 @@
+{
+  "id": "031-next-pages",
+  "target": "next-pages",
+  "framework": "nextjs",
+  "features": [
+    "store",
+    "todo",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "type-error",
+  "buggyFeature": null,
+  "expected": "pass"
+}

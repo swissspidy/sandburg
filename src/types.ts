@@ -7,7 +7,7 @@
 export type FileTree = Record<string, FileContent>;
 export type FileContent = string | { base64: string };
 
-export type Framework = 'vite' | 'next' | 'static' | 'unknown';
+export type Framework = 'vite' | 'next' | 'wordpress' | 'static' | 'unknown';
 
 export interface Project {
   name: string;
@@ -45,6 +45,11 @@ export interface AdapterDescriptor {
   egress: string[];
   /** Host sends COOP/COEP when true. */
   crossOriginIsolation: boolean;
+  /**
+   * Selectors of nested iframes, from the host's app frame down to the frame
+   * the app renders in (e.g. WordPress Playground renders inside remote.html's #wp).
+   */
+  appFrameSelectors?: string[];
   /** Module path aliases for bundling the browser entry. */
   bundleAliases?: Record<string, string>;
   probe(project: Project): ProbeVerdict;
@@ -175,5 +180,7 @@ export interface RunResult {
   artifacts: {
     screenshot?: string;
     a11ySnapshot?: string;
+    /** Install and server output of an out-of-browser runtime. */
+    runtimeLog?: string;
   };
 }

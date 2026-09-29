@@ -15,7 +15,7 @@
       "properties": {
         "name": { "type": "string" },
         "path": { "type": "string" },
-        "framework": { "enum": ["vite", "next", "static", "unknown"] },
+        "framework": { "enum": ["vite", "next", "wordpress", "static", "unknown"] },
         "snapshotId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "fileCount": { "type": "integer", "minimum": 0 }
       }
@@ -154,7 +154,8 @@
       "type": "object",
       "properties": {
         "screenshot": { "type": "string" },
-        "a11ySnapshot": { "type": "string" }
+        "a11ySnapshot": { "type": "string" },
+        "runtimeLog": { "type": "string" }
       }
     }
   },

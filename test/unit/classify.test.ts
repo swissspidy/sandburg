@@ -92,3 +92,10 @@ test('a missing Node.js built-in is a runtime limitation', () => {
   const g = classify(input({ phases: failedAt('start', `Cannot find module 'left-pad' from '/x.js'`) }));
   assert.equal(g?.class, 'unknown');
 });
+
+test('compile errors in project sources are app bugs', () => {
+  const f = classify(input({ phases: failedAt('ready', 'app threw before rendering: Module build failed (from ./node_modules/next/dist/build/webpack/loaders/next-swc-loader.js):') }));
+  assert.deepEqual([f?.class, f?.rule], ['app-bug', 'compile-error']);
+  const g = classify(input({ phases: failedAt('ready', 'waiting'), pageErrors: [{ source: 'app', message: 'Transform failed with 1 error:\n/src/App.tsx:3:15: ERROR: Unexpected ";"' }] }));
+  assert.equal(g?.rule, 'compile-error');
+});

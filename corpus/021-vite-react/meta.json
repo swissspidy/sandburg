@@ -1,0 +1,14 @@
+{
+  "id": "021-vite-react",
+  "target": "vite-react",
+  "framework": "vite-react",
+  "features": [
+    "store",
+    "icons"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "logic",
+  "buggyFeature": "icons",
+  "expected": "fail"
+}

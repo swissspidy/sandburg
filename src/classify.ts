@@ -26,11 +26,16 @@ export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
   { rule: 'signature:runtime-worker', pattern: /Initializing node worker failed/i },
 ];
 
+/** Compile errors reported by dev servers and esbuild for the project's sources. */
+const COMPILE_ERROR = /Module build failed|Failed to compile|Transform failed with \d+ error|\[plugin:vite:[a-z-]+\]|Expected [^\n]{1,40} but found|Unexpected token|Unterminated (string|template)/i;
+
 export interface ClassifyInput {
   probe: ProbeVerdict | null;
   phases: PhaseRecord[];
   checks: CheckResult[];
   pageErrors: PageError[];
+  /** Errors the runtime logged about the project (e.g. NextDevServer's transform errors); used for compile errors only. */
+  runtimeErrors?: string[];
   /** Dependency names declared in package.json (dependencies and devDependencies). */
   declaredDependencies: string[];
   /** Set when the orchestrator or browser itself failed (crash, offline cache miss). */
@@ -67,6 +72,9 @@ export function classify(input: ClassifyInput): Failure | null {
     const evidence = [message, ...appErrors];
     const sig = matchSignature(evidence);
     if (sig) return failure('runtime-unsupported', failedPhase.name, sig, message, evidence);
+    // The project's own source does not compile (dev servers report this for syntax errors).
+    const compile = [message, ...appErrors, ...(input.runtimeErrors ?? [])].find((e) => COMPILE_ERROR.test(e));
+    if (compile) return failure('app-bug', failedPhase.name, 'compile-error', compile.split('\n').slice(0, 3).join('\n'), evidence);
     // The runtime came up, but the app never rendered and threw from its own sources.
     if (failedPhase.name === 'ready' && hasProjectStack(input.pageErrors)) {
       return failure('app-bug', 'ready', 'app-error-before-ready', message, appErrors);

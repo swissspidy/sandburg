@@ -1,0 +1,15 @@
+{
+  "id": "067-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "icons",
+    "todo",
+    "counter"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "logic",
+  "buggyFeature": "counter",
+  "expected": "fail"
+}

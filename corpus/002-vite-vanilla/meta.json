@@ -1,0 +1,15 @@
+{
+  "id": "002-vite-vanilla",
+  "target": "vite-vanilla",
+  "framework": "vite-vanilla",
+  "features": [
+    "form",
+    "tabs",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

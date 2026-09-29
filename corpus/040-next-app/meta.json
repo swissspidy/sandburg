@@ -1,0 +1,14 @@
+{
+  "id": "040-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "search",
+    "icons"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

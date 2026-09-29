@@ -1,0 +1,16 @@
+{
+  "id": "013-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "fetch",
+    "todo",
+    "store",
+    "modal"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "logic",
+  "buggyFeature": "store",
+  "expected": "fail"
+}

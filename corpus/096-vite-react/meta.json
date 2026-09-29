@@ -1,0 +1,16 @@
+{
+  "id": "096-vite-react",
+  "target": "vite-react",
+  "framework": "vite-react",
+  "features": [
+    "icons",
+    "tabs",
+    "dates",
+    "search"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

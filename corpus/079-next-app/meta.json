@@ -1,0 +1,14 @@
+{
+  "id": "079-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "persist",
+    "dates"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "logic",
+  "buggyFeature": "dates",
+  "expected": "fail"
+}

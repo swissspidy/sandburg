@@ -49,12 +49,15 @@ export function createAdapter(): RuntimeAdapter {
       const deps = ctx.packageJson?.dependencies ?? {};
       const lock = readLockfile(fs);
       const resolved: Record<string, string> = {};
-      for (const [name, range] of Object.entries(deps)) {
+      const all = { ...ctx.packageJson?.devDependencies, ...deps };
+      for (const [name, range] of Object.entries(all)) {
         if (/^(file|link|workspace|git\+?|https?):/.test(range)) {
           throw new AdapterError('UNSUPPORTED', `dependency ${name}@${range}: only registry dependencies are supported`);
         }
-        resolved[name] = lock?.[name] ?? range;
       }
+      for (const [name, range] of Object.entries(deps)) resolved[name] = lock?.[name] ?? range;
+      // npm fails the install when a declared version does not exist, whether or not it is imported.
+      await checkVersionsExist(Object.fromEntries(Object.entries(all).map(([n, r]) => [n, lock?.[n] ?? r])));
       importMap = ctx.framework === 'next' ? nextImportMap(pickSingletons(resolved, 'next')).imports : buildImportMap(resolved).imports;
       if (ctx.framework === 'vite' && Object.keys(resolved).length > 0) {
         const html = fs.readFileSync('/index.html', 'utf8') as string;
@@ -65,6 +68,7 @@ export function createAdapter(): RuntimeAdapter {
         }
       }
       const shims: string[] = [];
+      if (ctx.framework === 'vite' && useTailwindBrowser(fs)) shims.push('tailwindcss (@tailwindcss/browser)');
       if (ctx.framework === 'next' && !fs.existsSync('/node_modules/next/server.js')) {
         for (const [path, content] of Object.entries(NEXT_SHIM_FILES)) {
           fs.mkdirSync(path.slice(0, path.lastIndexOf('/')), { recursive: true });
@@ -94,6 +98,7 @@ export function createAdapter(): RuntimeAdapter {
       } else {
         server = new ViteDevServer(fs, { port: PORT, root: '/' });
       }
+      const isVite = ctx.framework === 'vite';
       const bridge = getServerBridge();
       await bridge.initServiceWorker({ swUrl: '/__sw__.js' });
       const devServer = server;
@@ -104,7 +109,9 @@ export function createAdapter(): RuntimeAdapter {
           listening: true,
           address: () => ({ port: PORT, address: '0.0.0.0', family: 'IPv4' }),
           handleRequest: async (method: string, url: string, headers: Record<string, string>, body?: unknown) => {
-            const res = await devServer.handleRequest(method, url, headers, body as never);
+            let res = await devServer.handleRequest(method, url, headers, body as never);
+            if (res.statusCode === 404) res = (await resolveExtension(devServer, method, url, headers, body)) ?? res;
+            if (res.statusCode === 404 && isVite) res = (await viteFallbacks(devServer, method, url, headers, body)) ?? res;
             return overrideReact ? unpinResponse(res) : res;
           },
           // Next.js API routes can stream; the bridge uses this when present.
@@ -116,7 +123,10 @@ export function createAdapter(): RuntimeAdapter {
       );
       server.start();
       ctx.log('stdout', `almostnode ${server.constructor.name} listening on virtual port ${PORT}`);
-      return { url: `/__virtual__/${PORT}/` };
+      // Vite apps are served at the origin root (the service worker forwards "/" to the dev
+      // server), so routers and absolute paths behave as under `vite`. NextDevServer's HTML
+      // hard-codes the /__virtual__/ prefix, so Next.js apps stay there.
+      return { url: ctx.framework === 'vite' ? '/' : `/__virtual__/${PORT}/` };
     },
 
     async ready() {
@@ -134,6 +144,97 @@ export function createAdapter(): RuntimeAdapter {
 }
 
 type DevResponse = Awaited<ReturnType<ViteDevServer['handleRequest']>>;
+
+/**
+ * Vite behaviors almostnode's ViteDevServer lacks: files in public/ are served
+ * at the root, and unknown paths that accept HTML get index.html (SPA fallback).
+ */
+async function viteFallbacks(
+  server: ViteDevServer | NextDevServer,
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+): Promise<DevResponse | null> {
+  const u = new URL(url, 'http://x');
+  const pub = await server.handleRequest(method, `/public${u.pathname}${u.search}`, headers, body as never);
+  if (pub.statusCode !== 404) return pub;
+  const accept = headers.accept ?? headers.Accept ?? '';
+  if (method === 'GET' && accept.includes('text/html')) return server.handleRequest(method, '/', headers, body as never);
+  return null;
+}
+
+/**
+ * Tailwind v4 is a Vite plugin (@tailwindcss/vite), which almostnode cannot run.
+ * Tailwind's official browser build generates the same utilities at run time:
+ * drop the @import from CSS and load the browser build instead.
+ */
+function useTailwindBrowser(fs: VirtualFS): boolean {
+  let found = false;
+  const walk = (dir: string) => {
+    for (const name of fs.readdirSync(dir) as string[]) {
+      const path = `${dir === '/' ? '' : dir}/${name}`;
+      if (name === 'node_modules' || name.startsWith('.')) continue;
+      if (fs.statSync(path).isDirectory()) walk(path);
+      else if (path.endsWith('.css')) {
+        const css = fs.readFileSync(path, 'utf8') as string;
+        const stripped = css.replace(/@import\s+["']tailwindcss["'][^;]*;/g, '');
+        if (stripped !== css) {
+          fs.writeFileSync(path, stripped);
+          found = true;
+        }
+      }
+    }
+  };
+  walk('/');
+  if (found) {
+    const html = fs.readFileSync('/index.html', 'utf8') as string;
+    fs.writeFileSync('/index.html', html.replace(/<\/head>/i, `  <script src="${TAILWIND_BROWSER}"></script>\n  </head>`));
+  }
+  return found;
+}
+
+const TAILWIND_BROWSER = 'https://unpkg.com/@tailwindcss/browser@4';
+
+/** Fails like npm does when a declared version range matches nothing (esm.sh answers 404). */
+async function checkVersionsExist(deps: Record<string, string>): Promise<void> {
+  const missing: string[] = [];
+  await Promise.all(
+    Object.entries(deps).map(async ([name, range]) => {
+      const res = await fetch(`https://esm.sh/${name}@${encodeURIComponent(range)}/package.json`);
+      if (res.status === 404) missing.push(`${name}@${range}`);
+    }),
+  );
+  if (missing.length) throw new AdapterError('APP', `no matching version found for ${missing.sort().join(', ')} (npm would fail with ETARGET)`);
+}
+
+/**
+ * Vite and Next.js resolve extensionless imports ("./App" → App.tsx, "./lib" →
+ * lib/index.ts); almostnode's dev servers do not (Next.js: outside pages/ and app/).
+ */
+const VITE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.mjs', '/index.tsx', '/index.ts', '/index.jsx', '/index.js'];
+
+async function resolveExtension(
+  server: ViteDevServer | NextDevServer,
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+): Promise<DevResponse | null> {
+  const u = new URL(url, 'http://x');
+  if (/\.[a-z0-9]+$/i.test(u.pathname)) return null;
+  const bases = [u.pathname.replace(/\/$/, '')];
+  // NextDevServer maps only /_next/{pages,app}/… to files. A page importing "../components/X"
+  // asks for /_next/components/X, which is really /components/X.
+  if (/^\/_next\/(?!pages\/|app\/|shims\/|static\/)/.test(u.pathname)) bases.push(bases[0].slice('/_next'.length));
+  for (const base of bases) {
+    for (const ext of VITE_EXTENSIONS) {
+      const res = await server.handleRequest(method, base + ext + u.search, headers, body as never);
+      if (res.statusCode !== 404) return res;
+    }
+  }
+  return null;
+}
 
 function unpinResponse(res: DevResponse): DevResponse {
   const type = Object.entries(res.headers as Record<string, string>).find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';

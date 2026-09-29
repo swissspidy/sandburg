@@ -16,6 +16,13 @@ export interface CheckContext {
   /** The sandbox tab (host page). Prefer `app` for interacting with the app. */
   page: Page;
   expect: typeof expect;
+  /**
+   * Resolves an app path against the URL the app first loaded at, so checks
+   * work whatever prefix the runtime serves the app under
+   * (/__virtual__/5173/ in almostnode, /scope:…/ in WordPress Playground).
+   * appUrl('/about') and appUrl('about') are the same.
+   */
+  appUrl(path: string): string;
 }
 
 export type CheckFn = (ctx: CheckContext) => Promise<void> | void;
@@ -52,6 +59,8 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   const results: CheckResult[] = [];
   const artifacts: ChecksOutput['artifacts'] = {};
   const { page, app } = input;
+  const base = new URL('.', app.url()).href;
+  const appUrl = (path: string) => new URL(path.replace(/^\/+/, ''), base).href;
 
   // Artifacts first, so they show the app as it first rendered.
   results.push(
@@ -74,7 +83,7 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   for (const [name, fn] of Object.entries(input.checks ?? {})) {
     results.push(
       await timed(`functional:${slug(name)}`, 'functional', name, true, async () => {
-        await withTimeout(Promise.resolve(fn({ app, page, expect })), input.checkTimeoutMs, `check "${name}" timed out`);
+        await withTimeout(Promise.resolve(fn({ app, page, expect, appUrl })), input.checkTimeoutMs, `check "${name}" timed out`);
         return { status: 'passed' };
       }),
     );

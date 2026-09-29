@@ -1,0 +1,16 @@
+{
+  "id": "088-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "todo",
+    "search",
+    "tabs",
+    "persist"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}
