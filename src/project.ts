@@ -1,11 +1,12 @@
 /**
- * Project input: a directory, a JSON file tree, or a stored snapshot
- * ("snapshot:<id or prefix>"). (Zip input is planned.)
+ * Project input: a directory, a .zip archive, a JSON file tree, or a stored
+ * snapshot ("snapshot:<id or prefix>").
  */
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { isText, manifestOf, snapshotId, type SnapshotStore } from './store.ts';
 import type { FileTree, Framework, PackageJson, Project } from './types.ts';
+import { readZip, stripCommonRoot } from './zip.ts';
 
 const IGNORED_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.sandburg', '.turbo', '.cache']);
 /** Sandburg's own check files are not part of the app. */
@@ -28,8 +29,11 @@ export async function loadProject(path: string, store?: SnapshotStore): Promise<
   } else if (abs.endsWith('.json')) {
     files = parseFileTree(JSON.parse(await readFile(abs, 'utf8')));
     name = basename(abs, '.json');
+  } else if (abs.endsWith('.zip')) {
+    files = filesFromZip(await readFile(abs));
+    name = basename(abs, '.zip');
   } else {
-    throw new Error(`unsupported project input: ${path} (expected a directory or a .json file tree)`);
+    throw new Error(`unsupported project input: ${path} (expected a directory, a .zip, or a .json file tree)`);
   }
   return projectFromFiles(files, { name, path: abs });
 }
@@ -79,6 +83,23 @@ function isWordPressPlugin(files: FileTree): boolean {
 function isWordPressTheme(files: FileTree): boolean {
   const css = files['style.css'];
   return typeof css === 'string' && /^[ \t/*#@]*Theme Name:/im.test(css);
+}
+
+/** A zip's entries as a file tree, with the same exclusions as a directory (node_modules, .git, check files, …). */
+export function filesFromZip(buf: Buffer): FileTree {
+  const files: FileTree = {};
+  // macOS "Compress" adds a __MACOSX/ sibling; drop it before looking for a common root folder.
+  const entries = readZip(buf).filter((e) => !e.path.startsWith('__MACOSX/'));
+  for (const { path, data } of stripCommonRoot(entries)) {
+    const clean = normalize(path);
+    const parts = clean.split('/');
+    if (parts.slice(0, -1).some((d) => IGNORED_DIRS.has(d) || d === '__MACOSX')) continue;
+    const file = parts.at(-1)!;
+    if (IGNORED_FILES.test(file) || file === '.DS_Store') continue;
+    if (data.length > MAX_FILE_BYTES) throw new Error(`file too large: ${clean}`);
+    files[clean] = isText(data) ? data.toString('utf8') : { base64: data.toString('base64') };
+  }
+  return files;
 }
 
 function parseFileTree(value: unknown): FileTree {

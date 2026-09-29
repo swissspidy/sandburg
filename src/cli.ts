@@ -10,12 +10,12 @@ const USAGE = `Usage: sandburg <command> [options]
 
 Commands:
   run <project>        Run one project and check it
-  batch <dir>          Run every project in <dir> (subdirectories or .json trees), N tabs at a time
+  batch <dir>          Run every project in <dir> (subdirectories, .zip or .json), N tabs at a time
   open <project>       Load a project in a visible browser tab and keep it open
   snapshot <project>   Store a project in the snapshot store and print its id
   compare <dir>        Run projects in the browser and in a Docker reference; report agreement
 
-<project> is a directory, a JSON file tree, or snapshot:<id-or-prefix>.
+<project> is a directory, a .zip, a JSON file tree, or snapshot:<id-or-prefix>.
 
 Options:
   --runtime <name>     Runtime adapter (default: almostnode)

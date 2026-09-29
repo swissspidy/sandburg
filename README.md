@@ -47,7 +47,7 @@ sandburg snapshot <project>                            # store it, print its sna
 sandburg open <project>                                # load it in a visible tab
 ```
 
-- `<project>` is a directory, a JSON file tree (`{ "path": "contents" }`), or
+- `<project>` is a directory, a `.zip` (a single top-level folder is stripped, as in GitHub downloads), a JSON file tree (`{ "path": "contents" }`), or
   `snapshot:<id or prefix>`. Every run stores its project as a
   content-addressed snapshot, and the result records the snapshot id, so any
   run can be reopened exactly (`sandburg open snapshot:3f2a…`).
