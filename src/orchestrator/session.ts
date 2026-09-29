@@ -2,7 +2,8 @@
  * A session owns the browser, the host server and the egress gateway. Runs in
  * a session share them; each run gets its own browser context, tab and origin.
  */
-import { randomBytes } from 'node:crypto';
+import { X509Certificate, createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
@@ -23,7 +24,8 @@ import type {
 } from '../types.ts';
 import type { HostApi, RpcResult } from '../host/host.ts';
 import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.ts';
-import { EgressGateway, type EgressStats } from './egress.ts';
+import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
+import { EgressProxy } from './egress-proxy.ts';
 import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
@@ -38,6 +40,14 @@ export interface SessionOptions {
   headless?: boolean;
   /** Chromium binary; defaults to Playwright's, or $SANDBURG_CHROMIUM. */
   executablePath?: string;
+  /**
+   * PEM bundle of extra CAs the browser should accept for tunneled HTTPS, for
+   * networks whose egress proxy re-terminates TLS. Default: $SANDBURG_EXTRA_CA_CERTS,
+   * then $NODE_EXTRA_CA_CERTS (what Node already trusts). Their public keys are
+   * pinned with --ignore-certificate-errors-spki-list: only chains containing one
+   * of these keys are accepted in addition to the normal trust store.
+   */
+  extraCaCerts?: string | null;
 
 }
 
@@ -72,6 +82,8 @@ export interface RunOptions {
   /** CSS selector that must match a rendered element before checks start. */
   readySelector?: string;
   timeouts?: Partial<Record<PhaseName | 'check', number>>;
+  /** Re-run a project whose run failed as infra (a flaky download, a crashed tab) this many times. Default 1. */
+  infraRetries?: number;
   /** Keep the tab open after checks until it is closed (for `sandburg open`, with a headed browser). */
   hold?: boolean;
 }
@@ -136,6 +148,22 @@ export class Session {
   }
 
   async run(projectInput: string | Project, options: RunOptions = {}): Promise<RunResult> {
+    const previous: string[] = [];
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.runOnce(projectInput, options);
+      if (result.failure?.class !== 'infra' || attempt >= (options.infraRetries ?? 1) || options.hold) {
+        if (previous.length) {
+          result.previousAttempts = previous;
+          const outDir = resolve(options.outDir ?? '.sandburg/runs', result.runId);
+          await writeFile(join(outDir, 'result.json'), JSON.stringify(result, null, 2) + '\n');
+        }
+        return result;
+      }
+      previous.push(result.runId);
+    }
+  }
+
+  private async runOnce(projectInput: string | Project, options: RunOptions): Promise<RunResult> {
     if (!this.browser) throw new Error('session is not open');
     const runId = `r-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
     const outDir = resolve(options.outDir ?? '.sandburg/runs', runId);
@@ -150,6 +178,7 @@ export class Session {
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
     let context: BrowserContext | null = null;
+    let proxy: EgressProxy | null = null;
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -157,7 +186,18 @@ export class Session {
         return await run.finish(outDir);
       }
 
-      context = await this.browser.newContext({ viewport: { width: 1280, height: 800 } });
+      // Requests routing cannot see (service worker scripts, for one) use the context's own
+      // proxy credentials, which select this sandbox's allowlist in the egress proxy.
+      run.network = newEgressStats();
+      const allow = runtimeInfo.egress;
+      const runtimeAllow = originMatcher(allow);
+      proxy = new EgressProxy(originMatcher(allow), run.network);
+      await proxy.listen();
+      context = await this.browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
+      });
+      recordRequestFailures(context, run);
       const page = await context.newPage();
       if (node) {
         await this.runNode(node, run, context, page, project, runId, outDir, timeouts, checks, options);
@@ -166,7 +206,7 @@ export class Session {
       }
       const sandboxId = runId.toLowerCase();
       const origin = this.host.register(sandboxId, adapter!);
-      run.network = await this.egress.attach(context, origin, adapter!.egress);
+      await this.egress.attach(context, origin, allow, run.network);
       run.capture(page, origin);
 
       const ok = await run.phase('load', timeouts.load, async () => {
@@ -180,9 +220,10 @@ export class Session {
 
       if (ok) {
         const steps = async () => {
-          await run.phase('mount', timeouts.mount, () => host('mount', project.files, project.packageJson, project.framework));
-          run.install = (await run.phase('install', timeouts.install, () => host('install'))) as InstallReport;
-          const { url, navigate } = (await run.phase('start', timeouts.start, () => host('start'))) as { url: string; navigate?: boolean };
+          const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
+          await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
+          run.install = (await run.phase('install', timeouts.install, () => watch(host('install')))) as InstallReport;
+          const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
           const app = await run.phase('ready', timeouts.ready, async () => {
             await host('ready', url, navigate ?? true);
             const frame = await appFrame(page, adapter!.appFrameSelectors ?? []);
@@ -198,6 +239,7 @@ export class Session {
       return await run.finish(outDir);
     } finally {
       await context?.close().catch(() => {});
+      await proxy?.close();
       this.host.unregister(runId.toLowerCase());
     }
   }
@@ -221,9 +263,9 @@ export class Session {
       await run.phase('mount', timeouts.mount, () => node.mount(project, (l) => logs.push(l)));
       run.install = await run.phase('install', timeouts.install, () => node.install());
       const { port } = await run.phase('start', timeouts.start, () => node.start());
-      // *.sandburg.localhost resolves to loopback and bypasses the dead proxy.
+      // *.sandburg.localhost resolves to loopback and bypasses the proxy.
       const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
-      run.network = await this.egress.attach(context, origin, node.egress);
+      await this.egress.attach(context, origin, node.egress, run.network ?? undefined);
       run.capture(page, origin);
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });
@@ -266,13 +308,72 @@ async function runChecksPhase(
 
 /** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
 export function launchOptions(options: SessionOptions): LaunchOptions {
+  const ca = options.extraCaCerts === undefined ? (process.env.SANDBURG_EXTRA_CA_CERTS ?? process.env.NODE_EXTRA_CA_CERTS) : options.extraCaCerts;
+  const spki = ca ? spkiHashes(ca) : [];
   return {
     headless: options.headless ?? true,
+    args: spki.length ? [`--ignore-certificate-errors-spki-list=${spki.join(',')}`] : [],
     executablePath: options.executablePath ?? process.env.SANDBURG_CHROMIUM,
-    // Only sandbox origins bypass the dead proxy. Leading "<-loopback>" is required for
+    // Default for contexts without their own egress-proxy credentials: only sandbox origins
+    // bypass the dead proxy. Leading "<-loopback>" is required for
     // Chromium to honor the rule for *.localhost; it also keeps plain 127.0.0.1 blocked.
     proxy: { server: DEAD_PROXY, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
   };
+}
+
+/** Grace period after a runtime asset fails before the phase gives up (the runtime may retry). */
+const RUNTIME_FETCH_GRACE_MS = 3_000;
+
+/**
+ * Rejects when one of the runtime's own assets (an allowlisted origin) fails to
+ * load in the browser, so a flaky download fails the phase quickly as infra
+ * instead of waiting out its deadline.
+ */
+async function failFastOnRuntimeFetch<T>(work: Promise<T>, run: RunState, allow: (origin: string) => boolean): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const watch = new Promise<never>((_, reject) => {
+    let deadline = 0;
+    let reason = '';
+    const poll = () => {
+      if (!deadline) {
+        const f = run.network?.failed.find((e) => e.reason.startsWith('browser:') && allow(new URL(e.url).origin));
+        // Also: a rate limit or server error on a script, e.g. a runtime's service worker registration.
+        const limited = run.console.find((c) => c.type === 'error' && /bad HTTP response code \((429|5\d\d)\)/.test(c.text));
+        if (f) [deadline, reason] = [Date.now() + RUNTIME_FETCH_GRACE_MS, `runtime asset failed to load: ${f.url} (${f.reason})`];
+        else if (limited) [deadline, reason] = [Date.now() + RUNTIME_FETCH_GRACE_MS, `runtime asset failed to load: ${limited.text}`];
+      } else if (Date.now() >= deadline) {
+        reject(new Error(reason));
+        return;
+      }
+      timer = setTimeout(poll, 200);
+    };
+    poll();
+  });
+  try {
+    return await Promise.race([work, watch]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Requests that failed in the browser for reasons other than the gateway's own
+ * blocking (DNS, TLS, resets, a service worker's fetch failing).
+ */
+function recordRequestFailures(context: BrowserContext, run: RunState): void {
+  context.on('requestfailed', (req) => {
+    const reason = req.failure()?.errorText ?? 'failed';
+    if (/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(reason) || !run.network || run.network.failed.length >= 100) return;
+    run.network.failed.push({ url: req.url(), method: req.method(), reason: `browser: ${reason}` });
+  });
+}
+
+/** base64 sha256 of each certificate's SubjectPublicKeyInfo, as Chromium's SPKI list expects. */
+function spkiHashes(pemPath: string): string[] {
+  const pem = readFileSync(pemPath, 'utf8');
+  return (pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? []).map((c) =>
+    createHash('sha256').update(new X509Certificate(c).publicKey.export({ type: 'spki', format: 'der' })).digest('base64'),
+  );
 }
 
 /** Convenience: open a session, run one project, close. */

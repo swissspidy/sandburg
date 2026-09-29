@@ -22,6 +22,8 @@ export interface EgressStats {
   requests: number;
   cacheHits: number;
   cacheMisses: number;
+  /** Connections the egress proxy tunneled (requests routing cannot see; policed, not cached). */
+  tunneled?: number;
   failed: NetworkEntry[];
   blocked: NetworkEntry[];
 }
@@ -42,6 +44,19 @@ interface CacheMeta {
 const HOP_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'set-cookie']);
 /** Request headers forwarded upstream; they can change what a CDN serves (esm.sh picks its build target by user agent). */
 const FORWARDED = ['user-agent', 'accept'];
+
+export function newEgressStats(): EgressStats {
+  return { requests: 0, cacheHits: 0, cacheMisses: 0, tunneled: 0, failed: [], blocked: [] };
+}
+
+/**
+ * Only answers that stay true are cached: successes and "does not exist".
+ * Never redirects (the browser would follow them outside the gateway) and never
+ * transient failures such as 429 rate limits or 5xx, which would otherwise replay forever.
+ */
+function cacheable(status: number): boolean {
+  return (status >= 200 && status < 300) || status === 404 || status === 410;
+}
 
 export type OriginMatcher = (origin: string) => boolean;
 
@@ -84,8 +99,7 @@ export class EgressGateway {
    * Routes all requests of `context`. `localOrigin` is the sandbox origin;
    * `allow` lists upstream origins (e.g. "https://esm.sh").
    */
-  async attach(context: BrowserContext, localOrigin: string, allow: string[]): Promise<EgressStats> {
-    const stats: EgressStats = { requests: 0, cacheHits: 0, cacheMisses: 0, failed: [], blocked: [] };
+  async attach(context: BrowserContext, localOrigin: string, allow: string[], stats: EgressStats = newEgressStats()): Promise<EgressStats> {
     const allowed = originMatcher(allow);
     await context.route('**/*', async (route) => {
       const req = route.request();
@@ -137,8 +151,7 @@ export class EgressGateway {
     const path = join(this.options.cacheDir, key.slice(0, 2), key);
 
     const cached = await readCache(path);
-    // Never serve a cached redirect: the browser would follow it outside the gateway.
-    if (cached && (cached.status < 300 || cached.status >= 400)) return { response: cached, hit: true };
+    if (cached && cacheable(cached.status)) return { response: cached, hit: true };
     if (this.options.offline) throw new OfflineMissError(req.url());
 
     let pending = this.inflight.get(key);
@@ -181,7 +194,7 @@ export class EgressGateway {
       ),
       body: await res.body(),
     };
-    if (response.status < 300 || (response.status >= 400 && response.status < 500)) await writeCache(path, url, response);
+    if (cacheable(response.status)) await writeCache(path, url, response);
     return response;
   }
 

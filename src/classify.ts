@@ -26,6 +26,11 @@ export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
   { rule: 'signature:runtime-worker', pattern: /Initializing node worker failed/i },
 ];
 
+/** A runtime's own download came back broken (an error page instead of an archive, a reset). */
+const INFRA_SIGNATURE = /runtime asset failed to load|Could not unzip file\. Error code: \d+\. File size: \d+ bytes|ERR_TUNNEL_CONNECTION_FAILED|ECONNRESET|socket hang up|upstream proxy refused/i;
+
+const RUNTIME_BOOT_FETCH = /Failed to fetch dynamically imported module|WebWorker failed to load|Failed to register a ServiceWorker/i;
+
 /** Compile errors reported by dev servers and esbuild for the project's sources. */
 const COMPILE_ERROR = /Module build failed|Failed to compile|Transform failed with \d+ error|\[plugin:vite:[a-z-]+\]|Expected [^\n]{1,40} but found|Unexpected token|Unterminated (string|template)/i;
 
@@ -50,6 +55,14 @@ export function classify(input: ClassifyInput): Failure | null {
 
   if (failedPhase?.status === 'timeout') {
     return failure('timeout', failedPhase.name, 'phase-deadline', failedPhase.error?.message ?? `${failedPhase.name} timed out`, []);
+  }
+  // The runtime could not fetch its own code while booting (before any project code ran).
+  if (failedPhase && (failedPhase.name === 'load' || failedPhase.name === 'mount') && RUNTIME_BOOT_FETCH.test(failedPhase.error?.message ?? '')) {
+    return failure('infra', failedPhase.name, 'runtime-boot-fetch', failedPhase.error!.message.split('\n')[0], []);
+  }
+  const infraText = [failedPhase?.error?.message ?? '', ...(input.runtimeErrors ?? [])].find((t) => INFRA_SIGNATURE.test(t));
+  if (failedPhase && infraText) {
+    return failure('infra', failedPhase.name, 'signature:download-failed', infraText.split('\n').slice(0, 3).join('\n'), []);
   }
   if (input.infraError) {
     return failure('infra', input.infraError.phase, 'infra-error', input.infraError.message, []);

@@ -20,6 +20,7 @@
         "fileCount": { "type": "integer", "minimum": 0 }
       }
     },
+    "previousAttempts": { "type": "array", "items": { "type": "string" } },
     "runtime": {
       "type": "object",
       "required": ["name", "version"],
@@ -146,6 +147,7 @@
         "requests": { "type": "integer", "minimum": 0 },
         "cacheHits": { "type": "integer", "minimum": 0 },
         "cacheMisses": { "type": "integer", "minimum": 0 },
+        "tunneled": { "type": "integer", "minimum": 0 },
         "failed": { "type": "array", "items": { "$ref": "#/$defs/networkEntry" } },
         "blocked": { "type": "array", "items": { "$ref": "#/$defs/networkEntry" } }
       }

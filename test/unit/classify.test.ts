@@ -99,3 +99,15 @@ test('compile errors in project sources are app bugs', () => {
   const g = classify(input({ phases: failedAt('ready', 'waiting'), pageErrors: [{ source: 'app', message: 'Transform failed with 1 error:\n/src/App.tsx:3:15: ERROR: Unexpected ";"' }] }));
   assert.equal(g?.rule, 'compile-error');
 });
+
+test('a runtime download that came back broken is infra', () => {
+  const f = classify(input({ phases: failedAt('mount', 'PHP.run() failed with exit code 255.\nUncaught Exception: Could not unzip file. Error code: 19. File size: 960 bytes.') }));
+  assert.deepEqual([f?.class, f?.rule], ['infra', 'signature:download-failed']);
+});
+
+test('a runtime that cannot fetch its own code while booting is infra', () => {
+  const f = classify(input({ phases: failedAt('mount', 'Failed to fetch dynamically imported module: https://playground.wordpress.net/assets/index-BG9JLHps.js') }));
+  assert.deepEqual([f?.class, f?.rule], ['infra', 'runtime-boot-fetch']);
+  // The same text once the app is running is not infra.
+  assert.notEqual(classify(input({ phases: failedAt('ready', 'Failed to fetch dynamically imported module: https://esm.sh/x') }))?.class, 'infra');
+});

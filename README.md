@@ -12,8 +12,9 @@ with WordPress itself as one of the runtimes.
   WordPress Playground (plugins and themes), and optionally Nodebox.
 - **Honest about fidelity:** `sandburg compare` runs the same apps in a Docker
   reference and reports how often the two agree, and why they disagree.
-- **Nothing leaves the browser** except through a caching egress gateway with
-  a per-runtime allowlist. Tests prove it.
+- **Nothing leaves the browser** except through a caching egress gateway and a
+  per-sandbox filtering proxy, both enforcing a per-runtime allowlist. Tests
+  prove it.
 
 ## Status
 
@@ -98,7 +99,7 @@ the rule that decided it (`src/classify.ts`).
 | Runtime | Runs | Notes |
 |---|---|---|
 | `almostnode` (default) | Vite, Next.js (App and Pages Router) | MIT. Dependencies load from esm.sh. Sandburg patches several gaps (ADR 0003). No Vite plugins or PostCSS, so Tailwind v4 does not apply. |
-| `wordpress` | WordPress plugins and themes | WordPress Playground, loaded from playground.wordpress.net at run time. |
+| `wordpress` | WordPress plugins and themes | WordPress Playground, loaded at run time from `SANDBURG_PLAYGROUND_URL` (default: playground.wordpress.net, which rate-limits heavy use, so self-host it for batches). |
 | `nodebox` | Next.js ≤ 13, in theory | Optional. You must install `@codesandbox/nodebox` yourself (Sustainable Use License). It emulates Node.js 16, so current stacks are rejected. |
 | Docker reference | Vite, Next.js | `npm ci` or `npm install` plus the real dev server in `node:22-slim`. The same checks run in the same browser. |
 
@@ -114,9 +115,14 @@ seeded faults whose expected outcome is known.
 
 ```sh
 npm test            # unit tests
-npm run test:e2e    # real Chromium; the first run needs network access to the allowlisted CDNs
+npm run test:e2e    # real Chromium; the first run needs network access to the allowlisted CDNs.
+                    # Docker tests skip without Docker; WordPress tests need SANDBURG_E2E_WORDPRESS=1.
 npm run typecheck
 ```
+
+On networks that re-terminate TLS, Sandburg trusts the CAs in
+`$SANDBURG_EXTRA_CA_CERTS` (or `$NODE_EXTRA_CA_CERTS`) in the browser too, by
+pinning their public keys. Verification stays on.
 
 ## License
 

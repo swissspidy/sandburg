@@ -43,6 +43,7 @@ export function bundleHost(adapter: AdapterDescriptor): Promise<string> {
         platform: 'browser',
         target: 'es2022',
         logLevel: 'silent',
+        define: adapter.bundleDefines,
         plugins: [
           {
             name: 'sandburg-aliases',

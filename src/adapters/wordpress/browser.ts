@@ -10,7 +10,9 @@
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, InstallReport } from '../../types.ts';
 
-const PLAYGROUND = 'https://playground.wordpress.net';
+declare const __SANDBURG_PLAYGROUND__: string;
+/** The Playground deployment serving client and remote (SANDBURG_PLAYGROUND_URL; see ADR 0005). */
+const PLAYGROUND = __SANDBURG_PLAYGROUND__;
 
 /** The subset of Playground's client API the adapter uses. */
 interface PlaygroundClient {
@@ -64,7 +66,13 @@ export function createAdapter(): RuntimeAdapter {
           : `$t = wp_get_theme(${JSON.stringify(kind.slug)});
              if (!$t->exists() || $t->errors()) { echo 'ERROR: ' . ($t->errors() ? $t->errors()->get_error_message() : 'theme not found'); }
              else { switch_theme(${JSON.stringify(kind.slug)}); echo 'OK'; }`;
-      const res = await client.run({ code: `<?php require_once '/wordpress/wp-load.php'; ${activate}` });
+      let res: { text: string; errors: string };
+      try {
+        res = await client.run({ code: `<?php require_once '/wordpress/wp-load.php'; ${activate}` });
+      } catch (err) {
+        // Playground throws when PHP exits with a fatal error: loading the project's code failed.
+        throw new AdapterError('APP', `activating the ${kind.type} failed: ${String((err as Error).message ?? err).slice(0, 800)}`);
+      }
       ctx.log('stdout', res.text);
       if (res.errors) ctx.log('stderr', res.errors);
       if (!res.text.trim().endsWith('OK')) {

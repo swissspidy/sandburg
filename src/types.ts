@@ -50,6 +50,8 @@ export interface AdapterDescriptor {
    * the app renders in (e.g. WordPress Playground renders inside remote.html's #wp).
    */
   appFrameSelectors?: string[];
+  /** Compile-time constants for the browser bundle (esbuild `define`): identifier → JSON value. */
+  bundleDefines?: Record<string, string>;
   /** Module path aliases for bundling the browser entry. */
   bundleAliases?: Record<string, string>;
   probe(project: Project): ProbeVerdict;
@@ -145,6 +147,8 @@ export interface RunResult {
     fileCount: number;
   };
   runtime: { name: string; version: string };
+  /** Run ids of earlier attempts discarded because they failed as infra (see RunOptions.infraRetries). */
+  previousAttempts?: string[];
   environment: {
     sandburgVersion: string;
     browser: string;
@@ -174,6 +178,8 @@ export interface RunResult {
     requests: number;
     cacheHits: number;
     cacheMisses: number;
+    /** Connections tunneled by the egress proxy (policed by origin, not cached). */
+    tunneled?: number;
     failed: NetworkEntry[];
     blocked: NetworkEntry[];
   };
