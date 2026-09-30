@@ -494,7 +494,9 @@ function buildBuiltins() {
       return ~c >>> 0;
     },
   });
-  zlib.constants = { ...zlibBrowserify.constants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
+  // browserify-zlib has its Z_* constants on the module, not on `constants`.
+  const zConstants = Object.fromEntries(Object.entries(zlibBrowserify).filter(([k, v]) => k.startsWith('Z_') && typeof v === 'number'));
+  zlib.constants = { ...zConstants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
 
   const assertStrict = Object.assign((v: unknown, m?: string) => assert.strict(v, m as string), assert.strict);
 

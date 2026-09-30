@@ -6,10 +6,77 @@
  * not byte for byte what Node's zlib makes at a given level; options such as level are not applied.
  * The synchronous functions (gzipSync, …) stay on the JavaScript port: there is no synchronous
  * native API.
+ *
+ * A native compressor cannot flush: CompressionStream has no Z_SYNC_FLUSH, so the bytes of what was
+ * written so far may stay inside it. A compressing stream therefore holds its input until it knows
+ * which kind it is. If `flush()` is called first (HTTP compression middleware flushing a streamed
+ * response), it becomes the JavaScript port, which flushes as Node does. If 1 MB arrives, or the
+ * input ends, first, it becomes native: bulk data such as webpack's cache packs. A native stream
+ * that is flushed later waits for what was written to be taken in, but cannot force it out.
  */
 import { Transform } from 'stream';
+import zlibBrowserify from 'browserify-zlib';
 
 type Format = 'gzip' | 'deflate' | 'deflate-raw';
+
+const HOLD = 1024 * 1024;
+// browserify-zlib has its constants on the module, not on `constants`.
+const Z_FULL_FLUSH = (zlibBrowserify as unknown as { Z_FULL_FLUSH: number }).Z_FULL_FLUSH;
+
+type Callback = (e?: Error | null) => void;
+
+const ported: Record<Format, () => Transform> = {
+  gzip: () => zlibBrowserify.createGzip() as unknown as Transform,
+  deflate: () => zlibBrowserify.createDeflate() as unknown as Transform,
+  'deflate-raw': () => zlibBrowserify.createDeflateRaw() as unknown as Transform,
+};
+
+/** A compressing stream: native, or the JavaScript port if it is flushed before 1 MB arrives. */
+function compressor(format: Format): Transform {
+  let inner: Transform | null = null;
+  let held: Uint8Array[] = [];
+  let heldBytes = 0;
+  const t = new Transform({
+    transform(chunk: Uint8Array, _enc: string, cb: Callback) {
+      if (inner) return void (inner.write(chunk) ? cb() : inner.once('drain', () => cb()));
+      held.push(chunk);
+      heldBytes += chunk.length;
+      if (heldBytes >= HOLD) choose(nativeTransform(format, true));
+      cb();
+    },
+    flush(cb: Callback) {
+      if (!inner) choose(nativeTransform(format, true));
+      inner!.once('end', () => cb());
+      inner!.end();
+    },
+  });
+  const choose = (stream: Transform) => {
+    inner = stream;
+    inner.on('data', (c: Buffer) => t.push(c));
+    inner.on('error', (e: Error) => t.destroy(e));
+    for (const c of held) inner.write(c);
+    held = [];
+  };
+  Object.assign(t, {
+    bytesWritten: 0,
+    params: (_level: number, _strategy: number, cb?: () => void) => cb && queueMicrotask(cb),
+    flush: (kind?: number | (() => void), cb?: () => void) => {
+      const done = typeof kind === 'function' ? kind : cb;
+      // Written chunks are still in this stream's buffer: flush after them, as Node does.
+      t.write(Buffer.alloc(0), () => {
+        if (!inner) choose(ported[format]());
+        const flush = (inner as unknown as { flush(kind: number | undefined, cb: () => void): void }).flush;
+        flush.call(inner, typeof kind === 'number' ? kind : Z_FULL_FLUSH, () => done && done());
+      });
+    },
+    close: (cb?: () => void) => {
+      t.destroy();
+      inner?.destroy();
+      if (cb) queueMicrotask(cb);
+    },
+  });
+  return t;
+}
 
 function nativeTransform(format: Format, compress: boolean): Transform {
   const stream = compress ? new CompressionStream(format) : new DecompressionStream(format);
@@ -44,9 +111,10 @@ function nativeTransform(format: Format, compress: boolean): Transform {
   Object.assign(t, {
     bytesWritten: 0,
     params: (_level: number, _strategy: number, cb?: () => void) => cb && queueMicrotask(cb),
+    // What was written has been taken in (the native streams cannot be made to emit it).
     flush: (kind?: number | (() => void), cb?: () => void) => {
       const done = typeof kind === 'function' ? kind : cb;
-      if (done) queueMicrotask(done);
+      writer.ready.then(() => setTimeout(() => done && done()), () => done && done());
     },
     close: (cb?: () => void) => {
       t.destroy();
@@ -69,11 +137,11 @@ function convenience(format: Format, compress: boolean) {
 }
 
 export const nativeZlib = {
-  createGzip: () => nativeTransform('gzip', true),
+  createGzip: () => compressor('gzip'),
   createGunzip: () => nativeTransform('gzip', false),
-  createDeflate: () => nativeTransform('deflate', true),
+  createDeflate: () => compressor('deflate'),
   createInflate: () => nativeTransform('deflate', false),
-  createDeflateRaw: () => nativeTransform('deflate-raw', true),
+  createDeflateRaw: () => compressor('deflate-raw'),
   createInflateRaw: () => nativeTransform('deflate-raw', false),
   gzip: convenience('gzip', true),
   gunzip: convenience('gzip', false),

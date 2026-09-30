@@ -569,6 +569,37 @@ test('zlib: gzip, deflate and raw deflate streams (native) interoperate with the
   assert.equal(out.stdout.trim(), `${JSON.stringify([true, true, true, true, true, 'Z_DATA_ERROR'])} true true`, out.stderr);
 });
 
+test('zlib: a flushed compressing stream emits what was written so far (compression middleware)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const zlib = require('zlib');
+        const results = [];
+        const check = (make, inflate) => new Promise((resolve) => {
+          const z = make();
+          const chunks = [];
+          z.on('data', (c) => chunks.push(c));
+          z.write('event: tick\\ndata: 1\\n\\n');
+          z.flush(() => {
+            const sofar = inflate(Buffer.concat(chunks)).toString();
+            z.end();
+            resolve(sofar);
+          });
+        });
+        (async () => {
+          const opts = { finishFlush: zlib.constants.Z_SYNC_FLUSH };
+          results.push(await check(() => zlib.createDeflateRaw(), (b) => zlib.inflateRawSync(b, opts)));
+          // After gzip's 10-byte header, raw deflate.
+          results.push(await check(() => zlib.createGzip(), (b) => zlib.inflateRawSync(b.subarray(10), opts)));
+          console.log(JSON.stringify(results));
+        })();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), JSON.stringify(['event: tick\ndata: 1\n\n', 'event: tick\ndata: 1\n\n']), out.stderr);
+});
+
 test('Buffer: UTF-8 conversions of long strings (native) match Node', async () => {
   const out = await h.run(
     {

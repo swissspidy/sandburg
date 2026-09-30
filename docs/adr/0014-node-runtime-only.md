@@ -132,7 +132,9 @@ install, then Sandburg transforming every file Next.js loads, then webpack compi
     3.4–5.1 s, now 1–1.3 s, as files grow in place;
   - Buffer's UTF-8 conversions ran in JavaScript loops, ~13× slower than Node; longer strings now
     use TextEncoder and TextDecoder;
-  - zlib's streams use the browser's CompressionStream.
+  - zlib's streams use the browser's CompressionStream. It cannot flush, so a compressing stream
+    that is flushed before 1 MB has arrived (compression middleware on a streamed response) uses
+    the JavaScript port instead.
 
 Measured on the `next-app-router` fixture with one extra dependency, so each run is a new install
 (the seed for its versions already made; making it costs one extra run of about 30 s, once):
