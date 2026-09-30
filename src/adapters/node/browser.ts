@@ -20,8 +20,16 @@ export interface HostInstall {
    */
   /** The bundle of files earlier runs of this install loaded (see index.ts), or null. */
   preload?: string | null;
+  /** A bundle of project files to start with (the Next.js seed cache, see index.ts), or null. */
+  filesBundle?: string | null;
   /** Dev servers' caches from an earlier run (Vite's pre-bundled dependencies), and where they live. */
-  devCache?: { key: string; dirs: string[]; files: Record<string, string> };
+  devCache?: {
+    key: string;
+    dirs: string[];
+    files: Record<string, string | { base64: string }>;
+    /** Files to wait for before the cache is saved (a seed run: webpack stores its cache when idle). */
+    waitFor?: string[];
+  };
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
   proxy?: ProxyRule[];
   start?: ({ main: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
@@ -134,6 +142,7 @@ export function createAdapter(): RuntimeAdapter {
         env: { NEXT_TELEMETRY_DISABLED: '1', ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
         installKey: host.key,
         preload: host.preload ?? null,
+        filesBundle: host.filesBundle ?? null,
         nodeModules: host.index,
         log: (stream, line) => {
           ctx.log(stream, line);
@@ -183,9 +192,22 @@ export function createAdapter(): RuntimeAdapter {
     async dispose() {
       // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
       if (proc && devCache && !proc.failure) {
-        const tree = await Promise.race([proc.readTree(devCache.dirs), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
-        const complete = tree && devCache.dirs.some((d) => `${d}/_metadata.json` in tree);
-        const changed = complete && Object.keys(tree).some((p) => tree[p] !== devCache!.files[p]);
+        const read = () => Promise.race([proc!.readTree(devCache!.dirs), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+        let tree = await read();
+        if (devCache.waitFor) {
+          // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment).
+          const size = (t: typeof tree) => (t ? Object.values(t).reduce((n, f) => n + (typeof f === 'string' ? f.length : f.base64.length), 0) : -1);
+          for (let i = 0; i < 40; i++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            const next = await read();
+            const ready = next && devCache.waitFor.every((f) => f in next);
+            if (ready && size(next) === size(tree)) break;
+            tree = next;
+          }
+        }
+        const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : devCache.dirs.some((d) => `${d}/_metadata.json` in tree!));
+        const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
+        const changed = complete && Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p]));
         if (changed) await fetch(`/__sandburg/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
       }
       proc?.terminate();

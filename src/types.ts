@@ -61,9 +61,19 @@ export interface AdapterDescriptor {
    * node runtime). Its result is passed to the browser adapter's install().
    * Must not execute project code.
    */
-  hostInstall?(project: Project, log: (line: string) => void): Promise<unknown>;
+  hostInstall?(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<unknown>;
   /** Extra routes under /__sandburg/ on the sandbox origin (worker bundles, file serving, compile). */
   serve?(request: HostRequest): Promise<HostResponse | null>;
+}
+
+export interface HostInstallOptions {
+  /**
+   * This run is a seed, started by the session to fill caches that other projects' runs share
+   * (the node adapter's Next.js cache). Only the session sets it: a project can never.
+   */
+  seed?: boolean;
+  /** Runs a seed project (Sandburg's own, with the given checks) in this session and waits for it. */
+  runSeed?(project: Project, checks: unknown): Promise<void>;
 }
 
 export interface HostRequest {

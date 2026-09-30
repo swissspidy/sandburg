@@ -42,6 +42,12 @@ export function sharedInstaller(): Installer {
 }
 let shared: Installer | undefined;
 
+interface Manifest {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  overrides?: unknown;
+}
+
 export class Installer {
   readonly root: string;
   private pending = new Map<string, Promise<InstallInfo>>();
@@ -105,6 +111,8 @@ export class Installer {
       await mkdir(tmp, { recursive: true });
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
+      const base = await this.startFromClosest(manifest as Manifest, tmp, lock !== null);
+      if (base) log(`starting from install ${base.key}, which has ${base.shared} of the same dependencies (npm installs the difference)`);
       // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
       await placeNextSwcWasm(tmp);
@@ -124,6 +132,49 @@ export class Installer {
       }
     }
     return { key, dir, resolved, lockfile: lock !== null, fromCache: exists };
+  }
+
+  /**
+   * Starts a new install from the finished install that shares most of its dependencies: its
+   * node_modules, hard-linked (instant), and its lockfile, so npm only installs the difference
+   * (~0.5 s instead of ~7 s for a Next.js app). As with the install cache itself, versions that
+   * installs share stay the ones npm picked for the first. Linux only (cp -al); elsewhere npm installs
+   * everything. Files that installs change later are replaced, never written through the links.
+   */
+  private async startFromClosest(manifest: Manifest, tmp: string, hasLock: boolean): Promise<{ key: string; shared: number } | null> {
+    if (process.platform !== 'linux') return null;
+    const wanted = { ...manifest.dependencies, ...manifest.devDependencies };
+    const names = Object.keys(wanted);
+    if (!names.length) return null;
+    let best: { key: string; shared: number; time: number } | null = null;
+    for (const key of await readdir(this.root).catch(() => [] as string[])) {
+      if (!/^[0-9a-f]{24}$/.test(key)) continue;
+      const done = await readFile(join(this.root, key, '.sandburg-complete'), 'utf8').catch(() => '');
+      if (!done.includes(`layout ${LAYOUT_VERSION}`)) continue;
+      let other: Manifest;
+      try {
+        other = JSON.parse(await readFile(join(this.root, key, 'package.json'), 'utf8')) as Manifest;
+      } catch {
+        continue;
+      }
+      if (JSON.stringify(other.overrides ?? null) !== JSON.stringify(manifest.overrides ?? null)) continue;
+      const theirs = { ...other.dependencies, ...other.devDependencies };
+      const shared = names.filter((n) => theirs[n] === wanted[n]).length;
+      const time = Date.parse(done.split(' ')[0]) || 0;
+      if (shared * 2 >= names.length && (!best || shared > best.shared || (shared === best.shared && time > best.time))) best = { key, shared, time };
+    }
+    if (!best) return null;
+    const from = join(this.root, best.key);
+    try {
+      await run('cp', ['-al', join(from, 'node_modules'), join(tmp, 'node_modules')], tmp, () => {});
+      // npm's record of the tree it installed describes the other install: it reads the tree instead.
+      await rm(join(tmp, 'node_modules', '.package-lock.json'), { force: true });
+      if (!hasLock) await cp(join(from, 'package-lock.json'), join(tmp, 'package-lock.json')).catch(() => {});
+    } catch {
+      await rm(join(tmp, 'node_modules'), { recursive: true, force: true });
+      return null;
+    }
+    return { key: best.key, shared: best.shared };
   }
 
   /**
@@ -321,6 +372,7 @@ async function placeWasiBindings(dir: string, log: (line: string) => void): Prom
   }
   for (const [binding] of missing) {
     if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
+    await rm(join(nm, binding), { recursive: true, force: true });
     await cp(join(sideNm, binding), join(nm, binding), { recursive: true });
     for (const dep of sidePackages) {
       if (dep in wanted) continue;
@@ -514,8 +566,8 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
       }
       await rm(side, { recursive: true, force: true });
     }
-    await writeFile(join(pkgDir, build.file), build.shim);
-    for (const [file, shim] of Object.entries(build.also ?? {})) await writeFile(join(pkgDir, file), shim);
+    await replaceFile(join(pkgDir, build.file), build.shim);
+    for (const [file, shim] of Object.entries(build.also ?? {})) await replaceFile(join(pkgDir, file), shim);
     log(`${build.name} ${version}: using ${build.wasm}`);
   }
 }
@@ -540,6 +592,15 @@ const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }[] = [
 ];
 
 /**
+ * Writes a file as a new file: an install may share files with another through hard links (see
+ * Installer.startFromClosest), and writing into one would change both.
+ */
+async function replaceFile(path: string, content: string | Buffer): Promise<void> {
+  await rm(path, { force: true });
+  await writeFile(path, content);
+}
+
+/**
  * node_modules/.sandburg-bins.json: each package binary (node_modules/.bin/<name>) and the script it
  * runs, relative to the install directory. The runtime's shell resolves commands with it.
  */
@@ -554,14 +615,16 @@ async function writeBinIndex(dir: string): Promise<void> {
       // not a link (npm links every binary)
     }
   }
-  await writeFile(join(dir, 'node_modules', '.sandburg-bins.json'), JSON.stringify(bins));
+  await replaceFile(join(dir, 'node_modules', '.sandburg-bins.json'), JSON.stringify(bins));
 }
 
 async function placeNextSwcWasm(dir: string): Promise<void> {
   const from = join(dir, 'node_modules', '@next', 'swc-wasm-nodejs');
   const next = join(dir, 'node_modules', 'next');
   if (!(await access(from).then(() => true, () => false)) || !(await access(next).then(() => true, () => false))) return;
-  await cp(from, join(next, 'wasm', '@next', 'swc-wasm-nodejs'), { recursive: true });
+  const to = join(next, 'wasm', '@next', 'swc-wasm-nodejs');
+  await rm(to, { recursive: true, force: true });
+  await cp(from, to, { recursive: true });
 }
 
 async function buildIndex(dir: string): Promise<FileIndex> {

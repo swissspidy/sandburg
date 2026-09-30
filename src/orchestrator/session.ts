@@ -86,6 +86,8 @@ export interface RunOptions {
   infraRetries?: number;
   /** Keep the tab open after checks until it is closed (for `sandburg open`, with a headed browser). */
   hold?: boolean;
+  /** Internal: this run is a seed of shared caches (see HostInstallOptions.seed). */
+  seed?: boolean;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -165,6 +167,12 @@ export class Session {
     }
   }
 
+  /** Runs a seed project (see HostInstallOptions.runSeed); its result goes to .sandburg/seeds. */
+  private async runSeed(project: Project, checks: Checks, parent: RunOptions): Promise<void> {
+    const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds') });
+    if (result.status !== 'passed') throw new Error(`seed ${project.name} did not pass: ${result.failure?.message ?? result.status}`);
+  }
+
   private async runOnce(projectInput: string | Project, options: RunOptions): Promise<RunResult> {
     if (!this.browser) throw new Error('session is not open');
     const runId = `r-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
@@ -226,7 +234,12 @@ export class Session {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
           await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
-            const hostData = adapter!.hostInstall ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line)) : undefined;
+            const hostData = adapter!.hostInstall
+              ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line), {
+                  seed: options.seed,
+                  runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
+                })
+              : undefined;
             return watch(host('install', hostData));
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };

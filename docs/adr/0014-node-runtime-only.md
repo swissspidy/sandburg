@@ -100,14 +100,49 @@ classified as `compile-error` app bugs at that location.
 the host after a run and restored before the next run of the same project (the same installed
 packages and files). Vite checks the cache against the lockfile and its config before it uses it.
 The page uploads the cache, so the host accepts it only under the key it issued to that run, for
-the cache directories, up to 64 MB: one project cannot plant pre-bundled code in another's runs.
+the cache directories, up to 256 MB: one project cannot plant pre-bundled code in another's runs.
 
 The runtime reads installed files with one synchronous request each, about 7 ms apiece: `next dev`
 loads ~1,750 files (12 s of its start), svelte-vite's Vite ~700 in each of two runtimes. The host
-records which files an install's runs load, and a later run fetches them as one bundle. A runtime
+records which files an install's runs load, per install and per package version, and a later run
+fetches them as one bundle (so does a new install, for the package versions other runs loaded). A runtime
 switches to the bundle after its first 40 files, so the small WebAssembly helper threads do not each
 hold it; the browser caches the bundle for the other runtimes of the run. Measured: svelte-vite 16.3 s
 → 7.5 s, Next.js 33.1 s → 21.4 s.
+
+**Cold starts of Next.js apps.** A new Next.js app (never run, new install) took 45–60 s: npm
+install, then Sandburg transforming every file Next.js loads, then webpack compiling ~544 modules
+(19 s; native Node on the same machine: 3.9 s, of which SWC was 2.8 s here). What changed:
+
+- Transforms of installed files are kept by content, shared by every install with the same package
+  version.
+- A new install starts from the finished install that shares most of its dependencies: its
+  node_modules hard-linked and its lockfile, so npm installs only the difference (0.5 s instead of
+  7 s). Files that installs change afterwards are replaced, not written through the links. As with
+  the install cache, versions that installs share stay what npm picked for the first.
+- Next.js' webpack cache is seeded per set of versions (next, react, react-dom). Almost all of the
+  first compile is the framework's modules, the same in every app. The session runs Sandburg's own
+  seed app once per set, keeps its `.next/cache` (with the key Next.js derives the cache version
+  from), and every later app with those versions starts from it; the worker fetches it as a bundle.
+  Webpack checks each cached module against its files, so the app's own modules are compiled; a
+  different next.config means a different cache version and an empty start. Only the session can
+  write a seed: a project cannot plant cache entries in another project's run.
+- Three runtime costs that the profile of these runs showed:
+  - writes to a file copied the whole file each time: streaming webpack's 35–44 MB cache packs took
+    3.4–5.1 s, now 1–1.3 s, as files grow in place;
+  - Buffer's UTF-8 conversions ran in JavaScript loops, ~13× slower than Node; longer strings now
+    use TextEncoder and TextDecoder;
+  - zlib's streams use the browser's CompressionStream.
+
+Measured on the `next-app-router` fixture with one extra dependency, so each run is a new install
+(the seed for its versions already made; making it costs one extra run of about 30 s, once):
+
+| | Before | After |
+|---|---|---|
+| install | 9–12 s | 2.6 s |
+| start (`next dev` ready) | 7.7–12.7 s | 3.5 s |
+| first compile of `/` | 18.3 s | 2.2 s |
+| whole run, checks included | ~45 s | 15.7 s |
 
 Two other ideas were measured and dropped. Compiling WebAssembly is not a cost worth caching: V8
 compiles lazily, and rolldown's 10.8 MB binding or SWC's 27.8 MB take 20–60 ms. napi-rs's thread

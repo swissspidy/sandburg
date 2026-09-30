@@ -14,6 +14,8 @@ export interface NodeProcessOptions {
   installKey: string | null;
   /** The URL of a preload bundle for the install (see adapters/node/index.ts). */
   preload?: string | null;
+  /** The URL of a bundle of project files to start with. */
+  filesBundle?: string | null;
   nodeModules: Record<string, number> | null;
   log(stream: 'stdout' | 'stderr', line: string): void;
   /** What the program is, for messages ("the app", "the backend"). */
@@ -21,6 +23,9 @@ export interface NodeProcessOptions {
   /** Started by a TypeScript runner (tsx, ts-node): `./x.js` imports resolve to `./x.ts`. */
   tsRunner?: boolean;
 }
+
+/** A file of a dev server's cache: text, or binary as base64. */
+export type CacheFile = string | { base64: string };
 
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
@@ -37,14 +42,14 @@ export class NodeProcess {
   private nextId = 1;
   private label: string;
   private partial = { stdout: '', stderr: '' };
-  private trees = new Map<number, (files: Record<string, string>) => void>();
+  private trees = new Map<number, (files: Record<string, CacheFile>) => void>();
 
   constructor(opts: NodeProcessOptions) {
     this.label = opts.label ?? 'the app';
     this.worker = new Worker('/__sandburg/node-worker.js');
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
-    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, nodeModules: opts.nodeModules, base: '/__sandburg', tsRunner: opts.tsRunner });
+    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, base: '/__sandburg', tsRunner: opts.tsRunner });
   }
 
   /** Resolves when the runtime has loaded. */
@@ -147,7 +152,7 @@ export class NodeProcess {
   }
 
   /** The text files under project directories, keyed by project-relative path. */
-  readTree(dirs: string[]): Promise<Record<string, string>> {
+  readTree(dirs: string[]): Promise<Record<string, CacheFile>> {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.trees.set(id, resolve);

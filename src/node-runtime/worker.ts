@@ -47,6 +47,8 @@ export type ToWorker =
       installKey: string | null;
       /** A bundle of the install's files that runs load (see adapters/node/index.ts). */
       preload?: string | null;
+      /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
+      filesBundle?: string | null;
       nodeModules: Record<string, number> | null;
       base: string;
       ipc?: boolean;
@@ -100,7 +102,7 @@ export type FromWorker =
   | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
   /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
   | { type: 'process-exit'; command: string; code: number; stderr: string }
-  | { type: 'tree'; id: number; files: Record<string, string> };
+  | { type: 'tree'; id: number; files: Record<string, string | { base64: string }> };
 
 /** An EventEmitter whose listeners run in the async context it was created in (events.EventEmitterAsyncResource). */
 class EventEmitterAsyncResource extends EventEmitter {
@@ -247,20 +249,27 @@ let preloaded: Map<string, Uint8Array> | null = null;
 let installedRequests = 0;
 const PRELOAD_AFTER = 40;
 
+/** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
+function readBundle(url: string): [string, Uint8Array, string][] {
+  const res = requestSync(url, true);
+  if (res.status !== 200) return [];
+  const bytes = res.body as Uint8Array;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const length = view.getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as [string, string, number][];
+  const files: [string, Uint8Array, string][] = [];
+  let at = 4 + length;
+  for (const [mode, rel, size] of header) {
+    files.push([rel, bytes.subarray(at, at + size), mode]);
+    at += size;
+  }
+  return files;
+}
+
 function loadPreload(): void {
   preloaded = new Map();
   try {
-    const res = requestSync(preloadUrl!, true);
-    if (res.status !== 200) return;
-    const bytes = res.body as Uint8Array;
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const length = view.getUint32(0, true);
-    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as [string, string, number][];
-    let at = 4 + length;
-    for (const [mode, rel, size] of header) {
-      preloaded.set(`${mode}/${rel}`, bytes.subarray(at, at + size));
-      at += size;
-    }
+    for (const [rel, bytes, mode] of readBundle(preloadUrl!)) preloaded.set(`${mode}/${rel}`, bytes);
   } catch {
     // no bundle: files come one by one
   }
@@ -596,6 +605,13 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
     vfs.write(abs, typeof content === 'string' ? new TextEncoder().encode(content) : Uint8Array.from(atob(content.base64), (c) => c.charCodeAt(0)));
   }
+  if (msg.filesBundle) {
+    for (const [rel, bytes] of readBundle(msg.filesBundle)) {
+      const abs = `${msg.cwd}/${rel}`;
+      vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
+      vfs.write(abs, bytes);
+    }
+  }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
   if (msg.inherit) ({ usesSqlite, asyncModules } = msg.inherit);
@@ -925,13 +941,23 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
   else if (msg.type === 'read-tree') {
-    const files: Record<string, string> = {};
+    const files: Record<string, string | { base64: string }> = {};
+    const utf8 = new TextDecoder('utf-8', { fatal: true });
     const walk = (dir: string) => {
       for (const name of vfs.readdir(dir)) {
         const path = `${dir}/${name}`;
         const st = vfs.stat(path);
         if (st.kind === 'dir') walk(path);
-        else if (st.size < 8 << 20) files[path.slice(projectRoot.length + 1)] = new TextDecoder().decode(vfs.read(path));
+        else if (st.size < 64 << 20) {
+          const bytes = vfs.read(path);
+          let text: string | null = null;
+          try {
+            text = utf8.decode(bytes);
+          } catch {
+            // binary (webpack's cache packs)
+          }
+          files[path.slice(projectRoot.length + 1)] = text ?? { base64: Buffer.from(bytes).toString('base64') };
+        }
       }
     };
     for (const dir of msg.dirs) {

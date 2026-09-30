@@ -7,12 +7,12 @@
 import { fileURLToPath } from 'node:url';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expandScript, findFullStack, isTsRunner } from './scripts.ts';
-import { detectFramework } from '../../project.ts';
+import { detectFramework, projectFromFiles } from '../../project.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
-import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
+import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, sharedInstaller } from './install.ts';
 import type { HostInstall } from './browser.ts';
@@ -115,20 +115,22 @@ function devCacheKey(project: Project, installKey: string): string {
  * endpoint, so what it sends is untrusted).
  */
 const issuedCaches = new Map<string, string[]>();
-const DEV_CACHE_MAX = 64 << 20;
+const DEV_CACHE_MAX = 256 << 20;
 
 /** The entries of a cache that are text files under `dirs`. */
-function cacheEntries(value: unknown, dirs: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
+function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
+  const out: Record<string, string | { base64: string }> = {};
   if (!value || typeof value !== 'object') return out;
   for (const [path, content] of Object.entries(value)) {
-    if (typeof content !== 'string' || path.split('/').includes('..')) continue;
+    // Text, or binary as { base64 } (webpack's cache packs).
+    const file = typeof content === 'string' || (!!content && typeof content === 'object' && Object.keys(content).length === 1 && typeof (content as { base64?: unknown }).base64 === 'string');
+    if (!file || path.split('/').includes('..')) continue;
     if (dirs.some((d) => path.startsWith(`${d}/`))) out[path] = content;
   }
   return out;
 }
 
-async function readDevCache(key: string, dirs: string[]): Promise<Record<string, string>> {
+async function readDevCache(key: string, dirs: string[]): Promise<Record<string, string | { base64: string }>> {
   try {
     return cacheEntries(JSON.parse(await readFile(join(devCacheRoot(), `${key}.json`), 'utf8')), dirs);
   } catch {
@@ -136,10 +138,42 @@ async function readDevCache(key: string, dirs: string[]): Promise<Record<string,
   }
 }
 
+/** Caches handed to runs to start from, and the directories they may hold (see cacheBundle). */
+const readableCaches = new Map<string, string[]>();
+
+/**
+ * A stored cache as a bundle (the preload format: u32 header length, JSON [[mode, path, length], …],
+ * bytes): the worker fetches it itself, instead of tens of megabytes of base64 in the install data.
+ */
+async function cacheBundle(key: string): Promise<Buffer | null> {
+  const dirs = readableCaches.get(key);
+  if (!dirs) return null;
+  const json = join(devCacheRoot(), `${key}.json`);
+  const bin = `${json}.bin`;
+  const [jsonStat, binStat] = await Promise.all([stat(json).catch(() => null), stat(bin).catch(() => null)]);
+  if (!jsonStat) return null;
+  if (binStat && binStat.mtimeMs >= jsonStat.mtimeMs) return readFile(bin);
+  const header: [string, string, number][] = [];
+  const bodies: Buffer[] = [];
+  for (const [path, content] of Object.entries(await readDevCache(key, dirs))) {
+    const body = typeof content === 'string' ? Buffer.from(content) : Buffer.from(content.base64, 'base64');
+    header.push(['f', path, body.length]);
+    bodies.push(body);
+  }
+  const head = Buffer.from(JSON.stringify(header));
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(head.length);
+  const bundle = Buffer.concat([length, head, ...bodies]);
+  const tmp = `${bin}.${process.pid}.tmp`;
+  await writeFile(tmp, bundle);
+  await rename(tmp, bin);
+  return bundle;
+}
+
 async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
   const dirs = issuedCaches.get(key);
   if (!dirs || body.length > DEV_CACHE_MAX) return false;
-  let files: Record<string, string>;
+  let files: Record<string, string | { base64: string }>;
   try {
     files = cacheEntries(JSON.parse(body.toString('utf8')), dirs);
   } catch {
@@ -315,6 +349,64 @@ async function preloadBundle(key: string, hash: string): Promise<Buffer | null> 
   return bundle;
 }
 
+/**
+ * Next.js' webpack cache, seeded per version (ADR 0014). In an app's first compile, almost every
+ * module is the framework's (React, Next.js' client and server runtimes), the same in every app with
+ * the same versions. For each set of versions, the session runs Sandburg's own seed app once; the
+ * webpack cache it leaves (.next/cache, with the key Next.js derives the cache version from) is where
+ * every later app with those versions starts. Webpack still checks each cached module against its
+ * files, so the app's own modules are compiled; a different next.config gives a different cache
+ * version, and webpack starts empty. The seed is the session's, never a project's: a project cannot
+ * write a cache that another project's run starts from.
+ */
+const NEXT_SEED_DIRS = ['.next/cache'];
+const seeding = new Map<string, Promise<void>>();
+
+function nextSeedKey(versions: Record<string, string>): string {
+  return createHash('sha256').update(`next-seed\0${JSON.stringify(versions)}\0${NODE_VERSION}\0${TRANSFORM_VERSION}`).digest('hex').slice(0, 24);
+}
+
+function nextSeedProject(versions: Record<string, string>): { project: Project; checks: Record<string, (ctx: { app: { goto?: unknown }; page: { evaluate(f: () => Promise<unknown>): Promise<unknown> } }) => Promise<void>> } {
+  const files = {
+    'package.json': JSON.stringify({ name: 'sandburg-next-seed', private: true, scripts: { dev: 'next dev' }, dependencies: versions }, null, 2),
+    'app/layout.js': `export const metadata = { title: 'Seed' };\nexport default function RootLayout({ children }) {\n  return (<html lang="en"><body>{children}</body></html>);\n}\n`,
+    'app/page.js': `import Counter from './counter';\nimport Link from 'next/link';\nexport default function Page() {\n  return (<main><h1>Seed</h1><Counter /><Link href="/about">About</Link></main>);\n}\n`,
+    'app/counter.js': `'use client';\nimport { useState } from 'react';\nexport default function Counter() {\n  const [n, setN] = useState(0);\n  return <button onClick={() => setN(n + 1)}>Count {n}</button>;\n}\n`,
+    'app/about/page.js': `export default function About() {\n  return <p>About</p>;\n}\n`,
+    'app/api/ping/route.js': `export async function GET() {\n  return Response.json({ ok: true });\n}\n`,
+  };
+  const project = projectFromFiles(files, { name: `sandburg-next-seed@${versions.next}`, path: `sandburg:next-seed/${versions.next}` });
+  // Compile what apps compile first: a page with a client component, another route, a route handler.
+  const checks = {
+    'the page, a route and a route handler compile': async ({ app }: { app: { getByRole(r: string, o: object): { click(): Promise<void> }; evaluate(f: () => Promise<unknown>): Promise<unknown> } }) => {
+      await app.getByRole('button', { name: /Count/ }).click();
+      await app.evaluate(() => fetch('/api/ping').then((r) => r.json()));
+      await app.getByRole('link', { name: 'About' }).click();
+    },
+  };
+  return { project, checks: checks as never };
+}
+
+/** The key of the Next.js seed cache for an install's versions, and whether it exists (seeding it first if needed). */
+async function nextSeedCache(resolved: Record<string, string>, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean } | null> {
+  const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
+  if (!versions.next || !versions.react || !versions['react-dom']) return null;
+  const key = nextSeedKey(versions);
+  const stored = () => stat(join(devCacheRoot(), `${key}.json`)).then(() => true, () => false);
+  if (options?.seed) return { key, ready: false };
+  if (!(await stored()) && options?.runSeed) {
+    let pending = seeding.get(key);
+    if (!pending) {
+      log(`seeding the webpack cache for next@${versions.next} (once per set of versions)`);
+      const seed = nextSeedProject(versions);
+      pending = options.runSeed(seed.project, seed.checks).catch((e: Error) => log(`seeding failed: ${e.message}`));
+      seeding.set(key, pending);
+    }
+    await pending;
+  }
+  return { key, ready: await stored() };
+}
+
 /** The JS file behind a package binary (node_modules/.bin/<name>), from the installed packages' "bin" fields. */
 async function resolveBin(installDir: string, name: string): Promise<string | null> {
   const nm = join(installDir, 'node_modules');
@@ -360,6 +452,11 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     }
   }
   // The dev servers' caches of a finished run (see DEV_CACHE_DIRS): project-relative path → text.
+  const bundled = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})\/bundle$/.exec(req.path);
+  if (bundled) {
+    const bundle = await cacheBundle(bundled[1]);
+    return bundle ? { status: 200, headers: { 'content-type': 'application/octet-stream' }, body: bundle } : null;
+  }
   const cache = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})$/.exec(req.path);
   if (cache && req.method === 'POST') {
     const saved = await writeDevCache(cache[1], await req.body());
@@ -392,14 +489,15 @@ export const node: AdapterDescriptor = {
   crossOriginIsolation: 'credentialless',
   // A cold npm install of a Next.js app and its first webpack compile take a while.
   // expect: routes compile on first request (next dev), which is slower in the browser.
-  timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000 },
+  // dispose: a seed run waits for webpack to store its cache (see nextSeedCache).
+  timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000, dispose: 60_000 },
   probe(project: Project) {
     if (project.framework === 'next' || project.framework === 'static') return { verdict: 'supported' };
     if (startCommand(project) || devScript(project)) return { verdict: 'supported' };
     const scripts = project.packageJson?.scripts ?? {};
     return { verdict: 'unsupported', reason: `no way to start this project in the node runtime (dev/start script: "${scripts.dev ?? scripts.start ?? ''}")` };
   },
-  async hostInstall(project, log): Promise<HostInstall> {
+  async hostInstall(project, log, options): Promise<HostInstall> {
     // A static site: no packages, a file server (see browser.ts).
     if (project.framework === 'static') return { key: '', index: {}, resolved: {}, lockfile: false, start: { main: '.sandburg/start.js', argv: [], command: 'a static file server', tsRunner: false } };
     const info = await installer.install(project, extraDependencies(project), log);
@@ -428,8 +526,20 @@ export const node: AdapterDescriptor = {
     const cacheKey = devCacheKey(project, key);
     const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
     issuedCaches.set(cacheKey, cacheDirs);
-    const devCache = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
-    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, preload: await preloadUrl(key) };
+    let filesBundle: string | null = null;
+    let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
+    if (project.framework === 'next') {
+      const seed = await nextSeedCache(info.resolved, options, log);
+      if (seed && options?.seed) {
+        // The seed run keeps its webpack cache under the shared key.
+        issuedCaches.set(seed.key, NEXT_SEED_DIRS);
+        devCache = { key: seed.key, dirs: NEXT_SEED_DIRS, files: {}, waitFor: ['.next/cache/webpack/client-development/index.pack.gz', '.next/cache/webpack/server-development/index.pack.gz'] };
+      } else if (seed?.ready) {
+        readableCaches.set(seed.key, NEXT_SEED_DIRS);
+        filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
+      }
+    }
+    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, preload: await preloadUrl(key) };
   },
   serve,
 };
