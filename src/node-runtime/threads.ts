@@ -19,6 +19,8 @@ export interface ThreadInit {
   argv: string[];
   /** The thread's entry script; it starts right after init (the parent may be blocked meanwhile). */
   main: string;
+  /** The project's files when the thread started (see projectSnapshot), for reads while the parent is blocked. */
+  snapshot?: Record<string, Uint8Array>;
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
   process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
 }
@@ -27,6 +29,9 @@ export interface ThreadInit {
 
 type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
 const HEADER = 16;
+const READ_OPS = new Set<VfsOp>(['exists', 'stat', 'read', 'readdir']);
+/** How long a thread waits for its parent before reading from its snapshot instead. */
+const PARENT_PATIENCE_MS = 200;
 
 /** A thread's VFS: every operation runs on the parent's VFS. */
 export class RemoteVfs extends Vfs {
@@ -39,13 +44,39 @@ export class RemoteVfs extends Vfs {
     this.post = post;
   }
 
-  private call(op: VfsOp, args: unknown[]): unknown {
+  /**
+   * Answers a read when the parent does not: it may be blocked (a WebAssembly atomic wait) until
+   * this thread's work is done. `undefined` means no answer; the call keeps waiting.
+   */
+  protected fallback(_op: VfsOp, _args: unknown[]): { value: unknown } | undefined {
+    return undefined;
+  }
+
+  /** A request the parent has not answered in time: until it does, the parent is taken to be blocked. */
+  private stalled: Int32Array | null = null;
+
+  protected call(op: VfsOp, args: unknown[]): unknown {
+    if (this.stalled && Atomics.load(this.stalled, 0) === 0 && READ_OPS.has(op)) {
+      const answer = this.fallback(op, args);
+      if (answer) {
+        if (answer.value instanceof Error) throw answer.value;
+        return answer.value;
+      }
+    }
     let capacity = 1 << 16;
     for (;;) {
       const sab = new SharedArrayBuffer(HEADER + capacity);
       const header = new Int32Array(sab, 0, 4);
       this.post({ type: 'vfs-rpc', sab, op, args });
-      Atomics.wait(header, 0, 0);
+      if (Atomics.wait(header, 0, 0, PARENT_PATIENCE_MS) === 'timed-out') {
+        this.stalled = header;
+        const answer = READ_OPS.has(op) ? this.fallback(op, args) : undefined;
+        if (answer) {
+          if (answer.value instanceof Error) throw answer.value;
+          return answer.value;
+        }
+        Atomics.wait(header, 0, 0);
+      }
       const status = header[0]; // 1 ok, 2 error, 3 needs a bigger buffer
       const length = header[1];
       if (status === 3) {
@@ -105,10 +136,42 @@ export class ThreadVfs extends RemoteVfs {
   private installed: Vfs;
   private nm: string;
 
-  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string) {
+  private snapshot: Vfs | null;
+  private root: string;
+
+  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>) {
     super(post);
     this.installed = installed;
     this.nm = `${cwd}/node_modules/`;
+    this.root = cwd;
+    this.snapshot = null;
+    if (snapshot) {
+      const v = new Vfs(() => {
+        throw new FsError('ENOENT', 'open', '');
+      });
+      for (const [path, data] of Object.entries(snapshot)) {
+        v.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', true);
+        v.write(path, data);
+      }
+      this.snapshot = v;
+    }
+  }
+
+  /** The parent's files as of this thread's start: while the parent is blocked, they are the whole file system. */
+  protected override fallback(op: VfsOp, args: unknown[]): { value: unknown } | undefined {
+    const snap = this.snapshot;
+    const path = String(args[0]);
+    if (!snap) return undefined;
+    try {
+      if (op === 'exists') return { value: snap.exists(path) };
+      if (op === 'stat') return { value: snap.stat(path, String(args[1] ?? 'stat')) };
+      if (op === 'read') return { value: snap.read(path) };
+      const names = snap.readdir(path);
+      if (path === this.root && this.installed.exists(this.nm.slice(0, -1)) && !names.includes('node_modules')) names.push('node_modules');
+      return { value: names };
+    } catch (e) {
+      return { value: e };
+    }
   }
 
   private local(path: string): boolean {
@@ -127,6 +190,46 @@ export class ThreadVfs extends RemoteVfs {
   override readdir(path: string): string[] {
     return this.local(path) ? this.installed.readdir(path) : super.readdir(path);
   }
+}
+
+/** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output, big files. */
+const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
+const SNAPSHOT_MAX_FILE = 4 << 20;
+const snapshots = new WeakMap<Vfs, { value: Record<string, Uint8Array> | null; off: () => void }>();
+
+/** The project's files under `root`, for a new thread (rebuilt only after something changed). */
+export function projectSnapshot(vfs: Vfs, root: string): Record<string, Uint8Array> {
+  let entry = snapshots.get(vfs);
+  if (!entry) {
+    const e: { value: Record<string, Uint8Array> | null; off: () => void } = { value: null, off: () => {} };
+    e.off = vfs.watch(() => (e.value = null));
+    snapshots.set(vfs, e);
+    entry = e;
+  }
+  if (entry.value) return entry.value;
+  const files: Record<string, Uint8Array> = {};
+  const walk = (dir: string) => {
+    let names: string[];
+    try {
+      names = vfs.readdir(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const path = `${dir}/${name}`;
+      if (SNAPSHOT_SKIP.test(path)) continue;
+      try {
+        const st = vfs.stat(path);
+        if (st.kind === 'dir') walk(path);
+        else if (st.kind === 'file' && st.size <= SNAPSHOT_MAX_FILE) files[path] = vfs.read(path);
+      } catch {
+        // gone meanwhile
+      }
+    }
+  };
+  walk(root);
+  entry.value = files;
+  return files;
 }
 
 /** Serves a thread's VFS call on this thread's VFS and wakes the thread. */
@@ -168,6 +271,8 @@ export interface ThreadHost {
   /** Output of a child thread (it goes to this thread's stdout/stderr, as in Node). */
   write(stream: 'stdout' | 'stderr', text: string): void;
   cwd(): string;
+  /** The project's root directory (snapshots for threads cover it). */
+  root(): string;
   env(): Record<string, string>;
   resolvePath(p: string): string;
   base(): string;
@@ -186,8 +291,32 @@ export interface ThreadHost {
 /** Nested runtimes (threads and child processes) that are running: they keep this process alive. */
 export const liveRuntimes = new Set<globalThis.Worker>();
 
+/**
+ * Runtime workers started ahead of time. A browser cannot start a worker while its parent thread is
+ * blocked (Atomics.wait, or a WebAssembly atomic wait), yet Rust code in WebAssembly does exactly
+ * that: it blocks the calling thread and spawns threads to do the work (Tailwind's oxide scanner).
+ * So once a program loads worker_threads, a few runtime workers boot in advance; a new thread takes
+ * one of them, which only needs its init message.
+ */
+const warm: globalThis.Worker[] = [];
+let warmTarget = 0;
+let warmBase = '';
+
+export function warmRuntimes(base: string, count: number): void {
+  warmBase = base;
+  warmTarget = Math.max(warmTarget, count);
+  refill();
+}
+
+function refill(): void {
+  // A worker created earlier starts on its own, even if this thread is busy or blocked by then; it
+  // takes its init message whenever it is ready.
+  while (warm.length < warmTarget) warm.push(new globalThis.Worker(`${warmBase}/node-worker.js`));
+}
+
 export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: { type: string; [k: string]: unknown }) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
-  const worker = new globalThis.Worker(`${host.base()}/node-worker.js`);
+  const worker = warm.shift() ?? new globalThis.Worker(`${host.base()}/node-worker.js`);
+  if (warmTarget) queueMicrotask(refill);
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data as { type: string; [k: string]: unknown };
     if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m as unknown as Parameters<typeof serveVfsCall>[1]);
@@ -197,7 +326,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
     e.preventDefault?.();
     onError(e.message);
   };
-  worker.postMessage(host.childInit(init), transfer);
+  worker.postMessage(host.childInit({ ...init, snapshot: projectSnapshot(host.vfs(), host.root()) }), transfer);
   liveRuntimes.add(worker);
   const terminate = worker.terminate.bind(worker);
   worker.terminate = () => {

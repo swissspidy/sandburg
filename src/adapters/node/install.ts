@@ -22,7 +22,7 @@ import type { Project } from '../../types.ts';
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 const TRANSFORM_VERSION = 7;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 7;
+const LAYOUT_VERSION = 8;
 
 export interface InstallInfo {
   key: string;
@@ -306,6 +306,14 @@ const WASM_BUILDS: { name: string; wasm: string; file: string; applies(version: 
     shim: "// sandburg: rollup's WebAssembly build (@rollup/wasm-node)\nmodule.exports = require('../node_modules/@rollup/wasm-node/dist/native.js');\n",
   },
   {
+    // lightningcss's native parser (lightningcss-<platform>): Tailwind CSS v4, Vite's CSS minifier.
+    name: 'lightningcss',
+    wasm: 'lightningcss-wasm',
+    file: 'node/index.js',
+    applies: (v) => /^1\./.test(v),
+    shim: "// sandburg: lightningcss's WebAssembly build (lightningcss-wasm), loaded synchronously\nmodule.exports = require('../node_modules/lightningcss-wasm/wasm-node.cjs');\n",
+  },
+  {
     // esbuild's Go binary (@esbuild/<platform>): its browser build, which runs the compiler in this thread.
     name: 'esbuild',
     wasm: 'esbuild-wasm',
@@ -376,6 +384,13 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
       await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasm-build', private: true, dependencies: { [build.wasm]: version } }));
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
       await cp(join(side, 'node_modules', build.wasm), target, { recursive: true });
+      // Its own dependencies (lightningcss-wasm's napi-wasm) go inside it.
+      const sideNm = join(side, 'node_modules');
+      for (const entry of await readdir(sideNm, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+        const names = entry.name.startsWith('@') ? (await readdir(join(sideNm, entry.name))).map((n) => `${entry.name}/${n}`) : [entry.name];
+        for (const dep of names) if (dep !== build.wasm) await cp(join(sideNm, dep), join(target, 'node_modules', dep), { recursive: true });
+      }
       await rm(side, { recursive: true, force: true });
     }
     await writeFile(join(pkgDir, build.file), build.shim);

@@ -373,3 +373,23 @@ test('Request and Response keep Cookie, Referer and Set-Cookie headers, as in No
   assert.deepEqual(JSON.parse(json), { cookie: 'a=1', referer: 'http://localhost/page', origin: 'http://localhost', cloned: 'a=1', setCookie: ['a=1', 'b=2'], fromRequest: 'a=1', json: 'application/json', isRequest: true });
   assert.equal(body, 'body hi');
 });
+
+test('worker_threads: a thread started while its parent is blocked runs (WebAssembly threads do this)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker } = require('worker_threads');
+        const shared = new Int32Array(new SharedArrayBuffer(8));
+        setTimeout(() => {
+          // A browser cannot start a worker while its parent blocks; the thread comes from runtimes booted in advance,
+          // and reads its files from the parent's snapshot while the parent does not answer.
+          new Worker('const s = require("worker_threads").workerData; Atomics.store(s, 0, 42); Atomics.notify(s, 0);', { eval: true, workerData: shared });
+          console.log('wait', Atomics.wait(shared, 0, 0, 10000), Atomics.load(shared, 0));
+          process.exit(0);
+        }, 1500);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), 'wait ok 42');
+});
