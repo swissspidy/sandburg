@@ -31,7 +31,7 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
   const result = JSON.parse(out.stdout.split('\n')[0]);
   assert.deepEqual(result, {
     greet: 'hello node', n: 42, read: 'content', list: ['b', 'b/f.txt'], exists: false, rel: '../../d',
-    sha: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', gz: 'zip me', node: 'v24.11.0', platform: 'linux',
+    sha: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', gz: 'zip me', node: 'v24.15.0', platform: 'linux',
     dirname: '/app', main: true, resolved: '/app/lib/greet.js',
   });
   assert.match(out.stdout, /event 7/);
@@ -109,6 +109,17 @@ test('top-level await: modules evaluate after the dependencies they await, and r
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.deepEqual(out.stdout.trim().split('\n'), ['db ready', 'repo true', 'main 13']);
+
+  // import() from CommonJS (as a tool loads a config file) resolves once the module has evaluated.
+  const dynamic = await h.run(
+    {
+      'config.mjs': `await new Promise((r) => setTimeout(r, 50));\nexport default { name: 'app' };`,
+      'main.cjs': `import('./config.mjs').then((m) => console.log('config', JSON.stringify(m.default), typeof m.then));`,
+    },
+    '/app/main.cjs',
+  );
+  assert.equal(dynamic.fatal, null, dynamic.fatal ?? dynamic.stderr);
+  assert.equal(dynamic.stdout.trim(), 'config {"name":"app"} undefined', dynamic.stderr);
 
   const failed = await h.run({ 'main.mjs': `await Promise.reject(new Error('cannot connect to the database'));` }, '/app/main.mjs');
   assert.match(failed.fatal ?? '', /cannot connect to the database/);

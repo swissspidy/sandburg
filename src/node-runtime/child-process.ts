@@ -27,6 +27,8 @@ interface SpawnOptions {
   silent?: boolean;
   signal?: AbortSignal;
   encoding?: string;
+  /** A command of a shell script: report it when it fails (see ChildProcessHost.reportExit). */
+  sandburgCommand?: boolean;
 }
 
 /** A command line split into words (quotes and backslash escapes, as a POSIX shell would). */
@@ -112,6 +114,8 @@ function nodeOptions(execArgv: string[], env: Record<string, string>) {
 
 export interface ChildProcessHost extends ThreadHost {
   execPath(): string;
+  /** A command a shell script ran (a dev script's server, say) exited with an error. */
+  reportExit?(info: { command: string; code: number; stderr: string }): void;
 }
 
 let nextPid = 100;
@@ -175,10 +179,17 @@ export function createChildProcess(host: ChildProcessHost) {
       this.stdin = stdio[0] === 'pipe' ? new Writable({ write: (_c, _e, cb) => cb() }) : null;
       this.stdio = [this.stdin, this.stdout, this.stderr];
       for (const s of [this.stdout, this.stderr]) if (s && options.encoding && options.encoding !== 'buffer') s.setEncoding(options.encoding as BufferEncoding);
+      let stderrTail = '';
       const write = (fd: 1 | 2, text: string) => {
+        if (fd === 2 && options.sandburgCommand) stderrTail = (stderrTail + text).slice(-4000);
         if (stdio[fd] === 'inherit') host.write(fd === 1 ? 'stdout' : 'stderr', text);
         else if (stdio[fd] === 'pipe') (fd === 1 ? this.stdout : this.stderr)!.push(Buffer.from(text));
       };
+      if (options.sandburgCommand) {
+        this.once('exit', (code: number | null) => {
+          if (code && !this.killed) host.reportExit?.({ command: argv.join(' '), code, stderr: stderrTail });
+        });
+      }
       this.connected = ipc;
       options.signal?.addEventListener('abort', () => this.kill('SIGTERM'), { once: true });
 
@@ -220,7 +231,7 @@ export function createChildProcess(host: ChildProcessHost) {
       this.shell = runScript(script, cwd, env, {
         node: (argv, o) => {
           const child = new ChildProcess();
-          child.start(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env, stdio: ['ignore', 'pipe', 'pipe'] }, false);
+          child.start(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env, stdio: ['ignore', 'pipe', 'pipe'], sandburgCommand: true }, false);
           child.stdout?.on('data', (d: Buffer) => o.write(1, d.toString()));
           child.stderr?.on('data', (d: Buffer) => o.write(2, d.toString()));
           let ended = false;

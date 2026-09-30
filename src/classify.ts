@@ -44,6 +44,8 @@ export interface ClassifyInput {
   pageErrors: PageError[];
   /** Errors the runtime logged about the project (e.g. NextDevServer's transform errors); used for compile errors only. */
   runtimeErrors?: string[];
+  /** The app's output (stdout and stderr), line by line: dev servers report compile errors there. */
+  runtimeOutput?: string[];
   /** Dependency names declared in package.json (dependencies and devDependencies). */
   declaredDependencies: string[];
   /** Set when the orchestrator or browser itself failed (crash, offline cache miss). */
@@ -56,6 +58,18 @@ export function classify(input: ClassifyInput): Failure | null {
   const failedChecks = input.checks.filter((c) => c.blocking && (c.status === 'failed' || c.status === 'error'));
   if (!failedPhase && failedChecks.length === 0 && input.probe?.verdict !== 'unsupported') return null;
 
+  const appErrors = input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message);
+  // Importing a package the project never declared fails in any environment: that is the app's bug.
+  const output = (input.runtimeOutput ?? []).map((l) => l.replace(ANSI, ''));
+  const undeclared = undeclaredImport([failedPhase?.error?.message ?? '', ...appErrors, ...(input.runtimeErrors ?? []), ...output], input.declaredDependencies);
+  if (undeclared && failedPhase?.status === 'timeout') {
+    return failure('app-bug', failedPhase.name, 'undeclared-import', `imports undeclared package "${undeclared}"`, appErrors);
+  }
+  // A dev server that cannot compile the project waits for a fix instead of serving it (ng serve).
+  const devError = failedPhase ? devServerCompileError(input.runtimeOutput ?? []) : null;
+  if (failedPhase?.status === 'timeout' && devError && !matchSignature([devError])) {
+    return failure('app-bug', failedPhase.name, 'compile-error', devError, [devError]);
+  }
   if (failedPhase?.status === 'timeout') {
     return failure('timeout', failedPhase.name, 'phase-deadline', failedPhase.error?.message ?? `${failedPhase.name} timed out`, []);
   }
@@ -74,11 +88,12 @@ export function classify(input: ClassifyInput): Failure | null {
     return failure('runtime-unsupported', 'probe', 'probe-unsupported', input.probe.reason, []);
   }
 
-  const appErrors = input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message);
-  // Importing a package the project never declared fails in any environment: that is the app's bug.
-  const undeclared = undeclaredImport([failedPhase?.error?.message ?? '', ...appErrors, ...(input.runtimeErrors ?? [])], input.declaredDependencies);
   if (undeclared) {
     return failure('app-bug', failedPhase?.name ?? 'checks', 'undeclared-import', `imports undeclared package "${undeclared}"`, appErrors);
+  }
+  // A dev server (Vite) could not compile one of the project's files: the app's bug, at that location.
+  if (failedPhase && devError && !matchSignature([devError])) {
+    return failure('app-bug', failedPhase.name, 'compile-error', devError, [devError, ...appErrors]);
   }
   if (failedPhase) {
     const err = failedPhase.error;
@@ -115,6 +130,43 @@ function undeclaredImport(errors: string[], declared: string[]): string | null {
     const parts = m[1].split('/');
     const pkg = m[1].startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
     if (!declared.includes(pkg) && !NODE_BUILTINS.includes(pkg)) return pkg;
+  }
+  return null;
+}
+
+const ANSI = /\x1b\[[0-9;]*m/g;
+
+/**
+ * Vite's report of a module it could not compile: "[vite] Internal server error: <message>" (or
+ * "Pre-transform error"), then "Plugin: …" and "File: /app/<path>:<line>:<column>". Only files of
+ * the project count (not dependencies).
+ */
+export function devServerCompileError(lines: string[]): string | null {
+  // Without the stream, and the prefix of a process that concurrently runs ("[client] ").
+  const clean = lines.map((l) => l.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, '').replace(/^\[[\w@:./-]{1,40}\]\s/, ''));
+  for (let i = 0; i < clean.length; i++) {
+    const head = /(?:Internal server error|Pre-transform error): (.+)/.exec(clean[i]);
+    if (!head) continue;
+    // The location: a "File:" line below, else the path the message starts with ("/app/src/x.tsx: … (2:14)").
+    let at: { path: string; loc: string } | null = null;
+    for (let j = i + 1; j < Math.min(clean.length, i + 12) && !at; j++) {
+      const file = /^\s*File: \/app\/(\S+?)(:\d+:\d+)?$/.exec(clean[j].trim() ? clean[j] : '');
+      if (file) at = { path: file[1], loc: file[2] ?? '' };
+    }
+    const inline = /^\/app\/([^\s:]+)(:\d+:\d+)?:?\s+(.*?)(?:\s+\((\d+):(\d+)\))?$/.exec(head[1].trim());
+    if (!at && inline) at = { path: inline[1], loc: inline[2] ?? (inline[4] ? `:${inline[4]}:${inline[5]}` : '') };
+    if (!at || /(^|\/)node_modules\//.test(at.path)) continue;
+    const message = inline && inline[1] === at.path ? inline[3] + (inline[4] ? ` (${inline[4]}:${inline[5]})` : '') : head[1].trim();
+    return `${at.path}${at.loc}: ${message}`;
+  }
+  // esbuild's format (the Angular CLI, Vite's dependency scan): "✘ [ERROR] <message>", then "/app/<path>:<line>:<column>:".
+  for (let i = 0; i < clean.length; i++) {
+    const head = /✘ \[ERROR\] (.+?)(?: \[plugin [^\]]+\])?$/.exec(clean[i]);
+    if (!head) continue;
+    for (let j = i + 1; j < Math.min(clean.length, i + 5); j++) {
+      const at = /^\s+\/app\/(\S+?:\d+:\d+):$/.exec(clean[j]);
+      if (at && !/(^|\/)node_modules\//.test(at[1])) return `${at[1]}: ${head[1].trim()}`;
+    }
   }
   return null;
 }

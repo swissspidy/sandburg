@@ -23,6 +23,8 @@ export interface NodeProcessOptions {
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
   readonly ports: number[] = [];
+  /** Commands of the dev script that exited with an error (a backend that crashed, say). */
+  readonly failedCommands: { command: string; code: number; stderr: string }[] = [];
   failure: Error | null = null;
   exitCode: number | null = null;
   private worker: Worker;
@@ -33,6 +35,7 @@ export class NodeProcess {
   private nextId = 1;
   private label: string;
   private partial = { stdout: '', stderr: '' };
+  private trees = new Map<number, (files: Record<string, string>) => void>();
 
   constructor(opts: NodeProcessOptions) {
     this.label = opts.label ?? 'the app';
@@ -141,6 +144,15 @@ export class NodeProcess {
     this.worker.postMessage({ type: 'write-file', path, content });
   }
 
+  /** The text files under project directories, keyed by project-relative path. */
+  readTree(dirs: string[]): Promise<Record<string, string>> {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      this.trees.set(id, resolve);
+      this.worker.postMessage({ type: 'read-tree', id, dirs });
+    });
+  }
+
   terminate(): void {
     this.worker.terminate();
   }
@@ -165,6 +177,13 @@ export class NodeProcess {
       case 'listening':
         // TCP ports only (the runtime keeps servers on local sockets to itself).
         if (typeof m.port === 'number' && !this.ports.includes(m.port)) this.ports.push(m.port);
+        break;
+      case 'tree':
+        this.trees.get(m.id)?.(m.files);
+        this.trees.delete(m.id);
+        break;
+      case 'process-exit':
+        this.failedCommands.push({ command: m.command, code: m.code, stderr: m.stderr });
         break;
       case 'fatal':
         // The runtime could not load one of its own parts: infrastructure, not the app.
@@ -210,7 +229,8 @@ export class NodeProcess {
     for (const w of this.waiters) w();
   }
 
-  private fail(e: Error) {
+  /** Ends the wait for the program (listening(), pagePort()) with an error. */
+  fail(e: Error) {
     this.failure ??= e;
     for (const w of this.waiters) w();
   }

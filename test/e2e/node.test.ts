@@ -24,7 +24,7 @@ after(() => session?.close());
 
 test('a Next.js 15 app (App Router, API route) runs on the node runtime', async () => {
   const dir = fixture('next-app-router');
-  const result = await session.run(dir, { runtime: 'node', checks: `${dir}/checks.spec.ts`, outDir });
+  const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
   assert.equal(result.runtime.name, 'node');
   assert.equal(result.project.framework, 'next');
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
@@ -33,7 +33,7 @@ test('a Next.js 15 app (App Router, API route) runs on the node runtime', async 
 
 test('an Express server runs on the node runtime', async () => {
   const dir = fixture('node-express');
-  const result = await session.run(dir, { runtime: 'node', checks: `${dir}/checks.spec.ts`, outDir });
+  const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
@@ -46,7 +46,7 @@ test('a Next.js page that throws on the server is an app bug', async () => {
     },
     { name: 'next-app-router-broken', path: fixture('next-app-router') },
   );
-  const result = await session.run(broken, { runtime: 'node', outDir });
+  const result = await session.run(broken, { outDir });
   assert.equal(result.status, 'failed');
   assert.equal(result.failure?.class, 'app-bug', JSON.stringify(result.failure, null, 2));
 });

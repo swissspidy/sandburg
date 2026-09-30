@@ -1,6 +1,6 @@
 # ADR 0009: Full-stack apps (front end + Node backend), Vue, and SQLite in WebAssembly
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0014](0014-node-runtime-only.md) (the front end runs on its own dev server)
 - Date: 2026-09-30
 
 ## Context

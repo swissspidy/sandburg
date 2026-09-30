@@ -335,6 +335,65 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   return worker;
 }
 
+/**
+ * MessagePorts as in Node: EventEmitters whose 'message' listeners get the message itself (and
+ * start the port), with ref/unref and a 'close' event. Ports from MessageChannel and those that
+ * arrive in messages are the browser's, so the prototype gets these methods.
+ */
+export function installNodeMessagePorts(): void {
+  const P = MessagePort.prototype as unknown as Record<string, unknown> & { __sandburg?: boolean };
+  if (P.__sandburg) return;
+  P.__sandburg = true;
+  const emitters = new WeakMap<MessagePort, EventEmitter>();
+  const emitterOf = (port: MessagePort) => {
+    let em = emitters.get(port);
+    if (!em) {
+      const e = new EventEmitter();
+      em = e;
+      emitters.set(port, e);
+      port.addEventListener('message', (m) => e.emit('message', (m as MessageEvent).data));
+      port.addEventListener('messageerror', (m) => e.emit('messageerror', (m as MessageEvent).data));
+    }
+    return em;
+  };
+  type Fn = (...a: unknown[]) => unknown;
+  for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener'] as const) {
+    P[name] = function (this: MessagePort, event: string, fn: Fn) {
+      emitterOf(this)[name](event, fn);
+      if (event === 'message') this.start();
+      return this;
+    };
+  }
+  for (const name of ['off', 'removeListener'] as const) {
+    P[name] = function (this: MessagePort, event: string, fn: Fn) {
+      emitters.get(this)?.[name](event, fn);
+      return this;
+    };
+  }
+  P.removeAllListeners = function (this: MessagePort, event?: string) {
+    emitters.get(this)?.removeAllListeners(event);
+    return this;
+  };
+  P.emit = function (this: MessagePort, event: string, ...args: unknown[]) {
+    return emitters.get(this)?.emit(event, ...args) ?? false;
+  };
+  P.listenerCount = function (this: MessagePort, event: string) {
+    return emitters.get(this)?.listenerCount(event) ?? 0;
+  };
+  P.listeners = function (this: MessagePort, event: string) {
+    return emitters.get(this)?.listeners(event) ?? [];
+  };
+  P.ref = P.unref = function (this: MessagePort) {
+    return this;
+  };
+  P.hasRef = () => true;
+  const close = MessagePort.prototype.close;
+  P.close = function (this: MessagePort) {
+    close.call(this);
+    queueMicrotask(() => emitters.get(this)?.emit('close'));
+  };
+}
+
 let nextThreadId = 1;
 const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
 

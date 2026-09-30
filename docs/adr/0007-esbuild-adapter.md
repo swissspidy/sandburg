@@ -1,6 +1,6 @@
 # ADR 0007: esbuild adapter (Vite-style apps built with esbuild-wasm)
 
-- Status: Accepted
+- Status: Superseded by [ADR 0014](0014-node-runtime-only.md)
 - Date: 2026-09-29
 
 ## Context

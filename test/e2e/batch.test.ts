@@ -131,7 +131,7 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
   await host.listen();
   const browser = await chromium.launch(launchOptions({}));
   try {
-    const origin = host.register('backstop', getAdapter('esbuild'));
+    const origin = host.register('backstop', getAdapter('node'));
     const page = await browser.newPage(); // no egress routing on this context
     await page.goto(origin + '/');
     await page.evaluate(escapeAttempts(port));

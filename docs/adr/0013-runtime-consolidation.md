@@ -1,6 +1,6 @@
 # ADR 0013: One Node.js runtime, `--runtime auto`, almostnode, Nodebox and WordPress Playground removed
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0014](0014-node-runtime-only.md) (`--runtime auto`, the esbuild and angular adapters removed)
 - Date: 2026-09-30
 - Supersedes: [ADR 0003](0003-nextjs-and-nodebox.md). Amends [ADR 0001](0001-runtime-adapters-serving-results.md): almostnode is no longer the default.
 

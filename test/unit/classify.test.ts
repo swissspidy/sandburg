@@ -139,3 +139,42 @@ test('a Node built-in the runtime lacks (even an underscored one) is a runtime l
   const f = classify(input({ phases: failedAt('start', `Error: Cannot find module '_http_client'`) }));
   assert.deepEqual([f?.class, f?.rule], ['runtime-unsupported', 'signature:missing-builtin']);
 });
+
+test('a project file Vite cannot compile is an app bug at its location; a dependency is not', () => {
+  const stderr = (file: string) => [
+    '[runtime:stderr] \x1b[31m5:30:33 PM [vite] Internal server error: /app/src/App.tsx: Unexpected token (2:15)\x1b[39m',
+    '[runtime:stderr]   Plugin: vite:react-babel',
+    `[runtime:stderr]   File: /app/${file}:2:15`,
+    '[runtime:stderr]   1  |  export default function App() {',
+  ];
+  const f = classify(input({ phases: failedAt('ready', 'app did not render after a console error: 500'), runtimeOutput: stderr('src/App.tsx') }));
+  assert.deepEqual([f?.class, f?.rule, f?.message], ['app-bug', 'compile-error', 'src/App.tsx:2:15: Unexpected token (2:15)']);
+  const dep = classify(input({ phases: failedAt('ready', 'app did not render after a console error: 500'), runtimeOutput: stderr('node_modules/x/index.js') }));
+  assert.notEqual(dep?.rule, 'compile-error');
+  // Vite 5: the path starts the message, the location ends it.
+  const inline = classify(input({ phases: failedAt('ready', '500'), runtimeOutput: ['[runtime:stderr] 6:21 PM [vite] Pre-transform error: /app/src/App.tsx: Unterminated JSX contents. (2:14)', '[runtime:stderr] '] }));
+  assert.equal(inline?.message, 'src/App.tsx:2:14: Unterminated JSX contents. (2:14)');
+  // Svelte: path and location first, "File:" below with its color codes.
+  const svelte = classify(input({ phases: failedAt('ready', '500'), runtimeOutput: ['[runtime:stderr] [vite] Internal server error: /app/src/lib/Counter.svelte:10:2 Unterminated regular expression', '[runtime:stderr]   File: \x1b[36m/app/src/lib/Counter.svelte\x1b[39m:10:2'] }));
+  assert.equal(svelte?.message, 'src/lib/Counter.svelte:10:2: Unterminated regular expression');
+});
+
+test('ng serve waiting after a failed first build is an app bug at the error\'s location', () => {
+  const stderr = [
+    "[runtime:stderr] ✘ [ERROR] TS2339: Property 'remainingCount' does not exist on type 'TaskStore'. [plugin angular-compiler]",
+    '[runtime:stderr] ',
+    '[runtime:stderr]     /app/src/app/tasks/task-list.html:7:26:',
+  ];
+  const f = classify(input({ phases: [{ name: 'start', status: 'timeout', durationMs: 1, error: { name: 'PhaseTimeout', message: 'start did not finish' } }], runtimeOutput: stderr }));
+  assert.deepEqual([f?.class, f?.rule, f?.message], ['app-bug', 'compile-error', "src/app/tasks/task-list.html:7:26: TS2339: Property 'remainingCount' does not exist on type 'TaskStore'."]);
+});
+
+test('an undeclared import that Vite reports while the page waits is an undeclared import, not a compile error', () => {
+  const f = classify(
+    input({
+      phases: failedAt('ready', 'ready did not finish', undefined, 'timeout'),
+      runtimeOutput: ['[runtime:stderr] \x1b[31m[vite] Internal server error: Failed to resolve import "lodash/debounce" from "src/App.tsx". Does the file exist?\x1b[39m', '[runtime:stderr]   File: /app/src/App.tsx:1:21'],
+    }),
+  );
+  assert.deepEqual([f?.class, f?.rule], ['app-bug', 'undeclared-import']);
+});

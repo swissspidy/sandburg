@@ -8,7 +8,7 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import { ThreadVfs, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, createWorkerThreads, installNodeMessagePorts, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
@@ -26,7 +26,7 @@ import * as stringDecoder from 'string_decoder';
 import cryptoBrowserify from 'crypto-browserify';
 import zlibBrowserify from 'browserify-zlib';
 import { parseArgs } from '@pkgjs/parseargs';
-import { asyncHooks, installAsyncContext } from './async-context.ts';
+import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https, loopback, servers, serverEvents, type BridgeResponse, type UpgradeSocket } from './builtins/http.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
@@ -65,6 +65,8 @@ export type ToWorker =
   /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
   /** Writes a project file, as an editor would (file watchers see the change). */
   | { type: 'write-file'; path: string; content: string }
+  /** The text files under some directories (dev servers' caches, kept for the next run). */
+  | { type: 'read-tree'; id: number; dirs: string[] }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
   | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
   | { type: 'ws-close'; id: number; code?: number; reason?: string }
@@ -91,7 +93,31 @@ export type FromWorker =
   | { type: 'ws-accept'; id: number; protocol: string; extensions: string }
   | { type: 'ws-reject'; id: number; status: number; message: string }
   | { type: 'ws-message'; id: number; data: string | ArrayBuffer }
-  | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean };
+  | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
+  /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
+  | { type: 'process-exit'; command: string; code: number; stderr: string }
+  | { type: 'tree'; id: number; files: Record<string, string> };
+
+/** An EventEmitter whose listeners run in the async context it was created in (events.EventEmitterAsyncResource). */
+class EventEmitterAsyncResource extends EventEmitter {
+  readonly asyncResource: AsyncResource;
+  constructor(options?: { name?: string; captureRejections?: boolean }) {
+    super(options);
+    this.asyncResource = new AsyncResource(options?.name ?? new.target.name);
+  }
+  emit(event: string | symbol, ...args: unknown[]): boolean {
+    return this.asyncResource.runInAsyncScope(() => super.emit(event, ...args));
+  }
+  emitDestroy(): void {
+    this.asyncResource.emitDestroy();
+  }
+  get asyncId(): number {
+    return this.asyncResource.asyncId();
+  }
+  get triggerAsyncId(): number {
+    return this.asyncResource.triggerAsyncId();
+  }
+}
 
 /** The buffer polyfill predates the base64url encoding (Node 15+); hashes and ids use it. */
 function patchBase64Url(): void {
@@ -365,7 +391,7 @@ function buildBuiltins() {
     'path/posix': () => path,
     'path/win32': () => path,
     buffer: () => ({ Buffer, SlowBuffer: Buffer, kMaxLength: 2 ** 31 - 1, kStringMaxLength: 2 ** 29, constants: { MAX_LENGTH: 2 ** 31 - 1, MAX_STRING_LENGTH: 2 ** 29 }, Blob, File, atob, btoa, isUtf8: () => true, isAscii: (b: Uint8Array) => b.every((x) => x < 128), transcode: (b: Uint8Array) => b, INSPECT_MAX_BYTES: 50 }),
-    events: () => Object.assign(events, { EventEmitter, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), setMaxListeners: () => {}, addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
+    events: () => Object.assign(events, { EventEmitter, EventEmitterAsyncResource, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), setMaxListeners: () => {}, addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
     stream: () => stream,
     'stream/promises': () => stream.promises,
     'stream/web': () => ({ ReadableStream, WritableStream, TransformStream, TextEncoderStream, TextDecoderStream, ByteLengthQueuingStrategy, CountQueuingStrategy, CompressionStream, DecompressionStream }),
@@ -504,7 +530,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     relay: relayFromNested,
   };
   threads = createWorkerThreads(nested);
-  childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string });
+  childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string, reportExit: (info) => post({ type: 'process-exit', ...info }) });
   const table = buildBuiltins();
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
@@ -679,6 +705,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
   });
   serverEvents.on('listening', (port: number | string) => announce(port));
+  installNodeMessagePorts();
   hideWorkerGlobals();
   post({ type: 'ready' });
   // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
@@ -732,6 +759,8 @@ function run(msg: Extract<ToWorker, { type: 'run' }>) {
 
 function start(msg: Extract<ToWorker, { type: 'run' }>) {
   proc.argv = ['/usr/local/bin/node', msg.main, ...(msg.argv ?? [])];
+  // The main program ends like a child process does: when nothing is left to do (a CLI that exits).
+  if (!thread) exitWhenIdle();
   try {
     // --require / --import (loaded in order, before the entry).
     for (const p of msg.preload ?? []) (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(p, null, false);
@@ -783,7 +812,26 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   else if (msg.type === 'wt-message') threads.deliver(msg.data);
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
-  else if (msg.type === 'write-file') {
+  else if (msg.type === 'read-tree') {
+    const files: Record<string, string> = {};
+    const walk = (dir: string) => {
+      for (const name of vfs.readdir(dir)) {
+        const path = `${dir}/${name}`;
+        const st = vfs.stat(path);
+        if (st.kind === 'dir') walk(path);
+        else if (st.size < 8 << 20) files[path.slice(projectRoot.length + 1)] = new TextDecoder().decode(vfs.read(path));
+      }
+    };
+    for (const dir of msg.dirs) {
+      try {
+        walk(`${projectRoot}/${dir}`);
+      } catch {
+        // not there
+      }
+    }
+    post({ type: 'tree', id: msg.id, files });
+  }
+    else if (msg.type === 'write-file') {
     const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;
     vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
     vfs.write(abs, new TextEncoder().encode(msg.content));
@@ -972,6 +1020,9 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
     return true;
   }
   switch (m.type) {
+    case 'process-exit':
+      post(m as FromWorker);
+      return true;
     case 'lb-request':
       loopbackRequest(m as unknown as Parameters<typeof loopbackRequest>[0], from);
       return true;

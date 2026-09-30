@@ -6,10 +6,11 @@
  */
 import { fileURLToPath } from 'node:url';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
-import { readdir, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { expandScript, findFullStack, isTsRunner } from '../esbuild/backend.ts';
-import { subProject } from '../esbuild/index.ts';
+import { expandScript, findFullStack, isTsRunner } from './scripts.ts';
+import { detectFramework } from '../../project.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
@@ -49,6 +50,21 @@ export function startCommand(project: Project): { file?: string; bin?: string; a
   return null;
 }
 
+/** The package in `dir` as a project of its own (a client/ or server/ package). */
+export function subProject(project: Project, dir: string): Project {
+  if (!dir) return project;
+  const prefix = `${dir}/`;
+  const files: Project['files'] = {};
+  for (const [path, content] of Object.entries(project.files)) if (path.startsWith(prefix)) files[path.slice(prefix.length)] = content;
+  let packageJson: Project['packageJson'] = null;
+  try {
+    packageJson = typeof files['package.json'] === 'string' ? JSON.parse(files['package.json']) : null;
+  } catch {
+    // reported by npm at install
+  }
+  return { ...project, name: `${project.name}/${dir}`, files, packageJson, framework: detectFramework(files, packageJson) };
+}
+
 function devScript(project: Project): string | null {
   const scripts = project.packageJson?.scripts ?? {};
   return scripts.dev ?? scripts.start ?? null;
@@ -71,6 +87,38 @@ function packageDirs(project: Project): string[] {
     .map((p) => /^([^/]+)\/package\.json$/.exec(p)?.[1])
     .filter((d): d is string => !!d && d !== 'node_modules' && !d.startsWith('.'))
     .sort();
+}
+
+/**
+ * Dev servers' dependency caches, kept between runs: Vite's pre-bundled dependencies
+ * (node_modules/.vite/deps of each package). Vite checks that a cache matches the lockfile and its
+ * config before it uses one, so a stale cache costs a re-optimization, not a wrong result. The key
+ * covers the installed packages and the packages the sources import (what Vite's scan finds), so
+ * projects that import the same packages share a cache and a run does not start with a cache that
+ * lacks one of its imports.
+ */
+const DEV_CACHE_DIRS = ['node_modules/.vite/deps'];
+const devCacheRoot = () => join(installer.root, '..', 'dev-cache');
+
+function devCacheKey(project: Project, installKey: string): string {
+  const h = createHash('sha256').update(installKey);
+  const imports = new Set<string>();
+  for (const [path, content] of Object.entries(project.files)) {
+    if (typeof content !== 'string' || path.includes('node_modules/')) continue;
+    if (/(^|\/)(vite|svelte|astro|nuxt|react-router)\.config\.[cm]?[jt]s$|(^|\/)package\.json$/.test(path)) h.update(path).update('\0').update(content);
+    else if (/\.([cm]?[jt]sx?|vue|svelte|astro|html)$/.test(path)) {
+      for (const m of content.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"]([^'"./][^'"]*)['"]/g)) imports.add(m[1]);
+    }
+  }
+  return h.update([...imports].sort().join('\n')).digest('hex').slice(0, 24);
+}
+
+async function readDevCache(key: string): Promise<Record<string, string> | null> {
+  try {
+    return JSON.parse(await readFile(join(devCacheRoot(), `${key}.json`), 'utf8')) as Record<string, string>;
+  } catch {
+    return null;
+  }
 }
 
 /** The JS file behind a package binary (node_modules/.bin/<name>), from the installed packages' "bin" fields. */
@@ -117,6 +165,13 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
       return { status: 400, headers: { 'content-type': 'text/plain' }, body: String((e as Error).message) };
     }
   }
+  // The dev servers' caches of a finished run (see DEV_CACHE_DIRS): project-relative path → text.
+  const cache = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})$/.exec(req.path);
+  if (cache && req.method === 'POST') {
+    await mkdir(devCacheRoot(), { recursive: true });
+    await writeFile(join(devCacheRoot(), `${cache[1]}.json`), await req.body());
+    return { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' };
+  }
   const m = /^\/__sandburg\/nm\/([0-9a-f]{24})\/(f|t)\/(.+)$/.exec(req.path);
   if (m) {
     const [, key, mode, rel] = m;
@@ -140,12 +195,14 @@ export const node: AdapterDescriptor = {
   // expect: routes compile on first request (next dev), which is slower in the browser.
   timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000 },
   probe(project: Project) {
-    if (project.framework === 'next') return { verdict: 'supported' };
+    if (project.framework === 'next' || project.framework === 'static') return { verdict: 'supported' };
     if (startCommand(project) || devScript(project)) return { verdict: 'supported' };
     const scripts = project.packageJson?.scripts ?? {};
     return { verdict: 'unsupported', reason: `no way to start this project in the node runtime (dev/start script: "${scripts.dev ?? scripts.start ?? ''}")` };
   },
   async hostInstall(project, log): Promise<HostInstall> {
+    // A static site: no packages, a file server (see browser.ts).
+    if (project.framework === 'static') return { key: '', index: {}, resolved: {}, lockfile: false, start: { main: '.sandburg/start.js', argv: [], command: 'a static file server', tsRunner: false } };
     const info = await installer.install(project, extraDependencies(project), log);
     // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
     const parts = [{ dir: '', key: info.key }];
@@ -169,7 +226,9 @@ export const node: AdapterDescriptor = {
       }
     }
     const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
-    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy };
+    const cacheKey = devCacheKey(project, key);
+    const devCache = { key: cacheKey, dirs: parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d))), files: (await readDevCache(cacheKey)) ?? {} };
+    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache };
   },
   serve,
 };

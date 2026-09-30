@@ -2,11 +2,12 @@
 // Node globals at module-evaluation time, before the real process object exists.
 // The runtime replaces globalThis.process during init.
 import { Buffer } from 'buffer';
+import { NODE_VERSION } from './version.ts';
 
 const early = {
   env: {} as Record<string, string>,
-  version: 'v24.11.0',
-  versions: { node: '24.11.0' },
+  version: `v${NODE_VERSION}`,
+  versions: { node: NODE_VERSION },
   platform: 'linux',
   argv: [] as string[],
   cwd: () => '/',

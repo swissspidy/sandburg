@@ -23,14 +23,14 @@ const failures = (r: Awaited<ReturnType<Session['run']>>) => JSON.stringify(r.fa
 
 test('Next.js hot reloading: an edited page updates in place over the HMR WebSocket', async () => {
   const dir = fixture('next-app-router');
-  const result = await session.run(dir, { runtime: 'node', checks: `${dir}/hmr.spec.ts`, outDir });
+  const result = await session.run(dir, { checks: `${dir}/hmr.spec.ts`, outDir });
   assert.equal(result.status, 'passed', failures(result));
   assert.ok(!result.console.some((c) => /WebSocket/i.test(c.text) && c.type === 'error'), 'no WebSocket errors');
 });
 
 test('socket.io through Vite\'s ws proxy upgrades to a WebSocket and round-trips messages', async () => {
   const dir = fixture('vite-socketio-chat');
-  const result = await session.run(dir, { runtime: 'esbuild', checks: `${dir}/checks.spec.ts`, outDir });
+  const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
   assert.equal(result.status, 'passed', failures(result));
 });
 
@@ -46,6 +46,6 @@ test('socket.io to http://localhost:3001 directly (no proxy)', async () => {
     },
     { name: 'socketio-direct', path: dir },
   );
-  const result = await session.run(project, { runtime: 'esbuild', checks: `${dir}/checks.spec.ts`, outDir });
+  const result = await session.run(project, { checks: `${dir}/checks.spec.ts`, outDir });
   assert.equal(result.status, 'passed', failures(result));
 });

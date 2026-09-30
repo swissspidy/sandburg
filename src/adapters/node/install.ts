@@ -20,7 +20,7 @@ import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } 
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-const TRANSFORM_VERSION = 8;
+const TRANSFORM_VERSION = 10;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 13;
 
@@ -189,6 +189,7 @@ export class Installer {
  * the runtime patches to carry AsyncLocalStorage context.
  */
 export async function transformForRuntime(source: string, path: string, esm: boolean): Promise<string> {
+  for (const patch of SOURCE_PATCHES) if (patch.file.test(path)) source = source.replace(patch.from, patch.to);
   if (esm) source = renameCommonJsNames(source.replace(/^#!.*/, ''));
   source = patchFunctionImport(patchAsyncFunction(source));
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
@@ -481,6 +482,25 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
     log(`${build.name} ${version}: using ${build.wasm}`);
   }
 }
+
+/**
+ * Changes to package sources for what the browser cannot do. piscina's workers wait for tasks with
+ * Atomics.wait and take them with receiveMessageOnPort, which needs a synchronous look into a
+ * MessagePort (browsers have none): they use its message-event mode instead, as under WebContainers.
+ */
+const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }[] = [
+  {
+    file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
+    from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
+    to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
+  },
+  {
+    // piscina 4
+    file: /(^|\/)node_modules\/piscina\/dist\/src\/worker\.js$|(^|\/)node_modules\/piscina\/dist\/worker\.js$/,
+    from: /useAtomics = process\.env\.PISCINA_DISABLE_ATOMICS === '1' \? false : message\.useAtomics;/,
+    to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
+  },
+];
 
 /**
  * node_modules/.sandburg-bins.json: each package binary (node_modules/.bin/<name>) and the script it

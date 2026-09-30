@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expandScript, findFullStack, matchProxy, readViteProxy, splitWords } from '../../src/adapters/esbuild/backend.ts';
+import { expandScript, findFullStack, matchProxy, readViteProxy, splitWords } from '../../src/adapters/node/scripts.ts';
 
 const pkg = (scripts: Record<string, string>, extra: object = {}) => JSON.stringify({ scripts, ...extra });
 

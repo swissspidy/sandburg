@@ -8,7 +8,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
-import { AUTO, adapterFor } from '../adapters.ts';
+import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
 import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
 import type {
@@ -172,7 +172,7 @@ export class Session {
     await mkdir(outDir, { recursive: true });
     const project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
     const node = options.nodeRuntime?.() ?? null;
-    const adapter = node ? null : adapterFor(options.runtime ?? AUTO, project);
+    const adapter = node ? null : getAdapter(options.runtime ?? DEFAULT_RUNTIME);
     const runtimeInfo = node ?? adapter!;
     await this.store.put(project.files, project.name);
     const checks = typeof options.checks === 'string' ? await loadChecks(options.checks) : (options.checks ?? null);
@@ -498,6 +498,7 @@ class RunState {
         ...this.console.filter((c) => c.source === 'host' && c.type === 'error').map((c) => c.text),
         ...this.runtimeLogs,
       ],
+      runtimeOutput: this.console.filter((c) => c.source === 'host' && /^\[runtime:std(?:out|err)\]/.test(c.text)).map((c) => c.text),
       infraError: this.infraError,
       declaredDependencies: Object.keys({ ...this.project.packageJson?.dependencies, ...this.project.packageJson?.devDependencies }),
     });

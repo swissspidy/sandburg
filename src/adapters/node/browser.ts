@@ -7,7 +7,7 @@ import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../ho
 import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, webSocketPort } from './process.ts';
-import { matchProxy, type ProxyRule } from '../esbuild/backend.ts';
+import { matchProxy, type ProxyRule } from './scripts.ts';
 
 export interface HostInstall {
   key: string;
@@ -18,6 +18,8 @@ export interface HostInstall {
    * How to start the app (null: Next.js' programmatic dev server): a file (`main`, project-relative)
    * with arguments, or a dev script for the runtime's shell (`shell`).
    */
+  /** Dev servers' caches from an earlier run (Vite's pre-bundled dependencies), and where they live. */
+  devCache?: { key: string; dirs: string[]; files: Record<string, string> };
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
   proxy?: ProxyRule[];
   start?: ({ main: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
@@ -45,6 +47,30 @@ app
   });
 `;
 
+/** A static site (index.html, no package.json): its files, served as a static file server serves them. */
+const STATIC_SERVER = `// Sandburg: a static file server for the project's files.
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.txt': 'text/plain; charset=utf-8', '.wasm': 'application/wasm' };
+const root = process.cwd();
+http
+  .createServer((req, res) => {
+    let file = path.join(root, decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
+    if (!file.startsWith(root)) file = root;
+    try {
+      if (fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
+      const body = fs.readFileSync(file);
+      res.writeHead(200, { 'content-type': types[path.extname(file).toLowerCase()] ?? 'application/octet-stream' });
+      res.end(body);
+    } catch {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('Not found');
+    }
+  })
+  .listen(3000, () => console.log('Serving on http://localhost:3000'));
+`;
+
 /** A dev script with several commands (or other packages' scripts), run by the runtime's shell as npm runs it. */
 const shellStart = (script: string) => `// Sandburg: the dev script, run as npm runs it.
 const { spawn } = require('node:child_process');
@@ -59,19 +85,35 @@ export function createAdapter(): RuntimeAdapter {
   let argv: string[] = [];
   let shell = false;
   let proxy: ProxyRule[] = [];
+  let devCache: HostInstall['devCache'] | null = null;
+  /**
+   * A dev server whose first build fails reports it and waits for a fix instead of serving (ng serve:
+   * "Application bundle generation failed", then "Watch mode enabled"): that ends the start.
+   */
+  let buildFailed = false;
+  const watchBuild = (line: string) => {
+    const text = line.replace(/\x1b\[[0-9;]*m/g, '');
+    if (/Application bundle generation failed/.test(text)) buildFailed = true;
+    else if (buildFailed && /Watch mode enabled/.test(text) && proc && !proc.ports.length) {
+      proc.fail(new AdapterError('APP', 'the dev server could not build the app and is waiting for changes (see the errors above)'));
+    }
+  };
 
   return {
     name: 'node',
 
     async mount(tree: FileTree, ctx: AdapterContext) {
       files = { ...tree };
-      if (!ctx.packageJson) throw new AdapterError('APP', 'package.json is missing or invalid');
+      if (ctx.framework === 'static') files[START] = STATIC_SERVER;
+      else if (!ctx.packageJson) throw new AdapterError('APP', 'package.json is missing or invalid');
       if (ctx.framework === 'next') files[START] = NEXT_DEV;
     },
 
     async install(ctx: AdapterContext, hostData?: unknown): Promise<InstallReport> {
       const host = hostData as HostInstall;
       proxy = host.proxy ?? [];
+      devCache = host.devCache ?? null;
+      Object.assign(files, devCache?.files);
       if (ctx.framework !== 'next') {
         if (!host.start) throw new AdapterError('UNSUPPORTED', 'no way to start this project in the node runtime');
         shell = 'shell' in host.start;
@@ -90,7 +132,10 @@ export function createAdapter(): RuntimeAdapter {
         env: { NEXT_TELEMETRY_DISABLED: '1', ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
         installKey: host.key,
         nodeModules: host.index,
-        log: (stream, line) => ctx.log(stream, line),
+        log: (stream, line) => {
+          ctx.log(stream, line);
+          watchBuild(line);
+        },
       });
       await proc.started();
       return {
@@ -126,10 +171,20 @@ export function createAdapter(): RuntimeAdapter {
       p.run(main, argv);
       // A dev script may start several servers (an API and the page's dev server): the page's is the app.
       port = shell ? await p.pagePort() : await p.listening();
+      // One of the dev script's servers crashed while the others came up (concurrently keeps going): the app is broken.
+      const crashed = p.failedCommands[0];
+      if (crashed) throw new AdapterError('APP', `"${crashed.command}" exited with code ${crashed.code}${crashed.stderr ? `:\n${crashed.stderr.trim().split('\n').slice(-15).join('\n')}` : ''}`);
       return { url: '/' };
     },
 
     async dispose() {
+      // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
+      if (proc && devCache && !proc.failure) {
+        const tree = await Promise.race([proc.readTree(devCache.dirs), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+        const complete = tree && devCache.dirs.some((d) => `${d}/_metadata.json` in tree);
+        const changed = complete && Object.keys(tree).some((p) => tree[p] !== devCache!.files[p]);
+        if (changed) await fetch(`/__sandburg/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
+      }
       proc?.terminate();
       proc = null;
     },
