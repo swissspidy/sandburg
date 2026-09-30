@@ -17,6 +17,7 @@
 import type * as esbuildTypes from 'esbuild';
 import { Resolver, dirname, readAliases, stripJsonComments, type FileSystem } from './resolve.ts';
 import { Tailwind, scanCandidates, usesTailwind } from './tailwind.ts';
+import { STYLE_QUERY, VueCompiler } from './vue.ts';
 
 type Esbuild = Pick<typeof esbuildTypes, 'build'>;
 
@@ -126,25 +127,25 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
   const resolver = new Resolver(fs, readAliases(files));
   const warnings: string[] = [];
   const nodeEnv = JSON.stringify(mode === 'production' ? 'production' : 'development');
-  const tailwind = new Tailwind({
-    resolver,
-    read,
-    // Bundles an installed package (Tailwind itself, its plugins) and imports it in this realm.
-    importPackage: async (path) => {
-      const out = await esbuild.build({
-        entryPoints: [path],
-        bundle: true,
-        format: 'esm',
-        platform: 'browser',
-        write: false,
-        logLevel: 'silent',
-        define: { 'process.env.NODE_ENV': nodeEnv },
-        plugins: [vfsPlugin(resolver, read, [])],
-      });
-      return import(/* @vite-ignore */ `data:text/javascript;charset=utf-8,${encodeURIComponent(out.outputFiles[0].text)}`);
-    },
-  });
+  // Bundles an installed package (Tailwind, @vue/compiler-sfc) and imports it in this realm.
+  const importPackage = async (path: string) => {
+    const out = await esbuild.build({
+      entryPoints: [path],
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      write: false,
+      logLevel: 'silent',
+      define: { 'process.env.NODE_ENV': nodeEnv },
+      plugins: [vfsPlugin(resolver, read, [])],
+    });
+    return import(/* @vite-ignore */ `data:text/javascript;charset=utf-8,${encodeURIComponent(out.outputFiles[0].text)}`);
+  };
+  const tailwind = new Tailwind({ resolver, read, importPackage });
   let candidates: string[] | null = null;
+  const vue = new VueCompiler({ resolver, files, importPackage });
+  /** Compiled <style> blocks of .vue files, by "<path>?vue&type=style&index=N&lang.css". */
+  const sfcStyles = new Map<string, string>();
 
   const entries: string[] = [];
   for (const [, src] of html.matchAll(MODULE_SCRIPT)) {
@@ -160,6 +161,10 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
   const define: Record<string, string> = {
     'import.meta.env': JSON.stringify(env),
     'process.env.NODE_ENV': nodeEnv,
+    // Vue's compile-time flags, as @vitejs/plugin-vue defines them for development.
+    __VUE_OPTIONS_API__: 'true',
+    __VUE_PROD_DEVTOOLS__: 'false',
+    __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false',
   };
   for (const [k, v] of Object.entries(env)) define[`import.meta.env.${k}`] = JSON.stringify(v);
   Object.assign(define, input.define);
@@ -194,6 +199,7 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
           setup(build) {
             build.onResolve({ filter: /.*/ }, async (args) => {
               if (args.namespace === 'sandburg-empty') return { path: args.path, namespace: 'sandburg-empty' };
+              if (STYLE_QUERY.test(args.path) && sfcStyles.has(args.path)) return { path: args.path, namespace: 'sandburg-vue-style' };
               // Vite serves public/ at the root and leaves such URLs in CSS as they are.
               if ((args.kind === 'url-token' || args.kind === 'import-rule') && args.path.startsWith('/') && `public${args.path}` in files) {
                 return { path: args.path, external: true };
@@ -219,8 +225,18 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
             build.onLoad({ filter: /.*/, namespace: 'sandburg-raw' }, async (args) => ({ contents: await read(args.path), loader: 'text' }));
             build.onLoad({ filter: /.*/, namespace: 'sandburg-url' }, async (args) => ({ contents: await read(args.path), loader: 'file' }));
             build.onLoad({ filter: /.*/, namespace: 'sandburg-css-inline' }, async (args) => ({ contents: await read(args.path), loader: 'text' }));
+            build.onLoad({ filter: /.*/, namespace: 'sandburg-vue-style' }, (args) => ({ contents: sfcStyles.get(args.path), loader: 'css', resolveDir: dirname(args.path) }));
             build.onLoad({ filter: /.*/, namespace: 'sandburg' }, async (args) => {
               const contents = await read(args.path);
+              if (args.path.endsWith('.vue')) {
+                try {
+                  const sfc = await vue.compile(new TextDecoder().decode(contents), args.path);
+                  sfc.styles.forEach((css, i) => sfcStyles.set(`${args.path}?vue&type=style&index=${i}&lang.css`, css));
+                  return { contents: sfc.code, loader: sfc.loader, resolveDir: dirname(args.path) };
+                } catch (e) {
+                  return { errors: [{ text: (e as Error).message }] };
+                }
+              }
               const loader = loaderFor(args.path);
               if ((loader === 'css' || loader === 'local-css') && !args.path.includes('/node_modules/')) {
                 const css = new TextDecoder().decode(contents);

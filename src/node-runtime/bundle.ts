@@ -39,3 +39,27 @@ export function bundleNodeRuntime(): Promise<string> {
   cached.catch(() => (cached = null));
   return cached;
 }
+
+/** The official SQLite WebAssembly build (Apache-2.0), loaded by the runtime with importScripts when an app uses SQLite. */
+export const SQLITE_WASM = fileURLToPath(new URL('../../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm', import.meta.url));
+
+let sqliteBundle: Promise<string> | null = null;
+
+export function bundleSqlite(): Promise<string> {
+  sqliteBundle ??= esbuild
+    .build({
+      entryPoints: [fileURLToPath(new URL('../../node_modules/@sqlite.org/sqlite-wasm/dist/index.mjs', import.meta.url))],
+      bundle: true,
+      write: false,
+      format: 'iife',
+      globalName: 'sandburgSqlite3',
+      platform: 'browser',
+      target: 'es2022',
+      logLevel: 'silent',
+      // The module locates its .wasm relative to itself; the runtime passes locateFile instead.
+      define: { 'import.meta.url': '"http://sandburg.invalid/__sandburg/sqlite3.js"' },
+    })
+    .then((r) => r.outputFiles[0].text);
+  sqliteBundle.catch(() => (sqliteBundle = null));
+  return sqliteBundle;
+}

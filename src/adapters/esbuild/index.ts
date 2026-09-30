@@ -11,6 +11,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { sharedInstaller } from '../node/install.ts';
+import { serve as serveNode } from '../node/index.ts';
+import { detectFramework } from '../../project.ts';
+import { findFullStack, type ProxyRule } from './backend.ts';
 
 const require = createRequire(import.meta.url);
 const pkgRoot = dirname(require.resolve('esbuild-wasm/package.json'));
@@ -22,10 +25,45 @@ export interface EsbuildHostInstall {
   index: Record<string, number>;
   resolved: Record<string, string>;
   lockfile: boolean;
+  /** Directory of the front end ("" is the project root). */
+  frontend?: string;
+  /** The backend the dev scripts start alongside Vite (ADR 0009). */
+  backend?: {
+    /** Package directory, and the server entry relative to it. */
+    dir: string;
+    main: string;
+    command: string;
+    key: string | null;
+    index: Record<string, number>;
+  } | null;
+  proxy?: ProxyRule[];
+}
+
+/** The package in `dir` as a project of its own (a client/ or server/ package). */
+export function subProject(project: Project, dir: string): Project {
+  if (!dir) return project;
+  const prefix = `${dir}/`;
+  const files: Project['files'] = {};
+  for (const [path, content] of Object.entries(project.files)) if (path.startsWith(prefix)) files[path.slice(prefix.length)] = content;
+  let packageJson: Project['packageJson'] = null;
+  try {
+    packageJson = typeof files['package.json'] === 'string' ? JSON.parse(files['package.json']) : null;
+  } catch {
+    // reported by npm at install
+  }
+  return { ...project, name: `${project.name}/${dir}`, files, packageJson, framework: detectFramework(files, packageJson) };
+}
+
+async function installPackage(project: Project, log: (line: string) => void) {
+  const pkg = project.packageJson;
+  if (!pkg || !Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length) return { key: null, index: {}, resolved: {}, lockfile: false };
+  const installer = sharedInstaller();
+  const info = await installer.install(project, {}, log);
+  return { key: info.key, index: await installer.index(info.key), resolved: info.resolved, lockfile: info.lockfile };
 }
 
 /** Vite config imports that the esbuild build covers by itself. */
-const BUILT_IN = /^(vite|node:.*|path|url|fs|@vitejs\/plugin-react(-swc)?|@tailwindcss\/vite)$/;
+const BUILT_IN = /^(vite|node:.*|path|url|fs|@vitejs\/plugin-(react(-swc)?|vue)|@tailwindcss\/vite)$/;
 
 /** Plugins imported by vite.config that the build cannot apply. */
 export function unsupportedVitePlugins(project: Project): string[] {
@@ -81,7 +119,8 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     const file = await sharedInstaller().raw(m[1], decodeURIComponent(m[2]));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
-  return null;
+  // The backend runs in the node runtime (its worker bundle, compile endpoint and transformed files).
+  return serveNode(req);
 }
 
 export const esbuildAdapter: AdapterDescriptor = {
@@ -93,8 +132,10 @@ export const esbuildAdapter: AdapterDescriptor = {
   egress: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'],
   crossOriginIsolation: false,
   timeouts: { install: 600_000 },
-  probe(project: Project) {
-    if (!('index.html' in project.files)) return { verdict: 'unsupported', reason: 'no index.html at the project root' };
+  probe(whole: Project) {
+    const layout = findFullStack(whole.files);
+    const project = subProject(whole, layout.frontend);
+    if (!('index.html' in project.files)) return { verdict: 'unsupported', reason: `no index.html in the front end (${layout.frontend || 'the project root'})` };
     if (project.framework !== 'vite' && project.framework !== 'static' && project.framework !== 'unknown') {
       return { verdict: 'unsupported', reason: `framework "${project.framework}" is not supported by the esbuild adapter` };
     }
@@ -109,11 +150,15 @@ export const esbuildAdapter: AdapterDescriptor = {
     return { verdict: 'supported' };
   },
   async hostInstall(project, log): Promise<EsbuildHostInstall> {
-    const pkg = project.packageJson;
-    if (!pkg || !Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length) return { key: null, index: {}, resolved: {}, lockfile: false };
-    const installer = sharedInstaller();
-    const info = await installer.install(project, {}, log);
-    return { key: info.key, index: await installer.index(info.key), resolved: info.resolved, lockfile: info.lockfile };
+    const layout = findFullStack(project.files);
+    const front = await installPackage(subProject(project, layout.frontend), log);
+    let backend: EsbuildHostInstall['backend'] = null;
+    if (layout.backend) {
+      const { dir, main, command } = layout.backend;
+      const deps = dir === layout.frontend ? front : await installPackage(subProject(project, dir), log);
+      backend = { dir, main, command, key: deps.key, index: deps.index };
+    }
+    return { ...front, frontend: layout.frontend, backend, proxy: layout.proxy };
   },
   serve,
 };

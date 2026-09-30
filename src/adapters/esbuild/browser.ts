@@ -9,6 +9,8 @@ import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker, type BridgedRequest } from '../sw-bridge.ts';
 import { BuildError, buildApp, mimeType, type Asset } from './build.ts';
 import type { EsbuildHostInstall } from './index.ts';
+import { isTsRunner, matchProxy } from './backend.ts';
+import { NodeProcess } from '../node/process.ts';
 
 let initialized: Promise<void> | null = null;
 
@@ -133,27 +135,109 @@ export function createResponder(site: () => Site) {
   };
 }
 
+/** Re-roots a file tree at `dir` (a client/ or server/ package). */
+function subTree<T>(tree: Record<string, T>, dir: string): Record<string, T> {
+  if (!dir) return tree;
+  const out: Record<string, T> = {};
+  for (const [path, content] of Object.entries(tree)) if (path.startsWith(`${dir}/`)) out[path.slice(dir.length + 1)] = content;
+  return out;
+}
+
+/** URL prefix under which the page reaches the backend's ports: /__sandburg_backend/<port>/<path>. */
+const BACKEND_PREFIX = /^\/__sandburg_backend\/(\d+)(\/.*)?$/;
+
+/**
+ * Sends the app's requests for http://localhost:<backend port>/… (and 127.0.0.1) to the backend in
+ * this sandbox: fetch, XMLHttpRequest and EventSource, as a CORS-enabled dev setup calls its API.
+ */
+function localhostRewriter(ports: number[]): string {
+  return `<script>(() => {
+  const ports = ${JSON.stringify(ports)};
+  const re = /^(?:https?:)?\\/\\/(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\]):(\\d+)(\\/[^#]*)?/;
+  const map = (u) => {
+    const m = re.exec(String(u instanceof Request ? u.url : u));
+    return m && ports.includes(Number(m[1])) ? '/__sandburg_backend/' + m[1] + (m[2] || '/') : null;
+  };
+  const fetch = window.fetch;
+  window.fetch = function (input, init) {
+    const to = map(input);
+    if (!to) return fetch.call(this, input, init);
+    return fetch.call(this, input instanceof Request ? new Request(to, input) : to, init);
+  };
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    return open.call(this, method, map(url) ?? url, ...rest);
+  };
+  if (window.EventSource) {
+    const ES = window.EventSource;
+    window.EventSource = class extends ES {
+      constructor(url, init) {
+        super(map(url) ?? url, init);
+      }
+    };
+  }
+})();</script>`;
+}
+
 export function createAdapter(): RuntimeAdapter {
+  let tree: FileTree = {};
   let files: Record<string, string | Uint8Array> = {};
   let host: EsbuildHostInstall = { key: null, index: {}, resolved: {}, lockfile: false };
   let assets = new Map<string, Asset>();
   let html = '';
-  const respond = createResponder(() => ({ assets, html, files, statics: [{ input: 'public', output: '/' }], projectFiles: true }));
+  let backend: NodeProcess | null = null;
+  const serveStatic = createResponder(() => ({ assets, html, files, statics: [{ input: 'public', output: '/' }], projectFiles: true }));
+
+  function respond(request: BridgedRequest, reply: MessagePort) {
+    if (backend) {
+      const direct = BACKEND_PREFIX.exec(request.url.replace(/[?#].*$/, ''));
+      if (direct) {
+        const query = /[?].*$/.exec(request.url)?.[0] ?? '';
+        return backend.request(Number(direct[1]), { ...request, url: (direct[2] ?? '/') + query }, reply);
+      }
+      const proxied = matchProxy(host.proxy ?? [], request.url);
+      if (proxied) {
+        // The backend may listen elsewhere than the proxy says (e.g. PORT from .env); then it gets the request anyway.
+        const port = backend.ports.includes(proxied.rule.port) ? proxied.rule.port : backend.ports[0];
+        return backend.request(port, { ...request, url: proxied.path }, reply);
+      }
+    }
+    serveStatic(request, reply);
+  }
 
   return {
     name: 'esbuild',
 
-    async mount(tree: FileTree) {
-      files = decodeTree(tree);
+    async mount(t: FileTree) {
+      tree = t;
     },
 
     async install(ctx: AdapterContext, hostData?: unknown): Promise<InstallReport> {
       host = (hostData as EsbuildHostInstall | undefined) ?? host;
+      files = decodeTree(subTree(tree, host.frontend ?? ''));
       await initEsbuild();
       return installReport(ctx, host);
     },
 
     async start(ctx: AdapterContext) {
+      // The backend first: the front end's first requests go to it.
+      if (host.backend) {
+        const b = host.backend;
+        ctx.log('stdout', `starting the backend: ${b.command}${b.dir ? ` (in ${b.dir}/)` : ''}`);
+        backend = new NodeProcess({
+          files: subTree(tree, b.dir),
+          env: { NODE_ENV: 'development' },
+          installKey: b.key,
+          nodeModules: b.index,
+          label: 'the backend',
+          tsRunner: isTsRunner(b.command),
+          log: (stream, line) => ctx.log(stream, `[backend] ${line}`),
+        });
+        await backend.started();
+        backend.run(`/app/${b.main}`);
+        await backend.listening();
+        ctx.log('stdout', `backend listening on port ${backend.ports.join(', ')}`);
+      }
       const t = performance.now();
       try {
         const out = await buildApp(esbuild, {
@@ -162,7 +246,7 @@ export function createAdapter(): RuntimeAdapter {
           readNodeModule: (path) => readNodeModule(host, path),
         });
         assets = out.assets;
-        html = out.html;
+        html = backend ? out.html.replace(/<head[^>]*>/i, (m) => `${m}\n${localhostRewriter([...new Set([...backend!.ports, ...(host.proxy ?? []).map((r) => r.port)])])}`) : out.html;
         for (const w of out.warnings) ctx.log('stderr', `[esbuild] ${w}`);
       } catch (e) {
         if (e instanceof BuildError) throw new AdapterError('APP', `build failed:\n${e.message}`);
@@ -173,7 +257,10 @@ export function createAdapter(): RuntimeAdapter {
       return { url: '/' };
     },
 
-    async dispose() {},
+    async dispose() {
+      backend?.terminate();
+      backend = null;
+    },
   };
 }
 

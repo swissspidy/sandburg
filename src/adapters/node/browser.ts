@@ -5,8 +5,8 @@
  */
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, InstallReport } from '../../types.ts';
-import type { FromWorker } from '../../node-runtime/worker.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
+import { NodeProcess } from './process.ts';
 
 export interface HostInstall {
   key: string;
@@ -37,74 +37,7 @@ app
 
 export function createAdapter(): RuntimeAdapter {
   let files: FileTree = {};
-  let worker: Worker | null = null;
-  let listeningPort = 0;
-  let failure: Error | null = null;
-  const waiters = new Set<() => void>();
-  const pending = new Map<number, MessagePort>();
-  let nextId = 1;
-
-  const notify = () => {
-    for (const w of waiters) w();
-  };
-  const until = (cond: () => boolean) =>
-    new Promise<void>((resolve, reject) => {
-      const check = () => {
-        if (failure) {
-          waiters.delete(check);
-          reject(failure);
-        } else if (cond()) {
-          waiters.delete(check);
-          resolve();
-        }
-      };
-      waiters.add(check);
-      check();
-    });
-
-  function onWorkerMessage(e: MessageEvent<FromWorker>, ctx: AdapterContext) {
-    const m = e.data;
-    switch (m.type) {
-      case 'log':
-        for (const line of m.text.replace(/\n$/, '').split('\n')) ctx.log(m.stream, line);
-        break;
-      case 'listening':
-        listeningPort ||= m.port;
-        notify();
-        break;
-      case 'fatal':
-        failure = new AdapterError('APP', m.stack ?? m.message);
-        notify();
-        break;
-      case 'exit':
-        if (!listeningPort) failure = new AdapterError('APP', `the app exited with code ${m.code} before it started listening`);
-        notify();
-        break;
-      case 'response-start': {
-        const port = pending.get(m.id);
-        for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
-        port?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers: m.headers });
-        break;
-      }
-      case 'response-chunk':
-        pending.get(m.id)?.postMessage({ type: 'chunk', chunk: m.chunk }, [m.chunk.buffer]);
-        break;
-      case 'response-end':
-        pending.get(m.id)?.postMessage({ type: 'end' });
-        pending.get(m.id)?.close();
-        pending.delete(m.id);
-        break;
-      case 'response-error':
-        pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
-        pending.delete(m.id);
-        break;
-      case 'ready':
-        notify();
-        break;
-    }
-  }
-
-  let ready = false;
+  let proc: NodeProcess | null = null;
 
   return {
     name: 'node',
@@ -123,26 +56,15 @@ export function createAdapter(): RuntimeAdapter {
 
     async install(ctx: AdapterContext, hostData?: unknown): Promise<InstallReport> {
       const host = hostData as HostInstall;
-      worker = new Worker('/__sandburg/node-worker.js');
-      worker.onmessage = (e) => {
-        if (e.data.type === 'ready') ready = true;
-        onWorkerMessage(e, ctx);
-      };
-      worker.onerror = (e) => {
-        failure = new AdapterError('INTERNAL', `runtime worker error: ${e.message}`);
-        notify();
-      };
-      worker.postMessage({
-        type: 'init',
-        cwd: '/app',
+      proc = new NodeProcess({
+        files,
         // NEXT_TEST_WASM: load SWC's WebAssembly build (there is no native SWC in the browser).
         env: { NEXT_TELEMETRY_DISABLED: '1', PORT: '3000', CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
-        files,
         installKey: host.key,
         nodeModules: host.index,
-        base: '/__sandburg',
+        log: (stream, line) => ctx.log(stream, line),
       });
-      await until(() => ready);
+      await proc.started();
       return {
         resolution: host.lockfile ? 'lockfile' : Object.keys(ctx.packageJson?.dependencies ?? {}).length ? 'range' : 'none',
         lockfileHonored: host.lockfile,
@@ -152,30 +74,18 @@ export function createAdapter(): RuntimeAdapter {
     },
 
     async start() {
-      if (!worker) throw new AdapterError('INTERNAL', 'install() has not run');
-      await connectServiceWorker((request, port) => {
-        const id = nextId++;
-        pending.set(id, port);
-        // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
-        const headers: [string, string][] = request.headers.filter(([k]) => !/^(cookie|accept-encoding)$/i.test(k));
-        if (document.cookie) headers.push(['cookie', document.cookie]);
-        worker!.postMessage({ type: 'request', id, port: listeningPort, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
-      });
-      worker.postMessage({ type: 'run', main: `/app/${START}` });
-      await until(() => listeningPort > 0);
+      if (!proc) throw new AdapterError('INTERNAL', 'install() has not run');
+      const p = proc;
+      let port = 0;
+      await connectServiceWorker((request, reply) => p.request(port, request, reply));
+      p.run(`/app/${START}`);
+      port = await p.listening();
       return { url: '/' };
     },
 
     async dispose() {
-      worker?.terminate();
-      worker = null;
+      proc?.terminate();
+      proc = null;
     },
   };
-}
-
-/** Applies a Set-Cookie header to the sandbox origin (a service worker cannot). HttpOnly cannot be honored. */
-function applyCookie(header: string) {
-  const [pair, ...attrs] = header.split(';');
-  const kept = attrs.map((a) => a.trim()).filter((a) => !/^(httponly|secure)$/i.test(a));
-  document.cookie = [pair.trim(), ...kept].join('; ');
 }

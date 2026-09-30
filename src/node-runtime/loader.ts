@@ -27,6 +27,13 @@ export interface LoaderHost {
   cwd(): string;
   /** The main script path (process.argv[1]). */
   argv1(): string;
+  /**
+   * TypeScript runners (tsx, ts-node) resolve `./x.js` to `./x.ts` from TypeScript files, as tsc
+   * does; plain Node does not.
+   */
+  tsRunner?: boolean;
+  /** A replacement for an installed package's module (native addons such as better-sqlite3), or undefined. */
+  packageOverride?(filename: string): unknown;
 }
 
 const REQUIRE_CONDITIONS = ['require', 'node', 'module-sync', 'node-addons', 'default'];
@@ -243,6 +250,16 @@ export function createModuleSystem(host: LoaderHost) {
       const bases = options?.paths ?? [parent?.filename ? dirname(parent.filename) : host.cwd()];
       const found = request.startsWith('/') ? tryPath(request) : Module._findPath(request, bases);
       if (found) return found;
+      if (host.tsRunner && parent?.filename && /\.[cm]?tsx?$/.test(parent.filename)) {
+        const m = /\.([cm]?)js$/.exec(request);
+        if (m) {
+          const stem = request.slice(0, -m[0].length);
+          for (const ext of m[1] ? [`.${m[1]}ts`] : ['.ts', '.tsx']) {
+            const ts = request.startsWith('/') ? tryFile(stem + ext) : Module._findPath(stem + ext, bases);
+            if (ts) return ts;
+          }
+        }
+      }
       throw notFound(request, parent);
     }
     // Package self-reference: a package importing itself by name through its "exports".
@@ -277,6 +294,8 @@ export function createModuleSystem(host: LoaderHost) {
     if (isBuiltin(request)) return host.builtin(request.replace(/^node:/, ''));
     const filename = Module._resolveFilename(request, parent, isMain);
     if (isBuiltin(filename)) return host.builtin(filename.replace(/^node:/, ''));
+    const override = host.packageOverride?.(filename);
+    if (override !== undefined) return override;
     const cached = Module._cache[filename];
     if (cached) {
       if (parent && !parent.children.includes(cached)) parent.children.push(cached);

@@ -73,10 +73,10 @@ test('a syntax error is a build failure classified as an app bug', async () => {
 test('Vite plugins that the build cannot apply are unsupported, not failures', async () => {
   const base = await loadProject(fixture);
   const project = projectFromFiles(
-    { ...base.files, 'vite.config.ts': "import vue from '@vitejs/plugin-vue';\nexport default { plugins: [vue()] };\n" },
-    { name: 'vite-vue', path: fixture },
+    { ...base.files, 'vite.config.ts': "import svgr from 'vite-plugin-svgr';\nexport default { plugins: [svgr()] };\n" },
+    { name: 'vite-svgr', path: fixture },
   );
   const result = await session.run(project, { runtime: 'esbuild', outDir });
   assert.equal(result.failure?.class, 'runtime-unsupported');
-  assert.match(result.failure!.message, /@vitejs\/plugin-vue/);
+  assert.match(result.failure!.message, /vite-plugin-svgr/);
 });

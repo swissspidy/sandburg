@@ -6,7 +6,8 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { chromium, type Browser, type Page } from 'playwright-core';
-import { bundleNodeRuntime } from '../../src/node-runtime/bundle.ts';
+import { readFile } from 'node:fs/promises';
+import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
 import { compileForRuntime, type CompileKind } from '../../src/adapters/node/compile.ts';
 
 const PAGE = `<!doctype html><script>
@@ -49,6 +50,14 @@ export class RuntimeHarness {
       if (url.pathname === '/__sandburg/node-worker.js') {
         res.writeHead(200, { 'content-type': 'text/javascript' });
         return res.end(js);
+      }
+      if (url.pathname === '/__sandburg/sqlite3.js') {
+        res.writeHead(200, { 'content-type': 'text/javascript' });
+        return res.end(await bundleSqlite());
+      }
+      if (url.pathname === '/__sandburg/sqlite3.wasm') {
+        res.writeHead(200, { 'content-type': 'application/wasm' });
+        return res.end(await readFile(SQLITE_WASM));
       }
       if (url.pathname === '/__sandburg/compile') {
         const chunks: Buffer[] = [];

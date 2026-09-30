@@ -5,7 +5,8 @@
  * lazily; the app itself, Next.js included, runs in a Web Worker.
  */
 import { fileURLToPath } from 'node:url';
-import { bundleNodeRuntime } from '../../node-runtime/bundle.ts';
+import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
+import { readFile } from 'node:fs/promises';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, type CompileKind } from './compile.ts';
@@ -24,6 +25,12 @@ function extraDependencies(project: Project): Record<string, string> {
 export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/node-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleNodeRuntime() };
+  }
+  if (req.path === '/__sandburg/sqlite3.js') {
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleSqlite() };
+  }
+  if (req.path === '/__sandburg/sqlite3.wasm') {
+    return { status: 200, headers: { 'content-type': 'application/wasm', 'cache-control': 'max-age=31536000, immutable' }, body: await readFile(SQLITE_WASM) };
   }
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;

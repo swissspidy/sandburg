@@ -6,6 +6,10 @@
  * virtual servers.
  */
 import { Buffer } from 'buffer';
+import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
+import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
+import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
+import { createNodeSqlite } from './builtins/sqlite/node-sqlite.ts';
 import events, { EventEmitter } from 'events';
 import * as rs from 'readable-stream';
 import util from 'util';
@@ -26,7 +30,7 @@ import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
 export type ToWorker =
-  | { type: 'init'; cwd: string; env: Record<string, string>; files: FileTree; installKey: string | null; nodeModules: Record<string, number> | null; base: string; ipc?: boolean }
+  | { type: 'init'; cwd: string; env: Record<string, string>; files: FileTree; installKey: string | null; nodeModules: Record<string, number> | null; base: string; ipc?: boolean; tsRunner?: boolean }
   | { type: 'run'; main: string; argv?: string[] }
   | { type: 'request'; id: number; port: number; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
   /** A message for the program (with init.ipc): process.on('message'). */
@@ -73,6 +77,24 @@ let proc: ReturnType<typeof createProcess>;
 function write(stream: 'stdout' | 'stderr', text: string) {
   post({ type: 'log', stream, text });
 }
+
+/** How the SQLite modules see files: the VFS, relative to the process's working directory. */
+function sqliteFiles(): FileAccess {
+  return {
+    exists: (p) => vfs.exists(p),
+    read: (p) => vfs.read(p),
+    write: (p, data) => vfs.write(p, data),
+    resolve: (p) => (p.startsWith('/') ? p : pathBrowserify.resolve((proc.cwd as () => string)(), p.replace(/^file:/, ''))),
+  };
+}
+
+/** Installed packages that are native addons, replaced by SQLite WebAssembly-backed modules. */
+const SQLITE_PACKAGES: [RegExp, () => unknown][] = [
+  [/\/node_modules\/better-sqlite3\//, () => createBetterSqlite3(sqliteFiles())],
+  [/\/node_modules\/sqlite3\//, () => createSqlite3(sqliteFiles())],
+];
+const overrides = new Map<RegExp, unknown>();
+let usesSqlite = false;
 
 function buildBuiltins() {
   const fs = createFs(vfs, () => (proc.cwd as () => string)());
@@ -289,7 +311,7 @@ function buildBuiltins() {
     trace_events: () => ({ createTracing: () => ({ enable() {}, disable() {}, enabled: false }), getEnabledCategories: () => '' }),
     wasi: () => misc.stub('wasi'),
     test: () => misc.stub('test'),
-    sqlite: () => misc.stub('sqlite'),
+    sqlite: () => createNodeSqlite(sqliteFiles()),
     sea: () => ({ isSea: () => false }),
   };
   return table;
@@ -307,6 +329,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     vfs.write(abs, typeof content === 'string' ? new TextEncoder().encode(content) : Uint8Array.from(atob(content.base64), (c) => c.charCodeAt(0)));
   }
   for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
+  // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
+  usesSqlite =
+    [...Object.keys(msg.nodeModules ?? {}), ...Object.keys(msg.files)].some((rel) => /(^|\/)node_modules\/(better-sqlite3|sqlite3)\/package\.json$/.test(rel)) ||
+    Object.values(msg.files).some((c) => typeof c === 'string' && c.includes('node:sqlite'));
   vfs.mkdir('/tmp', true);
 
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc ? (data) => post({ type: 'message', data }) : undefined });
@@ -324,6 +350,15 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   const compiledCache = new Map<string, string>();
   moduleSystem = createModuleSystem({
     vfs,
+    tsRunner: !!msg.tsRunner,
+    packageOverride(filename: string) {
+      for (const [pattern, make] of SQLITE_PACKAGES) {
+        if (!pattern.test(filename)) continue;
+        if (!overrides.has(pattern)) overrides.set(pattern, make());
+        return overrides.get(pattern);
+      }
+      return undefined;
+    },
     compiledNodeModule(path: string) {
       if (!installKey) return null;
       const rel = path.slice(projectRoot.length + 1);
@@ -414,6 +449,14 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 }
 
 function run(msg: Extract<ToWorker, { type: 'run' }>) {
+  if (!usesSqlite) return start(msg);
+  loadSqlite(base).then(
+    () => start(msg),
+    (e) => post({ type: 'fatal', message: `runtime asset failed to load: SQLite WebAssembly (${(e as Error)?.message ?? e})` }),
+  );
+}
+
+function start(msg: Extract<ToWorker, { type: 'run' }>) {
   proc.argv = ['/usr/local/bin/node', msg.main, ...(msg.argv ?? [])];
   try {
     (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(msg.main, null, true);
