@@ -154,9 +154,11 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
 }
 
 /**
- * Preloading: the files of an install that runs load (node_modules/…, compiled or raw), recorded
- * as the host serves them, in the order of first use. A later run fetches them as one bundle
- * instead of one synchronous request each, which dominates start-up (next dev loads ~1,700 files).
+ * Preloading: the installed files that runs load (node_modules/…, compiled or raw), recorded as the
+ * host serves them, in the order of first use. A later run fetches them as one bundle instead of
+ * one synchronous request each, which dominates start-up (next dev loads ~1,700 files). They are
+ * recorded per install and per package version, so an install that was never run still gets a
+ * bundle for the packages other installs loaded (a new app with next@15 preloads Next.js).
  * Files over PRELOAD_FILE_MAX are left out (a few large ones, WebAssembly binaries).
  */
 const PRELOAD_FILE_MAX = 2 << 20;
@@ -164,6 +166,10 @@ const preloadLists = new Map<string, Map<string, true>>();
 const preloadDirty = new Set<string>();
 let preloadFlush: ReturnType<typeof setTimeout> | null = null;
 const preloadListPath = (key: string) => join(devCacheRoot(), `preload-${key}.json`);
+/** "name@version" → "mode:path-in-package" entries; one file for all packages. */
+const PACKAGE_LIST = '_packages';
+/** Package versions by install and package directory. */
+const packageVersions = new Map<string, Promise<string | null>>();
 
 async function preloadList(key: string): Promise<Map<string, true>> {
   let list = preloadLists.get(key);
@@ -175,26 +181,102 @@ async function preloadList(key: string): Promise<Map<string, true>> {
   return list;
 }
 
-async function recordLoad(key: string, entry: string): Promise<void> {
-  const list = await preloadList(key);
-  if (list.has(entry)) return;
-  list.set(entry, true);
+function markDirty(key: string) {
   preloadDirty.add(key);
   preloadFlush ??= setTimeout(async () => {
     preloadFlush = null;
     await mkdir(devCacheRoot(), { recursive: true });
     for (const k of [...preloadDirty]) {
       preloadDirty.delete(k);
-      await writeFile(preloadListPath(k), JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])])).catch(() => {});
+      const file = preloadListPath(k);
+      const tmp = `${file}.${process.pid}.tmp`;
+      await writeFile(tmp, JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])]))
+        .then(() => rename(tmp, file))
+        .catch(() => {});
     }
   }, 2000);
 }
 
-/** The preload bundle's URL for an install, or null before any run of it has loaded files. */
-async function preloadUrl(key: string): Promise<string | null> {
+/** The package a path is in: its directory ("…/node_modules/@scope/name"), name and the path inside it. */
+function packageOf(rel: string): { dir: string; name: string; inner: string } | null {
+  const at = rel.lastIndexOf('node_modules/');
+  if (at < 0) return null;
+  const parts = rel.slice(at + 'node_modules/'.length).split('/');
+  const n = parts[0].startsWith('@') ? 2 : 1;
+  if (parts.length <= n) return null;
+  const name = parts.slice(0, n).join('/');
+  return { dir: `${rel.slice(0, at)}node_modules/${name}`, name, inner: parts.slice(n).join('/') };
+}
+
+function packageVersion(key: string, dir: string): Promise<string | null> {
+  let v = packageVersions.get(`${key}\0${dir}`);
+  if (!v) {
+    v = installer.raw(key, `${dir}/package.json`).then(
+      (f) => (f ? ((JSON.parse(f.body.toString('utf8')) as { version?: string }).version ?? null) : null),
+      () => null,
+    );
+    packageVersions.set(`${key}\0${dir}`, v);
+  }
+  return v;
+}
+
+async function recordLoad(key: string, mode: string, rel: string): Promise<void> {
   const list = await preloadList(key);
-  if (!list.size) return null;
-  const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0`).update([...list.keys()].join('\n')).digest('hex').slice(0, 16);
+  if (list.has(`${mode}:${rel}`)) return;
+  list.set(`${mode}:${rel}`, true);
+  markDirty(key);
+  const pkg = packageOf(rel);
+  const version = pkg && (await packageVersion(key, pkg.dir));
+  if (!pkg || !version) return;
+  const packages = await preloadList(PACKAGE_LIST);
+  const entry = `${pkg.name}@${version}\0${mode}:${pkg.inner}`;
+  if (packages.has(entry)) return;
+  packages.set(entry, true);
+  markDirty(PACKAGE_LIST);
+}
+
+/**
+ * The files to preload for an install: those its runs loaded, then those that runs of other installs
+ * loaded from the same package versions, where this install has them.
+ */
+async function preloadEntries(key: string): Promise<string[]> {
+  const own = [...(await preloadList(key)).keys()];
+  const byPackage = new Map<string, string[]>();
+  for (const e of (await preloadList(PACKAGE_LIST)).keys()) {
+    const [pkg, entry] = e.split('\0');
+    byPackage.get(pkg)?.push(entry) ?? byPackage.set(pkg, [entry]);
+  }
+  const recorded = new Set([...byPackage.keys()].map((p) => p.slice(0, p.lastIndexOf('@'))));
+  const index = await installer.index(key);
+  const seen = new Set(own);
+  const out = [...own];
+  for (const path of Object.keys(index)) {
+    if (!path.endsWith('/package.json')) continue;
+    const pkg = packageOf(path);
+    if (!pkg || pkg.inner !== 'package.json') continue;
+    if (!recorded.has(pkg.name)) continue;
+    const version = await packageVersion(key, pkg.dir);
+    const entries = version ? byPackage.get(`${pkg.name}@${version}`) : undefined;
+    for (const entry of entries ?? []) {
+      const full = `${entry.slice(0, 2)}${pkg.dir}/${entry.slice(2)}`;
+      if (!seen.has(full) && full.slice(2) in index) {
+        seen.add(full);
+        out.push(full);
+      }
+    }
+  }
+  return out;
+}
+
+/** The file lists of the bundles handed out, by hash: fixed when the URL is (the lists grow as the run loads files). */
+const issuedBundles = new Map<string, string[]>();
+
+/** The preload bundle's URL for an install, or null when there is nothing to preload yet. */
+async function preloadUrl(key: string): Promise<string | null> {
+  const entries = await preloadEntries(key);
+  if (!entries.length) return null;
+  const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0`).update(entries.join('\n')).digest('hex').slice(0, 16);
+  issuedBundles.set(`${key}/${hash}`, entries);
   return `/__sandburg/preload/${key}/${hash}`;
 }
 
@@ -206,10 +288,11 @@ async function preloadBundle(key: string, hash: string): Promise<Buffer | null> 
   const file = join(devCacheRoot(), `preload-${key}-${hash}.bin`);
   const cached = await readFile(file).catch(() => null);
   if (cached) return cached;
-  if ((await preloadUrl(key)) !== `/__sandburg/preload/${key}/${hash}`) return null;
+  const entries = issuedBundles.get(`${key}/${hash}`);
+  if (!entries) return null;
   const header: [string, string, number][] = [];
   const bodies: Buffer[] = [];
-  for (const entry of (await preloadList(key)).keys()) {
+  for (const entry of entries) {
     const mode = entry[0];
     const rel = entry.slice(2);
     const got = mode === 't' ? await installer.file(key, rel) : await installer.raw(key, rel);
@@ -222,11 +305,13 @@ async function preloadBundle(key: string, hash: string): Promise<Buffer | null> 
   length.writeUInt32LE(json.length);
   const bundle = Buffer.concat([length, json, ...bodies]);
   await mkdir(devCacheRoot(), { recursive: true });
-  // Earlier bundles of the install (the list grew since) are not asked for again.
+  // Earlier bundles of the install (the lists grew since) are not asked for again.
   for (const old of await readdir(devCacheRoot()).catch(() => [] as string[])) {
     if (old.startsWith(`preload-${key}-`) && old.endsWith('.bin')) await rm(join(devCacheRoot(), old), { force: true });
   }
-  await writeFile(file, bundle);
+  const tmp = `${file}.${process.pid}.tmp`;
+  await writeFile(tmp, bundle);
+  await rename(tmp, file);
   return bundle;
 }
 
@@ -289,7 +374,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (m) {
     const [, key, mode, rel] = m;
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
-    if (file && file.body.length <= PRELOAD_FILE_MAX) void recordLoad(key, `${mode}:${decodeURIComponent(rel)}`);
+    if (file && file.body.length <= PRELOAD_FILE_MAX) void recordLoad(key, mode, decodeURIComponent(rel));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
   return null;

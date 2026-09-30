@@ -25,6 +25,7 @@ import querystring from 'querystring-es3';
 import * as stringDecoder from 'string_decoder';
 import cryptoBrowserify from 'crypto-browserify';
 import zlibBrowserify from 'browserify-zlib';
+import { nativeZlib } from './builtins/zlib-native.ts';
 import { parseArgs } from '@pkgjs/parseargs';
 import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
@@ -150,6 +151,69 @@ function patchBase64Url(): void {
   B.byteLength = (v: unknown, enc?: string) => (typeof v === 'string' && isUrl(enc) ? byteLength(toB64(v), 'base64') : byteLength(v, enc));
 }
 patchBase64Url();
+
+/**
+ * UTF-8 through the browser's TextEncoder/TextDecoder: the buffer polyfill converts in JavaScript
+ * loops, ~13x slower than Node (11 MB: 560 ms instead of 40). Tools convert a lot (webpack's cache,
+ * loaders, source maps).
+ */
+function patchUtf8(): void {
+  const B = Buffer as unknown as {
+    prototype: Record<string, (...a: unknown[]) => unknown> & { length: number; subarray(s: number, e: number): Uint8Array };
+    from(v: unknown, enc?: unknown, len?: unknown): Buffer;
+  };
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+  const isUtf8 = (enc: unknown) => enc === undefined || enc === null || (typeof enc === 'string' && /^utf-?8$/i.test(enc));
+  const { from } = B;
+  const { toString, write } = B.prototype as unknown as Record<string, (this: Uint8Array, ...a: unknown[]) => unknown>;
+  // Short strings stay in JavaScript: the native encoder's call costs more than it saves there.
+  const SHORT = 64;
+  B.from = function (v: unknown, enc?: unknown, len?: unknown) {
+    if (typeof v === 'string' && v.length > SHORT && isUtf8(enc)) {
+      const bytes = encoder.encode(v);
+      return from.call(B, bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    }
+    return from.call(B, v, enc, len);
+  };
+  const slice = (buf: Uint8Array, start?: unknown, end?: unknown) => {
+    const s = typeof start === 'number' && start > 0 ? Math.floor(start) : 0;
+    const e = typeof end === 'number' && end < buf.length ? Math.floor(end) : buf.length;
+    return e <= s ? '' : decoder.decode(buf.subarray(s, e));
+  };
+  B.prototype.toString = function (this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown) {
+    return isUtf8(enc) && this.length > SHORT ? slice(this, start, end) : Reflect.apply(toString, this, [enc, start, end]);
+  };
+  B.prototype.utf8Slice = function (this: Uint8Array, start?: unknown, end?: unknown) {
+    return slice(this, start, end);
+  };
+  const encodeInto = (buf: Uint8Array, str: string, offset: number, length: number) => {
+    const start = Math.max(0, Math.min(offset, buf.length));
+    return encoder.encodeInto(str, buf.subarray(start, Math.min(buf.length, start + length))).written;
+  };
+  // buf.write(string[, offset[, length]][, encoding])
+  B.prototype.write = function (this: Uint8Array, str: unknown, a?: unknown, b?: unknown, c?: unknown) {
+    let offset = 0;
+    let length = this.length;
+    let enc: unknown;
+    if (typeof a === 'string') enc = a;
+    else {
+      if (typeof a === 'number') offset = a;
+      if (typeof b === 'string') enc = b;
+      else {
+        if (typeof b === 'number') length = b;
+        enc = c;
+      }
+    }
+    if (typeof str !== 'string' || str.length <= SHORT || !isUtf8(enc)) return write.call(this, str, a, b, c);
+    return encodeInto(this, str, offset, Math.min(length, this.length - offset));
+  };
+  B.prototype.utf8Write = function (this: Uint8Array, str: unknown, offset?: unknown, length?: unknown) {
+    const o = typeof offset === 'number' ? offset : 0;
+    return encodeInto(this, String(str), o, typeof length === 'number' ? length : this.length - o);
+  };
+}
+patchUtf8();
 
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
 const realPostMessage = (self as unknown as Worker).postMessage.bind(self);
@@ -405,7 +469,7 @@ function buildBuiltins() {
   const zlibUnsupported = (name: string) => () => {
     throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
   };
-  const zlib = Object.assign(Object.create(null), zlibBrowserify, {
+  const zlib = Object.assign(Object.create(null), zlibBrowserify, typeof CompressionStream === 'function' ? nativeZlib : {}, {
     createBrotliCompress: zlibUnsupported('createBrotliCompress'),
     createBrotliDecompress: zlibUnsupported('createBrotliDecompress'),
     brotliCompressSync: zlibUnsupported('brotliCompressSync'),

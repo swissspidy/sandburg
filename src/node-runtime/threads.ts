@@ -30,7 +30,7 @@ export interface ThreadInit {
 
 // --- the shared VFS ----------------------------------------------------------------------
 
-type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
+type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'writeAt' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
 const HEADER = 16;
 const READ_OPS = new Set<VfsOp>(['exists', 'stat', 'read', 'readdir']);
 /** How long a thread waits for its parent before reading from its snapshot instead. */
@@ -111,6 +111,9 @@ export class RemoteVfs extends Vfs {
   }
   override write(path: string, data: Uint8Array, append = false): void {
     this.call('write', [path, data, append]);
+  }
+  override writeAt(path: string, data: Uint8Array, position: number | 'end'): void {
+    this.call('writeAt', [path, data, position]);
   }
   override mkdir(path: string, recursive = false): string | undefined {
     return this.call('mkdir', [path, recursive]) as string | undefined;

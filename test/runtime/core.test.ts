@@ -536,3 +536,84 @@ test('worker_threads: receiveMessageOnPort keeps working after more traffic than
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout.trim(), 'replies 40', out.stderr);
 });
+
+test('zlib: gzip, deflate and raw deflate streams (native) interoperate with the synchronous functions', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const zlib = require('zlib');
+        const { pipeline, Readable, Writable } = require('stream');
+        const data = Buffer.from('sandburg '.repeat(2 * 1024 * 1024));
+        const through = (stream, input) => new Promise((resolve, reject) => {
+          const chunks = [];
+          pipeline(Readable.from([input.subarray(0, 1000), input.subarray(1000)]), stream, new Writable({ write(c, e, cb) { chunks.push(c); cb(); } }), (err) => (err ? reject(err) : resolve(Buffer.concat(chunks))));
+        });
+        (async () => {
+          const t = performance.now();
+          const gz = await through(zlib.createGzip(), data);
+          const ms = performance.now() - t;
+          const results = [
+            zlib.gunzipSync(gz).equals(data),
+            (await through(zlib.createGunzip(), zlib.gzipSync(data))).equals(data),
+            zlib.inflateSync(await through(zlib.createDeflate(), data)).equals(data),
+            zlib.inflateRawSync(await through(zlib.createDeflateRaw(), data)).equals(data),
+            await new Promise((r) => zlib.gunzip(gz, (e, b) => r(!e && b.equals(data)))),
+            await through(zlib.createGunzip(), Buffer.from('not gzip at all')).then(() => 'no error', (e) => e.code),
+          ];
+          console.log(JSON.stringify(results), gz.length < data.length / 100, ms < 2000);
+        })();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), `${JSON.stringify([true, true, true, true, true, 'Z_DATA_ERROR'])} true true`, out.stderr);
+});
+
+test('Buffer: UTF-8 conversions of long strings (native) match Node', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const s = 'héllo wörld 😀 '.repeat(20);
+        const b = Buffer.from(s);
+        const w = Buffer.alloc(10); const written = w.write('😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀');
+        const at = Buffer.alloc(300, 0x2e); const n = at.write(s, 5, 20, 'utf8');
+        const bad = Buffer.concat([Buffer.from('x'.repeat(80)), Buffer.from([0xff, 0xfe, 0xc3])]);
+        console.log(JSON.stringify([
+          b.length, Buffer.byteLength(s), b.toString() === s, b.toString('utf8', 1, 3), b.toString(undefined, 0, 1000).length,
+          written, w.subarray(0, written).toString(), n, at.subarray(0, 26).toString(),
+          bad.toString().endsWith('\\ufffd\\ufffd\\ufffd'), Buffer.from('\\ufeff' + 'a'.repeat(70)).toString().charCodeAt(0),
+        ]));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // The values real Node 22 gives.
+  assert.deepEqual(JSON.parse(out.stdout), [380, 380, true, 'é', 300, 8, '😀😀', 20, '.....héllo wörld 😀 h.', true, 0xfeff]);
+});
+
+test('fs: streamed and positional writes grow a file in place, as in Node', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const fs = require('fs');
+        const fd = fs.openSync('/tmp/f.bin', 'w');
+        fs.writeSync(fd, 'abcdef');
+        fs.writeSync(fd, Buffer.from('XY'), 0, 2, 1); // an explicit position leaves the file position alone
+        fs.writeSync(fd, 'gh');
+        fs.closeSync(fd);
+        const small = fs.readFileSync('/tmp/f.bin', 'utf8');
+        const chunk = Buffer.alloc(64 * 1024, 7);
+        const t = performance.now();
+        const ws = fs.createWriteStream('/tmp/big.bin');
+        for (let i = 0; i < 640; i++) ws.write(chunk);
+        ws.end(() => {
+          const big = fs.readFileSync('/tmp/big.bin');
+          fs.appendFileSync('/tmp/big.bin', 'end');
+          console.log(JSON.stringify([small, big.length, big.every((b) => b === 7), fs.statSync('/tmp/big.bin').size, performance.now() - t < 3000]));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), ['aXYdefgh', 640 * 64 * 1024, true, 640 * 64 * 1024 + 3, true]);
+});

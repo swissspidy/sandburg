@@ -185,17 +185,22 @@ export class Installer {
     if (!(rel in index)) return null;
     const abs = join(this.root, key, rel);
     if (!/\.(c|m)?js$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
-    const cached = join(this.root, key, '.sandburg-transformed', `v${TRANSFORM_VERSION}`, rel);
+    // Transforms are kept by content, not by install: every install with the same package version
+    // shares them (a new app with next@15 does not transform Next.js again).
+    const source = await readFile(abs, 'utf8');
+    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
+    const hash = createHash('sha256').update(`${esm ? 'esm' : 'cjs'}\0${rel}\0`).update(source).digest('hex');
+    const cached = join(this.root, '..', 'transforms', `v${TRANSFORM_VERSION}`, hash.slice(0, 2), `${hash.slice(2)}.js`);
     try {
       return { body: await readFile(cached), type: 'text/javascript' };
     } catch {
       // not transformed yet
     }
-    const source = await readFile(abs, 'utf8');
-    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
     const body = Buffer.from(await transformForRuntime(source, rel, esm));
     await mkdir(join(cached, '..'), { recursive: true });
-    await writeFile(cached, body);
+    const tmp = `${cached}.${process.pid}.tmp`;
+    await writeFile(tmp, body);
+    await rename(tmp, cached);
     return { body, type: 'text/javascript' };
   }
 }
