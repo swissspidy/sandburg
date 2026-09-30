@@ -7,7 +7,7 @@
 export type FileTree = Record<string, FileContent>;
 export type FileContent = string | { base64: string };
 
-export type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'solid-start' | 'react-router' | 'wordpress' | 'static' | 'unknown';
+export type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'solid-start' | 'react-router' | 'static' | 'unknown';
 
 export interface Project {
   name: string;
@@ -49,11 +49,6 @@ export interface AdapterDescriptor {
    * uses COEP: credentialless, so cross-origin no-cors resources (fonts, images) still load.
    */
   crossOriginIsolation: boolean | 'credentialless';
-  /**
-   * Selectors of nested iframes, from the host's app frame down to the frame
-   * the app renders in (e.g. WordPress Playground renders inside remote.html's #wp).
-   */
-  appFrameSelectors?: string[];
   /** Default phase deadlines for this runtime (user options still win). */
   timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
   /** Compile-time constants for the browser bundle (esbuild `define`): identifier → JSON value. */

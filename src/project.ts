@@ -69,26 +69,8 @@ export function detectFramework(files: FileTree, pkg: PackageJson | null): Frame
   if ('@solidjs/start' in deps) return 'solid-start';
   if ('@react-router/dev' in deps) return 'react-router';
   if ('vite' in deps || paths.some((p) => /^vite\.config\.[cm]?[jt]s$/.test(p))) return 'vite';
-  if (isWordPressPlugin(files) || isWordPressTheme(files)) return 'wordpress';
   if (!pkg && 'index.html' in files) return 'static';
   return 'unknown';
-}
-
-/** A root-level PHP file with a "Plugin Name:" header. */
-export function wordPressPluginFile(files: FileTree): string | null {
-  for (const [path, content] of Object.entries(files)) {
-    if (!path.includes('/') && path.endsWith('.php') && typeof content === 'string' && /^[ \t/*#@]*Plugin Name:/im.test(content)) return path;
-  }
-  return null;
-}
-
-function isWordPressPlugin(files: FileTree): boolean {
-  return wordPressPluginFile(files) !== null;
-}
-
-function isWordPressTheme(files: FileTree): boolean {
-  const css = files['style.css'];
-  return typeof css === 'string' && /^[ \t/*#@]*Theme Name:/im.test(css);
 }
 
 /** A zip's entries as a file tree, with the same exclusions as a directory (node_modules, .git, check files, …). */

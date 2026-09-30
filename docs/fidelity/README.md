@@ -21,9 +21,23 @@ Caveats:
   dependencies (`nanoid` is hoisted by npm), not reference bugs. The
   corpus's labels were wrong for those three apps.
 
-To reproduce:
+To reproduce, generate the corpus first:
 
 ```sh
 node scripts/corpus/generate.ts corpus 100 1
+```
+
+v1 and v2 (almostnode, which no longer exists, against the Docker reference):
+
+```sh
 node bin/sandburg.js compare corpus --reference docker --parallel 4 --report docs/fidelity/vN-almostnode-vs-docker
 ```
+
+v3 (`--runtime auto`, the default, against ground truth): run the batch, then compare each run's
+status with the app's `meta.expected` (`corpus/<app>/meta.json`):
+
+```sh
+mkdir -p .sandburg/study && node bin/sandburg.js batch corpus --parallel 3 --out .sandburg/study --json > .sandburg/study/batch.json
+```
+
+With Docker, `compare corpus --reference docker` also reports agreement with the reference.

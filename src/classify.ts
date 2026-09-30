@@ -3,13 +3,11 @@
  * first match wins; each result names its rule so a disagreement with the
  * Docker reference can be traced back to the rule that caused it.
  */
+import { builtinModules } from 'node:module';
 import type { CheckResult, Failure, PageError, PhaseName, PhaseRecord, ProbeVerdict } from './types.ts';
 
-const NODE_BUILTINS = [
-  'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'crypto', 'dgram', 'diagnostics_channel', 'dns', 'events',
-  'fs', 'http', 'http2', 'https', 'inspector', 'module', 'net', 'os', 'path', 'perf_hooks', 'process', 'querystring',
-  'readline', 'stream', 'string_decoder', 'timers', 'tls', 'tty', 'url', 'util', 'v8', 'vm', 'worker_threads', 'zlib',
-];
+/** Node's built-in modules (`sqlite` is only listed with its prefix, as node:sqlite). */
+const NODE_BUILTINS = [...builtinModules.filter((m) => !m.startsWith('node:')), 'sqlite'];
 
 /** Error texts that point at a limitation of the in-browser runtime, not the app. */
 export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [

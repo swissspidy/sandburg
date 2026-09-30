@@ -18,8 +18,7 @@ export interface CheckContext {
   expect: typeof expect;
   /**
    * Resolves an app path against the URL the app first loaded at, so checks
-   * work whatever prefix the runtime serves the app under
-   * (/scope:…/ in WordPress Playground).
+   * work whatever prefix the runtime serves the app under.
    * appUrl('/about') and appUrl('about') are the same.
    */
   appUrl(path: string): string;

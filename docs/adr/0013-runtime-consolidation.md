@@ -1,4 +1,4 @@
-# ADR 0013: One Node.js runtime, `--runtime auto`, almostnode and Nodebox removed
+# ADR 0013: One Node.js runtime, `--runtime auto`, almostnode, Nodebox and WordPress Playground removed
 
 - Status: Accepted
 - Date: 2026-09-30
@@ -34,7 +34,6 @@ app's own compilers.
 
   | Project | Runtime |
   |---|---|
-  | WordPress plugin or theme | `wordpress` |
   | Angular CLI app | `angular` |
   | Anything the esbuild build supports: client-side Vite apps, static sites, and those with a Node backend | `esbuild` |
   | Everything else: Next.js, SvelteKit, Astro, Nuxt, React Router, SolidStart, Vite with other plugins or PostCSS, Node servers | `node` |
@@ -48,6 +47,12 @@ app's own compilers.
   any served project file). An import of a package the project never
   declared is an app bug, whether the browser, esbuild, Vite or Node
   reports it. Node built-ins are excluded.
+
+- **Remove the WordPress Playground adapter** (decided after the rest of this ADR and the study
+  below). Sandburg now focuses on JavaScript web frameworks. It loaded
+  Playground from playground.wordpress.net at run time, which rate-limits
+  heavy use. If WordPress comes back, it should run a locally served
+  Playground build instead.
 
 ## Consequences
 

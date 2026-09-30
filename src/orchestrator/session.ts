@@ -232,7 +232,7 @@ export class Session {
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
           const app = await run.phase('ready', timeouts.ready, async () => {
             await host('ready', url, navigate ?? true);
-            const frame = await appFrame(page, adapter!.appFrameSelectors ?? []);
+            const frame = await appFrame(page);
             await failFastOnAppError(waitForRender(frame, options.readySelector), run);
             return frame;
           });
@@ -557,13 +557,9 @@ function unwrap<T>(result: RpcResult<T>): T {
   return result.value;
 }
 
-/** The frame the app renders in: the host's #app iframe, then any nested iframes the adapter names. */
-async function appFrame(page: Page, nested: string[]): Promise<Frame> {
-  let frame: Frame | null = await (await page.waitForSelector('#app')).contentFrame();
-  for (const selector of nested) {
-    if (!frame) break;
-    frame = await (await frame.waitForSelector(selector, { state: 'attached', timeout: 0 })).contentFrame();
-  }
+/** The frame the app renders in: the host's #app iframe. */
+async function appFrame(page: Page): Promise<Frame> {
+  const frame = await (await page.waitForSelector('#app')).contentFrame();
   if (!frame) throw new Error('app frame is not attached');
   return frame;
 }

@@ -13,7 +13,6 @@ test('--runtime auto picks the runtime that suits each project', async () => {
     'vue-express-sqlite': 'esbuild',
     'react-express-split': 'esbuild',
     'angular-tasks': 'angular',
-    'wordpress-reading-time': 'wordpress',
     'next-app-router': 'node',
     'node-express': 'node',
     'sveltekit-app': 'node',
@@ -27,6 +26,6 @@ test('--runtime auto picks the runtime that suits each project', async () => {
   assert.deepEqual(actual, expected);
 });
 
-test('the runtimes are auto, node, esbuild, angular and wordpress', () => {
-  assert.deepEqual([...adapterNames].sort(), ['angular', 'auto', 'esbuild', 'node', 'wordpress']);
+test('the runtimes are auto, node, esbuild and angular', () => {
+  assert.deepEqual([...adapterNames].sort(), ['angular', 'auto', 'esbuild', 'node']);
 });

@@ -107,7 +107,7 @@ test('a runtime download that came back broken is infra', () => {
 });
 
 test('a runtime that cannot fetch its own code while booting is infra', () => {
-  const f = classify(input({ phases: failedAt('mount', 'Failed to fetch dynamically imported module: https://playground.wordpress.net/assets/index-BG9JLHps.js') }));
+  const f = classify(input({ phases: failedAt('mount', 'Failed to fetch dynamically imported module: https://cdn.example.org/runtime/index-BG9JLHps.js') }));
   assert.deepEqual([f?.class, f?.rule], ['infra', 'runtime-boot-fetch']);
   // The same text once the app is running is not infra.
   assert.notEqual(classify(input({ phases: failedAt('ready', 'Failed to fetch dynamically imported module: https://esm.sh/x') }))?.class, 'infra');
@@ -133,4 +133,9 @@ test('a package that does not exist is an app bug; a missing tarball of a listed
   assert.deepEqual([missing?.class, missing?.rule], ['app-bug', 'unresolvable-dependency']);
   const tarball = classify(input({ phases: failedAt('install', 'npm install failed (exit 1): npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.443.tgz - Not found') }));
   assert.equal(tarball?.class, 'infra');
+});
+
+test('a Node built-in the runtime lacks (even an underscored one) is a runtime limitation, not an undeclared import', () => {
+  const f = classify(input({ phases: failedAt('start', `Error: Cannot find module '_http_client'`) }));
+  assert.deepEqual([f?.class, f?.rule], ['runtime-unsupported', 'signature:missing-builtin']);
 });

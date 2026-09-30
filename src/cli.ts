@@ -18,7 +18,7 @@ Commands:
 <project> is a directory, a .zip, a JSON file tree, or snapshot:<id-or-prefix>.
 
 Options:
-  --runtime <name>     auto (default: chosen per project), node, esbuild, angular or wordpress
+  --runtime <name>     auto (default: chosen per project), node, esbuild or angular
   --checks <file>      Checks file; default export maps check names to functions
                        (batch: a project's own checks.spec.ts takes precedence)
   --parallel <n>       batch/compare: tabs at a time (default: 4)
