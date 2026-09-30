@@ -8,8 +8,9 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import { ThreadVfs, createWorkerThreads, liveRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess } from './child-process.ts';
+import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
 import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
@@ -78,6 +79,8 @@ export type FromWorker =
   | { type: 'exit'; code: number }
   | { type: 'fatal'; message: string; stack?: string }
   | { type: 'ready' }
+  /** The worker's script has run; it waits for init. */
+  | { type: 'booted' }
   /** process.send() from the program (with init.ipc). */
   | { type: 'message'; data: unknown }
   | { type: 'ws-accept'; id: number; protocol: string; extensions: string }
@@ -213,9 +216,9 @@ function buildBuiltins() {
     getDefaultHighWaterMark: () => 65536,
     setDefaultHighWaterMark: () => {},
   });
-  // Node >= 17: Readable.fromWeb / toWeb and friends.
+  // Node >= 17: Readable.fromWeb / toWeb and friends. readable-stream has them, but they call Node internals.
   const Readable = rs.Readable as unknown as Record<string, unknown>;
-  Readable.fromWeb ??= (web: ReadableStream, opts?: object) => {
+  Readable.fromWeb = (web: ReadableStream, opts?: object) => {
     const reader = web.getReader();
     return new rs.Readable({
       ...opts,
@@ -227,7 +230,7 @@ function buildBuiltins() {
       },
     });
   };
-  Readable.toWeb ??= (node: NodeJS.ReadableStream) =>
+  Readable.toWeb = (node: NodeJS.ReadableStream) =>
     new ReadableStream({
       start(controller) {
         node.on('data', (c: Buffer | string) => controller.enqueue(typeof c === 'string' ? new TextEncoder().encode(c) : new Uint8Array(c)));
@@ -239,7 +242,7 @@ function buildBuiltins() {
       },
     });
   const Writable = rs.Writable as unknown as Record<string, unknown>;
-  Writable.fromWeb ??= (web: WritableStream) => {
+  Writable.fromWeb = (web: WritableStream) => {
     const writer = web.getWriter();
     return new rs.Writable({
       write(chunk, _e, cb) {
@@ -250,7 +253,7 @@ function buildBuiltins() {
       },
     });
   };
-  Writable.toWeb ??= (node: NodeJS.WritableStream) =>
+  Writable.toWeb = (node: NodeJS.WritableStream) =>
     new WritableStream({
       write: (chunk) => new Promise<void>((res) => (node.write(chunk) ? res() : node.once('drain', () => res()))),
       close: () => new Promise<void>((res) => node.end(res)),
@@ -397,7 +400,11 @@ function buildBuiltins() {
     _http_agent: () => ({ Agent: http.Agent, globalAgent: http.globalAgent }),
     _http_common: () => ({ methods: http.METHODS }),
     child_process: () => childProcess,
-    worker_threads: () => threads.module,
+    worker_threads: () => {
+      // Threads may be spawned while this thread is blocked; have runtimes ready for them (see threads.ts).
+      warmRuntimes(base, WARM_RUNTIMES);
+      return threads.module;
+    },
     cluster: () => misc.cluster,
     vm: () => misc.vm,
     v8: () => misc.v8,
@@ -426,6 +433,8 @@ function buildBuiltins() {
 }
 
 let moduleSystem: ReturnType<typeof createModuleSystem>;
+/** Runtime workers booted ahead of time for threads (see threads.ts). */
+const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
 
 function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
@@ -441,7 +450,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       return res.body as Uint8Array;
     });
     for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) installed.addRemote(`${msg.cwd}/${rel}`, size);
-    vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd);
+    vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd, thread.snapshot);
   }
   nodeModulesIndex = msg.nodeModules;
   for (const [path, content] of Object.entries(msg.files)) {
@@ -463,6 +472,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     asyncModules = xhr.status === 200 && (JSON.parse(xhr.responseText) as { topLevelAwait: boolean }).topLevelAwait;
   }
   if (!thread) vfs.mkdir('/tmp', true);
+  // WebAssembly threads (napi-rs wasm32-wasi builds) may be spawned while this thread is blocked: have runtimes ready.
+  if (Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
@@ -477,6 +488,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
+    root: () => projectRoot,
     env: () => proc.env as Record<string, string>,
     resolvePath: (p) => (p.startsWith('/') ? p : pathBrowserify.resolve((proc.cwd as () => string)(), p)),
     base: () => base,
@@ -539,13 +551,27 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   // `new AsyncFunction(…params, body)` with the body lowered like all other code (see interop.ts).
   const RealAsyncFunction = new Function('return (async function () {}).constructor')() as FunctionConstructor;
+  /** Names evaluated code in stack traces after the file its inline source map is for (Vite's SSR modules). */
+  const sourceUrlOf = (code: string): string => {
+    const named = /\/\/[#@] sourceURL=(\S+)\s*$/m.exec(code);
+    if (named) return `\n//# sourceURL=${named[1]}`;
+    const map = /\/\/[#@] sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,([A-Za-z0-9+/=]+)\s*$/m.exec(code);
+    if (!map) return '';
+    try {
+      const { sources, file } = JSON.parse(atob(map[1])) as { sources?: string[]; file?: string };
+      const name = sources?.[0] ?? file;
+      return name ? `\n//# sourceURL=${name}` : '';
+    } catch {
+      return '';
+    }
+  };
   function AsyncFunction(...args: unknown[]) {
     const body = args.length ? String(args.pop()) : '';
     const params = args.map(String).join(',');
     try {
       const js = hostCompile(`module.exports = async function anonymous(${params}\n) {\n${body}\n};`, '/[eval]', 'cjs');
       const m = { exports: undefined as unknown };
-      new Function('module', js)(m);
+      new Function('module', js + sourceUrlOf(body))(m);
       return m.exports;
     } catch {
       return new RealAsyncFunction(...(args as string[]), body);
@@ -583,6 +609,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   // Node globals.
   const g = globalThis as Record<string, unknown>;
+  installNodeFetchClasses(g);
   Object.assign(g, {
     console: nodeConsole,
     process: proc,
@@ -943,3 +970,6 @@ function hash(s: string): number {
 }
 
 export const RUNTIME_NODE_VERSION = NODE_VERSION;
+
+// Ready for an init message (a parent keeps booted runtimes for its threads: see threads.ts).
+realPostMessage({ type: 'booted' });

@@ -18,7 +18,7 @@ Commands:
 <project> is a directory, a .zip, a JSON file tree, or snapshot:<id-or-prefix>.
 
 Options:
-  --runtime <name>     Runtime adapter (default: almostnode)
+  --runtime <name>     auto (default: chosen per project), node, esbuild, angular or wordpress
   --checks <file>      Checks file; default export maps check names to functions
                        (batch: a project's own checks.spec.ts takes precedence)
   --parallel <n>       batch/compare: tabs at a time (default: 4)
@@ -34,7 +34,7 @@ Options:
 Exit codes: 0 passed, 1 failed (app ran, a blocking check failed), 2 error (run did not reach checks), 64 usage error.`;
 
 const OPTIONS = {
-  runtime: { type: 'string', default: 'almostnode' },
+  runtime: { type: 'string', default: 'auto' },
   checks: { type: 'string' },
   parallel: { type: 'string', default: '4' },
   out: { type: 'string' },

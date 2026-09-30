@@ -25,3 +25,13 @@ export function patchAsyncFunction(source: string): string {
   if (!source.includes('async')) return source;
   return source.replace(ASYNC_FUNCTION_CONSTRUCTOR, '(globalThis[Symbol.for("sandburg.AsyncFunction")] ?? (async function () {}).constructor)');
 }
+
+/**
+ * The name esbuild is given for an ES module it converts. esbuild applies Node's CommonJS interop
+ * (`import x from 'cjs'` is the whole module.exports, even with __esModule) only for .mjs/.mts
+ * files, since it does not read package.json "type". The runtime converts only real ES modules
+ * (.mjs, or .js in a "type": "module" package), so each gets Node's semantics.
+ */
+export function esmSourcefile(path: string): string {
+  return /\.m[jt]s$/.test(path) ? path : `${path}.mjs`;
+}

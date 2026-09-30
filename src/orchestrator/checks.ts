@@ -19,7 +19,7 @@ export interface CheckContext {
   /**
    * Resolves an app path against the URL the app first loaded at, so checks
    * work whatever prefix the runtime serves the app under
-   * (/__virtual__/5173/ in almostnode, /scope:…/ in WordPress Playground).
+   * (/scope:…/ in WordPress Playground).
    * appUrl('/about') and appUrl('about') are the same.
    */
   appUrl(path: string): string;

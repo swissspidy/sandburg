@@ -70,6 +70,53 @@ export class BigIntStats {
   isSocket() { return false; }
 }
 
+/** A glob pattern as a regular expression: `**`, `*`, `?`, `[...]` and `{a,b}`. */
+export function globToRegExp(pattern: string): RegExp {
+  const convert = (p: string): string => {
+    let out = '';
+    for (let i = 0; i < p.length; i++) {
+      const c = p[i];
+      if (c === '*' && p[i + 1] === '*') {
+        i++;
+        if (p[i + 1] === '/') {
+          i++;
+          out += '(?:[^/]*(?:/|$))*';
+        } else out += '.*';
+      } else if (c === '*') out += '[^/]*';
+      else if (c === '?') out += '[^/]';
+      else if (c === '[') {
+        const end = p.indexOf(']', i + 1);
+        if (end < 0) out += '\\[';
+        else {
+          out += `[${p.slice(i + 1, end).replace(/^!/, '^')}]`;
+          i = end;
+        }
+      } else if (c === '{') {
+        let depth = 1;
+        let j = i + 1;
+        for (; j < p.length && depth; j++) depth += p[j] === '{' ? 1 : p[j] === '}' ? -1 : 0;
+        const inner = p.slice(i + 1, j - 1);
+        const parts: string[] = [];
+        let level = 0;
+        let start = 0;
+        for (let k = 0; k < inner.length; k++) {
+          if (inner[k] === '{') level++;
+          else if (inner[k] === '}') level--;
+          else if (inner[k] === ',' && level === 0) {
+            parts.push(inner.slice(start, k));
+            start = k + 1;
+          }
+        }
+        parts.push(inner.slice(start));
+        out += `(?:${parts.map(convert).join('|')})`;
+        i = j - 1;
+      } else out += c.replace(/[.+^$()|\\\]]/g, '\\$&');
+    }
+    return out;
+  };
+  return new RegExp(`^${convert(pattern.replace(/^\.\//, ''))}$`);
+}
+
 export class Dirent {
   name: string;
   parentPath: string;
@@ -490,10 +537,65 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     return { ref() { return this; }, unref() { return this; } };
   }
 
+  // --- glob (Node 22) ------------------------------------------------------------------
+  type GlobOpts = { cwd?: PathLike; exclude?: ((p: string | Dirent) => boolean) | string[]; withFileTypes?: boolean };
+  function globSync(pattern: string | string[], o: GlobOpts = {}): (string | Dirent)[] {
+    const cwdDir = abs(o.cwd ?? '.');
+    const excludes = Array.isArray(o.exclude) ? o.exclude.map(globToRegExp) : [];
+    const excluded = (rel: string, d: Dirent) =>
+      excludes.some((r) => r.test(rel)) || (typeof o.exclude === 'function' && o.exclude(o.withFileTypes ? d : rel));
+    const found = new Map<string, Dirent>();
+    for (const pat of Array.isArray(pattern) ? pattern : [pattern]) {
+      const absolute = pat.startsWith('/');
+      const segs = pat.split('/');
+      let fixed = 0;
+      while (fixed < segs.length - 1 && !/[*?[{]/.test(segs[fixed])) fixed++;
+      const re = globToRegExp(pat);
+      const maxDepth = pat.includes('**') ? Infinity : segs.length - fixed;
+      const baseRel = segs.slice(0, fixed).join('/');
+      const base = absolute ? norm(baseRel || '/') : baseRel ? norm(`${cwdDir}/${baseRel}`) : cwdDir;
+      const walk = (dir: string, rel: string, depth: number) => {
+        let entries: Dirent[];
+        try {
+          entries = readdirSync(dir, { withFileTypes: true }) as Dirent[];
+        } catch {
+          return;
+        }
+        for (const d of entries) {
+          const childRel = rel ? `${rel}/${d.name}` : d.name;
+          const shown = absolute ? `${base === '/' ? '' : base}/${childRel}` : baseRel ? `${baseRel}/${childRel}` : childRel;
+          if (excluded(shown, d)) continue;
+          if (re.test(shown)) found.set(shown, d);
+          if (d.isDirectory() && depth + 1 < maxDepth) walk(`${dir}/${d.name}`, childRel, depth + 1);
+        }
+      };
+      walk(base, '', 0);
+    }
+    return o.withFileTypes ? [...found.values()] : [...found.keys()];
+  }
+  function glob(pattern: string | string[], o?: GlobOpts | ((e: Error | null, m?: unknown) => void), cb?: (e: Error | null, m?: unknown) => void) {
+    const done = (typeof o === 'function' ? o : cb)!;
+    const opts = typeof o === 'object' ? o : {};
+    try {
+      const matches = globSync(pattern, opts);
+      setTimeout(() => done(null, matches), 0);
+    } catch (e) {
+      setTimeout(() => done(e as Error), 0);
+    }
+  }
+  promisified.glob = ((pattern: string | string[], o?: GlobOpts) => {
+    const matches = globSync(pattern, o);
+    return (async function* () {
+      yield* matches;
+    })();
+  }) as never;
+
   const promises = { ...promisified, constants };
   return {
     ...sync,
     ...callbackified,
+    globSync,
+    glob,
     exists,
     createReadStream,
     createWriteStream,

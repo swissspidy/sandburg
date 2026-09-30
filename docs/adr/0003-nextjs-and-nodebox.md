@@ -1,6 +1,6 @@
 # ADR 0003: Next.js support, the Nodebox adapter, and what the runtimes need patched
 
-- Status: Accepted (milestone 3)
+- Status: Superseded by [ADR 0013](0013-runtime-consolidation.md) (almostnode and Nodebox were removed)
 - Date: 2026-09-29
 
 ## Context

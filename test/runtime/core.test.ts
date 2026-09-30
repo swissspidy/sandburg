@@ -351,3 +351,45 @@ test('net: local servers and sockets, also between a thread and its parent', asy
   const lines = out.stdout.trim().split('\n');
   assert.deepEqual(lines, ['ECONNREFUSED', 'local:hi', 'thread got parent:up', 'thread:down'], out.stdout + out.stderr);
 });
+
+test('Request and Response keep Cookie, Referer and Set-Cookie headers, as in Node', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const req = new Request('http://localhost/x', { method: 'POST', headers: { cookie: 'a=1', referer: 'http://localhost/page', origin: 'http://localhost' }, body: 'hi' });
+        const res = new Response('ok', { headers: [['set-cookie', 'a=1'], ['set-cookie', 'b=2'], ['content-type', 'text/plain']] });
+        const copy = req.clone();
+        console.log(JSON.stringify({
+          cookie: req.headers.get('cookie'), referer: req.headers.get('referer'), origin: req.headers.get('origin'),
+          cloned: copy.headers.get('cookie'), setCookie: res.headers.getSetCookie(), fromRequest: new Request(req).headers.get('cookie'),
+          json: Response.json({ a: 1 }).headers.get('content-type'), isRequest: req instanceof Request,
+        }));
+        copy.text().then((t) => console.log('body', t));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const [json, body] = out.stdout.trim().split('\n');
+  assert.deepEqual(JSON.parse(json), { cookie: 'a=1', referer: 'http://localhost/page', origin: 'http://localhost', cloned: 'a=1', setCookie: ['a=1', 'b=2'], fromRequest: 'a=1', json: 'application/json', isRequest: true });
+  assert.equal(body, 'body hi');
+});
+
+test('worker_threads: a thread started while its parent is blocked runs (WebAssembly threads do this)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker } = require('worker_threads');
+        const shared = new Int32Array(new SharedArrayBuffer(8));
+        setTimeout(() => {
+          // A browser cannot start a worker while its parent blocks; the thread comes from runtimes booted in advance,
+          // and reads its files from the parent's snapshot while the parent does not answer.
+          new Worker('const s = require("worker_threads").workerData; Atomics.store(s, 0, 42); Atomics.notify(s, 0);', { eval: true, workerData: shared });
+          console.log('wait', Atomics.wait(shared, 0, 0, 10000), Atomics.load(shared, 0));
+          process.exit(0);
+        }, 1500);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), 'wait ok 42');
+});
