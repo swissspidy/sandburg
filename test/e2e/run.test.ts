@@ -1,6 +1,7 @@
 /**
- * End-to-end: real Chromium, real almostnode. Needs network access to esm.sh
- * and unpkg.com on the first run; later runs are served from .sandburg/cache.
+ * End-to-end: real Chromium, with the default runtime (`auto`): the Vite + React
+ * fixture is built by the esbuild adapter and Next.js runs on the node runtime.
+ * The first run needs network access to the npm registry; later runs use caches.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,7 +32,7 @@ test('milestone 1: the Vite + React fixture runs and its functional checks pass'
   const result = await session.run(counter, { checks: `${fixtureDir}/checks.spec.ts`, outDir });
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks, null, 2));
   assert.equal(result.failure, null);
-  assert.equal(result.runtime.name, 'almostnode');
+  assert.equal(result.runtime.name, 'esbuild');
   const functional = result.checks.filter((c) => c.kind === 'functional');
   assert.equal(functional.length, 2);
   assert.ok(functional.every((c) => c.status === 'passed'));
@@ -102,21 +103,13 @@ test('projects the adapter cannot run are rejected before a tab opens', async ()
     { 'package.json': JSON.stringify({ dependencies: { express: '^4.21.0' } }), 'server.js': 'require("express")().listen(3000)' },
     { name: 'express-app', path: 'express-app' },
   );
-  const result = await session.run(server, { outDir });
+  const result = await session.run(server, { runtime: 'esbuild', outDir });
   assert.equal(result.status, 'error');
   assert.deepEqual([result.failure?.class, result.failure?.rule], ['runtime-unsupported', 'probe-unsupported']);
   assert.equal(result.timings.loadMs, null);
 });
 
 const nextDir = fileURLToPath(new URL('../../fixtures/next-app-router', import.meta.url));
-
-test('milestone 3: the Next.js App Router fixture (React 19, API route) runs on almostnode', async () => {
-  const result = await session.run(nextDir, { checks: `${nextDir}/checks.spec.ts`, outDir });
-  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
-  assert.equal(result.project.framework, 'next');
-  assert.deepEqual(result.install?.shims, ['next/server']);
-  assert.equal(result.checks.filter((c) => c.kind === 'functional' && c.status === 'passed').length, 3);
-});
 
 test('a broken Next.js API route is an app bug', async () => {
   const next = await loadProject(nextDir);
@@ -125,21 +118,9 @@ test('a broken Next.js API route is an app bug', async () => {
     { name: 'next-broken-api', path: `${nextDir}#broken-api` },
   );
   const result = await session.run(project, { checks: `${nextDir}/checks.spec.ts`, outDir });
+  assert.equal(result.runtime.name, 'node');
   assert.equal(result.status, 'failed');
   assert.deepEqual([result.failure?.class, result.failure?.rule], ['app-bug', 'blocking-check-failed']);
   assert.equal(result.checks.find((c) => c.name === 'API route answers')?.status, 'failed');
   assert.equal(result.checks.find((c) => c.name === 'a habit can be added')?.status, 'passed');
-});
-
-test('nodebox: Next.js 14+ is rejected up front (Nodebox emulates Node.js 16)', async (t) => {
-  let adapterAvailable = true;
-  try {
-    (await import('../../src/adapters.ts')).getAdapter('nodebox');
-  } catch {
-    adapterAvailable = false;
-  }
-  if (!adapterAvailable) return t.skip('@codesandbox/nodebox is not installed');
-  const result = await session.run(nextDir, { runtime: 'nodebox', outDir });
-  assert.deepEqual([result.failure?.class, result.failure?.rule], ['runtime-unsupported', 'probe-unsupported']);
-  assert.match(result.failure!.message, /Node\.js >= 18\.17/);
 });

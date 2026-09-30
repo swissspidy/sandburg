@@ -9,7 +9,7 @@ import type { NodeRuntime, RunOptions, Session } from '../orchestrator/session.t
 import type { RunResult } from '../types.ts';
 
 export interface CompareOptions extends RunOptions {
-  /** In-browser runtime under test (default: almostnode). */
+  /** In-browser runtime under test (default: auto, chosen per project). */
   runtime?: string;
   reference: { name: string; factory: () => NodeRuntime };
   parallel?: number;
@@ -141,7 +141,7 @@ export async function compare(session: Session, items: BatchItem[], options: Com
   return {
     schemaVersion: 1,
     createdAt: new Date().toISOString(),
-    runtime: `${browserRun.results[0]?.runtime.name} ${browserRun.results[0]?.runtime.version}`,
+    runtime: [...new Set(browserRun.results.map((r) => `${r.runtime.name} ${r.runtime.version}`))].sort().join(', '),
     reference: `${referenceRun.results[0]?.runtime.name} ${referenceRun.results[0]?.runtime.version}`,
     vcpus,
     vcpuHourUsd,

@@ -8,7 +8,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
-import { getAdapter } from '../adapters.ts';
+import { AUTO, adapterFor } from '../adapters.ts';
 import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
 import type {
@@ -71,7 +71,7 @@ export interface NodeRuntime {
 }
 
 export interface RunOptions {
-  /** In-browser runtime adapter name (default: almostnode). Ignored when nodeRuntime is set. */
+  /** In-browser runtime adapter name, or `auto` (the default) to choose one per project. Ignored when nodeRuntime is set. */
   runtime?: string;
   /** Run in an out-of-browser runtime instead (e.g. the Docker reference); called once per run. */
   nodeRuntime?: () => NodeRuntime;
@@ -170,10 +170,10 @@ export class Session {
     const runId = `r-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
     const outDir = resolve(options.outDir ?? '.sandburg/runs', runId);
     await mkdir(outDir, { recursive: true });
-    const node = options.nodeRuntime?.() ?? null;
-    const adapter = node ? null : getAdapter(options.runtime ?? 'almostnode');
-    const runtimeInfo = node ?? adapter!;
     const project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
+    const node = options.nodeRuntime?.() ?? null;
+    const adapter = node ? null : adapterFor(options.runtime ?? AUTO, project);
+    const runtimeInfo = node ?? adapter!;
     await this.store.put(project.files, project.name);
     const checks = typeof options.checks === 'string' ? await loadChecks(options.checks) : (options.checks ?? null);
     const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };

@@ -1,6 +1,6 @@
 # ADR 0001: Runtime adapter interface, serving and isolation model, result schema
 
-- Status: Accepted (milestone 1)
+- Status: Accepted (milestone 1); the almostnode adapter it describes was removed in [ADR 0013](0013-runtime-consolidation.md)
 - Date: 2026-09-29
 
 ## Context

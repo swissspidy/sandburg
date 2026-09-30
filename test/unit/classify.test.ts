@@ -87,10 +87,11 @@ test('a failing dispose never decides the classification', () => {
 });
 
 test('a missing Node.js built-in is a runtime limitation', () => {
-  const f = classify(input({ phases: failedAt('start', `"next dev" exited with code 1: Cannot find module 'dns/promises' from '/nodebox/x.js'`) }));
+  const f = classify(input({ phases: failedAt('start', `"next dev" exited with code 1: Cannot find module 'dns/promises' from '/app/x.js'`) }));
   assert.deepEqual([f?.class, f?.rule], ['runtime-unsupported', 'signature:missing-builtin']);
+  // A package the project never declared is the app's bug, wherever the import fails.
   const g = classify(input({ phases: failedAt('start', `Cannot find module 'left-pad' from '/x.js'`) }));
-  assert.equal(g?.class, 'unknown');
+  assert.deepEqual([g?.class, g?.rule], ['app-bug', 'undeclared-import']);
 });
 
 test('compile errors in project sources are app bugs', () => {

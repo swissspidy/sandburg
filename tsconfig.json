@@ -23,8 +23,5 @@
     "src",
     "test",
     "fixtures/vite-react-counter/checks.spec.ts"
-  ],
-  "exclude": [
-    "src/adapters/nodebox/browser.ts"
   ]
 }
