@@ -8,22 +8,50 @@
  *   survives `await` (see src/node-runtime/async-context.ts).
  * - Code inside webpack's `eval("...")` modules (Next.js dev bundles use the
  *   eval-source-map devtool) is lowered too, in place, keeping direct-eval scope.
+ * - Top-level await: such modules become async modules (see tla.ts). With
+ *   `asyncModules`, every ES module does, so importers wait for dependencies.
  */
 import { createHash } from 'node:crypto';
 import * as esbuild from 'esbuild';
+import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
 const LOWER = { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false } as const;
 const cache = new Map<string, string>();
 
-export function compileForRuntime(code: string, path: string, kind: CompileKind): string {
-  const key = createHash('sha256').update(kind).update('\0').update(path).update('\0').update(code).digest('hex');
+/** Whether any of the project's source files uses top-level await (TypeScript is stripped first). */
+export function projectHasTopLevelAwait(files: Record<string, string>): boolean {
+  return Object.entries(files).some(([path, code]) => {
+    if (!/\bawait\b/.test(code)) return false;
+    const loader: esbuild.Loader = /\.[cm]?tsx$/.test(path) ? 'tsx' : /\.[cm]?ts$/.test(path) ? 'ts' : /\.jsx$/.test(path) ? 'jsx' : 'js';
+    try {
+      const js = loader === 'js' ? code : esbuild.transformSync(code, { loader, target: 'esnext', logLevel: 'silent' }).code;
+      return hasTopLevelAwait(js);
+    } catch {
+      return false;
+    }
+  });
+}
+
+const MODULE_SYNTAX = /^\s*(import\s*[\w{*'"]|export\s+[\w{*]|export\s*\{)/m;
+
+export function compileForRuntime(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean } = {}): string {
+  const key = createHash('sha256').update(kind).update(opts.asyncModules ? '\0async' : '').update('\0').update(path).update('\0').update(code).digest('hex');
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
   let out = kind === 'cjs' && /\beval\("/.test(code) ? lowerEvalStrings(code) : code;
+  let loader: esbuild.Loader = kind === 'ts' ? (path.endsWith('x') ? 'tsx' : 'ts') : 'js';
+  if (kind !== 'cjs' && ((opts.asyncModules && MODULE_SYNTAX.test(out)) || /\bawait\b/.test(out))) {
+    // Types (and JSX) first, keeping the module syntax, so the rewrite sees plain JavaScript.
+    const js = loader === 'js' ? out : esbuild.transformSync(out, { loader, sourcefile: path, target: 'esnext', logLevel: 'silent' }).code;
+    if ((opts.asyncModules && MODULE_SYNTAX.test(js)) || hasTopLevelAwait(js)) {
+      out = toAsyncModule(js);
+      loader = 'js';
+    }
+  }
   out = esbuild.transformSync(out, {
-    loader: kind === 'ts' ? (path.endsWith('x') ? 'tsx' : 'ts') : 'js',
+    loader,
     format: kind === 'cjs' ? undefined : 'cjs',
     sourcefile: path,
     target: 'es2022',

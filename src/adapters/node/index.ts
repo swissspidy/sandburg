@@ -9,11 +9,12 @@ import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime
 import { readFile } from 'node:fs/promises';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
-import { compileForRuntime, type CompileKind } from './compile.ts';
+import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
 import { sharedInstaller } from './install.ts';
 import type { HostInstall } from './browser.ts';
 
 const installer = sharedInstaller();
+const WS_SHIM = fileURLToPath(new URL('./ws-shim.js', import.meta.url));
 
 /** Extra packages a framework needs in the browser: WebAssembly builds of native tools. */
 function extraDependencies(project: Project): Record<string, string> {
@@ -26,16 +27,23 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/node-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleNodeRuntime() };
   }
+  if (req.path === '/__sandburg/ws-shim.js') {
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await readFile(WS_SHIM) };
+  }
   if (req.path === '/__sandburg/sqlite3.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleSqlite() };
   }
   if (req.path === '/__sandburg/sqlite3.wasm') {
     return { status: 200, headers: { 'content-type': 'application/wasm', 'cache-control': 'max-age=31536000, immutable' }, body: await readFile(SQLITE_WASM) };
   }
+  if (req.path === '/__sandburg/tla-scan' && req.method === 'POST') {
+    const files = JSON.parse((await req.body()).toString('utf8')) as Record<string, string>;
+    return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topLevelAwait: projectHasTopLevelAwait(files) }) };
+  }
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;
     try {
-      return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: compileForRuntime((await req.body()).toString('utf8'), req.query.get('path') ?? '/unknown.js', kind) };
+      return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: compileForRuntime((await req.body()).toString('utf8'), req.query.get('path') ?? '/unknown.js', kind, { asyncModules: req.query.get('async') === '1' }) };
     } catch (e) {
       return { status: 400, headers: { 'content-type': 'text/plain' }, body: String((e as Error).message) };
     }

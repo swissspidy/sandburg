@@ -112,9 +112,9 @@ the worker, and the response streams back in chunks. Details:
 - The runtime is about 3,500 lines. It grows when an app needs a Node.js API
   that nothing covers yet. A missing API throws a clear "not supported"
   error, and the run is classified from that error.
+- WebSockets (and so Next.js hot reloading) and top-level await were added
+  later (ADR 0010).
 - Not supported yet:
-  - WebSockets, so there is no HMR (the `/_next/webpack-hmr` socket gets a 404
-    and Next.js carries on),
   - child processes and worker threads,
   - native addons, `net` sockets, and Turbopack,
   - Vite, whose dev server depends on esbuild and Rollup native binaries.

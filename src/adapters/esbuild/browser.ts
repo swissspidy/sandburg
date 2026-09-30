@@ -10,7 +10,7 @@ import { connectServiceWorker, type BridgedRequest } from '../sw-bridge.ts';
 import { BuildError, buildApp, mimeType, type Asset } from './build.ts';
 import type { EsbuildHostInstall } from './index.ts';
 import { isTsRunner, matchProxy } from './backend.ts';
-import { NodeProcess } from '../node/process.ts';
+import { NodeProcess, exposeWebSockets, webSocketPort } from '../node/process.ts';
 
 let initialized: Promise<void> | null = null;
 
@@ -254,6 +254,17 @@ export function createAdapter(): RuntimeAdapter {
       }
       ctx.log('stdout', `built in ${Math.round(performance.now() - t)} ms (${assets.size} files)`);
       await connectServiceWorker(respond);
+      if (backend) {
+        const b = backend;
+        // WebSockets to the backend: through Vite's proxy (e.g. '/socket.io': { target, ws: true }) or to localhost:<port>.
+        exposeWebSockets((url) => {
+          const port = webSocketPort(url, b.ports, (path) => {
+            const proxied = matchProxy(host.proxy ?? [], path);
+            return proxied ? (b.ports.includes(proxied.rule.port) ? proxied.rule.port : b.ports[0]) : null;
+          });
+          return port ? { proc: b, port } : null;
+        });
+      }
       return { url: '/' };
     },
 

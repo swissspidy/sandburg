@@ -7,7 +7,7 @@
  */
 import { Buffer } from 'buffer';
 import { EventEmitter } from 'events';
-import { Readable, Writable } from 'readable-stream';
+import { Duplex, Readable, Writable } from 'readable-stream';
 
 export const STATUS_CODES: Record<number, string> = {
   100: 'Continue', 101: 'Switching Protocols', 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
@@ -29,6 +29,8 @@ export const servers = new Map<number, Server>();
 export const serverEvents = new EventEmitter();
 
 class FakeSocket extends EventEmitter {
+  /** The server that accepted the connection (Next.js finds its HTTP server through req.socket.server). */
+  server: Server | null = null;
   remoteAddress = '127.0.0.1';
   remotePort = 50000;
   localAddress = '127.0.0.1';
@@ -58,6 +60,75 @@ class FakeSocket extends EventEmitter {
   uncork() {}
 }
 
+/** Where the bytes a server writes to an upgraded socket go (the runtime's WebSocket client codec). */
+export interface UpgradeSink {
+  data(bytes: Uint8Array): void;
+  end(): void;
+}
+
+/**
+ * The socket of an upgraded connection ('upgrade' event): a Duplex whose writes go to the
+ * client side in the runtime and whose reads are what the client sends. `ws` (and so socket.io,
+ * Next.js' HMR server) speaks the WebSocket protocol over it.
+ */
+export class UpgradeSocket extends Duplex {
+  server: Server | null = null;
+  remoteAddress = '127.0.0.1';
+  remotePort = 50001;
+  remoteFamily = 'IPv4';
+  localAddress = '127.0.0.1';
+  localPort: number;
+  encrypted = false;
+  connecting = false;
+  bytesWritten = 0;
+  private sink: UpgradeSink;
+  private ended = false;
+
+  constructor(port: number, sink: UpgradeSink) {
+    super({ allowHalfOpen: false });
+    this.localPort = port;
+    this.sink = sink;
+  }
+  _read() {}
+  _write(chunk: unknown, encoding: BufferEncoding, cb: (e?: Error | null) => void) {
+    const bytes = typeof chunk === 'string' ? Buffer.from(chunk, encoding) : (chunk as Uint8Array);
+    this.bytesWritten += bytes.length;
+    this.sink.data(new Uint8Array(bytes));
+    cb();
+  }
+  _final(cb: (e?: Error | null) => void) {
+    this.finish();
+    cb();
+  }
+  _destroy(err: Error | null, cb: (e?: Error | null) => void) {
+    this.finish();
+    cb(err);
+  }
+  /** Bytes from the client. */
+  receive(bytes: Uint8Array) {
+    if (!this.destroyed) this.push(Buffer.from(bytes));
+  }
+  /** The client went away. */
+  hangUp() {
+    if (!this.destroyed) {
+      this.push(null);
+      this.destroy();
+    }
+  }
+  private finish() {
+    if (this.ended) return;
+    this.ended = true;
+    this.sink.end();
+  }
+  setTimeout() { return this; }
+  setNoDelay() { return this; }
+  setKeepAlive() { return this; }
+  ref() { return this; }
+  unref() { return this; }
+  address() { return { address: '127.0.0.1', family: 'IPv4', port: this.localPort }; }
+  get readyState() { return this.destroyed ? 'closed' : 'open'; }
+}
+
 export class IncomingMessage extends Readable {
   method: string;
   url: string;
@@ -68,8 +139,8 @@ export class IncomingMessage extends Readable {
   httpVersion = '1.1';
   httpVersionMajor = 1;
   httpVersionMinor = 1;
-  socket: FakeSocket;
-  connection: FakeSocket;
+  socket: FakeSocket | UpgradeSocket;
+  connection: FakeSocket | UpgradeSocket;
   complete = false;
   aborted = false;
   statusCode?: number;
@@ -109,7 +180,7 @@ export class ServerResponse extends Writable {
     super({ decodeStrings: false });
     this.req = req;
     this.bridge = bridge;
-    this.socket = this.connection = req.socket;
+    this.socket = this.connection = req.socket as FakeSocket;
   }
   setHeader(name: string, value: string | number | readonly string[]) {
     if (this.headersSent) throw Object.assign(new Error('Cannot set headers after they are sent to the client'), { code: 'ERR_HTTP_HEADERS_SENT' });
@@ -237,11 +308,28 @@ export class Server extends EventEmitter {
     // Body parsers (e.g. Express') use it to decide whether a request has a body.
     if (body && !headers.some(([k]) => /^(content-length|transfer-encoding)$/i.test(k))) headers = [...headers, ['content-length', String(body.length)]];
     const req = new IncomingMessage(method, url, headers, this.port);
+    (req.socket as FakeSocket).server = this;
     const res = new ServerResponse(req, bridge);
     if (body?.length) req.push(Buffer.from(body));
     req.push(null);
     req.complete = true;
     this.emit('request', req, res);
+  }
+
+  /**
+   * An upgrade request (WebSocket): emits 'upgrade' with a socket whose writes go to `sink`.
+   * Returns null when nothing handles upgrades, as Node then closes the connection.
+   */
+  upgrade(url: string, headers: [string, string][], sink: UpgradeSink): UpgradeSocket | null {
+    if (!this.listenerCount('upgrade')) return null;
+    const socket = new UpgradeSocket(this.port, sink);
+    socket.server = this;
+    const req = new IncomingMessage('GET', url, headers, this.port);
+    req.socket = req.connection = socket;
+    req.push(null);
+    req.complete = true;
+    this.emit('upgrade', req, socket, Buffer.alloc(0));
+    return socket;
   }
 }
 

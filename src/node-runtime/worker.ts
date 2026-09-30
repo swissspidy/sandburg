@@ -7,6 +7,7 @@
  */
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
+import { WsClientCodec } from './websocket.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
 import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
 import { createNodeSqlite } from './builtins/sqlite/node-sqlite.ts';
@@ -22,7 +23,7 @@ import cryptoBrowserify from 'crypto-browserify';
 import zlibBrowserify from 'browserify-zlib';
 import { asyncHooks, installAsyncContext } from './async-context.ts';
 import { createFs } from './builtins/fs.ts';
-import { http, https, servers, serverEvents } from './builtins/http.ts';
+import { http, https, servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
 import { ExitError, NODE_VERSION, createProcess, timers, timersPromises } from './builtins/process.ts';
 import * as misc from './builtins/misc.ts';
 import { createModuleSystem } from './loader.ts';
@@ -34,7 +35,13 @@ export type ToWorker =
   | { type: 'run'; main: string; argv?: string[] }
   | { type: 'request'; id: number; port: number; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
   /** A message for the program (with init.ipc): process.on('message'). */
-  | { type: 'message'; data: unknown };
+  | { type: 'message'; data: unknown }
+  /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
+  /** Writes a project file, as an editor would (file watchers see the change). */
+  | { type: 'write-file'; path: string; content: string }
+  | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
+  | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
+  | { type: 'ws-close'; id: number; code?: number; reason?: string };
 
 export type FromWorker =
   | { type: 'log'; stream: 'stdout' | 'stderr'; text: string }
@@ -47,7 +54,11 @@ export type FromWorker =
   | { type: 'fatal'; message: string; stack?: string }
   | { type: 'ready' }
   /** process.send() from the program (with init.ipc). */
-  | { type: 'message'; data: unknown };
+  | { type: 'message'; data: unknown }
+  | { type: 'ws-accept'; id: number; protocol: string; extensions: string }
+  | { type: 'ws-reject'; id: number; status: number; message: string }
+  | { type: 'ws-message'; id: number; data: string | ArrayBuffer }
+  | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean };
 
 const post = (msg: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(msg, transfer);
 
@@ -95,6 +106,12 @@ const SQLITE_PACKAGES: [RegExp, () => unknown][] = [
 ];
 const overrides = new Map<RegExp, unknown>();
 let usesSqlite = false;
+/**
+ * The project uses top-level await somewhere: every project ES module is compiled as an async
+ * module, so importers wait for their dependencies (see src/adapters/node/tla.ts). The host parses
+ * the project's sources once to decide.
+ */
+let asyncModules = false;
 
 function buildBuiltins() {
   const fs = createFs(vfs, () => (proc.cwd as () => string)());
@@ -333,6 +350,13 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   usesSqlite =
     [...Object.keys(msg.nodeModules ?? {}), ...Object.keys(msg.files)].some((rel) => /(^|\/)node_modules\/(better-sqlite3|sqlite3)\/package\.json$/.test(rel)) ||
     Object.values(msg.files).some((c) => typeof c === 'string' && c.includes('node:sqlite'));
+  const sources = Object.fromEntries(Object.entries(msg.files).filter(([p, c]) => typeof c === 'string' && !p.includes('node_modules/') && /\.[cm]?[jt]sx?$/.test(p) && /\bawait\b/.test(c)));
+  if (Object.keys(sources).length) {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${base}/tla-scan`, false);
+    xhr.send(JSON.stringify(sources));
+    asyncModules = xhr.status === 200 && (JSON.parse(xhr.responseText) as { topLevelAwait: boolean }).topLevelAwait;
+  }
   vfs.mkdir('/tmp', true);
 
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc ? (data) => post({ type: 'message', data }) : undefined });
@@ -370,7 +394,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       const hit = compiledCache.get(key);
       if (hit !== undefined) return hit;
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}`, false);
+      xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
       xhr.send(code);
       if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
       compiledCache.set(key, xhr.responseText);
@@ -459,7 +483,15 @@ function run(msg: Extract<ToWorker, { type: 'run' }>) {
 function start(msg: Extract<ToWorker, { type: 'run' }>) {
   proc.argv = ['/usr/local/bin/node', msg.main, ...(msg.argv ?? [])];
   try {
-    (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(msg.main, null, true);
+    const exports = (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(msg.main, null, true);
+    // An async main module (top-level await): a rejection ends the process like an uncaught exception.
+    const tla = (exports as Record<string, unknown> | null)?.__sandburg_tla as Promise<unknown> | undefined;
+    if (tla && typeof tla.then === 'function') {
+      tla.catch((e: unknown) => {
+        if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
+        post({ type: 'fatal', message: String((e as Error)?.message ?? e), stack: (e as Error)?.stack });
+      });
+    }
   } catch (e) {
     if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
     post({ type: 'fatal', message: String((e as Error)?.message ?? e), stack: (e as Error)?.stack });
@@ -486,7 +518,62 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
   else if (msg.type === 'run') run(msg);
   else if (msg.type === 'request') request(msg);
   else if (msg.type === 'message') proc?.emit('message', msg.data);
+  else if (msg.type === 'ws-open') wsOpen(msg);
+  else if (msg.type === 'write-file') {
+    const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;
+    vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
+    vfs.write(abs, new TextEncoder().encode(msg.content));
+  }
+  else if (msg.type === 'ws-send') {
+    const c = sockets.get(msg.id);
+    if (c?.codec.isOpen) c.socket.receive(c.codec.send(typeof msg.data === 'string' ? msg.data : new Uint8Array(msg.data)));
+  } else if (msg.type === 'ws-close') {
+    const c = sockets.get(msg.id);
+    if (c?.codec.isOpen) c.socket.receive(c.codec.close(msg.code ?? 1000, msg.reason ?? ''));
+    else if (c) c.socket.hangUp();
+  }
 };
+
+const sockets = new Map<number, { socket: UpgradeSocket; codec: WsClientCodec }>();
+
+/** Opens a WebSocket to a virtual server: an upgrade request, then the WebSocket protocol over the socket. */
+function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
+  const server = servers.get(msg.port);
+  const id = msg.id;
+  // The server may write (and so the client reply, e.g. pong) inside its 'upgrade' handler, before upgrade() returns.
+  let early: Uint8Array[] | null = [];
+  const codec = new WsClientCodec({
+    accept: (protocol, extensions) => post({ type: 'ws-accept', id, protocol, extensions }),
+    reject: (status, message) => {
+      sockets.delete(id);
+      post({ type: 'ws-reject', id, status, message });
+    },
+    message: (data) => {
+      if (typeof data === 'string') post({ type: 'ws-message', id, data });
+      else post({ type: 'ws-message', id, data: data.buffer as ArrayBuffer }, [data.buffer as ArrayBuffer]);
+    },
+    closed: (code, reason, wasClean) => {
+      sockets.get(id)?.socket.hangUp();
+      sockets.delete(id);
+      post({ type: 'ws-closed', id, code, reason, wasClean });
+    },
+    reply: (bytes) => (early ? early.push(bytes) : sockets.get(id)?.socket.receive(bytes)),
+  });
+  const key = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+  const headers: [string, string][] = [
+    ...msg.headers,
+    ['upgrade', 'websocket'],
+    ['connection', 'Upgrade'],
+    ['sec-websocket-key', key],
+    ['sec-websocket-version', '13'],
+    ...(msg.protocols.length ? [['sec-websocket-protocol', msg.protocols.join(', ')] as [string, string]] : []),
+  ];
+  const socket = server?.upgrade(msg.url, headers, { data: (bytes) => codec.receive(bytes), end: () => codec.end() });
+  if (!socket) return post({ type: 'ws-reject', id, status: 404, message: server ? 'the server does not accept WebSocket connections' : `nothing listening on port ${msg.port}` });
+  sockets.set(id, { socket, codec });
+  for (const bytes of early) socket.receive(bytes);
+  early = null;
+}
 
 function hash(s: string): number {
   let h = 2166136261;

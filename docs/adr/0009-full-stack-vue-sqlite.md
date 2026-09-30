@@ -140,12 +140,12 @@ accepted, but the in-memory database reports `memory`.
     constraint surfacing as HTTP 409.
 - Runtime tests cover the three SQLite APIs, and unit tests cover script and
   proxy detection.
+- WebSockets (socket.io, Vite's `ws: true` proxies) and top-level `await` in
+  ESM backends were added later (ADR 0010).
 - Not covered:
-  - WebSockets (socket.io, Vite's `ws: true` proxies),
   - backends that run Vite as middleware (`createServer({ server: {
     middlewareMode } })`),
   - Next.js/Nuxt-style meta-frameworks (other runtimes),
-  - top-level `await` in ESM backends (the runtime's loader is CommonJS),
   - databases other than SQLite,
   - ORMs with native engines (Prisma). ORMs that use better-sqlite3 or
     sqlite3 (Drizzle, Knex, Sequelize) should work through these

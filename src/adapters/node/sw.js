@@ -45,6 +45,39 @@ self.addEventListener('fetch', (event) => {
 });
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+const SHIM = '<script src="/__sandburg/ws-shim.js"></script>';
+
+/**
+ * Inserts the WebSocket shim (ws-shim.js) into an HTML page, first thing in <head>, so it runs
+ * before any app script. Streams through: only the bytes before <head …> are held back.
+ */
+function injectShim() {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let pending = '';
+  let done = false;
+  const place = (text, final) => {
+    const head = /<head\b[^>]*>/i.exec(text);
+    if (head) return text.slice(0, head.index + head[0].length) + SHIM + text.slice(head.index + head[0].length);
+    if (!final && text.length < 16384) return null;
+    const html = /<html\b[^>]*>/i.exec(text) ?? /<!doctype[^>]*>/i.exec(text);
+    return html ? text.slice(0, html.index + html[0].length) + SHIM + text.slice(html.index + html[0].length) : SHIM + text;
+  };
+  return new TransformStream({
+    transform(chunk, controller) {
+      if (done) return controller.enqueue(chunk);
+      pending += decoder.decode(chunk, { stream: true });
+      const out = place(pending, false);
+      if (out !== null) {
+        done = true;
+        controller.enqueue(encoder.encode(out));
+      }
+    },
+    flush(controller) {
+      if (!done) controller.enqueue(encoder.encode(place(pending + decoder.decode(), true)));
+    },
+  });
+}
 
 async function forward(request, url) {
   let p;
@@ -74,7 +107,13 @@ async function forward(request, url) {
         // Set-Cookie cannot be set from a service worker response; the page applies cookies itself.
         const h = new Headers();
         for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
-        resolve(new Response(NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream, { status: m.status, statusText: m.statusText, headers: h }));
+        let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
+        // App pages get the WebSocket shim (the host page relays their WebSockets to the runtime).
+        if (body && request.mode === 'navigate' && /text\/html/i.test(h.get('content-type') ?? '')) {
+          body = body.pipeThrough(injectShim());
+          h.delete('content-length');
+        }
+        resolve(new Response(body, { status: m.status, statusText: m.statusText, headers: h }));
       } else if (m.type === 'chunk') {
         controller.enqueue(new Uint8Array(m.chunk));
       } else if (m.type === 'end') {

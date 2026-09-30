@@ -63,3 +63,15 @@ test('a Vue template error fails the build as an app bug, with its location', as
   assert.equal(result.failure?.class, 'app-bug', failures(result));
   assert.match(result.failure!.message, /src\/App\.vue:\d+:\d+/);
 });
+
+test('an ESM backend with top-level await (setup before listen) runs', async () => {
+  const dir = fixture('vue-express-sqlite');
+  const base = await loadProject(dir);
+  const server = (base.files['server/index.js'] as string).replace(
+    "const port = process.env.PORT || 3001;",
+    "await new Promise((resolve) => setTimeout(resolve, 20)); // e.g. waiting for migrations\nconst port = process.env.PORT || 3001;",
+  );
+  const project = projectFromFiles({ ...base.files, 'server/index.js': server }, { name: 'backend-tla', path: dir });
+  const result = await session.run(project, { runtime: 'esbuild', checks: `${dir}/checks.spec.ts`, outDir });
+  assert.equal(result.status, 'passed', failures(result));
+});

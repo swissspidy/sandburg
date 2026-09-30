@@ -85,3 +85,82 @@ test('errors: missing modules, process.exit', async () => {
   assert.equal(out.stdout.trim(), 'MODULE_NOT_FOUND');
   assert.equal(out.exit, 3);
 });
+
+test('top-level await: modules evaluate after the dependencies they await, and rejections are fatal', async () => {
+  const out = await h.run(
+    {
+      'package.json': JSON.stringify({ type: 'module' }),
+      'db.js': `
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        await wait(50);
+        export const db = { ready: true, rows: [1, 2, 3] };
+        console.log('db ready');`,
+      'repo.js': `
+        import { db } from './db.js';
+        // Runs only after db.js has finished its top-level await.
+        export const count = db.rows.length;
+        console.log('repo', db.ready);`,
+      'main.js': `
+        import { count } from './repo.js';
+        const extra = await Promise.resolve(10);
+        console.log('main', count + extra);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['db ready', 'repo true', 'main 13']);
+
+  const failed = await h.run({ 'main.mjs': `await Promise.reject(new Error('cannot connect to the database'));` }, '/app/main.mjs');
+  assert.match(failed.fatal ?? '', /cannot connect to the database/);
+});
+
+/** A WebSocket server written against the raw upgrade socket, as `ws` does it. */
+const RAW_WS_SERVER = `
+  const http = require('http');
+  const crypto = require('crypto');
+  const server = http.createServer((req, res) => res.end('plain http'));
+  server.on('upgrade', (req, socket) => {
+    if (req.url !== '/chat') { socket.end('HTTP/1.1 404 Not Found\\r\\n\\r\\n'); return; }
+    const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: ' + accept + '\\r\\nSec-WebSocket-Protocol: chat.v1\\r\\n\\r\\n');
+    const frame = (op, payload, fin = true) => Buffer.concat([Buffer.from([(fin ? 0x80 : 0) | op, payload.length]), payload]);
+    socket.write(frame(0x9, Buffer.from('are you there')));           // ping: the client must pong
+    socket.write(frame(0x1, Buffer.from('hel'), false));               // a fragmented text message
+    socket.write(frame(0x0, Buffer.from('lo')));
+    let buf = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 6) {
+        const op = buf[0] & 0x0f, len = buf[1] & 0x7f, masked = (buf[1] & 0x80) !== 0;
+        if (!masked) throw new Error('client frames must be masked');
+        const mask = buf.subarray(2, 6), data = Buffer.from(buf.subarray(6, 6 + len)).map((b, i) => b ^ mask[i % 4]);
+        buf = buf.subarray(6 + len);
+        if (op === 0xa) socket.write(frame(0x1, Buffer.from('pong: ' + data.toString())));
+        else if (op === 0x1) socket.write(frame(0x1, Buffer.from('echo: ' + data.toString())));
+        else if (op === 0x2) socket.write(frame(0x2, Buffer.from(data.reverse())));
+        else if (op === 0x8) { socket.write(frame(0x8, data)); socket.end(); }
+      }
+    });
+  });
+  server.listen(3000);
+`;
+
+test('WebSockets: upgrade, subprotocol, ping/pong, fragments, text, close', async () => {
+  const out = await h.runWebSocket({ 'main.js': RAW_WS_SERVER }, '/app/main.js', '/chat', ['chat.v1'], ['hi', 'CLOSE']);
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.events, [
+    ['open', 'chat.v1'],
+    // The server wrote "hello" before it could have received the pong.
+    ['message', 'hello'],
+    ['message', 'pong: are you there'],
+    ['message', 'echo: hi'],
+    ['closed', 1000, 'bye', true],
+  ]);
+});
+
+test('WebSockets: a path the server rejects, and a server without upgrade handling', async () => {
+  const rejected = await h.runWebSocket({ 'main.js': RAW_WS_SERVER }, '/app/main.js', '/nope', [], []);
+  assert.deepEqual(rejected.events, [['reject', 404, '']]);
+  const plain = await h.runWebSocket({ 'main.js': `require('http').createServer((q, s) => s.end()).listen(3000);` }, '/app/main.js', '/', [], []);
+  assert.deepEqual(plain.events, [['reject', 404, 'the server does not accept WebSocket connections']]);
+});

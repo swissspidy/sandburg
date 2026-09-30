@@ -6,7 +6,7 @@
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
-import { NodeProcess } from './process.ts';
+import { NodeProcess, exposeWebSockets, webSocketPort } from './process.ts';
 
 export interface HostInstall {
   key: string;
@@ -78,6 +78,13 @@ export function createAdapter(): RuntimeAdapter {
       const p = proc;
       let port = 0;
       await connectServiceWorker((request, reply) => p.request(port, request, reply));
+      // Edits to the running app (sandburg open, checks that exercise hot reloading).
+      (window as unknown as Record<string, unknown>).__sandburgWriteFile = (path: string, content: string) => p.writeFile(path, content);
+      // WebSockets (e.g. Next.js' HMR at /_next/webpack-hmr) go to the app's server too.
+      exposeWebSockets((url) => {
+        const target = webSocketPort(url, p.ports, () => port || null);
+        return target ? { proc: p, port: target } : null;
+      });
       p.run(`/app/${START}`);
       port = await p.listening();
       return { url: '/' };

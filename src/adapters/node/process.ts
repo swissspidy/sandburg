@@ -29,6 +29,7 @@ export class NodeProcess {
   private ready = false;
   private waiters = new Set<() => void>();
   private pending = new Map<number, MessagePort>();
+  private sockets = new Map<number, MessagePort>();
   private nextId = 1;
   private label: string;
 
@@ -69,6 +70,33 @@ export class NodeProcess {
     this.worker.postMessage({ type: 'request', id, port, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
   }
 
+  /**
+   * Connects an app frame's WebSocket (ws-shim.js) to the server on `port`: the port carries
+   * send/close from the page and open/message/close back.
+   */
+  connectWebSocket(port: number, url: string, protocols: string[], channel: MessagePort): void {
+    const id = this.nextId++;
+    this.sockets.set(id, channel);
+    const target = new URL(url);
+    const headers: [string, string][] = [
+      ['host', target.host],
+      ['origin', location.origin],
+      ['user-agent', navigator.userAgent],
+    ];
+    if (document.cookie) headers.push(['cookie', document.cookie]);
+    channel.onmessage = (e) => {
+      const m = e.data as { type: 'send'; data: string | ArrayBuffer } | { type: 'close'; code?: number; reason?: string };
+      if (m.type === 'send') this.worker.postMessage({ type: 'ws-send', id, data: m.data }, typeof m.data === 'string' ? [] : [m.data]);
+      else this.worker.postMessage({ type: 'ws-close', id, code: m.code, reason: m.reason });
+    };
+    this.worker.postMessage({ type: 'ws-open', id, port, url: target.pathname + target.search, headers, protocols });
+  }
+
+  /** Writes a project file in the running program's file system (dev servers' watchers pick it up). */
+  writeFile(path: string, content: string): void {
+    this.worker.postMessage({ type: 'write-file', path, content });
+  }
+
   terminate(): void {
     this.worker.terminate();
   }
@@ -97,6 +125,21 @@ export class NodeProcess {
         this.pending.get(m.id)?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers: m.headers });
         break;
       }
+      case 'ws-accept':
+        this.sockets.get(m.id)?.postMessage({ type: 'open', protocol: m.protocol, extensions: m.extensions });
+        break;
+      case 'ws-message':
+        this.sockets.get(m.id)?.postMessage({ type: 'message', data: m.data }, typeof m.data === 'string' ? [] : [m.data]);
+        break;
+      case 'ws-reject':
+        opts.log('stderr', `WebSocket connection refused (${m.status}): ${m.message}`);
+        this.sockets.get(m.id)?.postMessage({ type: 'close', code: 1006, reason: '', wasClean: false, error: true });
+        this.sockets.delete(m.id);
+        break;
+      case 'ws-closed':
+        this.sockets.get(m.id)?.postMessage({ type: 'close', code: m.code, reason: m.reason, wasClean: m.wasClean });
+        this.sockets.delete(m.id);
+        break;
       case 'response-chunk':
         this.pending.get(m.id)?.postMessage({ type: 'chunk', chunk: m.chunk }, [m.chunk.buffer]);
         break;
@@ -133,6 +176,27 @@ export class NodeProcess {
       check();
     });
   }
+}
+
+/** Which port of the runtime an app WebSocket URL goes to: same-origin → `samePort`, localhost:<port> → that port. */
+export function webSocketPort(url: string, ports: number[], samePort: (path: string) => number | null): number | null {
+  const u = new URL(url);
+  if (u.host === location.host) return samePort(u.pathname + u.search);
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/.test(u.hostname)) {
+    const port = Number(u.port || (u.protocol === 'wss:' ? 443 : 80));
+    return ports.includes(port) ? port : null;
+  }
+  return null;
+}
+
+/** Lets app pages open WebSockets through the host page (ws-shim.js calls window.top.__sandburgWs). */
+export function exposeWebSockets(route: (url: string) => { proc: NodeProcess; port: number } | null): void {
+  (window as unknown as Record<string, unknown>).__sandburgWs = (url: string, protocols: string[], channel: MessagePort) => {
+    const target = route(url);
+    if (!target) return false;
+    target.proc.connectWebSocket(target.port, url, protocols, channel);
+    return true;
+  };
 }
 
 /** Applies a Set-Cookie header to the sandbox origin (a service worker cannot). HttpOnly cannot be honored. */
