@@ -13,6 +13,7 @@ Docker reference, with identical checks. For the method and the caveats, see
 | [v2](v2-almostnode-vs-docker.md) | almostnode 0.2.14, adapter fixed after v1 | 97.0% | 100.0% | 97.0% | 1.8 s / 4.9 s |
 | [v3](v3-auto-vs-truth.md) | `--runtime auto` (esbuild for Vite, node for Next.js) | not measured (no Docker) | 97.0% | (97.0% in v1/v2) | see report |
 | [v4](v4-node-vs-truth.md) | the node runtime for every app (real Vite, real `next dev`) | not measured (no Docker) | 97.0% | (97.0% in v1/v2) | see report |
+| [v5](v5-node-vs-truth.md) | the node runtime after the cold-start work (ADR 0014) | not measured (no Docker) | 97.0% | (97.0% in v1/v2) | see report |
 
 Caveats:
 - The corpus is synthetic, and v2's adapter fixes were made against this
