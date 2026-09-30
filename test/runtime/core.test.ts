@@ -260,7 +260,7 @@ test('child_process: node children with stdio, exit codes, --conditions, fork() 
   assert.ok(lines.includes('from fork 2'), out.stdout);
   assert.ok(lines.includes('fork exit 5'), out.stdout);
   assert.ok(lines.includes('exec null 42'), out.stdout);
-  assert.ok(lines.includes('git ENOSYS'), out.stdout);
+  assert.ok(lines.includes('git 127'), out.stdout);
 });
 
 test('child_process: servers in a child process are reachable', async () => {
@@ -392,4 +392,53 @@ test('worker_threads: a thread started while its parent is blocked runs (WebAsse
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout.trim(), 'wait ok 42');
+});
+
+test('child_process: shell commands, npm scripts and package binaries run as Node programs', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { spawn, exec } = require('child_process');
+        const c = spawn('npm run build --prefix server -- --fast && echo "done $GREETING" || echo failed', { shell: true, env: { ...process.env, GREETING: 'hi' } });
+        let text = '';
+        c.stdout.on('data', (d) => (text += d));
+        c.on('exit', (code) => {
+          console.log(JSON.stringify(text.trim().split('\\n')), code);
+          exec('cd server && PORT=4001 greet one "two words"; missing-tool', (err, stdout, stderr) => {
+            console.log(JSON.stringify(stdout.trim().split('\\n')), err && err.code, /missing-tool: not found/.test(stderr));
+            process.exit(0);
+          });
+        });`,
+      'server/package.json': JSON.stringify({ name: 'server', scripts: { prebuild: 'echo pre', build: 'greet built' } }),
+      'server/node_modules/.sandburg-bins.json': JSON.stringify({ greet: 'node_modules/greeter/bin.js' }),
+      'server/node_modules/greeter/bin.js': `console.log('greet ' + process.argv.slice(2).join('|') + ' port=' + (process.env.PORT ?? '-') + ' cwd=' + process.cwd());`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.equal(lines[0], `${JSON.stringify(['pre', 'greet built|--fast port=- cwd=/app/server', 'done hi'])} 0`, out.stdout + out.stderr);
+  assert.equal(lines[1], `${JSON.stringify(['greet one|two words port=4001 cwd=/app/server'])} 127 true`, out.stdout + out.stderr);
+});
+
+test('child_process: a program reaches a server another child process runs (a dev proxy and its API)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').spawn('node api.js & node web.js', { shell: true, stdio: 'inherit' });`,
+      'api.js': `require('http').createServer((req, res) => res.end('api ' + req.method + ' ' + req.url)).listen(4200, () => console.log('api up'));`,
+      'web.js': `
+        const http = require('http');
+        const ask = (port) => new Promise((resolve) => {
+          http.get('http://localhost:' + port + '/items', (res) => {
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('end', () => resolve(body));
+          }).on('error', (e) => resolve(e.code));
+        });
+        setTimeout(async () => console.log(await ask(4200), await ask(4299)), 300);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.match(out.stdout, /api GET \/items ECONNREFUSED/, out.stdout + out.stderr);
 });

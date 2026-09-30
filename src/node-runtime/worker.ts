@@ -67,7 +67,12 @@ export type ToWorker =
   | { type: 'write-file'; path: string; content: string }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
   | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
-  | { type: 'ws-close'; id: number; code?: number; reason?: string };
+  | { type: 'ws-close'; id: number; code?: number; reason?: string }
+  /** The reply to a loopback request this runtime sent its parent (see loopback.route). */
+  | { type: 'lb-start'; id: number; status: number; statusText: string; headers: [string, string][] }
+  | { type: 'lb-chunk'; id: number; chunk: ArrayBuffer }
+  | { type: 'lb-end'; id: number }
+  | { type: 'lb-error'; id: number; message: string; code?: string };
 
 export type FromWorker =
   | { type: 'log'; stream: 'stdout' | 'stderr'; text: string }
@@ -441,7 +446,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   installKey = msg.installKey;
   projectRoot = msg.cwd;
   thread = msg.thread ?? null;
-  tsRunner = !!msg.tsRunner;
+  // SANDBURG_TS_RUNNER: started by the shell for tsx, ts-node … (see shell.ts).
+  tsRunner = !!msg.tsRunner || msg.env?.SANDBURG_TS_RUNNER === '1';
   // A worker thread shares its parent's file system (installed packages it reads itself).
   if (thread) {
     const installed = new Vfs((path) => {
@@ -579,6 +585,25 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   AsyncFunction.prototype = RealAsyncFunction.prototype;
   (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.AsyncFunction')] = AsyncFunction;
+  // import() inside a Function constructor's source (see interop.ts): resolved from the working directory.
+  Object.defineProperty(globalThis, '__sandburg_import', {
+    configurable: true,
+    value: (specifier: string) =>
+      Promise.resolve().then(() => {
+        const spec = String(specifier).startsWith('file:') ? decodeURIComponent(new URL(String(specifier)).pathname) : String(specifier);
+        // An import(), so resolved with import conditions (as from an ES module).
+        type Mod = { filename: string; paths: string[]; esm: boolean };
+        const M = moduleSystem.Module as unknown as { new (id: string, parent: null): Mod; _nodeModulePaths(d: string): string[]; _load(r: string, p: Mod, main: boolean): unknown };
+        const cwd = (proc.cwd as () => string)();
+        const parent = new M(`${cwd}/[import]`, null);
+        parent.filename = `${cwd}/[import]`;
+        parent.paths = M._nodeModulePaths(cwd);
+        parent.esm = true;
+        const mod = M._load(spec, parent, false) as Record<string, unknown> | null;
+        if (mod && typeof mod === 'object' && (mod.__esModule || (globalThis as Record<symbol, WeakSet<object>>)[Symbol.for('sandburg.esm')]?.has(mod))) return mod;
+        return Object.assign(Object.create(null), mod && typeof mod === 'object' ? mod : {}, { default: mod });
+      }),
+  });
 
   // Node's console writes to process.stdout/stderr.
   const nodeUtil = builtin('util') as { format(...a: unknown[]): string; inspect(v: unknown, o?: object): string };
@@ -757,6 +782,7 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   else if (msg.type === 'message') proc?.emit('message', msg.data);
   else if (msg.type === 'wt-message') threads.deliver(msg.data);
   else if (msg.type === 'ws-open') wsOpen(msg);
+  else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
   else if (msg.type === 'write-file') {
     const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;
     vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
@@ -869,17 +895,62 @@ function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker | null):
 const nestedPorts = new Map<number | string, globalThis.Worker>();
 const nestedSockets = new Map<number, globalThis.Worker>();
 /** Requests this runtime's programs made to servers in nested runtimes (http.request to localhost). */
-const loopbackRequests = new Map<number, BridgeResponse & { error(message: string): void }>();
+const loopbackRequests = new Map<number, BridgeResponse & { error(message: string, code?: string): void }>();
 let nextLoopbackId = -1 - Math.floor(Math.random() * 2 ** 40);
+/**
+ * A request to a server this runtime does not run: down to the nested runtime that runs it, else up
+ * to the parent, which looks among its own servers and its other children (a Vite dev server
+ * proxying /api to a backend that the same dev script started).
+ */
 loopback.route = (target, method, url, headers, body, bridge) => {
   const worker = nestedPorts.get(target);
-  if (!worker) return false;
+  if (!worker && !thread) return false;
   const id = nextLoopbackId--;
   loopbackRequests.set(id, bridge);
   const buf = body ? (body.slice().buffer as ArrayBuffer) : null;
-  worker.postMessage({ type: 'request', id, port: target, method, url, headers, body: buf } satisfies ToWorker, buf ? [buf] : []);
+  const msg = { id, port: target, method, url, headers, body: buf };
+  if (worker) worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
+  else realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
   return true;
 };
+
+/** The parent's reply to a request sent up by loopback.route. */
+function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
+  const bridge = loopbackRequests.get(m.id);
+  if (!bridge) return;
+  if (m.type === 'lb-start') bridge.start(m.status, m.statusText, m.headers);
+  else if (m.type === 'lb-chunk') bridge.chunk(new Uint8Array(m.chunk));
+  else {
+    loopbackRequests.delete(m.id);
+    if (m.type === 'lb-end') bridge.end();
+    else bridge.error(m.message, m.code);
+  }
+}
+
+/** A loopback request from a nested runtime: served here, or routed on (see loopback.route). */
+function loopbackRequest(m: { id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }, from: globalThis.Worker) {
+  const reply = (x: ToWorker, t: Transferable[] = []) => from.postMessage(x, t);
+  const id = m.id;
+  const bridge = {
+    start: (status: number, statusText: string, headers: [string, string][]) => reply({ type: 'lb-start', id, status, statusText, headers }),
+    chunk: (data: Uint8Array) => {
+      const chunk = data.slice().buffer as ArrayBuffer;
+      reply({ type: 'lb-chunk', id, chunk }, [chunk]);
+    },
+    end: () => reply({ type: 'lb-end', id }),
+    error: (message: string, code?: string) => reply({ type: 'lb-error', id, message, code }),
+  };
+  const body = m.body ? new Uint8Array(m.body) : null;
+  const server = servers.get(m.port);
+  try {
+    if (server) server.dispatch(m.method, m.url, m.headers, body, bridge);
+    else if (nestedPorts.get(m.port) === from || !loopback.route!(m.port, m.method, m.url, m.headers, body, bridge)) {
+      bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
+    }
+  } catch (e) {
+    bridge.error(String((e as Error)?.message ?? e));
+  }
+}
 /** Only TCP ports are the host's business; a nested runtime's parent also learns its socket paths. */
 const announce = (port: number | string) => {
   if (typeof port === 'number' || thread) post({ type: 'listening', port });
@@ -901,6 +972,9 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
     return true;
   }
   switch (m.type) {
+    case 'lb-request':
+      loopbackRequest(m as unknown as Parameters<typeof loopbackRequest>[0], from);
+      return true;
     case 'listening':
       nestedPorts.set(m.port as number | string, from);
       announce(m.port as number | string);

@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { renameCommonJsNames } from './esm-names.ts';
-import { esmSourcefile, patchAsyncFunction, patchInterop } from './interop.ts';
+import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
@@ -42,7 +42,7 @@ export function compileForRuntime(code: string, path: string, kind: CompileKind,
   const key = createHash('sha256').update(kind).update(opts.asyncModules ? '\0async' : '').update('\0').update(path).update('\0').update(code).digest('hex');
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  let out = patchAsyncFunction(kind === 'cjs' && /\beval\("/.test(code) ? lowerEvalStrings(code) : code);
+  let out = patchFunctionImport(patchAsyncFunction(kind === 'cjs' && /\beval\("/.test(code) ? lowerEvalStrings(code) : code));
   let loader: esbuild.Loader = kind === 'ts' ? (path.endsWith('x') ? 'tsx' : 'ts') : 'js';
   const esmSource = kind === 'esm';
   if (kind !== 'cjs') {

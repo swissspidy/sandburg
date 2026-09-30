@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { expandScript, isTsRunner } from '../esbuild/backend.ts';
+import { expandScript, findFullStack, isTsRunner } from '../esbuild/backend.ts';
+import { subProject } from '../esbuild/index.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
@@ -46,6 +47,30 @@ export function startCommand(project: Project): { file?: string; bin?: string; a
   }
   if (typeof project.packageJson?.main === 'string') return { file: project.packageJson.main.replace(/^\.\//, ''), argv: [], command: `node ${project.packageJson.main}`, tsRunner: false };
   return null;
+}
+
+function devScript(project: Project): string | null {
+  const scripts = project.packageJson?.scripts ?? {};
+  return scripts.dev ?? scripts.start ?? null;
+}
+
+/**
+ * Whether the dev script is one command in the project root that startCommand can start directly:
+ * anything else (several commands, other packages' scripts, environment variables) runs through the
+ * runtime's shell, as npm runs it through sh.
+ */
+function isSimple(project: Project, script: string): boolean {
+  const leaves = expandScript(project.files, '', script);
+  return leaves.length === 1 && leaves[0].dir === '' && !/(^|\s)[A-Za-z_][A-Za-z0-9_]*=|\$/.test(script) && !/^(concurrently|npm-run-all|run-p|run-s)\b/.test(script.trim());
+}
+
+/** Directories (one level down) with a package.json of their own, unless the root's npm workspaces install them. */
+function packageDirs(project: Project): string[] {
+  if (project.packageJson && 'workspaces' in project.packageJson) return [];
+  return Object.keys(project.files)
+    .map((p) => /^([^/]+)\/package\.json$/.exec(p)?.[1])
+    .filter((d): d is string => !!d && d !== 'node_modules' && !d.startsWith('.'))
+    .sort();
 }
 
 /** The JS file behind a package binary (node_modules/.bin/<name>), from the installed packages' "bin" fields. */
@@ -116,20 +141,35 @@ export const node: AdapterDescriptor = {
   timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000 },
   probe(project: Project) {
     if (project.framework === 'next') return { verdict: 'supported' };
-    if (startCommand(project)) return { verdict: 'supported' };
+    if (startCommand(project) || devScript(project)) return { verdict: 'supported' };
     const scripts = project.packageJson?.scripts ?? {};
     return { verdict: 'unsupported', reason: `no way to start this project in the node runtime (dev/start script: "${scripts.dev ?? scripts.start ?? ''}")` };
   },
   async hostInstall(project, log): Promise<HostInstall> {
     const info = await installer.install(project, extraDependencies(project), log);
-    const cmd = project.framework === 'next' ? null : startCommand(project);
-    let start: HostInstall['start'] = null;
-    if (cmd) {
-      const main = cmd.bin ? await resolveBin(info.dir, cmd.bin) : cmd.file;
-      if (!main) throw new Error(`the dev script runs "${cmd.bin}", which no installed package provides`);
-      start = { main, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
+    // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
+    const parts = [{ dir: '', key: info.key }];
+    for (const dir of packageDirs(project)) {
+      const sub = subProject(project, dir);
+      const deps = sub.packageJson ? { ...sub.packageJson.dependencies, ...sub.packageJson.devDependencies } : {};
+      if (!Object.keys(deps).length) continue;
+      parts.push({ dir, key: (await installer.install(sub, {}, log)).key });
     }
-    return { key: info.key, index: await installer.index(info.key), resolved: info.resolved, lockfile: info.lockfile, start };
+    const key = parts.length > 1 ? installer.combine(parts) : info.key;
+    let start: HostInstall['start'] = null;
+    if (project.framework !== 'next') {
+      const cmd = startCommand(project);
+      const script = devScript(project);
+      if (cmd && (!script || isSimple(project, script))) {
+        const main = cmd.bin ? await resolveBin(info.dir, cmd.bin) : cmd.file;
+        if (!main) throw new Error(`the dev script runs "${cmd.bin}", which no installed package provides`);
+        start = { main, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
+      } else if (script) {
+        start = { shell: script, command: script, tsRunner: false };
+      }
+    }
+    const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
+    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy };
   },
   serve,
 };

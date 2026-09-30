@@ -11,18 +11,18 @@
 import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { renameCommonJsNames } from './esm-names.ts';
-import { esmSourcefile, patchAsyncFunction, patchInterop } from './interop.ts';
+import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-const TRANSFORM_VERSION = 7;
+const TRANSFORM_VERSION = 8;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 8;
+const LAYOUT_VERSION = 13;
 
 export interface InstallInfo {
   key: string;
@@ -46,6 +46,7 @@ export class Installer {
   readonly root: string;
   private pending = new Map<string, Promise<InstallInfo>>();
   private indexes = new Map<string, Promise<FileIndex>>();
+  private combined = new Map<string, { dir: string; key: string }[]>();
 
   constructor(root: string) {
     this.root = root;
@@ -91,6 +92,7 @@ export class Installer {
       await placeNextSwcWasm(tmp);
       await placeWasiBindings(tmp, log);
       await placeWasmBuilds(tmp, log);
+      await writeBinIndex(tmp);
       await writeFile(join(tmp, '.sandburg-complete'), new Date().toISOString());
       await rm(dir, { recursive: true, force: true });
       await rename(tmp, dir);
@@ -106,8 +108,36 @@ export class Installer {
     return { key, dir, resolved, lockfile: lock !== null, fromCache: exists };
   }
 
+  /**
+   * Several installs seen as one project tree (a root package and client/, server/ packages): a key
+   * whose index holds each install's files under its directory ("server/node_modules/express/…").
+   */
+  combine(parts: { dir: string; key: string }[]): string {
+    const key = createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 24);
+    this.combined.set(key, parts);
+    return key;
+  }
+
+  /** The install and path within it that a (possibly combined) key's path refers to. */
+  private locate(key: string, rel: string): { key: string; rel: string } | null {
+    const parts = this.combined.get(key);
+    if (!parts) return { key, rel };
+    for (const { dir, key: k } of parts) {
+      if (!dir) {
+        if (rel.startsWith('node_modules/')) return { key: k, rel };
+      } else if (rel.startsWith(`${dir}/node_modules/`)) return { key: k, rel: rel.slice(dir.length + 1) };
+    }
+    return null;
+  }
+
   /** All files under node_modules (paths relative to the install dir, e.g. "node_modules/next/package.json"). */
   index(key: string): Promise<FileIndex> {
+    const parts = this.combined.get(key);
+    if (parts) {
+      return Promise.all(parts.map(async ({ dir, key: k }) => Object.entries(await this.index(k)).map(([rel, size]) => [dir ? `${dir}/${rel}` : rel, size] as const))).then(
+        (lists) => Object.fromEntries(lists.flat()),
+      );
+    }
     let idx = this.indexes.get(key);
     if (!idx) {
       idx = buildIndex(join(this.root, key));
@@ -117,7 +147,10 @@ export class Installer {
   }
 
   /** A file's original bytes (what fs.readFileSync sees). */
-  async raw(key: string, rel: string): Promise<{ body: Buffer; type: string } | null> {
+  async raw(combinedKey: string, combinedRel: string): Promise<{ body: Buffer; type: string } | null> {
+    const at = this.locate(combinedKey, combinedRel);
+    if (!at) return null;
+    const { key, rel } = at;
     if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
     const index = await this.index(key);
     if (!(rel in index)) return null;
@@ -125,7 +158,10 @@ export class Installer {
   }
 
   /** A file for the browser: JavaScript is compiled for the runtime (and cached); everything else is raw. */
-  async file(key: string, rel: string): Promise<{ body: Buffer; type: string } | null> {
+  async file(combinedKey: string, combinedRel: string): Promise<{ body: Buffer; type: string } | null> {
+    const at = this.locate(combinedKey, combinedRel);
+    if (!at) return null;
+    const { key, rel } = at;
     if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
     const index = await this.index(key);
     if (!(rel in index)) return null;
@@ -154,7 +190,7 @@ export class Installer {
  */
 export async function transformForRuntime(source: string, path: string, esm: boolean): Promise<string> {
   if (esm) source = renameCommonJsNames(source.replace(/^#!.*/, ''));
-  source = patchAsyncFunction(source);
+  source = patchFunctionImport(patchAsyncFunction(source));
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
   const mark = (code: string) => patchInterop(esm ? `/*sandburg:esm*/\n${code}` : code);
   try {
@@ -324,20 +360,68 @@ const fs = require('fs');
 const path = require('path');
 const dir = path.join(__dirname, '../node_modules/esbuild-wasm');
 // Its in-thread service reads the worker global \`self\`, which the runtime leaves undefined (as in Node).
+// Go's file system calls go to that scope's \`fs\`: the runtime's, as esbuild-wasm has under Node.
+// The service sets read (stdin) and writeSync (stdout, stderr) on it for its pipes: those take the
+// pipes' descriptors, the file system keeps the rest. Go writes with fs.write, which goes to writeSync
+// for the pipes (as in esbuild-wasm's own stub fs).
+const scopeFs = Object.create(fs);
+const pipes = { read: null, writeSync: null };
+Object.defineProperty(scopeFs, 'read', {
+  get: () => (fd, ...rest) => (fd === 0 && pipes.read ? pipes.read(fd, ...rest) : fs.read(fd, ...rest)),
+  set: (fn) => (pipes.read = fn),
+});
+Object.defineProperty(scopeFs, 'writeSync', {
+  get: () => (fd, buf, ...rest) => ((fd === 1 || fd === 2) && pipes.writeSync ? pipes.writeSync(fd, buf) : fs.writeSync(fd, buf, ...rest)),
+  set: (fn) => (pipes.writeSync = fn),
+});
+scopeFs.write = (fd, buf, offset, length, position, callback) => {
+  if ((fd !== 1 && fd !== 2) || !pipes.writeSync) return fs.write(fd, buf, offset, length, position, callback);
+  try {
+    callback(null, pipes.writeSync(fd, offset === 0 && length === buf.length ? buf : buf.subarray(offset, offset + length)));
+  } catch (e) {
+    callback(e);
+  }
+};
+// Other globals are read from the real global object (its getters, e.g. location, need it as receiver).
+const scope = new Proxy(Object.create(globalThis, { fs: { value: scopeFs, enumerable: true } }), {
+  get: (target, key) => (key === 'fs' ? scopeFs : Reflect.get(globalThis, key)),
+});
 const browser = { exports: {} };
-new Function('self', 'module', 'exports', 'require', fs.readFileSync(path.join(dir, 'lib/browser.js'), 'utf8'))(globalThis, browser, browser.exports, require);
+new Function('self', 'module', 'exports', 'require', fs.readFileSync(path.join(dir, 'lib/browser.js'), 'utf8'))(scope, browser, browser.exports, require);
 const esbuild = browser.exports;
 let ready;
 const init = () =>
   (ready ??= esbuild.initialize({ wasmModule: new WebAssembly.Module(fs.readFileSync(path.join(dir, 'esbuild.wasm'))), worker: false }));
 const later = (name) => (...args) => init().then(() => esbuild[name](...args));
+// The browser build has no file system of its own, so no \`write: true\` (the default under Node): it
+// builds in memory and the output is written here, as esbuild does under Node.
+const writeOutput = (result, write) => {
+  if (!write || !result || !result.outputFiles) return result;
+  for (const file of result.outputFiles) {
+    fs.mkdirSync(path.dirname(file.path), { recursive: true });
+    fs.writeFileSync(file.path, file.contents);
+  }
+  const { outputFiles, ...rest } = result;
+  return rest;
+};
+const inMemory = (options) => ({ ...options, write: false });
+const build = (options = {}) => init().then(() => esbuild.build(inMemory(options))).then((r) => writeOutput(r, options.write !== false));
+const context = (options = {}) =>
+  init().then(() => esbuild.context(inMemory(options))).then((ctx) => ({
+    ...ctx,
+    rebuild: () => ctx.rebuild().then((r) => writeOutput(r, options.write !== false)),
+    watch: ctx.watch,
+    serve: ctx.serve,
+    cancel: ctx.cancel,
+    dispose: ctx.dispose,
+  }));
 const sync = (name) => () => {
   throw new Error('esbuild.' + name + '() is not available in the browser runtime (esbuild-wasm has no synchronous API there); use the asynchronous API');
 };
 module.exports = {
   version: esbuild.version,
-  build: later('build'),
-  context: later('context'),
+  build,
+  context,
   transform: later('transform'),
   formatMessages: later('formatMessages'),
   analyzeMetafile: later('analyzeMetafile'),
@@ -396,6 +480,24 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
     await writeFile(join(pkgDir, build.file), build.shim);
     log(`${build.name} ${version}: using ${build.wasm}`);
   }
+}
+
+/**
+ * node_modules/.sandburg-bins.json: each package binary (node_modules/.bin/<name>) and the script it
+ * runs, relative to the install directory. The runtime's shell resolves commands with it.
+ */
+async function writeBinIndex(dir: string): Promise<void> {
+  const binDir = join(dir, 'node_modules', '.bin');
+  const bins: Record<string, string> = {};
+  for (const name of await readdir(binDir).catch(() => [] as string[])) {
+    try {
+      const target = await readlink(join(binDir, name));
+      bins[name] = relative(dir, resolve(binDir, target)).split(sep).join('/');
+    } catch {
+      // not a link (npm links every binary)
+    }
+  }
+  await writeFile(join(dir, 'node_modules', '.sandburg-bins.json'), JSON.stringify(bins));
 }
 
 async function placeNextSwcWasm(dir: string): Promise<void> {

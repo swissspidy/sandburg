@@ -4,12 +4,15 @@
  * output goes to the child's stdout/stderr (or this process's, with stdio 'inherit'), fork() and an
  * 'ipc' stdio entry give it process.send(), and servers it starts are reachable like this process's
  * (ThreadHost.relay). CLIs relaunch themselves this way, e.g. with `--conditions=development`.
- * Other programs (shells, npm, git) cannot run in the browser: spawning them fails with ENOSYS.
+ * Other commands (`shell: true`, sh -c, npm scripts, package binaries such as `vite` or `tsx`) run
+ * in the runtime's shell (shell.ts), whose programs are all Node programs; git or a C compiler
+ * cannot run in the browser, and such a command exits with 127.
  */
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost, type ThreadInit } from './threads.ts';
 import { timers } from './builtins/process.ts';
+import { runScript } from './shell.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
 
@@ -127,22 +130,26 @@ export function createChildProcess(host: ChildProcessHost) {
     spawnfile = '';
     spawnargs: string[] = [];
     private worker: globalThis.Worker | null = null;
+    private shell: { kill(): void } | null = null;
     private done = false;
 
     /** Starts `node …` as a nested runtime, or fails (asynchronously, as Node does) for any other program. */
     start(file: string, args: string[], options: SpawnOptions, forkIpc: boolean) {
       this.spawnfile = file;
       this.spawnargs = [file, ...args];
-      let argv = [file, ...args];
-      if (options.shell) argv = splitCommand([file, ...args].join(' '));
+      const argv = [file, ...args];
       const execPath = host.execPath();
       const stdio = normalizeStdio(options.stdio, forkIpc, options.silent);
-      if (!argv.length || !isNode(argv[0], options.execPath ?? execPath)) return this.fail(argv[0] ?? file);
+      const cwd = options.cwd ? host.resolvePath(options.cwd instanceof URL ? decodeURIComponent(options.cwd.pathname) : String(options.cwd)) : host.cwd();
+      const env = Object.fromEntries(Object.entries(options.env ?? host.env()).filter(([, v]) => v !== undefined)) as Record<string, string>;
+      if (options.shell || !isNode(argv[0] ?? '', options.execPath ?? execPath)) {
+        // A shell command line (spawn(cmd, { shell: true }), exec) is the command as written; otherwise quote the arguments.
+        const script = options.shell ? argv.join(' ') : argv.map(shellQuote).join(' ');
+        return this.runShell(script, cwd, env, stdio, options);
+      }
       const cmd = parseNodeArgs(argv.slice(1));
       if (!cmd.script && cmd.evalCode === null) return this.fail(`${argv[0]} (without a script: the REPL)`);
 
-      const cwd = options.cwd ? host.resolvePath(options.cwd instanceof URL ? decodeURIComponent(options.cwd.pathname) : String(options.cwd)) : host.cwd();
-      const env = Object.fromEntries(Object.entries(options.env ?? host.env()).filter(([, v]) => v !== undefined)) as Record<string, string>;
       const execArgv = [...(forkIpc ? (options.execArgv ?? []) : []), ...cmd.execArgv];
       const { conditions, preload } = nodeOptions(execArgv, env);
       let main: string;
@@ -195,6 +202,51 @@ export function createChildProcess(host: ChildProcessHost) {
       timers.setTimeout(() => this.emit('spawn'), 0);
     }
 
+    /** Runs a command line in the runtime's shell; each Node program it starts is a child runtime. */
+    private runShell(script: string, cwd: string, env: Record<string, string>, stdio: Stdio[], options: SpawnOptions) {
+      this.pid = nextPid++;
+      const out = (fd: 1 | 2) => (stdio[fd] === 'pipe' ? new Readable({ read() {} }) : null);
+      this.stdout = out(1);
+      this.stderr = out(2);
+      this.stdin = stdio[0] === 'pipe' ? new Writable({ write: (_c, _e, cb) => cb() }) : null;
+      this.stdio = [this.stdin, this.stdout, this.stderr];
+      for (const s of [this.stdout, this.stderr]) if (s && options.encoding && options.encoding !== 'buffer') s.setEncoding(options.encoding as BufferEncoding);
+      const write = (fd: 1 | 2, text: string) => {
+        if (stdio[fd] === 'inherit') host.write(fd === 1 ? 'stdout' : 'stderr', text);
+        else if (stdio[fd] === 'pipe') (fd === 1 ? this.stdout : this.stderr)!.push(Buffer.from(text));
+      };
+      const vfs = host.vfs();
+      options.signal?.addEventListener('abort', () => this.kill('SIGTERM'), { once: true });
+      this.shell = runScript(script, cwd, env, {
+        node: (argv, o) => {
+          const child = new ChildProcess();
+          child.start(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env, stdio: ['ignore', 'pipe', 'pipe'] }, false);
+          child.stdout?.on('data', (d: Buffer) => o.write(1, d.toString()));
+          child.stderr?.on('data', (d: Buffer) => o.write(2, d.toString()));
+          let ended = false;
+          const end = (code: number | null) => {
+            if (ended) return;
+            ended = true;
+            o.onExit(code ?? 1);
+          };
+          child.on('exit', (code: number | null) => end(code));
+          child.on('error', () => end(127));
+          return { kill: () => child.kill() };
+        },
+        readFile: (path) => {
+          try {
+            return new TextDecoder().decode(vfs.read(path));
+          } catch {
+            return null;
+          }
+        },
+        exists: (path) => vfs.exists(path),
+        write,
+        onExit: (code) => this.finish(code, null),
+      });
+      timers.setTimeout(() => this.emit('spawn'), 0);
+    }
+
     private fail(command: string) {
       timers.setTimeout(() => {
         this.emit('error', Object.assign(notSupported(`spawning "${command}"`), { path: command, spawnargs: this.spawnargs.slice(1) }));
@@ -220,8 +272,9 @@ export function createChildProcess(host: ChildProcessHost) {
     }
 
     kill(signal: string | number = 'SIGTERM') {
-      if (this.done || !this.worker) return false;
+      if (this.done || (!this.worker && !this.shell)) return false;
       this.killed = true;
+      this.shell?.kill();
       this.finish(null, typeof signal === 'number' ? 'SIGTERM' : signal);
       return true;
     }
@@ -322,6 +375,10 @@ export function createChildProcess(host: ChildProcessHost) {
       throw syncError(cmd);
     },
   };
+}
+
+function shellQuote(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
 }
 
 function normalizeStdio(stdio: Stdio | Stdio[] | undefined, forkIpc: boolean, silent?: boolean): Stdio[] {

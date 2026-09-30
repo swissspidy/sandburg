@@ -59,6 +59,9 @@ let engine: Sqlite3 | null = null;
 /** Loads the engine; the runtime awaits this before running a program that uses SQLite. */
 export async function loadSqlite(base: string, importScripts: (url: string) => void): Promise<void> {
   if (engine) return;
+  // Its start-up warns that the OPFS file systems need a main-thread helper: we do not use them.
+  const quiet = () => {};
+  (globalThis as unknown as { sqlite3ApiConfig?: object }).sqlite3ApiConfig = { log: quiet, warn: quiet, error: quiet, debug: quiet };
   importScripts(`${base}/sqlite3.js`);
   const init = (globalThis as unknown as { sandburgSqlite3: { default(o: object): Promise<Sqlite3> } }).sandburgSqlite3.default;
   engine = await init({ locateFile: () => `${base}/sqlite3.wasm`, print: () => {}, printErr: () => {} });

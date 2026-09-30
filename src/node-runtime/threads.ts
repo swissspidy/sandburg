@@ -134,7 +134,6 @@ export class RemoteVfs extends Vfs {
  */
 export class ThreadVfs extends RemoteVfs {
   private installed: Vfs;
-  private nm: string;
 
   private snapshot: Vfs | null;
   private root: string;
@@ -142,7 +141,6 @@ export class ThreadVfs extends RemoteVfs {
   constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>) {
     super(post);
     this.installed = installed;
-    this.nm = `${cwd}/node_modules/`;
     this.root = cwd;
     this.snapshot = null;
     if (snapshot) {
@@ -167,7 +165,7 @@ export class ThreadVfs extends RemoteVfs {
       if (op === 'stat') return { value: snap.stat(path, String(args[1] ?? 'stat')) };
       if (op === 'read') return { value: snap.read(path) };
       const names = snap.readdir(path);
-      if (path === this.root && this.installed.exists(this.nm.slice(0, -1)) && !names.includes('node_modules')) names.push('node_modules');
+      if (this.installed.exists(`${path}/node_modules`) && !names.includes('node_modules')) names.push('node_modules');
       return { value: names };
     } catch (e) {
       return { value: e };
@@ -175,7 +173,8 @@ export class ThreadVfs extends RemoteVfs {
   }
 
   private local(path: string): boolean {
-    return path.startsWith(this.nm) && !/\/node_modules\/\.(vite|cache|tmp|astro|svelte-kit)/.test(path) && this.installed.exists(path);
+    // The root's node_modules, and those of packages in it (client/, server/).
+    return path.startsWith(this.root) && path.includes('/node_modules/') && !/\/node_modules\/\.(vite|cache|tmp|astro|svelte-kit)/.test(path) && this.installed.exists(path);
   }
 
   override exists(path: string): boolean {
