@@ -44,6 +44,8 @@ export type ToWorker =
       env: Record<string, string>;
       files: FileTree;
       installKey: string | null;
+      /** A bundle of the install's files that runs load (see adapters/node/index.ts). */
+      preload?: string | null;
       nodeModules: Record<string, number> | null;
       base: string;
       ipc?: boolean;
@@ -171,7 +173,45 @@ let base = '/__sandburg';
 let installKey: string | null = null;
 let projectRoot = '/app';
 
+/**
+ * Installed files come from the host one synchronous request each, or from the install's preload
+ * bundle: once a runtime has asked for PRELOAD_AFTER files (small helper threads never do), it
+ * fetches the bundle in one request (the browser caches it for the other runtimes of the run).
+ */
+let preloadUrl: string | null = null;
+let preloaded: Map<string, Uint8Array> | null = null;
+let installedRequests = 0;
+const PRELOAD_AFTER = 40;
+
+function loadPreload(): void {
+  preloaded = new Map();
+  try {
+    const res = requestSync(preloadUrl!, true);
+    if (res.status !== 200) return;
+    const bytes = res.body as Uint8Array;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const length = view.getUint32(0, true);
+    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as [string, string, number][];
+    let at = 4 + length;
+    for (const [mode, rel, size] of header) {
+      preloaded.set(`${mode}/${rel}`, bytes.subarray(at, at + size));
+      at += size;
+    }
+  } catch {
+    // no bundle: files come one by one
+  }
+}
+
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
+  if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
+    if (!preloaded && ++installedRequests > PRELOAD_AFTER) loadPreload();
+    const hit = preloaded?.get(url.slice(base.length + installKey.length + 5));
+    if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+  }
+  return requestSync(url, binary);
+}
+
+function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
@@ -471,6 +511,7 @@ const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4
 function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
+  preloadUrl = msg.preload ?? null;
   projectRoot = msg.cwd;
   thread = msg.thread ?? null;
   // SANDBURG_TS_RUNNER: started by the shell for tsx, ts-node … (see shell.ts).
@@ -518,7 +559,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,

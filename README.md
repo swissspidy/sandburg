@@ -121,7 +121,7 @@ as `npm run dev` would.
 | Docker reference | Vite and Next.js apps: `npm ci` or `npm install` plus the real dev server in `node:22-slim`; the same checks in the same browser. |
 
 The page is the server that answers `/` with HTML; a crash of one of the dev script's servers
-while the rest comes up is an app bug. Vite's pre-bundled dependencies are kept between runs of
+while the rest comes up is an app bug. Installed files that earlier runs loaded arrive as one bundle, and Vite's pre-bundled dependencies are kept between runs of
 projects that import the same packages.
 
 ## Fidelity

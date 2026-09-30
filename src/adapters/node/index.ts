@@ -7,14 +7,14 @@
 import { fileURLToPath } from 'node:url';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expandScript, findFullStack, isTsRunner } from './scripts.ts';
 import { detectFramework } from '../../project.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
-import { sharedInstaller } from './install.ts';
+import { TRANSFORM_VERSION, sharedInstaller } from './install.ts';
 import type { HostInstall } from './browser.ts';
 
 const installer = sharedInstaller();
@@ -121,6 +121,83 @@ async function readDevCache(key: string): Promise<Record<string, string> | null>
   }
 }
 
+/**
+ * Preloading: the files of an install that runs load (node_modules/…, compiled or raw), recorded
+ * as the host serves them, in the order of first use. A later run fetches them as one bundle
+ * instead of one synchronous request each, which dominates start-up (next dev loads ~1,700 files).
+ * Files over PRELOAD_FILE_MAX are left out (a few large ones, WebAssembly binaries).
+ */
+const PRELOAD_FILE_MAX = 2 << 20;
+const preloadLists = new Map<string, Map<string, true>>();
+const preloadDirty = new Set<string>();
+let preloadFlush: ReturnType<typeof setTimeout> | null = null;
+const preloadListPath = (key: string) => join(devCacheRoot(), `preload-${key}.json`);
+
+async function preloadList(key: string): Promise<Map<string, true>> {
+  let list = preloadLists.get(key);
+  if (!list) {
+    const saved = await readFile(preloadListPath(key), 'utf8').then((t) => JSON.parse(t) as string[], () => [] as string[]);
+    list = preloadLists.get(key) ?? new Map(saved.map((e) => [e, true] as const));
+    preloadLists.set(key, list);
+  }
+  return list;
+}
+
+async function recordLoad(key: string, entry: string): Promise<void> {
+  const list = await preloadList(key);
+  if (list.has(entry)) return;
+  list.set(entry, true);
+  preloadDirty.add(key);
+  preloadFlush ??= setTimeout(async () => {
+    preloadFlush = null;
+    await mkdir(devCacheRoot(), { recursive: true });
+    for (const k of [...preloadDirty]) {
+      preloadDirty.delete(k);
+      await writeFile(preloadListPath(k), JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])])).catch(() => {});
+    }
+  }, 2000);
+}
+
+/** The preload bundle's URL for an install, or null before any run of it has loaded files. */
+async function preloadUrl(key: string): Promise<string | null> {
+  const list = await preloadList(key);
+  if (!list.size) return null;
+  const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0`).update([...list.keys()].join('\n')).digest('hex').slice(0, 16);
+  return `/__sandburg/preload/${key}/${hash}`;
+}
+
+/**
+ * The bundle: a little-endian u32 header length, a JSON header [[mode, path, length], …], then the
+ * files' bytes in that order (mode "t": compiled for the runtime, "f": raw).
+ */
+async function preloadBundle(key: string, hash: string): Promise<Buffer | null> {
+  const file = join(devCacheRoot(), `preload-${key}-${hash}.bin`);
+  const cached = await readFile(file).catch(() => null);
+  if (cached) return cached;
+  if ((await preloadUrl(key)) !== `/__sandburg/preload/${key}/${hash}`) return null;
+  const header: [string, string, number][] = [];
+  const bodies: Buffer[] = [];
+  for (const entry of (await preloadList(key)).keys()) {
+    const mode = entry[0];
+    const rel = entry.slice(2);
+    const got = mode === 't' ? await installer.file(key, rel) : await installer.raw(key, rel);
+    if (!got || got.body.length > PRELOAD_FILE_MAX) continue;
+    header.push([mode, rel, got.body.length]);
+    bodies.push(got.body);
+  }
+  const json = Buffer.from(JSON.stringify(header));
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(json.length);
+  const bundle = Buffer.concat([length, json, ...bodies]);
+  await mkdir(devCacheRoot(), { recursive: true });
+  // Earlier bundles of the install (the list grew since) are not asked for again.
+  for (const old of await readdir(devCacheRoot()).catch(() => [] as string[])) {
+    if (old.startsWith(`preload-${key}-`) && old.endsWith('.bin')) await rm(join(devCacheRoot(), old), { force: true });
+  }
+  await writeFile(file, bundle);
+  return bundle;
+}
+
 /** The JS file behind a package binary (node_modules/.bin/<name>), from the installed packages' "bin" fields. */
 async function resolveBin(installDir: string, name: string): Promise<string | null> {
   const nm = join(installDir, 'node_modules');
@@ -172,10 +249,16 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     await writeFile(join(devCacheRoot(), `${cache[1]}.json`), await req.body());
     return { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' };
   }
+  const pre = /^\/__sandburg\/preload\/([0-9a-f]{24})\/([0-9a-f]{16})$/.exec(req.path);
+  if (pre) {
+    const bundle = await preloadBundle(pre[1], pre[2]);
+    return bundle ? { status: 200, headers: { 'content-type': 'application/octet-stream', 'cache-control': 'max-age=31536000, immutable' }, body: bundle } : null;
+  }
   const m = /^\/__sandburg\/nm\/([0-9a-f]{24})\/(f|t)\/(.+)$/.exec(req.path);
   if (m) {
     const [, key, mode, rel] = m;
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
+    if (file && file.body.length <= PRELOAD_FILE_MAX) void recordLoad(key, `${mode}:${decodeURIComponent(rel)}`);
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
   return null;
@@ -228,7 +311,7 @@ export const node: AdapterDescriptor = {
     const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
     const cacheKey = devCacheKey(project, key);
     const devCache = { key: cacheKey, dirs: parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d))), files: (await readDevCache(cacheKey)) ?? {} };
-    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache };
+    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, preload: await preloadUrl(key) };
   },
   serve,
 };

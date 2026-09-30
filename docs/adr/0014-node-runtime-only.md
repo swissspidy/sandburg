@@ -101,6 +101,18 @@ the host after a run and restored before the next run of a project with the same
 packages and the same imported packages. Vite checks the cache against the lockfile and its config
 before it uses it.
 
+The runtime reads installed files with one synchronous request each, about 7 ms apiece: `next dev`
+loads ~1,750 files (12 s of its start), svelte-vite's Vite ~700 in each of two runtimes. The host
+records which files an install's runs load, and a later run fetches them as one bundle. A runtime
+switches to the bundle after its first 40 files, so the small WebAssembly helper threads do not each
+hold it; the browser caches the bundle for the other runtimes of the run. Measured: svelte-vite 16.3 s
+→ 7.5 s, Next.js 33.1 s → 21.4 s.
+
+Two other ideas were measured and dropped. Compiling WebAssembly is not a cost worth caching: V8
+compiles lazily, and rolldown's 10.8 MB binding or SWC's 27.8 MB take 20–60 ms. napi-rs's thread
+pool has 4 threads, as in Node, and `os.availableParallelism()` reports the browser's cores, so
+there is no idle parallelism to add on the machines measured.
+
 ## Consequences
 
 - One code path for every framework: a project runs with the versions of Vite, its plugins, the

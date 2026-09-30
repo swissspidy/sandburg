@@ -18,6 +18,8 @@ export interface HostInstall {
    * How to start the app (null: Next.js' programmatic dev server): a file (`main`, project-relative)
    * with arguments, or a dev script for the runtime's shell (`shell`).
    */
+  /** The bundle of files earlier runs of this install loaded (see index.ts), or null. */
+  preload?: string | null;
   /** Dev servers' caches from an earlier run (Vite's pre-bundled dependencies), and where they live. */
   devCache?: { key: string; dirs: string[]; files: Record<string, string> };
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
@@ -131,6 +133,7 @@ export function createAdapter(): RuntimeAdapter {
         // PORT only for a single server: the servers of a dev script listen where it says.
         env: { NEXT_TELEMETRY_DISABLED: '1', ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
         installKey: host.key,
+        preload: host.preload ?? null,
         nodeModules: host.index,
         log: (stream, line) => {
           ctx.log(stream, line);

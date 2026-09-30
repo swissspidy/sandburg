@@ -20,7 +20,7 @@ import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } 
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-const TRANSFORM_VERSION = 10;
+export const TRANSFORM_VERSION = 10;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 14;
 

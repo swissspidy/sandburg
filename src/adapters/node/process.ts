@@ -12,6 +12,8 @@ export interface NodeProcessOptions {
   files: FileTree;
   env: Record<string, string>;
   installKey: string | null;
+  /** The URL of a preload bundle for the install (see adapters/node/index.ts). */
+  preload?: string | null;
   nodeModules: Record<string, number> | null;
   log(stream: 'stdout' | 'stderr', line: string): void;
   /** What the program is, for messages ("the app", "the backend"). */
@@ -42,7 +44,7 @@ export class NodeProcess {
     this.worker = new Worker('/__sandburg/node-worker.js');
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
-    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, nodeModules: opts.nodeModules, base: '/__sandburg', tsRunner: opts.tsRunner });
+    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, nodeModules: opts.nodeModules, base: '/__sandburg', tsRunner: opts.tsRunner });
   }
 
   /** Resolves when the runtime has loaded. */
