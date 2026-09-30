@@ -164,3 +164,47 @@ test('WebSockets: a path the server rejects, and a server without upgrade handli
   const plain = await h.runWebSocket({ 'main.js': `require('http').createServer((q, s) => s.end()).listen(3000);` }, '/app/main.js', '/', [], []);
   assert.deepEqual(plain.events, [['reject', 404, 'the server does not accept WebSocket connections']]);
 });
+
+test('worker_threads: workerData, messages, a shared file system, SharedArrayBuffer + Atomics, exit codes', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker } = require('worker_threads');
+        const fs = require('fs');
+        const shared = new Int32Array(new SharedArrayBuffer(8));
+        const w = new Worker(require('path').join(__dirname, 'child.js'), { workerData: { greeting: 'hi', shared } });
+        fs.writeFileSync('/app/after-spawn.txt', 'written by the parent after the spawn');
+        w.on('online', () => console.log('online'));
+        w.on('message', (m) => {
+          if (m.type === 'ready') { w.postMessage({ type: 'go' }); return; }
+          console.log('from child:', JSON.stringify(m));
+          console.log('child wrote:', fs.readFileSync('/app/from-child.txt', 'utf8'));
+          console.log('atomics:', Atomics.load(shared, 0));
+        });
+        w.on('exit', (code) => console.log('exit', code));
+        const e = new Worker('throw new Error("boom in thread")', { eval: true });
+        e.on('error', (err) => console.log('error event:', err.message));
+        e.on('exit', (code) => console.log('eval exit', code));`,
+      'child.js': `
+        const { parentPort, workerData, isMainThread, threadId } = require('worker_threads');
+        const fs = require('fs');
+        parentPort.postMessage({ type: 'ready' });
+        parentPort.on('message', () => {
+          Atomics.add(workerData.shared, 0, 42);
+          fs.writeFileSync('/app/from-child.txt', 'written by the thread');
+          parentPort.postMessage({ greeting: workerData.greeting, isMainThread, threadId: threadId > 0, read: fs.readFileSync('/app/after-spawn.txt', 'utf8') });
+          setTimeout(() => process.exit(7), 20);
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.ok(lines.includes('online'), out.stdout);
+  assert.ok(lines.includes('from child: {"greeting":"hi","isMainThread":false,"threadId":true,"read":"written by the parent after the spawn"}'), out.stdout);
+  assert.ok(lines.includes('child wrote: written by the thread'), out.stdout);
+  assert.ok(lines.includes('atomics: 42'), out.stdout);
+  assert.ok(lines.includes('exit 7'), out.stdout);
+  assert.ok(lines.includes('error event: boom in thread'), out.stdout);
+  assert.ok(lines.includes('eval exit 1'), out.stdout);
+});

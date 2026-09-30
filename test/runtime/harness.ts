@@ -68,7 +68,7 @@ export class RuntimeHarness {
     this.server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://x');
       if (url.pathname === '/__sandburg/node-worker.js') {
-        res.writeHead(200, { 'content-type': 'text/javascript' });
+        res.writeHead(200, { 'content-type': 'text/javascript', 'cross-origin-embedder-policy': 'require-corp' });
         return res.end(js);
       }
       if (url.pathname === '/__sandburg/sqlite3.js') {
@@ -97,7 +97,7 @@ export class RuntimeHarness {
           return res.end(String((e as Error).message));
         }
       }
-      res.writeHead(200, { 'content-type': 'text/html' });
+      res.writeHead(200, { 'content-type': 'text/html', 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp' });
       res.end(PAGE);
     });
     await new Promise<void>((r) => this.server.listen(0, '127.0.0.1', r));

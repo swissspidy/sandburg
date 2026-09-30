@@ -37,8 +37,14 @@ export interface LoaderHost {
 }
 
 const REQUIRE_CONDITIONS = ['require', 'node', 'module-sync', 'node-addons', 'default'];
-/** Web Worker globals Node does not have; hidden from modules so they do not take browser code paths. */
-const HIDDEN_GLOBALS = ['self', 'location', 'importScripts'];
+/** Conditions for `import` (ES modules are converted to CommonJS, but resolve as imports). */
+const IMPORT_CONDITIONS = ['import', 'node', 'module-sync', 'node-addons', 'default'];
+/** The conditions of the resolution in progress (resolution is synchronous). */
+let conditions = REQUIRE_CONDITIONS;
+/** First line of code compiled from an ES module (src/adapters/node/compile.ts, install.ts). */
+export const ESM_MARKER = '/*sandburg:esm*/';
+/** Exports objects of converted ES modules (see src/adapters/node/interop.ts). */
+const esmExports: WeakSet<object> = ((globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.esm')] ??= new WeakSet()) as WeakSet<object>;
 
 interface PackageJson {
   name?: string;
@@ -109,6 +115,8 @@ export function createModuleSystem(host: LoaderHost) {
     require(id: string): unknown;
     load(filename: string): void;
     _compile(content: string, filename: string): unknown;
+    /** Compiled from an ES module: its requests resolve with import conditions. */
+    esm?: boolean;
     isPreloading: boolean;
   }
 
@@ -202,7 +210,7 @@ export function createModuleSystem(host: LoaderHost) {
   const tryPath = (p: string): string | false => tryFile(p) || tryExtensions(p) || (isDir(p) && tryPackageMain(p)) || false;
 
   Module._findPath = (request: string, paths: string[]) => {
-    const key = `${request}\0${paths.join('\0')}`;
+    const key = `${conditions === IMPORT_CONDITIONS ? 'i' : 'r'}\0${request}\0${paths.join('\0')}`;
     if (Module._pathCache[key]) return Module._pathCache[key];
     if (request.startsWith('/')) {
       const found = tryPath(request);
@@ -232,7 +240,16 @@ export function createModuleSystem(host: LoaderHost) {
     return tryPath(`${dir}${subpath}`);
   };
 
-  Module._resolveFilename = (request: string, parent: Mod | null, _isMain?: boolean, options?: { paths?: string[] }) => {
+  Module._resolveFilename = (request: string, parent: Mod | null, isMain?: boolean, options?: { paths?: string[] }) => {
+    const previous = conditions;
+    conditions = parent?.esm ? IMPORT_CONDITIONS : REQUIRE_CONDITIONS;
+    try {
+      return resolveFilename(request, parent, isMain, options);
+    } finally {
+      conditions = previous;
+    }
+  };
+  const resolveFilename = (request: string, parent: Mod | null, _isMain?: boolean, options?: { paths?: string[] }): string => {
     if (isBuiltin(request)) return request;
     // import() of file: URLs (lowered to require) resolves like the path.
     if (request.startsWith('file://')) request = fileOf(request);
@@ -352,10 +369,16 @@ export function createModuleSystem(host: LoaderHost) {
   Module.prototype._compile = function (this: Mod, content: string, filename: string) {
     const require = makeRequire(this);
     const dir = dirname(filename);
-    const params = ['exports', 'require', 'module', '__filename', '__dirname', '__sandburg_import_meta_url', ...HIDDEN_GLOBALS];
+    // Web Worker globals Node lacks (self, location, importScripts) are undefined globals (worker.ts).
+    const params = ['exports', 'require', 'module', '__filename', '__dirname', '__sandburg_import_meta_url'];
     const source = `(function (${params.join(', ')}) {${stripShebang(content)}\n})\n//# sourceURL=${filename}`;
     const fn = (0, eval)(source) as (...args: unknown[]) => unknown;
-    return fn.call(this.exports, this.exports, require, this, filename, dir, `file://${filename}`);
+    if (!this.esm) return fn.call(this.exports, this.exports, require, this, filename, dir, `file://${filename}`);
+    try {
+      return fn.call(this.exports, this.exports, require, this, filename, dir, `file://${filename}`);
+    } finally {
+      if (this.exports && typeof this.exports === 'object') esmExports.add(this.exports);
+    }
   };
 
   const readText = (filename: string) => stripBOM(new TextDecoder().decode(vfs.read(filename)));
@@ -365,16 +388,23 @@ export function createModuleSystem(host: LoaderHost) {
 
   const loadJs = (m: Mod, filename: string) => {
     let code: string;
-    if (inNodeModules(filename)) {
-      code = host.compiledNodeModule(filename) ?? readText(filename);
+    const installed = inNodeModules(filename) ? host.compiledNodeModule(filename) : null;
+    if (installed !== null) {
+      code = installed;
     } else {
+      // Project files, and files written at run time (e.g. Vite's bundled config under node_modules/.vite-temp).
       code = readText(filename);
       const esm = filename.endsWith('.mjs') || (!filename.endsWith('.cjs') && (packageScope(filename)?.[1].type === 'module' || looksEsm(code)));
       if (esm || needsLowering(code)) code = host.compile(code, filename, esm ? 'esm' : 'cjs');
     }
+    if (code.startsWith(ESM_MARKER)) m.esm = true;
     m._compile(code, filename);
   };
-  const loadTs = (m: Mod, filename: string) => m._compile(host.compile(readText(filename), filename, 'ts'), filename);
+  const loadTs = (m: Mod, filename: string) => {
+    const code = host.compile(readText(filename), filename, 'ts');
+    if (code.startsWith(ESM_MARKER)) m.esm = true;
+    m._compile(code, filename);
+  };
 
   Module._extensions = Object.assign(Object.create(null), {
     '.js': loadJs,
@@ -465,7 +495,7 @@ function resolveTarget(target: unknown, match: string, folder = false): string |
   }
   if (target && typeof target === 'object') {
     for (const [cond, value] of Object.entries(target)) {
-      if (REQUIRE_CONDITIONS.includes(cond)) {
+      if (conditions.includes(cond)) {
         const r = resolveTarget(value, match, folder);
         if (r !== null) return r;
       }

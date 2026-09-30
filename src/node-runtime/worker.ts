@@ -8,6 +8,8 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
+import { ThreadVfs, createWorkerThreads, type ThreadInit } from './threads.ts';
+import { createWasi } from './builtins/wasi.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
 import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
 import { createNodeSqlite } from './builtins/sqlite/node-sqlite.ts';
@@ -31,7 +33,23 @@ import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
 export type ToWorker =
-  | { type: 'init'; cwd: string; env: Record<string, string>; files: FileTree; installKey: string | null; nodeModules: Record<string, number> | null; base: string; ipc?: boolean; tsRunner?: boolean }
+  | {
+      type: 'init';
+      cwd: string;
+      env: Record<string, string>;
+      files: FileTree;
+      installKey: string | null;
+      nodeModules: Record<string, number> | null;
+      base: string;
+      ipc?: boolean;
+      tsRunner?: boolean;
+      /** Set when this runtime is a worker thread (worker_threads.Worker) of another. */
+      thread?: ThreadInit;
+      /** A thread inherits these from its parent instead of scanning files it does not have. */
+      inherit?: { asyncModules: boolean; usesSqlite: boolean };
+    }
+  /** From the parent thread to this worker thread's parentPort. */
+  | { type: 'wt-message'; data: unknown }
   | { type: 'run'; main: string; argv?: string[] }
   | { type: 'request'; id: number; port: number; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
   /** A message for the program (with init.ipc): process.on('message'). */
@@ -60,7 +78,50 @@ export type FromWorker =
   | { type: 'ws-message'; id: number; data: string | ArrayBuffer }
   | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean };
 
-const post = (msg: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(msg, transfer);
+/** The buffer polyfill predates the base64url encoding (Node 15+); hashes and ids use it. */
+function patchBase64Url(): void {
+  const B = Buffer as unknown as {
+    prototype: { toString(enc?: string, s?: number, e?: number): string; write(str: string, a?: unknown, b?: unknown, c?: unknown): number };
+    from(v: unknown, enc?: unknown, len?: unknown): Buffer;
+    isEncoding(e: string): boolean;
+    byteLength(v: unknown, enc?: string): number;
+  };
+  const isUrl = (enc: unknown) => typeof enc === 'string' && enc.toLowerCase() === 'base64url';
+  const toB64 = (s: string) => s.replace(/-/g, '+').replace(/_/g, '/');
+  const { toString, write } = B.prototype;
+  const { from, isEncoding, byteLength } = B;
+  B.prototype.toString = function (this: Buffer, enc?: string, s?: number, e?: number) {
+    return isUrl(enc) ? toString.call(this, 'base64', s, e).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : toString.call(this, enc, s, e);
+  };
+  B.prototype.write = function (this: Buffer, str: string, a?: unknown, b?: unknown, c?: unknown) {
+    if (isUrl(a)) return write.call(this, toB64(str), 'base64');
+    if (isUrl(b)) return write.call(this, toB64(str), a, 'base64');
+    if (isUrl(c)) return write.call(this, toB64(str), a, b, 'base64');
+    return write.call(this, str, a, b, c);
+  };
+  B.from = function (v: unknown, enc?: unknown, len?: unknown) {
+    return typeof v === 'string' && isUrl(enc) ? from.call(Buffer, toB64(v), 'base64') : from.call(Buffer, v, enc, len);
+  } as typeof B.from;
+  B.isEncoding = (e: string) => isUrl(e) || isEncoding(e);
+  B.byteLength = (v: unknown, enc?: string) => (typeof v === 'string' && isUrl(enc) ? byteLength(toB64(v), 'base64') : byteLength(v, enc));
+}
+patchBase64Url();
+
+// Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
+const realPostMessage = (self as unknown as Worker).postMessage.bind(self);
+const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
+
+/**
+ * Web Worker globals that Node does not have. Programs see them as plain globals that start out
+ * undefined, as in Node; some set them (napi-rs' WASI thread script assigns self, importScripts and
+ * postMessage for emnapi), and every module then sees the assignment.
+ */
+function hideWorkerGlobals(): void {
+  for (const name of ['self', 'location', 'importScripts']) {
+    Object.defineProperty(globalThis, name, { value: undefined, writable: true, configurable: true, enumerable: false });
+  }
+}
+const post = (msg: FromWorker, transfer: Transferable[] = []) => realPostMessage(msg, transfer);
 
 installAsyncContext();
 
@@ -76,7 +137,7 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
   return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
 }
 
-const vfs = new Vfs((path) => {
+let vfs: Vfs = new Vfs((path) => {
   const rel = path.slice(projectRoot.length + 1);
   const res = syncGet(`${base}/nm/${installKey}/f/${rel}`, true);
   if (res.status !== 200) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
@@ -84,6 +145,11 @@ const vfs = new Vfs((path) => {
 });
 
 let proc: ReturnType<typeof createProcess>;
+/** This runtime as a worker thread (null in the main thread). */
+let thread: ThreadInit | null = null;
+let tsRunner = false;
+let threads: ReturnType<typeof createWorkerThreads>;
+let nodeModulesIndex: Record<string, number> | null = null;
 
 function write(stream: 'stdout' | 'stderr', text: string) {
   post({ type: 'log', stream, text });
@@ -202,6 +268,8 @@ function buildBuiltins() {
     transferableAbortSignal: (s: AbortSignal) => s,
     parseEnv: (s: string) => Object.fromEntries(s.split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])),
     getCallSites: () => [],
+    formatWithOptions: (_options: unknown, ...args: unknown[]) => (util as unknown as { format(...a: unknown[]): string }).format(...args),
+    debug: (util as unknown as { debuglog: unknown }).debuglog,
   });
   nodeUtil.inspect.custom ??= Symbol.for('nodejs.util.inspect.custom');
 
@@ -306,7 +374,7 @@ function buildBuiltins() {
     _http_agent: () => ({ Agent: http.Agent, globalAgent: http.globalAgent }),
     _http_common: () => ({ methods: http.METHODS }),
     child_process: () => misc.childProcess,
-    worker_threads: () => misc.workerThreads,
+    worker_threads: () => threads.module,
     cluster: () => misc.cluster,
     vm: () => misc.vm,
     v8: () => misc.v8,
@@ -326,7 +394,7 @@ function buildBuiltins() {
     dgram: () => misc.stub('dgram'),
     domain: () => ({ create: () => Object.assign(new EventEmitter(), { run: (fn: () => unknown) => fn(), add() {}, remove() {}, bind: (fn: unknown) => fn, intercept: (fn: unknown) => fn, enter() {}, exit() {}, dispose() {} }) }),
     trace_events: () => ({ createTracing: () => ({ enable() {}, disable() {}, enabled: false }), getEnabledCategories: () => '' }),
-    wasi: () => misc.stub('wasi'),
+    wasi: () => createWasi(fs, write),
     test: () => misc.stub('test'),
     sqlite: () => createNodeSqlite(sqliteFiles()),
     sea: () => ({ isSea: () => false }),
@@ -340,26 +408,51 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
   projectRoot = msg.cwd;
+  thread = msg.thread ?? null;
+  tsRunner = !!msg.tsRunner;
+  // A worker thread shares its parent's file system (installed packages it reads itself).
+  if (thread) {
+    const installed = new Vfs((path) => {
+      const res = syncGet(`${base}/nm/${installKey}/f/${path.slice(projectRoot.length + 1)}`, true);
+      if (res.status !== 200) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+      return res.body as Uint8Array;
+    });
+    for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) installed.addRemote(`${msg.cwd}/${rel}`, size);
+    vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd);
+  }
+  nodeModulesIndex = msg.nodeModules;
   for (const [path, content] of Object.entries(msg.files)) {
     const abs = `${msg.cwd}/${path}`;
     vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
     vfs.write(abs, typeof content === 'string' ? new TextEncoder().encode(content) : Uint8Array.from(atob(content.base64), (c) => c.charCodeAt(0)));
   }
-  for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
+  if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
-  usesSqlite =
+  if (msg.inherit) ({ usesSqlite, asyncModules } = msg.inherit);
+  else usesSqlite =
     [...Object.keys(msg.nodeModules ?? {}), ...Object.keys(msg.files)].some((rel) => /(^|\/)node_modules\/(better-sqlite3|sqlite3)\/package\.json$/.test(rel)) ||
     Object.values(msg.files).some((c) => typeof c === 'string' && c.includes('node:sqlite'));
-  const sources = Object.fromEntries(Object.entries(msg.files).filter(([p, c]) => typeof c === 'string' && !p.includes('node_modules/') && /\.[cm]?[jt]sx?$/.test(p) && /\bawait\b/.test(c)));
+  const sources = msg.inherit ? {} : Object.fromEntries(Object.entries(msg.files).filter(([p, c]) => typeof c === 'string' && !p.includes('node_modules/') && /\.[cm]?[jt]sx?$/.test(p) && /\bawait\b/.test(c)));
   if (Object.keys(sources).length) {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${base}/tla-scan`, false);
     xhr.send(JSON.stringify(sources));
     asyncModules = xhr.status === 200 && (JSON.parse(xhr.responseText) as { topLevelAwait: boolean }).topLevelAwait;
   }
-  vfs.mkdir('/tmp', true);
+  if (!thread) vfs.mkdir('/tmp', true);
 
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc ? (data) => post({ type: 'message', data }) : undefined });
+  threads = createWorkerThreads({
+    vfs: () => vfs,
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
+    write,
+    cwd: () => (proc.cwd as () => string)(),
+    env: () => proc.env as Record<string, string>,
+    resolvePath: (p) => (p.startsWith('/') ? p : pathBrowserify.resolve((proc.cwd as () => string)(), p)),
+    base: () => base,
+    self: thread,
+    postToParent: (m, transfer) => realPostMessage(m as FromWorker, transfer ?? []),
+  });
   const table = buildBuiltins();
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
@@ -372,9 +465,20 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     return cache.get(name);
   };
   const compiledCache = new Map<string, string>();
+  const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts'): string => {
+    const key = `${kind}:${path}:${code.length}:${hash(code)}`;
+    const hit = compiledCache.get(key);
+    if (hit !== undefined) return hit;
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
+    xhr.send(code);
+    if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
+    compiledCache.set(key, xhr.responseText);
+    return xhr.responseText;
+  };
   moduleSystem = createModuleSystem({
     vfs,
-    tsRunner: !!msg.tsRunner,
+    tsRunner,
     packageOverride(filename: string) {
       for (const [pattern, make] of SQLITE_PACKAGES) {
         if (!pattern.test(filename)) continue;
@@ -389,17 +493,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       const res = syncGet(`${base}/nm/${installKey}/t/${rel}`, false);
       return res.status === 200 ? (res.body as string) : null;
     },
-    compile(code: string, path: string, kind: 'esm' | 'cjs' | 'ts') {
-      const key = `${kind}:${path}:${code.length}:${hash(code)}`;
-      const hit = compiledCache.get(key);
-      if (hit !== undefined) return hit;
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
-      xhr.send(code);
-      if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
-      compiledCache.set(key, xhr.responseText);
-      return xhr.responseText;
-    },
+    compile: hostCompile,
     builtin,
     builtinNames: [...Object.keys(table), 'module'],
     prefixOnly: new Set(['test', 'sqlite', 'sea', 'test/reporters']),
@@ -407,6 +501,23 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     cwd: () => (proc.cwd as () => string)(),
     argv1: () => (proc.argv as string[])[1],
   } as never);
+
+  // `new AsyncFunction(…params, body)` with the body lowered like all other code (see interop.ts).
+  const RealAsyncFunction = new Function('return (async function () {}).constructor')() as FunctionConstructor;
+  function AsyncFunction(...args: unknown[]) {
+    const body = args.length ? String(args.pop()) : '';
+    const params = args.map(String).join(',');
+    try {
+      const js = hostCompile(`module.exports = async function anonymous(${params}\n) {\n${body}\n};`, '/[eval]', 'cjs');
+      const m = { exports: undefined as unknown };
+      new Function('module', js)(m);
+      return m.exports;
+    } catch {
+      return new RealAsyncFunction(...(args as string[]), body);
+    }
+  }
+  AsyncFunction.prototype = RealAsyncFunction.prototype;
+  (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.AsyncFunction')] = AsyncFunction;
 
   // Node's console writes to process.stdout/stderr.
   const nodeUtil = builtin('util') as { format(...a: unknown[]): string; inspect(v: unknown, o?: object): string };
@@ -452,7 +563,16 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   // Uncaught errors and rejections go through process events, as in Node.
   self.addEventListener('error', (e) => {
-    if (e.error instanceof ExitError) return e.preventDefault();
+    // process.exit() from a callback (timer, I/O) ends the process there too.
+    if (e.error instanceof ExitError) {
+      e.preventDefault();
+      return post({ type: 'exit', code: e.error.code });
+    }
+    // In a worker thread an uncaught exception ends the thread ('error' on its Worker), as in Node.
+    if (thread && !proc.listenerCount('uncaughtException')) {
+      e.preventDefault();
+      return post({ type: 'fatal', message: String(e.error?.message ?? e.message), stack: e.error?.stack });
+    }
     if ((proc.env as Record<string, string>).SANDBURG_DEBUG_ERRORS) write('stderr', `[sandburg] uncaught: ${e.error?.stack ?? e.message}\n`);
     if (proc.listenerCount('uncaughtException')) {
       e.preventDefault();
@@ -460,7 +580,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
   });
   self.addEventListener('unhandledrejection', (e) => {
-    if (e.reason instanceof ExitError) return e.preventDefault();
+    if (e.reason instanceof ExitError) {
+      e.preventDefault();
+      return post({ type: 'exit', code: e.reason.code });
+    }
     if (proc.listenerCount('unhandledRejection')) {
       e.preventDefault();
       proc.emit('unhandledRejection', e.reason, e.promise);
@@ -469,12 +592,15 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
   });
   serverEvents.on('listening', (port: number) => post({ type: 'listening', port }));
+  hideWorkerGlobals();
   post({ type: 'ready' });
+  // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
+  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv });
 }
 
 function run(msg: Extract<ToWorker, { type: 'run' }>) {
   if (!usesSqlite) return start(msg);
-  loadSqlite(base).then(
+  loadSqlite(base, realImportScripts).then(
     () => start(msg),
     (e) => post({ type: 'fatal', message: `runtime asset failed to load: SQLite WebAssembly (${(e as Error)?.message ?? e})` }),
   );
@@ -512,12 +638,13 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
   }
 }
 
-self.onmessage = (e: MessageEvent<ToWorker>) => {
+self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
   if (msg.type === 'init') init(msg);
   else if (msg.type === 'run') run(msg);
   else if (msg.type === 'request') request(msg);
   else if (msg.type === 'message') proc?.emit('message', msg.data);
+  else if (msg.type === 'wt-message') threads.deliver(msg.data);
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type === 'write-file') {
     const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;
@@ -532,7 +659,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     if (c?.codec.isOpen) c.socket.receive(c.codec.close(msg.code ?? 1000, msg.reason ?? ''));
     else if (c) c.socket.hangUp();
   }
-};
+});
 
 const sockets = new Map<number, { socket: UpgradeSocket; codec: WsClientCodec }>();
 

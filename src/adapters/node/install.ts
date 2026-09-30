@@ -9,14 +9,20 @@
  * lowered so AsyncLocalStorage works; see src/node-runtime/async-context.ts).
  */
 import { spawn } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
+import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
+import { renameCommonJsNames } from './esm-names.ts';
+import { patchAsyncFunction, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-const TRANSFORM_VERSION = 2;
+const TRANSFORM_VERSION = 6;
+/** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
+const LAYOUT_VERSION = 3;
 
 export interface InstallInfo {
   key: string;
@@ -57,6 +63,7 @@ export class Installer {
       overrides: pkg.overrides,
     };
     const key = createHash('sha256')
+      .update(`layout:${LAYOUT_VERSION}\0`)
       .update(JSON.stringify(manifest))
       .update(typeof lock === 'string' ? lock : '')
       .digest('hex')
@@ -82,6 +89,7 @@ export class Installer {
       // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
       await placeNextSwcWasm(tmp);
+      await placeWasiBindings(tmp, log);
       await writeFile(join(tmp, '.sandburg-complete'), new Date().toISOString());
       await rm(dir, { recursive: true, force: true });
       await rename(tmp, dir);
@@ -144,10 +152,22 @@ export class Installer {
  * the runtime patches to carry AsyncLocalStorage context.
  */
 export async function transformForRuntime(source: string, path: string, esm: boolean): Promise<string> {
+  if (esm) source = renameCommonJsNames(source.replace(/^#!.*/, ''));
+  source = patchAsyncFunction(source);
+  // Code from an ES module is marked: the loader resolves its requests with import conditions.
+  const mark = (code: string) => patchInterop(esm ? `/*sandburg:esm*/\n${code}` : code);
   try {
     const out = await esbuild.transform(source, TRANSFORM_OPTIONS(path, esm));
-    return out.code;
+    return mark(out.code);
   } catch {
+    // Top-level await (e.g. vite/bin/vite.js): an async module (see tla.ts).
+    if (esm && hasTopLevelAwait(source.replace(/^#!.*/, ''))) {
+      try {
+        return mark((await esbuild.transform(toAsyncModule(source.replace(/^#!.*/, '')), TRANSFORM_OPTIONS(path, true))).code);
+      } catch {
+        // fall through
+      }
+    }
     // Syntax esbuild cannot lower (rare): run it as is; AsyncLocalStorage may lose context there.
     return source;
   }
@@ -188,6 +208,81 @@ async function packageType(installDir: string, rel: string): Promise<'module' | 
  * Next.js looks for its SWC WebAssembly build in next/wasm/@next/swc-wasm-nodejs
  * (where its own on-demand download would extract it). Put the installed copy there.
  */
+/**
+ * napi-rs packages (rolldown, the Astro compiler, oxc, …) list a `*-wasm32-wasi` build among their
+ * optional dependencies; npm skips it on this platform (cpu: wasm32). The runtime loads those builds
+ * through node:wasi, so they are installed here, with their own dependencies (@napi-rs/wasm-runtime,
+ * @emnapi/*), next to the native-only packages npm chose.
+ */
+async function placeWasiBindings(dir: string, log: (line: string) => void): Promise<void> {
+  const nm = join(dir, 'node_modules');
+  const wanted: Record<string, string> = {};
+  const candidates: Record<string, string> = {};
+  const visit = async (pkgDir: string) => {
+    try {
+      const pkg = JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8')) as { optionalDependencies?: Record<string, string> };
+      for (const [name, range] of Object.entries(pkg.optionalDependencies ?? {})) {
+        if (/wasm32-wasi$/.test(name)) wanted[name] = range;
+        // napi-rs platform packages (<name>-linux-x64-gnu): the WebAssembly build is <name>-wasm32-wasi, if published.
+        else if (/-linux-x64-gnu$/.test(name)) candidates[name.replace(/-linux-x64-gnu$/, '-wasm32-wasi')] = range;
+      }
+    } catch {
+      // not a package
+    }
+  };
+  for (const entry of await readdir(nm, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    if (entry.name.startsWith('@')) {
+      for (const sub of await readdir(join(nm, entry.name), { withFileTypes: true })) if (sub.isDirectory()) await visit(join(nm, entry.name, sub.name));
+    } else await visit(join(nm, entry.name));
+  }
+  const checks = await Promise.all(
+    Object.entries(candidates)
+      .filter(([name]) => !(name in wanted))
+      .map(async ([name, range]) => ((await npmViewVersion(`${name}@${range}`)) ? ([name, range] as const) : null)),
+  );
+  for (const hit of checks) if (hit) wanted[hit[0]] = hit[1];
+  const missing = Object.entries(wanted).filter(([name]) => !existsSyncSafe(join(nm, name, 'package.json')));
+  if (!missing.length) return;
+  const side = join(dir, '.sandburg-wasi');
+  await mkdir(side, { recursive: true });
+  await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(missing) }));
+  // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
+  await run('npm', ['install', '--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
+  const sideNm = join(side, 'node_modules');
+  const copy = async (name: string) => {
+    if (existsSyncSafe(join(nm, name, 'package.json'))) return;
+    await cp(join(sideNm, name), join(nm, name), { recursive: true });
+  };
+  for (const entry of await readdir(sideNm, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    if (entry.name.startsWith('@')) {
+      for (const sub of await readdir(join(sideNm, entry.name))) await copy(`${entry.name}/${sub}`);
+    } else await copy(entry.name);
+  }
+  await rm(side, { recursive: true, force: true });
+  log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
+}
+
+/** Whether a package version exists on the registry (npm view). */
+function npmViewVersion(spec: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn('npm', ['view', spec, 'version', '--json'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (b: Buffer) => (out += b.toString()));
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => resolve(code === 0 && out.trim() ? out.trim() : null));
+  });
+}
+
+function existsSyncSafe(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 async function placeNextSwcWasm(dir: string): Promise<void> {
   const from = join(dir, 'node_modules', '@next', 'swc-wasm-nodejs');
   const next = join(dir, 'node_modules', 'next');

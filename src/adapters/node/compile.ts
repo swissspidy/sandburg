@@ -14,6 +14,8 @@
 import { createHash } from 'node:crypto';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
+import { renameCommonJsNames } from './esm-names.ts';
+import { patchAsyncFunction, patchInterop } from './interop.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
@@ -40,13 +42,17 @@ export function compileForRuntime(code: string, path: string, kind: CompileKind,
   const key = createHash('sha256').update(kind).update(opts.asyncModules ? '\0async' : '').update('\0').update(path).update('\0').update(code).digest('hex');
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  let out = kind === 'cjs' && /\beval\("/.test(code) ? lowerEvalStrings(code) : code;
+  let out = patchAsyncFunction(kind === 'cjs' && /\beval\("/.test(code) ? lowerEvalStrings(code) : code);
   let loader: esbuild.Loader = kind === 'ts' ? (path.endsWith('x') ? 'tsx' : 'ts') : 'js';
-  if (kind !== 'cjs' && ((opts.asyncModules && MODULE_SYNTAX.test(out)) || /\bawait\b/.test(out))) {
-    // Types (and JSX) first, keeping the module syntax, so the rewrite sees plain JavaScript.
-    const js = loader === 'js' ? out : esbuild.transformSync(out, { loader, sourcefile: path, target: 'esnext', logLevel: 'silent' }).code;
-    if ((opts.asyncModules && MODULE_SYNTAX.test(js)) || hasTopLevelAwait(js)) {
-      out = toAsyncModule(js);
+  const esmSource = kind === 'esm';
+  if (kind !== 'cjs') {
+    // Types (and JSX) first, keeping the module syntax, so the rewrites below see plain JavaScript.
+    const needsJs = (opts.asyncModules && MODULE_SYNTAX.test(out)) || /\bawait\b/.test(out) || /\b(require|module|exports|__dirname|__filename)\b/.test(out);
+    if (needsJs) {
+      let js = loader === 'js' ? out : esbuild.transformSync(out, { loader, sourcefile: path, target: 'esnext', logLevel: 'silent' }).code;
+      js = renameCommonJsNames(js);
+      if ((opts.asyncModules && MODULE_SYNTAX.test(js)) || hasTopLevelAwait(js)) js = toAsyncModule(js);
+      out = js;
       loader = 'js';
     }
   }
@@ -59,6 +65,9 @@ export function compileForRuntime(code: string, path: string, kind: CompileKind,
     define: kind === 'cjs' ? undefined : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' },
     logLevel: 'silent',
   }).code;
+  // Marks code that came from an ES module: the loader resolves its requests with import conditions.
+  if (kind !== 'cjs' && (esmSource || MODULE_SYNTAX.test(code))) out = `/*sandburg:esm*/\n${out}`;
+  out = patchInterop(out);
   if (cache.size > 5000) cache.clear();
   cache.set(key, out);
   return out;

@@ -21,6 +21,7 @@
     "test:runtime": "node --test --test-reporter=spec test/runtime/*.test.ts"
   },
   "dependencies": {
+    "@napi-rs/wasm-runtime": "^1.2.4",
     "@playwright/test": "1.56.1",
     "@sqlite.org/sqlite-wasm": "3.53.4-build1",
     "acorn": "^8.18.0",

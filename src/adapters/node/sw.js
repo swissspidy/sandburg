@@ -107,6 +107,9 @@ async function forward(request, url) {
         // Set-Cookie cannot be set from a service worker response; the page applies cookies itself.
         const h = new Headers();
         for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
+        // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
+        if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', 'credentialless');
+        if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
         // App pages get the WebSocket shim (the host page relays their WebSockets to the runtime).
         if (body && request.mode === 'navigate' && /text\/html/i.test(h.get('content-type') ?? '')) {

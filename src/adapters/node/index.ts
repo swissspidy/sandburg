@@ -6,7 +6,9 @@
  */
 import { fileURLToPath } from 'node:url';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { expandScript, isTsRunner } from '../esbuild/backend.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
@@ -21,6 +23,48 @@ function extraDependencies(project: Project): Record<string, string> {
   const next = project.packageJson?.dependencies?.next ?? project.packageJson?.devDependencies?.next;
   // SWC's official WebAssembly build replaces the native @next/swc-* binaries (omitted at install).
   return typeof next === 'string' ? { '@next/swc-wasm-nodejs': next } : {};
+}
+
+/**
+ * How the project's dev (or start) script starts it: `node <file>` (or tsx/nodemon …), or a
+ * package's CLI (vite, astro, …), following npm run / concurrently like a shell would.
+ */
+export function startCommand(project: Project): { file?: string; bin?: string; argv: string[]; command: string; tsRunner: boolean } | null {
+  const scripts = project.packageJson?.scripts ?? {};
+  const script = scripts.dev ?? scripts.start;
+  if (script) {
+    for (const leaf of expandScript(project.files, '', script)) {
+      if (leaf.dir) continue; // another package's script: not this runtime's job
+      const [cmd, ...args] = leaf.words;
+      if (/^(node|nodemon|tsx|ts-node|ts-node-dev|esno)$/.test(cmd)) {
+        const positional = args.filter((a) => !a.startsWith('-') && a !== 'watch');
+        if (positional[0]) return { file: positional[0].replace(/^\.\//, ''), argv: positional.slice(1), command: leaf.command, tsRunner: isTsRunner(leaf.command) };
+      } else if (/^[a-z@][\w@/.-]*$/i.test(cmd) && !/^(npm|npx|yarn|pnpm|bun|cd|echo|rm|cp|mkdir|concurrently|cross-env)$/.test(cmd)) {
+        return { bin: cmd, argv: args, command: leaf.command, tsRunner: false };
+      }
+    }
+  }
+  if (typeof project.packageJson?.main === 'string') return { file: project.packageJson.main.replace(/^\.\//, ''), argv: [], command: `node ${project.packageJson.main}`, tsRunner: false };
+  return null;
+}
+
+/** The JS file behind a package binary (node_modules/.bin/<name>), from the installed packages' "bin" fields. */
+async function resolveBin(installDir: string, name: string): Promise<string | null> {
+  const nm = join(installDir, 'node_modules');
+  const candidates = [name, ...(await readdir(nm).catch(() => [] as string[]))];
+  for (const dir of candidates) {
+    const pkgs = dir.startsWith('@') ? (await readdir(join(nm, dir)).catch(() => [] as string[])).map((s) => `${dir}/${s}`) : [dir];
+    for (const pkgName of pkgs) {
+      try {
+        const pkg = JSON.parse(await readFile(join(nm, pkgName, 'package.json'), 'utf8')) as { name?: string; bin?: string | Record<string, string> };
+        const bin = typeof pkg.bin === 'string' ? (pkg.name?.split('/').pop() === name ? pkg.bin : null) : pkg.bin?.[name];
+        if (bin) return `node_modules/${pkgName}/${bin.replace(/^\.\//, '')}`;
+      } catch {
+        // not a package
+      }
+    }
+  }
+  return null;
 }
 
 export async function serve(req: HostRequest): Promise<HostResponse | null> {
@@ -64,22 +108,27 @@ export const node: AdapterDescriptor = {
   assets: { '/__sw__.js': fileURLToPath(new URL('./sw.js', import.meta.url)) },
   // The app's own server-side fetches (e.g. next/font/google) go through the gateway.
   egress: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'],
-  crossOriginIsolation: false,
+  // WebAssembly threads (rolldown and other Rust tools' WASI builds) need shared memory.
+  crossOriginIsolation: 'credentialless',
   // A cold npm install of a Next.js app and its first webpack compile take a while.
   // expect: routes compile on first request (next dev), which is slower in the browser.
   timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000 },
   probe(project: Project) {
     if (project.framework === 'next') return { verdict: 'supported' };
-    if (project.framework === 'vite') {
-      return { verdict: 'unsupported', reason: 'real Vite needs its native esbuild and Rollup builds swapped for wasm; not yet supported by the node runtime (use almostnode)' };
-    }
+    if (startCommand(project)) return { verdict: 'supported' };
     const scripts = project.packageJson?.scripts ?? {};
-    if (/^node\s+\S+/.test(scripts.dev ?? scripts.start ?? '') || typeof project.packageJson?.main === 'string') return { verdict: 'supported' };
-    return { verdict: 'unsupported', reason: 'no dev/start script of the form "node <file>" and no "main"' };
+    return { verdict: 'unsupported', reason: `no way to start this project in the node runtime (dev/start script: "${scripts.dev ?? scripts.start ?? ''}")` };
   },
   async hostInstall(project, log): Promise<HostInstall> {
     const info = await installer.install(project, extraDependencies(project), log);
-    return { key: info.key, index: await installer.index(info.key), resolved: info.resolved, lockfile: info.lockfile };
+    const cmd = project.framework === 'next' ? null : startCommand(project);
+    let start: HostInstall['start'] = null;
+    if (cmd) {
+      const main = cmd.bin ? await resolveBin(info.dir, cmd.bin) : cmd.file;
+      if (!main) throw new Error(`the dev script runs "${cmd.bin}", which no installed package provides`);
+      start = { main, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
+    }
+    return { key: info.key, index: await installer.index(info.key), resolved: info.resolved, lockfile: info.lockfile, start };
   },
   serve,
 };

@@ -45,6 +45,31 @@ export class Stats {
   isSocket() { return false; }
 }
 
+/** fs.BigIntStats ({ bigint: true }): the same stats as BigInts, plus nanosecond times. WASI asks for these. */
+export class BigIntStats {
+  dev: bigint; ino: bigint; mode: bigint; nlink: bigint; uid: bigint; gid: bigint; rdev: bigint; size: bigint; blksize: bigint; blocks: bigint;
+  atimeMs: bigint; mtimeMs: bigint; ctimeMs: bigint; birthtimeMs: bigint;
+  atimeNs: bigint; mtimeNs: bigint; ctimeNs: bigint; birthtimeNs: bigint;
+  atime: Date; mtime: Date; ctime: Date; birthtime: Date;
+  private stats: Stats;
+  constructor(s: Stats) {
+    this.stats = s;
+    const b = (n: number) => BigInt(Math.trunc(n));
+    this.dev = b(s.dev); this.ino = b(s.ino); this.mode = b(s.mode); this.nlink = b(s.nlink); this.uid = b(s.uid); this.gid = b(s.gid);
+    this.rdev = b(s.rdev); this.size = b(s.size); this.blksize = b(s.blksize); this.blocks = b(s.blocks);
+    this.atimeMs = this.mtimeMs = this.ctimeMs = this.birthtimeMs = b(s.mtimeMs);
+    this.atimeNs = this.mtimeNs = this.ctimeNs = this.birthtimeNs = b(s.mtimeMs * 1e6);
+    this.atime = s.atime; this.mtime = s.mtime; this.ctime = s.ctime; this.birthtime = s.birthtime;
+  }
+  isFile() { return this.stats.isFile(); }
+  isDirectory() { return this.stats.isDirectory(); }
+  isSymbolicLink() { return false; }
+  isBlockDevice() { return false; }
+  isCharacterDevice() { return false; }
+  isFIFO() { return false; }
+  isSocket() { return false; }
+}
+
 export class Dirent {
   name: string;
   parentPath: string;
@@ -79,9 +104,10 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   };
 
   // --- sync API -------------------------------------------------------------
-  function statSync(p: PathLike, o?: { throwIfNoEntry?: boolean }): Stats | undefined {
+  function statSync(p: PathLike, o?: { throwIfNoEntry?: boolean; bigint?: boolean }): Stats | BigIntStats | undefined {
     try {
-      return new Stats(vfs.stat(abs(p)));
+      const s = new Stats(vfs.stat(abs(p)));
+      return o?.bigint ? new BigIntStats(s) : s;
     } catch (e) {
       if (o?.throwIfNoEntry === false && (e as FsError).code === 'ENOENT') return undefined;
       throw e;
@@ -225,8 +251,9 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     }
     return total;
   }
-  function fstatSync(fd: number): Stats {
-    return new Stats(vfs.stat(fdPath(fd)));
+  function fstatSync(fd: number, o?: { bigint?: boolean }): Stats {
+    const s = new Stats(vfs.stat(fdPath(fd)));
+    return (o?.bigint ? new BigIntStats(s) : s) as Stats;
   }
   function ftruncateSync(fd: number, len = 0): void {
     vfs.write(fdPath(fd), new Uint8Array(vfs.read(fdPath(fd)).subarray(0, len)));
@@ -452,10 +479,10 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   function watchFile(p: PathLike, o: unknown, listener?: (curr: Stats, prev: Stats) => void) {
     const cb = (typeof o === 'function' ? o : listener) as (curr: Stats, prev: Stats) => void;
     const path = abs(p);
-    let prev = statSync(path, { throwIfNoEntry: false }) ?? new Stats({ kind: 'file', size: 0, mtimeMs: 0, ino: 0 });
+    let prev = (statSync(path, { throwIfNoEntry: false }) as Stats | undefined) ?? new Stats({ kind: 'file', size: 0, mtimeMs: 0, ino: 0 });
     const off = vfs.watch((_e, changed) => {
       if (changed !== path) return;
-      const curr = statSync(path, { throwIfNoEntry: false }) ?? new Stats({ kind: 'file', size: 0, mtimeMs: 0, ino: 0 });
+      const curr = (statSync(path, { throwIfNoEntry: false }) as Stats | undefined) ?? new Stats({ kind: 'file', size: 0, mtimeMs: 0, ino: 0 });
       cb(curr, prev);
       prev = curr;
     });

@@ -19,3 +19,4 @@ declare module 'browserify-zlib' {
   import zlib = require('node:zlib');
   export = zlib;
 }
+declare module '@napi-rs/wasm-runtime';

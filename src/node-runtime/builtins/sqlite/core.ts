@@ -57,10 +57,10 @@ export interface OoStmt {
 let engine: Sqlite3 | null = null;
 
 /** Loads the engine; the runtime awaits this before running a program that uses SQLite. */
-export async function loadSqlite(base: string): Promise<void> {
+export async function loadSqlite(base: string, importScripts: (url: string) => void): Promise<void> {
   if (engine) return;
-  (self as unknown as { importScripts(url: string): void }).importScripts(`${base}/sqlite3.js`);
-  const init = (self as unknown as { sandburgSqlite3: { default(o: object): Promise<Sqlite3> } }).sandburgSqlite3.default;
+  importScripts(`${base}/sqlite3.js`);
+  const init = (globalThis as unknown as { sandburgSqlite3: { default(o: object): Promise<Sqlite3> } }).sandburgSqlite3.default;
   engine = await init({ locateFile: () => `${base}/sqlite3.wasm`, print: () => {}, printErr: () => {} });
   // The engine logs failed steps and similar diagnostics; the native packages do not.
   const config = (engine as unknown as { config?: Record<string, unknown> }).config;

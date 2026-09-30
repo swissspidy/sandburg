@@ -112,7 +112,7 @@ export class HostServer {
     const headers: Record<string, string> = { 'cache-control': 'no-store' };
     if (adapter.crossOriginIsolation) {
       headers['cross-origin-opener-policy'] = 'same-origin';
-      headers['cross-origin-embedder-policy'] = 'require-corp';
+      headers['cross-origin-embedder-policy'] = adapter.crossOriginIsolation === 'credentialless' ? 'credentialless' : 'require-corp';
     }
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path === '/' || path === '/index.html' || path === '/__sandburg/') {

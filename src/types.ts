@@ -7,7 +7,7 @@
 export type FileTree = Record<string, FileContent>;
 export type FileContent = string | { base64: string };
 
-export type Framework = 'vite' | 'next' | 'angular' | 'wordpress' | 'static' | 'unknown';
+export type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'wordpress' | 'static' | 'unknown';
 
 export interface Project {
   name: string;
@@ -44,7 +44,11 @@ export interface AdapterDescriptor {
   /** Upstream origins the runtime itself needs (e.g. CDNs). */
   egress: string[];
   /** Host sends COOP/COEP when true. */
-  crossOriginIsolation: boolean;
+  /**
+   * Serve the sandbox cross-origin isolated (SharedArrayBuffer, WebAssembly threads). 'credentialless'
+   * uses COEP: credentialless, so cross-origin no-cors resources (fonts, images) still load.
+   */
+  crossOriginIsolation: boolean | 'credentialless';
   /**
    * Selectors of nested iframes, from the host's app frame down to the frame
    * the app renders in (e.g. WordPress Playground renders inside remote.html's #wp).

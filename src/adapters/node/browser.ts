@@ -13,6 +13,8 @@ export interface HostInstall {
   index: Record<string, number>;
   resolved: Record<string, string>;
   lockfile: boolean;
+  /** How to start the app (null: Next.js' programmatic dev server). `main` is project-relative. */
+  start?: { main: string; argv: string[]; command: string; tsRunner: boolean } | null;
 }
 
 const START = '.sandburg/start.js';
@@ -38,6 +40,8 @@ app
 export function createAdapter(): RuntimeAdapter {
   let files: FileTree = {};
   let proc: NodeProcess | null = null;
+  let main = `/app/${START}`;
+  let argv: string[] = [];
 
   return {
     name: 'node',
@@ -46,17 +50,18 @@ export function createAdapter(): RuntimeAdapter {
       files = { ...tree };
       if (!ctx.packageJson) throw new AdapterError('APP', 'package.json is missing or invalid');
       if (ctx.framework === 'next') files[START] = NEXT_DEV;
-      else {
-        const script = ctx.packageJson.scripts?.dev ?? ctx.packageJson.scripts?.start ?? '';
-        const main = /^node\s+(\S+)/.exec(script)?.[1] ?? (typeof ctx.packageJson.main === 'string' ? ctx.packageJson.main : null);
-        if (!main) throw new AdapterError('UNSUPPORTED', `no way to start this project in the node runtime (dev/start script: "${script}")`);
-        files[START] = `require(${JSON.stringify(`../${main.replace(/^\.\//, '')}`)});\n`;
-      }
     },
 
     async install(ctx: AdapterContext, hostData?: unknown): Promise<InstallReport> {
       const host = hostData as HostInstall;
+      if (ctx.framework !== 'next') {
+        if (!host.start) throw new AdapterError('UNSUPPORTED', 'no way to start this project in the node runtime');
+        main = `/app/${host.start.main}`;
+        argv = host.start.argv;
+        ctx.log('stdout', `starting: ${host.start.command}`);
+      }
       proc = new NodeProcess({
+        tsRunner: host.start?.tsRunner,
         files,
         // NEXT_TEST_WASM: load SWC's WebAssembly build (there is no native SWC in the browser).
         env: { NEXT_TELEMETRY_DISABLED: '1', PORT: '3000', CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
@@ -85,7 +90,7 @@ export function createAdapter(): RuntimeAdapter {
         const target = webSocketPort(url, p.ports, () => port || null);
         return target ? { proc: p, port: target } : null;
       });
-      p.run(`/app/${START}`);
+      p.run(main, argv);
       port = await p.listening();
       return { url: '/' };
     },
