@@ -7,7 +7,7 @@
 export type FileTree = Record<string, FileContent>;
 export type FileContent = string | { base64: string };
 
-export type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'wordpress' | 'static' | 'unknown';
+export type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'solid-start' | 'react-router' | 'wordpress' | 'static' | 'unknown';
 
 export interface Project {
   name: string;

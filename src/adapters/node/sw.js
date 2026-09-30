@@ -90,6 +90,8 @@ async function forward(request, url) {
   const { port1, port2 } = new MessageChannel();
   const headers = [];
   request.headers.forEach((value, name) => headers.push([name, value]));
+  // Forbidden headers are not in request.headers; servers read Referer (SolidStart's single-flight actions).
+  if (request.referrer && request.referrer !== 'about:client' && !headers.some(([n]) => n === 'referer')) headers.push(['referer', request.referrer]);
   p.postMessage({ type: 'request', method: request.method, url: url.pathname + url.search, headers, body }, body ? [port2, body] : [port2]);
   return new Promise((resolve) => {
     let controller;

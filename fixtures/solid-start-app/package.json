@@ -1,0 +1,20 @@
+{
+  "name": "solid-start-app",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "vite preview"
+  },
+  "dependencies": {
+    "@solidjs/meta": "^0.29.4",
+    "@solidjs/router": "^0.16.1",
+    "@solidjs/start": "^2.0.5",
+    "solid-js": "^1.9.15",
+    "vite": "^8.0.16"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

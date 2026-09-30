@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { renameCommonJsNames } from './esm-names.ts';
-import { patchAsyncFunction, patchInterop } from './interop.ts';
+import { esmSourcefile, patchAsyncFunction, patchInterop } from './interop.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
@@ -59,7 +59,7 @@ export function compileForRuntime(code: string, path: string, kind: CompileKind,
   out = esbuild.transformSync(out, {
     loader,
     format: kind === 'cjs' ? undefined : 'cjs',
-    sourcefile: path,
+    sourcefile: kind === 'esm' && loader === 'js' ? esmSourcefile(path) : path,
     target: 'es2022',
     supported: LOWER,
     define: kind === 'cjs' ? undefined : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' },

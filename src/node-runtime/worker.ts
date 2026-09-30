@@ -10,6 +10,7 @@ import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import { ThreadVfs, createWorkerThreads, liveRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess } from './child-process.ts';
+import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
 import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
@@ -213,9 +214,9 @@ function buildBuiltins() {
     getDefaultHighWaterMark: () => 65536,
     setDefaultHighWaterMark: () => {},
   });
-  // Node >= 17: Readable.fromWeb / toWeb and friends.
+  // Node >= 17: Readable.fromWeb / toWeb and friends. readable-stream has them, but they call Node internals.
   const Readable = rs.Readable as unknown as Record<string, unknown>;
-  Readable.fromWeb ??= (web: ReadableStream, opts?: object) => {
+  Readable.fromWeb = (web: ReadableStream, opts?: object) => {
     const reader = web.getReader();
     return new rs.Readable({
       ...opts,
@@ -227,7 +228,7 @@ function buildBuiltins() {
       },
     });
   };
-  Readable.toWeb ??= (node: NodeJS.ReadableStream) =>
+  Readable.toWeb = (node: NodeJS.ReadableStream) =>
     new ReadableStream({
       start(controller) {
         node.on('data', (c: Buffer | string) => controller.enqueue(typeof c === 'string' ? new TextEncoder().encode(c) : new Uint8Array(c)));
@@ -239,7 +240,7 @@ function buildBuiltins() {
       },
     });
   const Writable = rs.Writable as unknown as Record<string, unknown>;
-  Writable.fromWeb ??= (web: WritableStream) => {
+  Writable.fromWeb = (web: WritableStream) => {
     const writer = web.getWriter();
     return new rs.Writable({
       write(chunk, _e, cb) {
@@ -250,7 +251,7 @@ function buildBuiltins() {
       },
     });
   };
-  Writable.toWeb ??= (node: NodeJS.WritableStream) =>
+  Writable.toWeb = (node: NodeJS.WritableStream) =>
     new WritableStream({
       write: (chunk) => new Promise<void>((res) => (node.write(chunk) ? res() : node.once('drain', () => res()))),
       close: () => new Promise<void>((res) => node.end(res)),
@@ -539,13 +540,27 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   // `new AsyncFunction(…params, body)` with the body lowered like all other code (see interop.ts).
   const RealAsyncFunction = new Function('return (async function () {}).constructor')() as FunctionConstructor;
+  /** Names evaluated code in stack traces after the file its inline source map is for (Vite's SSR modules). */
+  const sourceUrlOf = (code: string): string => {
+    const named = /\/\/[#@] sourceURL=(\S+)\s*$/m.exec(code);
+    if (named) return `\n//# sourceURL=${named[1]}`;
+    const map = /\/\/[#@] sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,([A-Za-z0-9+/=]+)\s*$/m.exec(code);
+    if (!map) return '';
+    try {
+      const { sources, file } = JSON.parse(atob(map[1])) as { sources?: string[]; file?: string };
+      const name = sources?.[0] ?? file;
+      return name ? `\n//# sourceURL=${name}` : '';
+    } catch {
+      return '';
+    }
+  };
   function AsyncFunction(...args: unknown[]) {
     const body = args.length ? String(args.pop()) : '';
     const params = args.map(String).join(',');
     try {
       const js = hostCompile(`module.exports = async function anonymous(${params}\n) {\n${body}\n};`, '/[eval]', 'cjs');
       const m = { exports: undefined as unknown };
-      new Function('module', js)(m);
+      new Function('module', js + sourceUrlOf(body))(m);
       return m.exports;
     } catch {
       return new RealAsyncFunction(...(args as string[]), body);
@@ -583,6 +598,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   // Node globals.
   const g = globalThis as Record<string, unknown>;
+  installNodeFetchClasses(g);
   Object.assign(g, {
     console: nodeConsole,
     process: proc,

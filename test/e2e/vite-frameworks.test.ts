@@ -2,7 +2,7 @@
  * Real Vite 8 in the node runtime (ADR 0012): meta-frameworks run their own dev servers in the
  * browser — SvelteKit, Astro, React Router (framework mode, relaunched as a child process with
  * --conditions=development) and Nuxt (Nitro's server in a worker thread, vite-node over a local
- * socket) — with server rendering, hydration and client navigation. A plain Vite app runs on
+ * socket) and SolidStart — with server rendering, hydration and client navigation. A plain Vite app runs on
  * real Vite too.
  *
  * Dependencies (and their WebAssembly builds) are installed on the host from the npm registry
@@ -28,8 +28,9 @@ const cases: [string, string, string][] = [
   ['svelte-vite', 'vite', 'a Svelte app on real Vite'],
   ['sveltekit-app', 'sveltekit', 'SvelteKit (load(), hydration, client navigation)'],
   ['astro-app', 'astro', 'Astro 7 (frontmatter, client script, API endpoint)'],
-  ['react-router-app', 'vite', 'React Router 8 framework mode (loader, action, hydration)'],
+  ['react-router-app', 'react-router', 'React Router 8 framework mode (loader, action, hydration)'],
   ['nuxt-app', 'nuxt', 'Nuxt 4 (Nitro server route, useFetch, hydration)'],
+  ['solid-start-app', 'solid-start', 'SolidStart 2 (server function, action, API route)'],
 ];
 for (const [name, framework, what] of cases) {
   test(`${what} runs on the node runtime`, async () => {

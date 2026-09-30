@@ -16,11 +16,11 @@ import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { renameCommonJsNames } from './esm-names.ts';
-import { patchAsyncFunction, patchInterop } from './interop.ts';
+import { esmSourcefile, patchAsyncFunction, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-const TRANSFORM_VERSION = 6;
+const TRANSFORM_VERSION = 7;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 7;
 
@@ -177,7 +177,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
 export const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.TransformOptions => ({
   loader: 'js',
   format: esm ? 'cjs' : undefined,
-  sourcefile: path,
+  sourcefile: esm ? esmSourcefile(path) : path,
   target: 'es2022',
   // import() goes through the runtime's loader (require), like everything else.
   supported: { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false },

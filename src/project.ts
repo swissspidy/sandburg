@@ -66,6 +66,8 @@ export function detectFramework(files: FileTree, pkg: PackageJson | null): Frame
   if ('@sveltejs/kit' in deps) return 'sveltekit';
   if ('astro' in deps || paths.some((p) => /^astro\.config\.[cm]?[jt]s$/.test(p))) return 'astro';
   if ('nuxt' in deps || paths.some((p) => /^nuxt\.config\.[cm]?[jt]s$/.test(p))) return 'nuxt';
+  if ('@solidjs/start' in deps) return 'solid-start';
+  if ('@react-router/dev' in deps) return 'react-router';
   if ('vite' in deps || paths.some((p) => /^vite\.config\.[cm]?[jt]s$/.test(p))) return 'vite';
   if (isWordPressPlugin(files) || isWordPressTheme(files)) return 'wordpress';
   if (!pkg && 'index.html' in files) return 'static';
