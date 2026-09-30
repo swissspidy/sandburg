@@ -22,7 +22,7 @@ import type { Project } from '../../types.ts';
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 const TRANSFORM_VERSION = 10;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 13;
+const LAYOUT_VERSION = 14;
 
 export interface InstallInfo {
   key: string;
@@ -54,7 +54,8 @@ export class Installer {
   }
 
   /**
-   * Removes installs of an earlier layout (LAYOUT_VERSION): their keys are never asked for again.
+   * Removes installs of an earlier layout (LAYOUT_VERSION) that have not changed for a day: their
+   * keys are never asked for again.
    * An install records its layout in .sandburg-complete; one without the record is left alone.
    */
   private async sweep(): Promise<void> {
@@ -62,7 +63,10 @@ export class Installer {
       if (!/^[0-9a-f]{24}$/.test(name)) continue;
       const done = await readFile(join(this.root, name, '.sandburg-complete'), 'utf8').catch(() => '');
       const layout = /layout (\d+)/.exec(done)?.[1];
-      if (layout && Number(layout) !== LAYOUT_VERSION) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
+      // A day without changes (new transforms are written into an install as it is used), so another
+      // Sandburg process still on that layout is not using it.
+      const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
+      if (layout && Number(layout) !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
     }
   }
 
@@ -347,7 +351,20 @@ function existsSyncSafe(path: string): boolean {
  * installed copy gets that build installed next to it (in its own node_modules), and the file that
  * loads the native code is replaced by one that loads the WebAssembly build.
  */
-const WASM_BUILDS: { name: string; wasm: string; file: string; applies(version: string): boolean; shim: string }[] = [
+const WASM_BUILDS: { name: string; wasm: string; file: string; applies(version: string): boolean; shim: string; also?: Record<string, string> }[] = [
+  {
+    // The Dart Sass compiler as a native program (sass-embedded-<platform>, which it runs over a pipe):
+    // the same compiler compiled to JavaScript (sass), with the same API. Angular's CLI and Vite
+    // prefer sass-embedded when it is installed.
+    name: 'sass-embedded',
+    wasm: 'sass',
+    file: 'dist/lib/index.js',
+    applies: (v) => /^1\./.test(v),
+    shim: "// sandburg: Dart Sass compiled to JavaScript (sass) in place of the native embedded compiler\nmodule.exports = require('../../node_modules/sass/sass.node.js');\n",
+    also: {
+      'dist/lib/index.mjs': "// sandburg: Dart Sass compiled to JavaScript (sass) in place of the native embedded compiler\nexport * from '../../node_modules/sass/sass.node.mjs';\nexport { default } from '../../node_modules/sass/sass.node.mjs';\n",
+    },
+  },
   {
     // Rollup 4's parser (@rollup/rollup-<platform>).
     name: 'rollup',
@@ -493,6 +510,7 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
       await rm(side, { recursive: true, force: true });
     }
     await writeFile(join(pkgDir, build.file), build.shim);
+    for (const [file, shim] of Object.entries(build.also ?? {})) await writeFile(join(pkgDir, file), shim);
     log(`${build.name} ${version}: using ${build.wasm}`);
   }
 }

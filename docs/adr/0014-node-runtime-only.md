@@ -86,6 +86,9 @@ classified as `compile-error` app bugs at that location.
 - `import()` inside `new Function` source and in plain CommonJS files goes through the runtime's
   loader with import conditions. A module with top-level await is thenable until it has
   evaluated, so `await import()` from CommonJS waits for it.
+- `sass-embedded` runs Dart Sass as a native program over a pipe; the Angular CLI 22 and Vite
+  prefer it when it is installed. It is replaced at install by `sass`, the same compiler compiled
+  to JavaScript, with the same API (as WebContainers do).
 - The reported Node.js version is 24.15.0 (the Angular CLI 22 refuses 24.11). The main program
   exits when its event loop is empty, as child processes already did.
 - The service worker's requests carry a `Host` header (Vite 5's `allowedHosts` check rejects a
@@ -113,4 +116,28 @@ before it uses it.
 
 ## Measurements
 
-MEASUREMENTS
+**The 100-app corpus** ([study v4](../fidelity/v4-node-vs-truth.md), against ground truth): 97/100
+right, the same answers as `--runtime auto` in v3, with no false alarms; all 27 caught faults are
+classified `app-bug`.
+
+| Apps | v3 (`auto`), median run | v4 (node), median run | v4, median of a repeat run |
+|---|---|---|---|
+| vite-vanilla (33) | 2.7 s | 3.9 s | 3.4 s |
+| vite-react (34) | 13.4 s | 33.0 s | 9.1 s |
+| nextjs (33) | 38.4 s | 40.4 s | |
+
+Both studies installed dependencies cold. A first run of a vite-react app is slower on real Vite:
+Vite 6 pre-bundles `lucide-react` with esbuild's WebAssembly build, in one thread. A repeat run keeps
+the install and Vite's pre-bundled dependencies.
+
+**Fixtures** (installs cached, from the e2e suite on the same machine):
+
+| Fixture | Run |
+|---|---|
+| lit-vite, Tailwind v4 on Vite | 4.5 s, 4.7 s |
+| vite-react-counter (Vite 5) | 6.3 s |
+| solid-vite, preact-vite | 8.0 s, 8.5 s |
+| socket.io chat, Vue + Express + SQLite, React + Express (`client/` + `server/`) | 11–12 s |
+| svelte-vite | 17.9 s |
+| angular-tasks (Angular 22), angular-19-zone | 28 s, 40 s |
+| Next.js 15 | 33 s |

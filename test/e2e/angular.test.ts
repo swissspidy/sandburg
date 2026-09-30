@@ -74,18 +74,19 @@ test('Tailwind CSS v4 via @tailwindcss/postcss is applied', async () => {
 });
 
 test('Sass @use of a package (the Angular CDK) is resolved by the CLI\'s importer', async () => {
-  const dir = fixture('angular-19-zone');
-  const base = await loadProject(dir);
+  const base = await loadProject(tasks);
   const pkg = JSON.parse(base.files['package.json'] as string);
-  pkg.dependencies['@angular/cdk'] = '^19.2.0';
+  pkg.dependencies['@angular/cdk'] = pkg.dependencies['@angular/core'];
+  const { 'src/styles.css': _css, ...files } = base.files;
   const project = projectFromFiles(
     {
-      ...base.files,
+      ...files,
       'package.json': JSON.stringify(pkg),
+      'angular.json': (base.files['angular.json'] as string).replace('"src/styles.css"', '"src/styles.scss"'),
       'src/styles.scss': "@use '@angular/cdk' as cdk;\n\n@include cdk.a11y-visually-hidden();\n",
       'src/index.html': (base.files['src/index.html'] as string).replace('<body>', '<body>\n  <span class="cdk-visually-hidden" data-testid="hidden">only for screen readers</span>'),
     },
-    { name: 'angular-sass-package', path: dir },
+    { name: 'angular-sass-package', path: tasks },
   );
   const tmp = await mkdtemp(join(tmpdir(), 'sandburg-ng-sass-'));
   const checks = join(tmp, 'checks.spec.ts');
