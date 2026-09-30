@@ -1,0 +1,16 @@
+{
+  "id": "008-vite-vanilla",
+  "target": "vite-vanilla",
+  "framework": "vite-vanilla",
+  "features": [
+    "persist",
+    "form",
+    "converter",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "010-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "form",
+    "search",
+    "tabs",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "syntax",
+  "buggyFeature": null,
+  "expected": "fail"
+}

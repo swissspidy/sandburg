@@ -1,0 +1,50 @@
+{
+  "name": "sandburg",
+  "version": "0.1.0",
+  "description": "Run and test generated web apps inside the browser.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "sandburg": "./bin/sandburg.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=spec test/unit/*.test.ts",
+    "test:e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.test.ts",
+    "spike": "node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts",
+    "test:runtime": "node --test --test-reporter=spec test/runtime/*.test.ts"
+  },
+  "dependencies": {
+    "@napi-rs/wasm-runtime": "^1.2.4",
+    "@playwright/test": "1.56.1",
+    "@sqlite.org/sqlite-wasm": "3.53.4-build1",
+    "acorn": "^8.18.0",
+    "almostnode": "0.2.14",
+    "assert": "^2.1.0",
+    "axe-core": "^4.13.0",
+    "browserify-zlib": "^0.2.0",
+    "buffer": "^6.0.3",
+    "crypto-browserify": "^3.12.1",
+    "esbuild": "^0.28.2",
+    "esbuild-wasm": "^0.28.2",
+    "events": "^3.3.0",
+    "path-browserify": "^1.0.1",
+    "playwright-core": "1.56.1",
+    "querystring-es3": "^0.2.1",
+    "readable-stream": "^4.7.0",
+    "string_decoder": "^1.3.0",
+    "url": "^0.11.4",
+    "util": "^0.12.5"
+  },
+  "devDependencies": {
+    "@pkgjs/parseargs": "^0.11.0",
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

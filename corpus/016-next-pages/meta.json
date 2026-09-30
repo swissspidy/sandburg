@@ -1,0 +1,14 @@
+{
+  "id": "016-next-pages",
+  "target": "next-pages",
+  "framework": "nextjs",
+  "features": [
+    "tabs",
+    "icons"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "logic",
+  "buggyFeature": "icons",
+  "expected": "fail"
+}

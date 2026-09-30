@@ -1,0 +1,21 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Counter from '../components/Counter.astro';
+
+const planets = ['Mercury', 'Venus', 'Earth', 'Mars'];
+---
+
+<Layout title="Welcome to Astro">
+  <h1>Welcome to Astro</h1>
+  <p>Rendered by Astro with {planets.length} planets.</p>
+  <ul>
+    {planets.map((planet) => <li>{planet}</li>)}
+  </ul>
+  <Counter />
+  <p id="api-message">Loading…</p>
+  <script>
+    const res = await fetch('/api/hello.json');
+    const { message } = await res.json();
+    document.getElementById('api-message')!.textContent = message;
+  </script>
+</Layout>

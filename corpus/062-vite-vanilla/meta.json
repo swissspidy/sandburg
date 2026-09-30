@@ -1,0 +1,16 @@
+{
+  "id": "062-vite-vanilla",
+  "target": "vite-vanilla",
+  "framework": "vite-vanilla",
+  "features": [
+    "form",
+    "modal",
+    "fetch",
+    "tabs"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "tabs",
+  "expected": "fail"
+}

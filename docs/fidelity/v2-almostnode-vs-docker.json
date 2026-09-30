@@ -1,0 +1,4461 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-29T15:59:33.916Z",
+  "runtime": "almostnode 0.2.14",
+  "reference": "docker node:22-slim",
+  "vcpus": 4,
+  "vcpuHourUsd": 0.0504,
+  "overall": {
+    "n": 100,
+    "agreement": 0.97,
+    "bothPass": 70,
+    "bothFail": 27,
+    "browserStricter": 3,
+    "browserLenient": 0
+  },
+  "byFramework": {
+    "nextjs": {
+      "n": 33,
+      "agreement": 1,
+      "bothPass": 23,
+      "bothFail": 10,
+      "browserStricter": 0,
+      "browserLenient": 0
+    },
+    "vite-react": {
+      "n": 34,
+      "agreement": 0.912,
+      "bothPass": 23,
+      "bothFail": 8,
+      "browserStricter": 3,
+      "browserLenient": 0
+    },
+    "vite-vanilla": {
+      "n": 33,
+      "agreement": 1,
+      "bothPass": 24,
+      "bothFail": 9,
+      "browserStricter": 0,
+      "browserLenient": 0
+    }
+  },
+  "causes": {
+    "undeclared-import": 3
+  },
+  "groundTruth": {
+    "n": 100,
+    "browserAccuracy": 1,
+    "referenceAccuracy": 0.97
+  },
+  "excluded": [],
+  "timing": {
+    "browser": {
+      "medianMs": 5281,
+      "p90Ms": 12626,
+      "meanMs": 6938,
+      "wallMs": 175807,
+      "parallel": 4,
+      "machineMsPerRun": 1758,
+      "costUsdPerRun": 0.00009845192
+    },
+    "reference": {
+      "medianMs": 11954,
+      "p90Ms": 28397,
+      "meanMs": 14450,
+      "wallMs": 487142,
+      "parallel": 3,
+      "machineMsPerRun": 4871,
+      "costUsdPerRun": 0.00027279952
+    }
+  },
+  "batches": {
+    "browser": "b-mumupffi-89e45d",
+    "reference": "b-mumut734-e2cb62"
+  },
+  "pairs": [
+    {
+      "label": "000-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "000-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "icons",
+          "counter",
+          "modal",
+          "tabs"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupffj-7b56d6",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 10076,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumut734-33bb13",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 13280,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "001-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "001-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "form",
+          "converter"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupffj-2d7924",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 12989,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumut734-45a428",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 28230,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "002-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "002-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "form",
+          "tabs",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupffj-60ae7c",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 9296,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumut734-065979",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7696,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "003-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "003-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "router",
+          "persist",
+          "icons",
+          "modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "type-error",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupffj-3eef48",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 13598,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumutd1b-90af10",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 14782,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "004-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "004-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "converter",
+          "persist",
+          "counter"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupmp9-a746dd",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 8755,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuthch-5bc644",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 24855,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "005-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "005-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "persist",
+          "form",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "logic",
+        "buggyFeature": "persist",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumupna5-7ac1aa",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "persist"
+        ],
+        "totalMs": 23195,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumutogp-e851b7",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "persist"
+        ],
+        "totalMs": 21694,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "006-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "006-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "router",
+          "icons",
+          "search",
+          "modal",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuppib-c75ab1",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7462,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumutsvz-62ff7f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 12276,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "007-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "007-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "modal",
+          "search",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupq15-2b3ff5",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7494,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuu0j9-0c3db2",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 23615,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "008-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "008-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "persist",
+          "form",
+          "converter",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupti4-b205ff",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5624,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuu2dd-59021d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4686,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "009-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "009-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "modal",
+          "dates",
+          "tabs"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupvb0-1e8266",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 6666,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuu57p-577ee7",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 10360,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "010-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "010-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "form",
+          "search",
+          "tabs",
+          "counter"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "syntax",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumupvvn-7e0fbd",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 14421,
+        "message": "[NextDevServer] Transform error: Error: Transform failed with 1 error:"
+      },
+      "reference": {
+        "runId": "r-mumuu5zy-3a469d",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 36318,
+        "message": "Module build failed (from ./node_modules/next/dist/build/webpack/loaders/next-swc-loader.js):"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "011-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "011-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "persist",
+          "fetch",
+          "converter",
+          "search"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumupxvx-718d6c",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 6130,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuud7z-6c59dc",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4752,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "012-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "012-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "fetch",
+          "icons",
+          "form"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuq0hr-513f88",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5281,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuugwi-a6d17b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 11954,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "013-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "013-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "fetch",
+          "todo",
+          "store",
+          "modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "store",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuq2ni-ae3942",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "store"
+        ],
+        "totalMs": 12626,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuuirw-454404",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "store"
+        ],
+        "totalMs": 29568,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "014-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "014-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "converter",
+          "fetch"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuq4ld-2d6ae8",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4831,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuuq52-c4e37f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5346,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "015-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "015-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "store",
+          "tabs",
+          "dates"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuq57k-5520db",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7878,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuuua4-0b09d2",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 9212,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "016-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "016-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "tabs",
+          "icons"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "icons",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuq72f-fd420c",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "icons"
+        ],
+        "totalMs": 10923,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuuy16-0f78d1",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "icons"
+        ],
+        "totalMs": 28397,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "017-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "017-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "todo",
+          "counter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "syntax",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuq8d6-0c8dde",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 6469,
+        "message": "[ViteDevServer] Transform error: Error: Transform failed with 1 error:"
+      },
+      "reference": {
+        "runId": "r-mumuv1eb-234d93",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 12592,
+        "message": "3:52:56 PM [vite] (client) Pre-transform error: Transform failed with 1 error:"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "018-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "018-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "converter",
+          "store",
+          "persist"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqbbs-81e8fa",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5007,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuv5lj-e5d68e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7217,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "019-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "019-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "tabs",
+          "todo",
+          "store",
+          "search"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqcfi-438c5b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5560,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuvb4g-a978ed",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 26997,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "020-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "020-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "fetch",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqdih-8f2e2b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5121,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuvb6p-c40b6f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4925,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "021-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "021-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "store",
+          "icons"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "icons",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuqf7o-b119ca",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "icons"
+        ],
+        "totalMs": 10694,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuvf0e-340f50",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "icons"
+        ],
+        "totalMs": 16600,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "022-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "022-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "store",
+          "fetch",
+          "converter"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "converter",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuqfip-f53593",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 11752,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuvjyg-17c9a4",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 35489,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "023-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "023-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "fetch",
+          "search",
+          "form"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "logic",
+        "buggyFeature": "form",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuqgr5-4b9f8d",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "form"
+        ],
+        "totalMs": 10749,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuvru5-70dfb6",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "form"
+        ],
+        "totalMs": 11142,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "024-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "024-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "modal",
+          "dates",
+          "tabs",
+          "todo"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqhht-87c8fb",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 6095,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuvvyz-847bbf",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 10497,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "025-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "025-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "converter",
+          "counter",
+          "tabs"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqm8g-a7b6f4",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5467,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuw0g9-75fb0d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 22842,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "026-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "026-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "modal",
+          "persist"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqnhi-30a343",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7577,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuw43q-b43d9d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5108,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "027-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "027-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "icons",
+          "dates"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "syntax",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuqom2-aeb63f",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 8463,
+        "message": "[ViteDevServer] Transform error: Error: Transform failed with 1 error:"
+      },
+      "reference": {
+        "runId": "r-mumuw82a-a9fd08",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 16348,
+        "message": "3:53:55 PM [vite] (client) Pre-transform error: /app/src/components/IconsFeature.tsx: Unexpected token (5:15)"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "028-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "028-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "modal",
+          "search",
+          "converter",
+          "store",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "type-error",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqp3i-9a59fe",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 8596,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuwbct-58698e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 23263,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "029-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "029-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "tabs",
+          "converter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqqim-c13f0b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7085,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuwi37-d5fc99",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4227,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "030-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "030-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "todo",
+          "router",
+          "store",
+          "search",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "search",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuqtfu-069edc",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "search"
+        ],
+        "totalMs": 15805,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuwkp3-19277e",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "search"
+        ],
+        "totalMs": 13992,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "031-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "031-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "store",
+          "todo",
+          "persist"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "type-error",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqv7d-e59d9e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 11408,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuwld5-bd12f8",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 20586,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "032-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "032-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "modal",
+          "search",
+          "converter",
+          "tabs"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqvrp-10bdea",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7359,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuwtbh-5df65b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4070,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "033-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "033-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "tabs",
+          "todo",
+          "store",
+          "search"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuqw06-2e5245",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 12335,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuwvia-8b183c",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7488,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "034-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "034-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "icons",
+          "converter",
+          "persist",
+          "search"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "persist",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumur1il-db7062",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "persist"
+        ],
+        "totalMs": 25718,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuwwh1-70f0a8",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "persist"
+        ],
+        "totalMs": 38786,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "035-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "035-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "fetch",
+          "search",
+          "todo"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumur42b-db4b79",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7042,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumux1a2-f3942e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5803,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "036-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "036-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "dates",
+          "converter",
+          "router"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumur5k0-c578d5",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 22444,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumux1az-c84dcf",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 10270,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "037-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "037-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "store",
+          "form",
+          "todo",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "bad-version",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumur5nx-2c9c8e",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "adapter-code:APP",
+        "failedChecks": [],
+        "totalMs": 901,
+        "message": "no matching version found for react-confetti@^99.0.0 (npm would fail with ETARGET)"
+      },
+      "reference": {
+        "runId": "r-mumux5s7-775ef3",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "adapter-code:APP",
+        "failedChecks": [],
+        "totalMs": 4340,
+        "message": "npm install failed: docker exec sandburg-ref-mumux5s7-25e5ac npm exited with 1"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "038-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "038-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "modal",
+          "fetch"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "type-error",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumur6dw-948b11",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 21669,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumux95e-000f4d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4496,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "039-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "039-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "dates",
+          "router",
+          "search",
+          "fetch"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumur9iv-57e4a0",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 20356,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumux98p-bcc5f5",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 8434,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "040-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "040-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "search",
+          "icons"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurlk7-7f6598",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5016,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuxcpy-b699c5",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 19766,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "041-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "041-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "tabs",
+          "form",
+          "search"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurmwr-bc5ad6",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5084,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuxfrv-ebac5b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4811,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "042-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "042-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "todo",
+          "icons",
+          "store"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "crash",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumurn4h-30aad7",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 6599,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "reference": {
+        "runId": "r-mumuxjhu-cc3414",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 11289,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "043-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "043-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "modal",
+          "icons",
+          "persist",
+          "store"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurp8z-506035",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5488,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuxqf1-715b76",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 23551,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "044-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "044-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "todo",
+          "counter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurpis-9a2f08",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3405,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuxrzn-257f00",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5310,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "045-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "045-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "router",
+          "todo",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurquo-ac589e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3943,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuxs7y-d437d8",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 8845,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "046-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "046-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "counter",
+          "store",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurs5u-46b572",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5303,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuxw3y-232e8c",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 24468,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "047-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "047-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "converter",
+          "modal",
+          "search"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurs8d-82d2e2",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3886,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuxz2n-b04b2b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5081,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "048-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "048-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "search",
+          "dates",
+          "tabs",
+          "store"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurthv-1129e8",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4818,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuy308-0192c9",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 9182,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "049-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "049-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "store",
+          "todo",
+          "search",
+          "tabs"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurtwy-db44b6",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4588,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuy8lu-45afd7",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 20506,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "050-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "050-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "persist",
+          "form",
+          "todo",
+          "counter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurv8w-4a0ee5",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4835,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuya47-98511f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 6088,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "051-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "051-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "converter",
+          "search"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "logic",
+        "buggyFeature": "converter",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumurw9z-363f41",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 8494,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuyeuo-ebe99c",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 12241,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "052-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "052-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "modal",
+          "search",
+          "dates"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurx8w-e98853",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4282,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuyezz-eb67e0",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 21218,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "053-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "053-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "modal",
+          "todo"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumurxhd-497622",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3655,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuyog7-bd06f5",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4595,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "054-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "054-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "tabs",
+          "search",
+          "converter",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "undeclared-import",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuryzn-c5a60b",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "undeclared-import",
+        "failedChecks": [],
+        "totalMs": 4222,
+        "message": "imports undeclared package \"nanoid\""
+      },
+      "reference": {
+        "runId": "r-mumuyog8-35ed81",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 6571,
+        "message": null
+      },
+      "comparable": true,
+      "agree": false,
+      "disagreement": "browser-stricter",
+      "cause": "undeclared-import"
+    },
+    {
+      "label": "055-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "055-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "modal",
+          "store",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus0bo-418350",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3044,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuys05-caf454",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 24310,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "056-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "056-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "tabs",
+          "modal",
+          "persist",
+          "search"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "bad-version",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumus0kb-366942",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "adapter-code:APP",
+        "failedChecks": [],
+        "totalMs": 377,
+        "message": "no matching version found for canvas-confetti@^99.0.0 (npm would fail with ETARGET)"
+      },
+      "reference": {
+        "runId": "r-mumuytjp-d31944",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "adapter-code:APP",
+        "failedChecks": [],
+        "totalMs": 2661,
+        "message": "npm install failed: docker exec sandburg-ref-mumuytjq-896f4c npm exited with 1"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "057-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "057-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "tabs",
+          "todo",
+          "icons",
+          "search"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus0ve-4226b9",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4295,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuyvdu-76f8c2",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 11116,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "058-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "058-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "converter",
+          "persist"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus29k-862285",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3989,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuyvmg-a5de2e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 23555,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "059-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "059-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "tabs",
+          "fetch",
+          "converter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus2os-bbff45",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4338,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuz3z5-c79907",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4418,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "060-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "060-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "modal",
+          "converter",
+          "todo",
+          "dates"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "type-error",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus2v3-0c5c91",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5502,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuz7ee-ba8811",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 8831,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "061-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "061-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "counter",
+          "fetch",
+          "modal",
+          "icons"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus477-469da1",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4074,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuzas1-cc6c21",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 22350,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "062-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "062-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "form",
+          "modal",
+          "fetch",
+          "tabs"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "logic",
+        "buggyFeature": "tabs",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumus5dz-b9f14f",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "tabs"
+        ],
+        "totalMs": 9184,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuzdtf-fad428",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "tabs"
+        ],
+        "totalMs": 10495,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "063-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "063-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "icons",
+          "tabs",
+          "form"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "crash",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumus61y-50f2d7",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 5424,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "reference": {
+        "runId": "r-mumuze80-456dcf",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 10259,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "064-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "064-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "fetch",
+          "todo",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "crash",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumus74g-1d3535",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "app-error-before-ready",
+        "failedChecks": [],
+        "totalMs": 9439,
+        "message": "app did not render after a console error: Failed to load resource: the server responded with a status of 404 (Not Found) (http://r-mumus74g-1d3535.sandburg.localhost:45447/__virtual__/5173/styles/tailwindcss)"
+      },
+      "reference": {
+        "runId": "r-mumuzlxn-d08dc6",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 30984,
+        "message": "app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Internal Server Error) (http://r-mumuzlxn-d08dc6-ref.sandburg.localhost:40777/)"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "065-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "065-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "tabs",
+          "converter",
+          "form",
+          "counter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus7cv-45e9bc",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3081,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuzm5e-35af75",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4906,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "066-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "066-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "fetch",
+          "modal",
+          "tabs",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "18.3.1",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumus9qw-268846",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 2489,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumuzpy2-18231f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 14398,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "067-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "067-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "icons",
+          "todo",
+          "counter"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "counter",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusa98-a8b90f",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "counter"
+        ],
+        "totalMs": 8090,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumuzs2e-bbabd6",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "counter"
+        ],
+        "totalMs": 29020,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "068-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "068-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "counter",
+          "form",
+          "tabs"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusbor-15582d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 2502,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv012o-78d326",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4833,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "069-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "069-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "form",
+          "converter",
+          "counter",
+          "router"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuscp2-1adaa7",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3022,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv04t9-a05ec1",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7652,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "070-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "070-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "todo",
+          "converter",
+          "store",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusdmy-5b5253",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3504,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv09un-928bc9",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 20884,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "071-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "071-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "form",
+          "counter",
+          "tabs",
+          "fetch"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusef0-062f80",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3076,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv0aqa-e48a53",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4300,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "072-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "072-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "converter",
+          "modal",
+          "fetch",
+          "todo"
+        ],
+        "tailwind": true,
+        "react": "18.3.1",
+        "fault": "logic",
+        "buggyFeature": "converter",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusf1o-a8fb52",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 8628,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumv0e2a-681999",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 15314,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "073-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "073-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "fetch",
+          "dates"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusgcp-b03f2f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4108,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv0eh6-be8397",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 28698,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "074-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "074-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "todo",
+          "persist",
+          "search"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusgij-2a94a6",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3401,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv0pyb-b11295",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5980,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "075-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "075-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "todo",
+          "icons",
+          "converter"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusgtf-678738",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4765,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv0pz2-5ef959",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 14600,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "076-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "076-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "todo",
+          "icons",
+          "search",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusj5c-97e2c7",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3935,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv0ulo-8e715c",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 26521,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "077-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "077-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "modal",
+          "todo",
+          "search",
+          "fetch"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusjjb-bdd7dd",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4115,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv10mt-d65884",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5474,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "078-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "078-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "search",
+          "persist"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "undeclared-import",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuski7-bc72ec",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "undeclared-import",
+        "failedChecks": [],
+        "totalMs": 4369,
+        "message": "imports undeclared package \"nanoid\""
+      },
+      "reference": {
+        "runId": "r-mumv119p-964ebb",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 7551,
+        "message": null
+      },
+      "comparable": true,
+      "agree": false,
+      "disagreement": "browser-stricter",
+      "cause": "undeclared-import"
+    },
+    {
+      "label": "079-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "079-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "persist",
+          "dates"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "dates",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumuslq1-bb753d",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "dates"
+        ],
+        "totalMs": 9903,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumv14vj-4289fb",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "dates"
+        ],
+        "totalMs": 31840,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "080-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "080-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "modal",
+          "form",
+          "persist",
+          "converter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "logic",
+        "buggyFeature": "form",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusm7k-399209",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "form"
+        ],
+        "totalMs": 9602,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumv173y-79f553",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "form"
+        ],
+        "totalMs": 10719,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "081-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "081-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "todo",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusmq8-7b2544",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4220,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv1f30-6beade",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 9279,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "082-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "082-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "persist",
+          "modal",
+          "todo"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "logic",
+        "buggyFeature": "todo",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusnxv-108d16",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "todo"
+        ],
+        "totalMs": 3839,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumv1fe4-bbb2d6",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "todo"
+        ],
+        "totalMs": 23893,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "083-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "083-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "tabs",
+          "todo",
+          "counter"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusq06-98a22d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 2654,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv1m9i-e765db",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5532,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "084-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "084-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "dates",
+          "router"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "undeclared-import",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusqxr-b4fc16",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "undeclared-import",
+        "failedChecks": [],
+        "totalMs": 3995,
+        "message": "imports undeclared package \"nanoid\""
+      },
+      "reference": {
+        "runId": "r-mumv1qjk-1f1b9f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 13069,
+        "message": null
+      },
+      "comparable": true,
+      "agree": false,
+      "disagreement": "browser-stricter",
+      "cause": "undeclared-import"
+    },
+    {
+      "label": "085-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "085-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "tailwind-modal",
+          "fetch",
+          "todo"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumuss2o-40a1ed",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3234,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv1tge-1132b3",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 28104,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "086-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "086-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "tabs",
+          "todo"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumustdr-04e818",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3646,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv1xuh-9fb730",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4963,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "087-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "087-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "modal",
+          "icons",
+          "form"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumustn9-5ecaa9",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4780,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv20n4-42ce45",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 13201,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "088-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "088-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "todo",
+          "search",
+          "tabs",
+          "persist"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusu16-da698e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5194,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv21ox-600d56",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 23031,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "089-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "089-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "search",
+          "persist",
+          "fetch"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "crash",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusul6-a5003b",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 5702,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "reference": {
+        "runId": "r-mumv2auq-c208ce",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 6916,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "090-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "090-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "router",
+          "converter",
+          "form",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "18.3.1",
+        "fault": "logic",
+        "buggyFeature": "converter",
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusw7v-059202",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 10189,
+        "message": "1 blocking check(s) failed"
+      },
+      "reference": {
+        "runId": "r-mumv2f6e-991807",
+        "status": "failed",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "blocking-check-failed",
+        "failedChecks": [
+          "converter"
+        ],
+        "totalMs": 15739,
+        "message": "1 blocking check(s) failed"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "091-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "091-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "tabs",
+          "search"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusxch-12d478",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3628,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv2g7f-b71d3f",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 24804,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "092-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "092-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "form",
+          "todo",
+          "search"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "syntax",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumusy23-12571a",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 4366,
+        "message": "[ViteDevServer] Transform error: Error: Transform failed with 1 error:"
+      },
+      "reference": {
+        "runId": "r-mumv2jhj-ae5524",
+        "status": "error",
+        "passed": false,
+        "failureClass": "app-bug",
+        "rule": "compile-error",
+        "failedChecks": [],
+        "totalMs": 12659,
+        "message": "3:58:47 PM [vite] (client) Pre-transform error: Transform failed with 1 error:"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "093-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "093-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "tabs",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": "18.3.1",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumusz0b-711095",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3293,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv2rdi-3e0840",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 8628,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "094-next-app",
+      "framework": "nextjs",
+      "meta": {
+        "id": "094-next-app",
+        "target": "next-app",
+        "framework": "nextjs",
+        "features": [
+          "form",
+          "fetch",
+          "search"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumut05x-902e4b",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3228,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv2t9w-cb27ab",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 28771,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "095-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "095-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "fetch",
+          "counter",
+          "persist",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "type-error",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumut1fw-a02584",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3953,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv2y1m-2f6fe7",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 5379,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "096-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "096-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "icons",
+          "tabs",
+          "dates",
+          "search"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumut1k7-baae4e",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 4451,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv2zd1-17984d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 14410,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "097-next-pages",
+      "framework": "nextjs",
+      "meta": {
+        "id": "097-next-pages",
+        "target": "next-pages",
+        "framework": "nextjs",
+        "features": [
+          "modal",
+          "tabs",
+          "converter",
+          "tailwind-modal"
+        ],
+        "tailwind": true,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumut2oa-65aea7",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 3861,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv327m-ff30cc",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 22759,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "098-vite-vanilla",
+      "framework": "vite-vanilla",
+      "meta": {
+        "id": "098-vite-vanilla",
+        "target": "vite-vanilla",
+        "framework": "vite-vanilla",
+        "features": [
+          "search",
+          "modal"
+        ],
+        "tailwind": false,
+        "react": null,
+        "fault": "crash",
+        "buggyFeature": null,
+        "expected": "fail"
+      },
+      "browser": {
+        "runId": "r-mumut43f-801688",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 3860,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "reference": {
+        "runId": "r-mumv3ahz-b41830",
+        "status": "error",
+        "passed": false,
+        "failureClass": "unknown",
+        "rule": "unmatched",
+        "failedChecks": [],
+        "totalMs": 6454,
+        "message": "app threw before rendering: Cannot read properties of undefined (reading 'theme')"
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    },
+    {
+      "label": "099-vite-react",
+      "framework": "vite-react",
+      "meta": {
+        "id": "099-vite-react",
+        "target": "vite-react",
+        "framework": "vite-react",
+        "features": [
+          "fetch",
+          "icons",
+          "search",
+          "store"
+        ],
+        "tailwind": false,
+        "react": "19.1.0",
+        "fault": "none",
+        "buggyFeature": null,
+        "expected": "pass"
+      },
+      "browser": {
+        "runId": "r-mumut4ia-bf406d",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 2890,
+        "message": null
+      },
+      "reference": {
+        "runId": "r-mumv3fhn-e380b3",
+        "status": "passed",
+        "passed": true,
+        "failureClass": null,
+        "rule": null,
+        "failedChecks": [],
+        "totalMs": 9674,
+        "message": null
+      },
+      "comparable": true,
+      "agree": true,
+      "disagreement": null,
+      "cause": null
+    }
+  ]
+}

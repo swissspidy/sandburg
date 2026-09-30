@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/swissspidy/sandburg/result-schema.json",
+  "title": "Sandburg run result",
+  "description": "One run of one project in one runtime. schemaVersion 1; see docs/adr/0001-runtime-adapters-serving-results.md.",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "status", "project", "runtime", "environment", "startedAt", "finishedAt", "timings", "phases", "install", "checks", "failure", "console", "pageErrors", "network", "artifacts"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string" },
+    "status": { "enum": ["passed", "failed", "error"] },
+    "project": {
+      "type": "object",
+      "required": ["name", "path", "framework", "snapshotId", "fileCount"],
+      "properties": {
+        "name": { "type": "string" },
+        "path": { "type": "string" },
+        "framework": { "enum": ["vite", "next", "wordpress", "static", "unknown"] },
+        "snapshotId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "fileCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "previousAttempts": { "type": "array", "items": { "type": "string" } },
+    "runtime": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": { "name": { "type": "string" }, "version": { "type": "string" } }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["sandburgVersion", "browser", "platform", "offline"],
+      "properties": {
+        "sandburgVersion": { "type": "string" },
+        "browser": { "type": "string" },
+        "platform": { "type": "string" },
+        "offline": { "type": "boolean" }
+      }
+    },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "timings": {
+      "type": "object",
+      "required": ["probeMs", "loadMs", "mountMs", "installMs", "buildMs", "startMs", "readyMs", "checksMs", "totalMs"],
+      "properties": {
+        "probeMs": { "$ref": "#/$defs/msOrNull" },
+        "loadMs": { "$ref": "#/$defs/msOrNull" },
+        "mountMs": { "$ref": "#/$defs/msOrNull" },
+        "installMs": { "$ref": "#/$defs/msOrNull" },
+        "buildMs": { "$ref": "#/$defs/msOrNull" },
+        "startMs": { "$ref": "#/$defs/msOrNull" },
+        "readyMs": { "$ref": "#/$defs/msOrNull" },
+        "checksMs": { "$ref": "#/$defs/msOrNull" },
+        "totalMs": { "type": "number", "minimum": 0 }
+      }
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "durationMs"],
+        "properties": {
+          "name": { "$ref": "#/$defs/phase" },
+          "status": { "enum": ["ok", "failed", "timeout", "skipped"] },
+          "durationMs": { "type": "number", "minimum": 0 },
+          "error": { "$ref": "#/$defs/error" }
+        }
+      }
+    },
+    "install": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["resolution", "lockfileHonored", "dependencies"],
+          "properties": {
+            "resolution": { "enum": ["lockfile", "range", "none"] },
+            "lockfileHonored": { "type": "boolean" },
+            "dependencies": { "type": "object", "additionalProperties": { "type": "string" } },
+            "buildMs": { "$ref": "#/$defs/msOrNull" },
+            "shims": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "name", "status", "blocking", "durationMs"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "enum": ["functional", "document", "console", "network", "axe", "a11y-snapshot", "screenshot"] },
+          "name": { "type": "string" },
+          "status": { "enum": ["passed", "failed", "error", "skipped"] },
+          "blocking": { "type": "boolean" },
+          "durationMs": { "type": "number", "minimum": 0 },
+          "message": { "type": "string" },
+          "details": {}
+        }
+      }
+    },
+    "failure": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["class", "phase", "rule", "message", "evidence"],
+          "properties": {
+            "class": { "enum": ["runtime-unsupported", "app-bug", "timeout", "infra", "unknown"] },
+            "phase": { "$ref": "#/$defs/phase" },
+            "rule": { "type": "string" },
+            "message": { "type": "string" },
+            "evidence": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "console": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "type", "text"],
+        "properties": {
+          "source": { "enum": ["app", "host"] },
+          "type": { "type": "string" },
+          "text": { "type": "string" },
+          "url": { "type": "string" }
+        }
+      }
+    },
+    "pageErrors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "message"],
+        "properties": {
+          "source": { "enum": ["app", "host"] },
+          "message": { "type": "string" },
+          "stack": { "type": "string" }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "required": ["requests", "cacheHits", "cacheMisses", "failed", "blocked"],
+      "properties": {
+        "requests": { "type": "integer", "minimum": 0 },
+        "cacheHits": { "type": "integer", "minimum": 0 },
+        "cacheMisses": { "type": "integer", "minimum": 0 },
+        "tunneled": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "array", "items": { "$ref": "#/$defs/networkEntry" } },
+        "blocked": { "type": "array", "items": { "$ref": "#/$defs/networkEntry" } }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "screenshot": { "type": "string" },
+        "a11ySnapshot": { "type": "string" },
+        "runtimeLog": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "msOrNull": { "type": ["number", "null"], "minimum": 0 },
+    "phase": { "enum": ["probe", "load", "mount", "install", "start", "ready", "checks", "dispose"] },
+    "error": {
+      "type": "object",
+      "required": ["name", "message"],
+      "properties": {
+        "name": { "type": "string" },
+        "message": { "type": "string" },
+        "code": { "type": "string" },
+        "stack": { "type": "string" }
+      }
+    },
+    "networkEntry": {
+      "type": "object",
+      "required": ["url", "method", "reason"],
+      "properties": {
+        "url": { "type": "string" },
+        "method": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

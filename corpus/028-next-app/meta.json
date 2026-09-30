@@ -1,0 +1,17 @@
+{
+  "id": "028-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "modal",
+    "search",
+    "converter",
+    "store",
+    "tailwind-modal"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "type-error",
+  "buggyFeature": null,
+  "expected": "pass"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "022-next-pages",
+  "target": "next-pages",
+  "framework": "nextjs",
+  "features": [
+    "store",
+    "fetch",
+    "converter"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "logic",
+  "buggyFeature": "converter",
+  "expected": "fail"
+}

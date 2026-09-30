@@ -1,0 +1,15 @@
+{
+  "id": "015-vite-react",
+  "target": "vite-react",
+  "framework": "vite-react",
+  "features": [
+    "store",
+    "tabs",
+    "dates"
+  ],
+  "tailwind": false,
+  "react": "18.3.1",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

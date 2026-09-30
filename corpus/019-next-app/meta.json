@@ -1,0 +1,16 @@
+{
+  "id": "019-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "tabs",
+    "todo",
+    "store",
+    "search"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

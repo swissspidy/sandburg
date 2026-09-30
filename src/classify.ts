@@ -1,0 +1,129 @@
+/**
+ * Failure classification (ADR 0001, decision 3). Rules run in order and the
+ * first match wins; each result names its rule so a disagreement with the
+ * Docker reference can be traced back to the rule that caused it.
+ */
+import type { CheckResult, Failure, PageError, PhaseName, PhaseRecord, ProbeVerdict } from './types.ts';
+
+const NODE_BUILTINS = [
+  'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'crypto', 'dgram', 'diagnostics_channel', 'dns', 'events',
+  'fs', 'http', 'http2', 'https', 'inspector', 'module', 'net', 'os', 'path', 'perf_hooks', 'process', 'querystring',
+  'readline', 'stream', 'string_decoder', 'timers', 'tls', 'tty', 'url', 'util', 'v8', 'vm', 'worker_threads', 'zlib',
+];
+
+/** Error texts that point at a limitation of the in-browser runtime, not the app. */
+export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
+  { rule: 'signature:bare-specifier', pattern: /Failed to resolve module specifier|Relative references must start with/i },
+  { rule: 'signature:cdn-transform', pattern: /esm\.sh.*(error|failed)|\[esm\.sh\]/i },
+  { rule: 'signature:native-addon', pattern: /\.node['"]? (?:is not|cannot)|native (?:module|addon)|node-gyp|NODE_MODULE_VERSION/i },
+  { rule: 'signature:stubbed-builtin', pattern: /\b(net|tls|dgram|dns|cluster|worker_threads|child_process)\b.*not (?:supported|implemented)/i },
+  // A Node.js built-in the runtime does not implement (e.g. Nodebox lacks dns/promises).
+  { rule: 'signature:missing-builtin', pattern: new RegExp(`Cannot find module ['"](?:node:)?(?:${NODE_BUILTINS.join('|')})(?:/[a-z_/]+)?['"]`) },
+  // The runtime's emulated Node.js is older than the framework requires.
+  { rule: 'signature:node-version', pattern: /Node\.js version >=? ?v?\d+[.\d]* is required|requires Node\.js/i },
+  { rule: 'signature:esbuild-wasm', pattern: /esbuild(-wasm)?.*(initialize|not available)|Cannot find module ['"]esbuild-wasm['"]/i },
+  // The runtime's own worker failed to boot (seen with Nodebox).
+  { rule: 'signature:runtime-worker', pattern: /Initializing node worker failed/i },
+];
+
+/** A runtime's own download came back broken (an error page instead of an archive, a reset). */
+const INFRA_SIGNATURE = /runtime asset failed to load|Could not unzip file\. Error code: \d+\. File size: \d+ bytes|ERR_TUNNEL_CONNECTION_FAILED|ECONNRESET|socket hang up|upstream proxy refused/i;
+
+const RUNTIME_BOOT_FETCH = /Failed to fetch dynamically imported module|WebWorker failed to load|Failed to register a ServiceWorker/i;
+
+/** Compile errors reported by dev servers and esbuild for the project's sources. */
+const COMPILE_ERROR = /Module build failed|Failed to compile|Transform failed with \d+ error|\[plugin:vite:[a-z-]+\]|Expected [^\n]{1,40} but found|Unexpected token|Unterminated (string|template)/i;
+
+export interface ClassifyInput {
+  probe: ProbeVerdict | null;
+  phases: PhaseRecord[];
+  checks: CheckResult[];
+  pageErrors: PageError[];
+  /** Errors the runtime logged about the project (e.g. NextDevServer's transform errors); used for compile errors only. */
+  runtimeErrors?: string[];
+  /** Dependency names declared in package.json (dependencies and devDependencies). */
+  declaredDependencies: string[];
+  /** Set when the orchestrator or browser itself failed (crash, offline cache miss). */
+  infraError: { phase: PhaseName; message: string } | null;
+}
+
+export function classify(input: ClassifyInput): Failure | null {
+  // dispose is cleanup: a failure there is recorded but never decides the run's class.
+  const failedPhase = input.phases.find((p) => p.name !== 'dispose' && (p.status === 'failed' || p.status === 'timeout'));
+  const failedChecks = input.checks.filter((c) => c.blocking && (c.status === 'failed' || c.status === 'error'));
+  if (!failedPhase && failedChecks.length === 0 && input.probe?.verdict !== 'unsupported') return null;
+
+  if (failedPhase?.status === 'timeout') {
+    return failure('timeout', failedPhase.name, 'phase-deadline', failedPhase.error?.message ?? `${failedPhase.name} timed out`, []);
+  }
+  // The runtime could not fetch its own code while booting (before any project code ran).
+  if (failedPhase && (failedPhase.name === 'load' || failedPhase.name === 'mount') && RUNTIME_BOOT_FETCH.test(failedPhase.error?.message ?? '')) {
+    return failure('infra', failedPhase.name, 'runtime-boot-fetch', failedPhase.error!.message.split('\n')[0], []);
+  }
+  const infraText = [failedPhase?.error?.message ?? '', ...(input.runtimeErrors ?? [])].find((t) => INFRA_SIGNATURE.test(t));
+  if (failedPhase && infraText) {
+    return failure('infra', failedPhase.name, 'signature:download-failed', infraText.split('\n').slice(0, 3).join('\n'), []);
+  }
+  if (input.infraError) {
+    return failure('infra', input.infraError.phase, 'infra-error', input.infraError.message, []);
+  }
+  if (input.probe?.verdict === 'unsupported') {
+    return failure('runtime-unsupported', 'probe', 'probe-unsupported', input.probe.reason, []);
+  }
+
+  const appErrors = input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message);
+  // Importing a package the project never declared fails in any environment: that is the app's bug.
+  const undeclared = undeclaredImport(appErrors, input.declaredDependencies);
+  if (undeclared) {
+    return failure('app-bug', failedPhase?.name ?? 'checks', 'undeclared-import', `imports undeclared package "${undeclared}"`, appErrors);
+  }
+  if (failedPhase) {
+    const err = failedPhase.error;
+    const message = err?.message ?? `${failedPhase.name} failed`;
+    if (err?.code === 'UNSUPPORTED') return failure('runtime-unsupported', failedPhase.name, 'adapter-code:UNSUPPORTED', message, []);
+    if (err?.code === 'APP') return failure('app-bug', failedPhase.name, 'adapter-code:APP', message, []);
+    const evidence = [message, ...appErrors];
+    const sig = matchSignature(evidence);
+    if (sig) return failure('runtime-unsupported', failedPhase.name, sig, message, evidence);
+    // The project's own source does not compile (dev servers report this for syntax errors).
+    const compile = [message, ...appErrors, ...(input.runtimeErrors ?? [])].find((e) => COMPILE_ERROR.test(e));
+    if (compile) return failure('app-bug', failedPhase.name, 'compile-error', compile.split('\n').slice(0, 3).join('\n'), evidence);
+    // The runtime came up, but the app never rendered and threw from its own sources.
+    if (failedPhase.name === 'ready' && hasProjectStack(input.pageErrors)) {
+      return failure('app-bug', 'ready', 'app-error-before-ready', message, appErrors);
+    }
+    return failure('unknown', failedPhase.name, 'unmatched', message, evidence);
+  }
+
+  const evidence = [...failedChecks.map((c) => `${c.name}: ${c.message ?? c.status}`), ...appErrors];
+  const sig = matchSignature(appErrors);
+  if (sig) return failure('runtime-unsupported', 'checks', sig, failedChecks[0].message ?? 'check failed', evidence);
+  return failure('app-bug', 'checks', 'blocking-check-failed', `${failedChecks.length} blocking check(s) failed`, evidence);
+}
+
+function undeclaredImport(errors: string[], declared: string[]): string | null {
+  for (const text of errors) {
+    const m = /Failed to resolve module specifier ["']([^"']+)["']/.exec(text);
+    if (!m || m[1].startsWith('.') || m[1].startsWith('/')) continue;
+    const parts = m[1].split('/');
+    const pkg = m[1].startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+    if (!declared.includes(pkg)) return pkg;
+  }
+  return null;
+}
+
+function matchSignature(texts: string[]): string | null {
+  for (const { rule, pattern } of RUNTIME_SIGNATURES) {
+    if (texts.some((t) => pattern.test(t))) return rule;
+  }
+  return null;
+}
+
+/** An error whose stack runs through served project files (not CDN or runtime code). */
+function hasProjectStack(errors: PageError[]): boolean {
+  return errors.some((e) => e.source === 'app' && /\/__virtual__\/\d+\/(?!@|node_modules)/.test(e.stack ?? ''));
+}
+
+function failure(cls: Failure['class'], phase: PhaseName, rule: string, message: string, evidence: string[]): Failure {
+  return { class: cls, phase, rule, message, evidence: evidence.slice(0, 10) };
+}

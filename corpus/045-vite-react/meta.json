@@ -1,0 +1,15 @@
+{
+  "id": "045-vite-react",
+  "target": "vite-react",
+  "framework": "vite-react",
+  "features": [
+    "router",
+    "todo",
+    "tailwind-modal"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

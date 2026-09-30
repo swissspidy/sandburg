@@ -1,0 +1,394 @@
+{
+  "schemaVersion": 1,
+  "runId": "r-mumxhhya-efa01d",
+  "status": "passed",
+  "project": {
+    "name": "wordpress-reading-time",
+    "path": "fixtures/wordpress-reading-time",
+    "framework": "wordpress",
+    "snapshotId": "33698dabb520374d3b10cc667fbd519172aea23c0d47fb49773a53b1bdf7b63f",
+    "fileCount": 1
+  },
+  "runtime": {
+    "name": "wordpress",
+    "version": "playground.wordpress.net"
+  },
+  "environment": {
+    "sandburgVersion": "0.1.0",
+    "browser": "chromium 141.0.7390.37",
+    "platform": "linux-x64",
+    "offline": false
+  },
+  "startedAt": "2026-09-29T17:06:19.820Z",
+  "finishedAt": "2026-09-29T17:06:32.479Z",
+  "timings": {
+    "probeMs": 0,
+    "loadMs": 108,
+    "mountMs": 7125,
+    "installMs": 279,
+    "buildMs": null,
+    "startMs": 1462,
+    "readyMs": 57,
+    "checksMs": 3553,
+    "totalMs": 12659
+  },
+  "phases": [
+    {
+      "name": "probe",
+      "status": "ok",
+      "durationMs": 0
+    },
+    {
+      "name": "load",
+      "status": "ok",
+      "durationMs": 108
+    },
+    {
+      "name": "mount",
+      "status": "ok",
+      "durationMs": 7125
+    },
+    {
+      "name": "install",
+      "status": "ok",
+      "durationMs": 279
+    },
+    {
+      "name": "start",
+      "status": "ok",
+      "durationMs": 1462
+    },
+    {
+      "name": "ready",
+      "status": "ok",
+      "durationMs": 57
+    },
+    {
+      "name": "checks",
+      "status": "ok",
+      "durationMs": 3553
+    },
+    {
+      "name": "dispose",
+      "status": "ok",
+      "durationMs": 3
+    }
+  ],
+  "install": {
+    "resolution": "none",
+    "lockfileHonored": false,
+    "dependencies": {},
+    "buildMs": null
+  },
+  "checks": [
+    {
+      "id": "screenshot",
+      "kind": "screenshot",
+      "name": "Screenshot",
+      "blocking": false,
+      "durationMs": 48,
+      "status": "passed"
+    },
+    {
+      "id": "a11y-snapshot",
+      "kind": "a11y-snapshot",
+      "name": "Accessibility tree snapshot",
+      "blocking": false,
+      "durationMs": 29,
+      "status": "passed",
+      "details": {
+        "lines": 79
+      }
+    },
+    {
+      "id": "axe",
+      "kind": "axe",
+      "name": "axe-core accessibility scan",
+      "blocking": false,
+      "durationMs": 290,
+      "status": "failed",
+      "message": "aria-allowed-role (minor, 7 nodes), list (serious, 1 nodes), region (moderate, 1 nodes)",
+      "details": {
+        "violations": [
+          {
+            "id": "aria-allowed-role",
+            "impact": "minor",
+            "nodes": 7
+          },
+          {
+            "id": "list",
+            "impact": "serious",
+            "nodes": 1
+          },
+          {
+            "id": "region",
+            "impact": "moderate",
+            "nodes": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "functional:shows-reading-time-on-a-post",
+      "kind": "functional",
+      "name": "shows reading time on a post",
+      "blocking": true,
+      "durationMs": 482,
+      "status": "passed"
+    },
+    {
+      "id": "functional:reading-speed-can-be-changed-in-the-settings",
+      "kind": "functional",
+      "name": "reading speed can be changed in the settings",
+      "blocking": true,
+      "durationMs": 2703,
+      "status": "passed"
+    },
+    {
+      "id": "console",
+      "kind": "console",
+      "name": "No uncaught errors in the app",
+      "blocking": true,
+      "durationMs": 0,
+      "status": "passed",
+      "details": {
+        "uncaught": 0,
+        "consoleErrors": 8
+      }
+    },
+    {
+      "id": "network",
+      "kind": "network",
+      "name": "No failed or blocked requests",
+      "blocking": false,
+      "durationMs": 0,
+      "status": "failed",
+      "message": "GET https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g: origin not allowlisted\nPOST https://api.wordpress.org/core/browse-happy/1.1/: only GET/HEAD reach allowlisted origins\nPOST https://api.wordpress.org/plugins/update-check/1.1/: only GET/HEAD reach allowlisted origins\nPOST https://api.wordpress.org/themes/update-check/1.1/: only GET/HEAD reach allowlisted origins\nPOST https://api.wordpress.org/core/version-check/1.7/?version=7.1.2&php=8.3.33&locale=en_US&mysql=8.0.38-mysql-on-sqlite-3.0.2&local_package=&blogs=1&users=1&multisite_enabled=0&initial_db_version=61833&extensions%5Bbcmath%5D=8.3.33&extensions%5Bcalendar%5D=8.3.33&extensions%5BCore%5D=8.3.33&extensions%5Bctype%5D=8.3.33&extensions%5Bcurl%5D=8.3.33&extensions%5Bdate%5D=8.3.33&extensions%5Bdns_polyfill%5D=1.0.0&extensions%5Bdom%5D=20031129&extensions%5Bexif%5D=8.3.33&extensions%5Bfileinfo%5D=8.3.33&extensions%5Bfilter%5D=8.3.33&extensions%5Bgd%5D=8.3.33&extensions%5Bhash%5D=8.3.33&extensions%5Biconv%5D=8.3.33&extensions%5Bjson%5D=8.3.33&extensions%5Blibxml%5D=8.3.33&extensions%5Bmbstring%5D=8.3.33&extensions%5Bopcache%5D=8.3.33&extensions%5Bopenssl%5D=8.3.33&extensions%5Bpcre%5D=8.3.33&extensions%5BPDO%5D=8.3.33&extensions%5Bpdo_sqlite%5D=8.3.33&extensions%5BPhar%5D=8.3.33&extensions%5Bpost_message_to_js%5D=1.0.0&extensions%5Brandom%5D=8.3.33&extensions%5BReflection%5D=8.3.33&extensions%5Bsession%5D=8.3.33&extensions%5BSimpleXML%5D=8.3.33&extensions%5Bsoap%5D=8.3.33&extensions%5BSPL%5D=8.3.33&extensions%5Bsqlite3%5D=8.3.33&extensions%5Bstandard%5D=8.3.33&extensions%5Btokenizer%5D=8.3.33&extensions%5Bwasm_memory_storage%5D=0.0.1&extensions%5Bxml%5D=8.3.33&extensions%5Bxmlreader%5D=8.3.33&extensions%5Bxmlwriter%5D=8.3.33&extensions%5BZend+OPcache%5D=8.3.33&extensions%5Bzip%5D=1.22.3&extensions%5Bzlib%5D=8.3.33&platform_flags%5Bos%5D=Linux&platform_flags%5Bbits%5D=64&image_support%5Bgd%5D%5B0%5D=webp&image_support%5Bgd%5D%5B1%5D=avif: only GET/HEAD reach allowlisted origins",
+      "details": {
+        "failed": 0,
+        "blocked": 18
+      }
+    }
+  ],
+  "failure": null,
+  "console": [
+    {
+      "source": "app",
+      "type": "warning",
+      "text": "Loaded WordPress version (7.1) differs from requested version (latest).",
+      "url": "https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js"
+    },
+    {
+      "source": "app",
+      "type": "log",
+      "text": "[29-Sep-2026 17:06:26 UTC] PHP Notice:  Function wp_maybe_inline_styles was called <strong>incorrectly</strong>. Unable to read the \"path\" key with value \"/wordpress/wp-content/themes/twentytwentyfive/style.min.css\" for stylesheet \"twentytwentyfive-style\". Please see <a href=\"https://developer.wordpress.org/advanced-administration/debug/debug-wordpress/\">Debugging in WordPress</a> for more information. (This message was added in version 7.0.0.) in /wordpress/wp-includes/functions.php on line 135\n",
+      "url": "https://playground.wordpress.net/client/index-Brkvo5HN.js"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g"
+    },
+    {
+      "source": "app",
+      "type": "info",
+      "text": "Intercepted 5 admin requests for pre-fetching",
+      "url": "https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js"
+    },
+    {
+      "source": "host",
+      "type": "log",
+      "text": "[runtime:stdout] OK",
+      "url": "http://r-mumxhhya-efa01d.sandburg.localhost:36733/__sandburg/host.js"
+    },
+    {
+      "source": "app",
+      "type": "warning",
+      "text": "Failed to pre-fetch admin request: https://api.wordpress.org/core/browse-happy/1.1/ TypeError: Failed to fetch\n    at https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:556\n    at Array.map (<anonymous>)\n    at WordPressFetchNetworkTransport.prefetchUpdateChecks (https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:161)\n    at async PlaygroundWorkerEndpointBlueprints.prefetchUpdateChecks (https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5244:1581)",
+      "url": "https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js"
+    },
+    {
+      "source": "app",
+      "type": "warning",
+      "text": "Failed to pre-fetch admin request: https://api.wordpress.org/plugins/update-check/1.1/ TypeError: Failed to fetch\n    at https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:556\n    at Array.map (<anonymous>)\n    at WordPressFetchNetworkTransport.prefetchUpdateChecks (https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:161)\n    at async PlaygroundWorkerEndpointBlueprints.prefetchUpdateChecks (https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5244:1581)",
+      "url": "https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js"
+    },
+    {
+      "source": "app",
+      "type": "warning",
+      "text": "Failed to pre-fetch admin request: https://api.wordpress.org/themes/update-check/1.1/ TypeError: Failed to fetch\n    at https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:556\n    at Array.map (<anonymous>)\n    at WordPressFetchNetworkTransport.prefetchUpdateChecks (https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:161)\n    at async PlaygroundWorkerEndpointBlueprints.prefetchUpdateChecks (https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5244:1581)",
+      "url": "https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js"
+    },
+    {
+      "source": "app",
+      "type": "warning",
+      "text": "Failed to pre-fetch admin request: https://api.wordpress.org/core/version-check/1.7/?version=7.1.2&php=8.3.33&locale=en_US&mysql=8.0.38-mysql-on-sqlite-3.0.2&local_package=&blogs=1&users=1&multisite_enabled=0&initial_db_version=61833&extensions%5Bbcmath%5D=8.3.33&extensions%5Bcalendar%5D=8.3.33&extensions%5BCore%5D=8.3.33&extensions%5Bctype%5D=8.3.33&extensions%5Bcurl%5D=8.3.33&extensions%5Bdate%5D=8.3.33&extensions%5Bdns_polyfill%5D=1.0.0&extensions%5Bdom%5D=20031129&extensions%5Bexif%5D=8.3.33&extensions%5Bfileinfo%5D=8.3.33&extensions%5Bfilter%5D=8.3.33&extensions%5Bgd%5D=8.3.33&extensions%5Bhash%5D=8.3.33&extensions%5Biconv%5D=8.3.33&extensions%5Bjson%5D=8.3.33&extensions%5Blibxml%5D=8.3.33&extensions%5Bmbstring%5D=8.3.33&extensions%5Bopcache%5D=8.3.33&extensions%5Bopenssl%5D=8.3.33&extensions%5Bpcre%5D=8.3.33&extensions%5BPDO%5D=8.3.33&extensions%5Bpdo_sqlite%5D=8.3.33&extensions%5BPhar%5D=8.3.33&extensions%5Bpost_message_to_js%5D=1.0.0&extensions%5Brandom%5D=8.3.33&extensions%5BReflection%5D=8.3.33&extensions%5Bsession%5D=8.3.33&extensions%5BSimpleXML%5D=8.3.33&extensions%5Bsoap%5D=8.3.33&extensions%5BSPL%5D=8.3.33&extensions%5Bsqlite3%5D=8.3.33&extensions%5Bstandard%5D=8.3.33&extensions%5Btokenizer%5D=8.3.33&extensions%5Bwasm_memory_storage%5D=0.0.1&extensions%5Bxml%5D=8.3.33&extensions%5Bxmlreader%5D=8.3.33&extensions%5Bxmlwriter%5D=8.3.33&extensions%5BZend+OPcache%5D=8.3.33&extensions%5Bzip%5D=1.22.3&extensions%5Bzlib%5D=8.3.33&platform_flags%5Bos%5D=Linux&platform_flags%5Bbits%5D=64&image_support%5Bgd%5D%5B0%5D=webp&image_support%5Bgd%5D%5B1%5D=avif TypeError: Failed to fetch\n    at https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:556\n    at Array.map (<anonymous>)\n    at WordPressFetchNetworkTransport.prefetchUpdateChecks (https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js:5235:161)\n    at async PlaygroundWorkerEndpointBlueprints.prefetchUpdateChecks (https://playground.wordpress.net/p",
+      "url": "https://playground.wordpress.net/playground-worker-endpoint-blueprints-B4zK0_Ac.js"
+    },
+    {
+      "source": "app",
+      "type": "log",
+      "text": "[29-Sep-2026 17:06:27 UTC] PHP Notice:  Function wp_maybe_inline_styles was called <strong>incorrectly</strong>. Unable to read the \"path\" key with value \"/wordpress/wp-content/themes/twentytwentyfive/style.min.css\" for stylesheet \"twentytwentyfive-style\". Please see <a href=\"https://developer.wordpress.org/advanced-administration/debug/debug-wordpress/\">Debugging in WordPress</a> for more information. (This message was added in version 7.0.0.) in /wordpress/wp-includes/functions.php on line 135\n",
+      "url": "https://playground.wordpress.net/client/index-Brkvo5HN.js"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8e1606e6fba450a9362af43874c1b2dfad34c782e33d0a51e1b46c18a2a567dd?s=50&d=mm&r=g"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g"
+    },
+    {
+      "source": "app",
+      "type": "log",
+      "text": "JQMIGRATE: Migrate is installed, version 3.4.1",
+      "url": "https://playground.wordpress.net/scope:0.9374985150262057/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g"
+    },
+    {
+      "source": "app",
+      "type": "log",
+      "text": "JQMIGRATE: Migrate is installed, version 3.4.1",
+      "url": "https://playground.wordpress.net/scope:0.9374985150262057/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g"
+    },
+    {
+      "source": "app",
+      "type": "error",
+      "text": "Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector",
+      "url": "https://secure.gravatar.com/avatar/8e1606e6fba450a9362af43874c1b2dfad34c782e33d0a51e1b46c18a2a567dd?s=50&d=mm&r=g"
+    }
+  ],
+  "pageErrors": [],
+  "network": {
+    "requests": 82,
+    "cacheHits": 6,
+    "cacheMisses": 0,
+    "tunneled": 56,
+    "failed": [],
+    "blocked": [
+      {
+        "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://api.wordpress.org/core/browse-happy/1.1/",
+        "method": "POST",
+        "reason": "only GET/HEAD reach allowlisted origins"
+      },
+      {
+        "url": "https://api.wordpress.org/plugins/update-check/1.1/",
+        "method": "POST",
+        "reason": "only GET/HEAD reach allowlisted origins"
+      },
+      {
+        "url": "https://api.wordpress.org/themes/update-check/1.1/",
+        "method": "POST",
+        "reason": "only GET/HEAD reach allowlisted origins"
+      },
+      {
+        "url": "https://api.wordpress.org/core/version-check/1.7/?version=7.1.2&php=8.3.33&locale=en_US&mysql=8.0.38-mysql-on-sqlite-3.0.2&local_package=&blogs=1&users=1&multisite_enabled=0&initial_db_version=61833&extensions%5Bbcmath%5D=8.3.33&extensions%5Bcalendar%5D=8.3.33&extensions%5BCore%5D=8.3.33&extensions%5Bctype%5D=8.3.33&extensions%5Bcurl%5D=8.3.33&extensions%5Bdate%5D=8.3.33&extensions%5Bdns_polyfill%5D=1.0.0&extensions%5Bdom%5D=20031129&extensions%5Bexif%5D=8.3.33&extensions%5Bfileinfo%5D=8.3.33&extensions%5Bfilter%5D=8.3.33&extensions%5Bgd%5D=8.3.33&extensions%5Bhash%5D=8.3.33&extensions%5Biconv%5D=8.3.33&extensions%5Bjson%5D=8.3.33&extensions%5Blibxml%5D=8.3.33&extensions%5Bmbstring%5D=8.3.33&extensions%5Bopcache%5D=8.3.33&extensions%5Bopenssl%5D=8.3.33&extensions%5Bpcre%5D=8.3.33&extensions%5BPDO%5D=8.3.33&extensions%5Bpdo_sqlite%5D=8.3.33&extensions%5BPhar%5D=8.3.33&extensions%5Bpost_message_to_js%5D=1.0.0&extensions%5Brandom%5D=8.3.33&extensions%5BReflection%5D=8.3.33&extensions%5Bsession%5D=8.3.33&extensions%5BSimpleXML%5D=8.3.33&extensions%5Bsoap%5D=8.3.33&extensions%5BSPL%5D=8.3.33&extensions%5Bsqlite3%5D=8.3.33&extensions%5Bstandard%5D=8.3.33&extensions%5Btokenizer%5D=8.3.33&extensions%5Bwasm_memory_storage%5D=0.0.1&extensions%5Bxml%5D=8.3.33&extensions%5Bxmlreader%5D=8.3.33&extensions%5Bxmlwriter%5D=8.3.33&extensions%5BZend+OPcache%5D=8.3.33&extensions%5Bzip%5D=1.22.3&extensions%5Bzlib%5D=8.3.33&platform_flags%5Bos%5D=Linux&platform_flags%5Bbits%5D=64&image_support%5Bgd%5D%5B0%5D=webp&image_support%5Bgd%5D%5B1%5D=avif",
+        "method": "POST",
+        "reason": "only GET/HEAD reach allowlisted origins"
+      },
+      {
+        "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://secure.gravatar.com/avatar/8e1606e6fba450a9362af43874c1b2dfad34c782e33d0a51e1b46c18a2a567dd?s=50&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://api.wordpress.org/core/version-check/1.7/?version=7.1.2&php=8.3.33&locale=en_US&mysql=8.0.38-mysql-on-sqlite-3.0.2&local_package=&blogs=1&users=1&multisite_enabled=0&initial_db_version=61833&extensions%5Bbcmath%5D=8.3.33&extensions%5Bcalendar%5D=8.3.33&extensions%5BCore%5D=8.3.33&extensions%5Bctype%5D=8.3.33&extensions%5Bcurl%5D=8.3.33&extensions%5Bdate%5D=8.3.33&extensions%5Bdns_polyfill%5D=1.0.0&extensions%5Bdom%5D=20031129&extensions%5Bexif%5D=8.3.33&extensions%5Bfileinfo%5D=8.3.33&extensions%5Bfilter%5D=8.3.33&extensions%5Bgd%5D=8.3.33&extensions%5Bhash%5D=8.3.33&extensions%5Biconv%5D=8.3.33&extensions%5Bjson%5D=8.3.33&extensions%5Blibxml%5D=8.3.33&extensions%5Bmbstring%5D=8.3.33&extensions%5Bopcache%5D=8.3.33&extensions%5Bopenssl%5D=8.3.33&extensions%5Bpcre%5D=8.3.33&extensions%5BPDO%5D=8.3.33&extensions%5Bpdo_sqlite%5D=8.3.33&extensions%5BPhar%5D=8.3.33&extensions%5Bpost_message_to_js%5D=1.0.0&extensions%5Brandom%5D=8.3.33&extensions%5BReflection%5D=8.3.33&extensions%5Bsession%5D=8.3.33&extensions%5BSimpleXML%5D=8.3.33&extensions%5Bsoap%5D=8.3.33&extensions%5BSPL%5D=8.3.33&extensions%5Bsqlite3%5D=8.3.33&extensions%5Bstandard%5D=8.3.33&extensions%5Btokenizer%5D=8.3.33&extensions%5Bwasm_memory_storage%5D=0.0.1&extensions%5Bxml%5D=8.3.33&extensions%5Bxmlreader%5D=8.3.33&extensions%5Bxmlwriter%5D=8.3.33&extensions%5BZend+OPcache%5D=8.3.33&extensions%5Bzip%5D=1.22.3&extensions%5Bzlib%5D=8.3.33&platform_flags%5Bos%5D=Linux&platform_flags%5Bbits%5D=64&image_support%5Bgd%5D%5B0%5D=webp&image_support%5Bgd%5D%5B1%5D=avif",
+        "method": "POST",
+        "reason": "only GET/HEAD reach allowlisted origins"
+      },
+      {
+        "url": "https://wordpress-playground-cors-proxy.net/?https://api.wordpress.org/core/version-check/1.7/?version=7.1.2&php=8.3.33&locale=en_US&mysql=8.0.38-mysql-on-sqlite-3.0.2&local_package=&blogs=1&users=1&multisite_enabled=0&initial_db_version=61833&extensions%5Bbcmath%5D=8.3.33&extensions%5Bcalendar%5D=8.3.33&extensions%5BCore%5D=8.3.33&extensions%5Bctype%5D=8.3.33&extensions%5Bcurl%5D=8.3.33&extensions%5Bdate%5D=8.3.33&extensions%5Bdns_polyfill%5D=1.0.0&extensions%5Bdom%5D=20031129&extensions%5Bexif%5D=8.3.33&extensions%5Bfileinfo%5D=8.3.33&extensions%5Bfilter%5D=8.3.33&extensions%5Bgd%5D=8.3.33&extensions%5Bhash%5D=8.3.33&extensions%5Biconv%5D=8.3.33&extensions%5Bjson%5D=8.3.33&extensions%5Blibxml%5D=8.3.33&extensions%5Bmbstring%5D=8.3.33&extensions%5Bopcache%5D=8.3.33&extensions%5Bopenssl%5D=8.3.33&extensions%5Bpcre%5D=8.3.33&extensions%5BPDO%5D=8.3.33&extensions%5Bpdo_sqlite%5D=8.3.33&extensions%5BPhar%5D=8.3.33&extensions%5Bpost_message_to_js%5D=1.0.0&extensions%5Brandom%5D=8.3.33&extensions%5BReflection%5D=8.3.33&extensions%5Bsession%5D=8.3.33&extensions%5BSimpleXML%5D=8.3.33&extensions%5Bsoap%5D=8.3.33&extensions%5BSPL%5D=8.3.33&extensions%5Bsqlite3%5D=8.3.33&extensions%5Bstandard%5D=8.3.33&extensions%5Btokenizer%5D=8.3.33&extensions%5Bwasm_memory_storage%5D=0.0.1&extensions%5Bxml%5D=8.3.33&extensions%5Bxmlreader%5D=8.3.33&extensions%5Bxmlwriter%5D=8.3.33&extensions%5BZend+OPcache%5D=8.3.33&extensions%5Bzip%5D=1.22.3&extensions%5Bzlib%5D=8.3.33&platform_flags%5Bos%5D=Linux&platform_flags%5Bbits%5D=64&image_support%5Bgd%5D%5B0%5D=webp&image_support%5Bgd%5D%5B1%5D=avif",
+        "method": "POST",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://api.wordpress.org/plugins/update-check/1.1/",
+        "method": "POST",
+        "reason": "only GET/HEAD reach allowlisted origins"
+      },
+      {
+        "url": "https://wordpress-playground-cors-proxy.net/?https://api.wordpress.org/plugins/update-check/1.1/",
+        "method": "POST",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://api.wordpress.org/themes/update-check/1.1/",
+        "method": "POST",
+        "reason": "only GET/HEAD reach allowlisted origins"
+      },
+      {
+        "url": "https://wordpress-playground-cors-proxy.net/?https://api.wordpress.org/themes/update-check/1.1/",
+        "method": "POST",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://secure.gravatar.com/avatar/8c9689fb60bd7c4c56112540c064fea2dea8e61c4e527dd53f7adfea094b490b?s=28&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      },
+      {
+        "url": "https://secure.gravatar.com/avatar/8e1606e6fba450a9362af43874c1b2dfad34c782e33d0a51e1b46c18a2a567dd?s=50&d=mm&r=g",
+        "method": "GET",
+        "reason": "origin not allowlisted"
+      }
+    ]
+  },
+  "artifacts": {
+    "screenshot": ".sandburg/test-runs/r-mumxhhya-efa01d/screenshot.png",
+    "a11ySnapshot": ".sandburg/test-runs/r-mumxhhya-efa01d/a11y.yaml"
+  }
+}

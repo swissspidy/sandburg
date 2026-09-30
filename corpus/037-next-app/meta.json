@@ -1,0 +1,16 @@
+{
+  "id": "037-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "store",
+    "form",
+    "todo",
+    "tailwind-modal"
+  ],
+  "tailwind": true,
+  "react": "19.1.0",
+  "fault": "bad-version",
+  "buggyFeature": null,
+  "expected": "fail"
+}

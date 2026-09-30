@@ -1,0 +1,20 @@
+{
+  "name": "vite-socketio-chat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:*\"",
+    "dev:server": "node server/index.js",
+    "dev:client": "vite"
+  },
+  "dependencies": {
+    "express": "^5.2.0",
+    "socket.io": "^4.8.0",
+    "socket.io-client": "^4.8.0"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.0"
+  }
+}

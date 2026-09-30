@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Notes</title></head>
+  <body>
+    <main>
+      <h1>Notes</h1>
+      <form id="f"><label for="t">Note</label> <input id="t" /> <button>Save</button></form>
+      <ul aria-label="Notes" id="list"></ul>
+    </main>
+    <script>
+      const list = document.getElementById('list');
+      const render = (notes) => (list.innerHTML = notes.map((n) => `<li>${n.text}</li>`).join(''));
+      fetch('/api/notes').then((r) => r.json()).then(render);
+      document.getElementById('f').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await fetch('/api/notes', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: document.getElementById('t').value }) });
+        render(await (await fetch('/api/notes')).json());
+      });
+    </script>
+  </body>
+</html>

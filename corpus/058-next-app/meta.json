@@ -1,0 +1,14 @@
+{
+  "id": "058-next-app",
+  "target": "next-app",
+  "framework": "nextjs",
+  "features": [
+    "converter",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": "19.1.0",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}
