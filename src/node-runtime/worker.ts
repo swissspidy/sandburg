@@ -8,7 +8,8 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import { ThreadVfs, createWorkerThreads, type ThreadInit } from './threads.ts';
+import { ThreadVfs, createWorkerThreads, liveRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { createChildProcess } from './child-process.ts';
 import { createWasi } from './builtins/wasi.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
 import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
@@ -23,10 +24,11 @@ import querystring from 'querystring-es3';
 import * as stringDecoder from 'string_decoder';
 import cryptoBrowserify from 'crypto-browserify';
 import zlibBrowserify from 'browserify-zlib';
+import { parseArgs } from '@pkgjs/parseargs';
 import { asyncHooks, installAsyncContext } from './async-context.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https, servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
-import { ExitError, NODE_VERSION, createProcess, timers, timersPromises } from './builtins/process.ts';
+import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
 import * as misc from './builtins/misc.ts';
 import { createModuleSystem } from './loader.ts';
 import { Vfs } from './vfs.ts';
@@ -50,7 +52,9 @@ export type ToWorker =
     }
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown }
-  | { type: 'run'; main: string; argv?: string[] }
+  | { type: 'run'; main: string; argv?: string[]; preload?: string[] }
+  /** The parent closed this child process's IPC channel. */
+  | { type: 'disconnect' }
   | { type: 'request'; id: number; port: number; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
   /** A message for the program (with init.ipc): process.on('message'). */
   | { type: 'message'; data: unknown }
@@ -149,6 +153,7 @@ let proc: ReturnType<typeof createProcess>;
 let thread: ThreadInit | null = null;
 let tsRunner = false;
 let threads: ReturnType<typeof createWorkerThreads>;
+let childProcess: ReturnType<typeof createChildProcess>;
 let nodeModulesIndex: Record<string, number> | null = null;
 
 function write(stream: 'stdout' | 'stderr', text: string) {
@@ -268,6 +273,7 @@ function buildBuiltins() {
     transferableAbortSignal: (s: AbortSignal) => s,
     parseEnv: (s: string) => Object.fromEntries(s.split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])),
     getCallSites: () => [],
+    parseArgs,
     formatWithOptions: (_options: unknown, ...args: unknown[]) => (util as unknown as { format(...a: unknown[]): string }).format(...args),
     debug: (util as unknown as { debuglog: unknown }).debuglog,
   });
@@ -373,7 +379,7 @@ function buildBuiltins() {
     http2: () => misc.http2,
     _http_agent: () => ({ Agent: http.Agent, globalAgent: http.globalAgent }),
     _http_common: () => ({ methods: http.METHODS }),
-    child_process: () => misc.childProcess,
+    child_process: () => childProcess,
     worker_threads: () => threads.module,
     cluster: () => misc.cluster,
     vm: () => misc.vm,
@@ -441,8 +447,15 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   if (!thread) vfs.mkdir('/tmp', true);
 
-  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc ? (data) => post({ type: 'message', data }) : undefined });
-  threads = createWorkerThreads({
+  const child = thread?.process;
+  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
+  if (child) {
+    (proc.chdir as (d: string) => void)(child.cwd);
+    proc.execArgv = child.execArgv;
+    // A child process's environment is exactly what its parent passed.
+    proc.env = { ...msg.env };
+  }
+  const nested: ThreadHost = {
     vfs: () => vfs,
     childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
     write,
@@ -450,9 +463,13 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     env: () => proc.env as Record<string, string>,
     resolvePath: (p) => (p.startsWith('/') ? p : pathBrowserify.resolve((proc.cwd as () => string)(), p)),
     base: () => base,
-    self: thread,
+    // A child process is a main thread of its own.
+    self: child ? null : thread,
     postToParent: (m, transfer) => realPostMessage(m as FromWorker, transfer ?? []),
-  });
+    relay: relayFromNested,
+  };
+  threads = createWorkerThreads(nested);
+  childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string });
   const table = buildBuiltins();
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
@@ -479,6 +496,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   moduleSystem = createModuleSystem({
     vfs,
     tsRunner,
+    conditions: child?.conditions,
     packageOverride(filename: string) {
       for (const [pattern, make] of SQLITE_PACKAGES) {
         if (!pattern.test(filename)) continue;
@@ -595,7 +613,44 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   hideWorkerGlobals();
   post({ type: 'ready' });
   // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
-  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv });
+  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv, preload: thread.process?.preload });
+  if (thread?.process) exitWhenIdle();
+}
+
+const nativeSetInterval = globalThis.setInterval.bind(globalThis);
+const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
+
+/**
+ * A child process ends when its event loop has nothing left to do, as in Node: no ref'd timers or
+ * immediates, servers, sockets, IPC channel, threads or children, or in-flight fetches. Work the
+ * runtime cannot see (a pending WebAssembly compile, say) is covered by waiting for the loop to stay
+ * idle for a while.
+ */
+function exitWhenIdle() {
+  const track = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => (...args: A): Promise<R> => {
+    pendingWork.count++;
+    return fn(...args).finally(() => pendingWork.count--);
+  };
+  globalThis.fetch = track(globalThis.fetch.bind(globalThis));
+  const wasm = WebAssembly as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+  for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) if (wasm[name]) wasm[name] = track(wasm[name].bind(WebAssembly));
+  const busy = () => timersActive() || servers.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
+  let idle = 0;
+  const timer = nativeSetInterval(() => {
+    idle = busy() ? 0 : idle + 1;
+    if (idle < 8) return;
+    idle = 0;
+    const code = Number(proc.exitCode ?? 0);
+    try {
+      proc.emit('beforeExit', code);
+      if (busy()) return;
+      nativeClearInterval(timer);
+      (proc.exit as (c: number) => void)(Number(proc.exitCode ?? 0));
+    } catch (e) {
+      nativeClearInterval(timer);
+      post({ type: 'exit', code: e instanceof ExitError ? e.code : 1 });
+    }
+  }, 25);
 }
 
 function run(msg: Extract<ToWorker, { type: 'run' }>) {
@@ -609,6 +664,8 @@ function run(msg: Extract<ToWorker, { type: 'run' }>) {
 function start(msg: Extract<ToWorker, { type: 'run' }>) {
   proc.argv = ['/usr/local/bin/node', msg.main, ...(msg.argv ?? [])];
   try {
+    // --require / --import (loaded in order, before the entry).
+    for (const p of msg.preload ?? []) (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(p, null, false);
     const exports = (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(msg.main, null, true);
     // An async main module (top-level await): a rejection ends the process like an uncaught exception.
     const tla = (exports as Record<string, unknown> | null)?.__sandburg_tla as Promise<unknown> | undefined;
@@ -642,7 +699,16 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
   if (msg.type === 'init') init(msg);
   else if (msg.type === 'run') run(msg);
+  else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) nestedPorts.get(msg.port)!.postMessage(msg, msg.body ? [msg.body] : []);
   else if (msg.type === 'request') request(msg);
+  else if (msg.type === 'ws-open' && !servers.has(msg.port) && nestedPorts.has(msg.port)) {
+    nestedSockets.set(msg.id, nestedPorts.get(msg.port)!);
+    nestedSockets.get(msg.id)!.postMessage(msg);
+  } else if ((msg.type === 'ws-send' || msg.type === 'ws-close') && nestedSockets.has(msg.id)) nestedSockets.get(msg.id)!.postMessage(msg);
+  else if (msg.type === 'disconnect' && proc?.connected) {
+    proc.connected = false;
+    proc.emit('disconnect');
+  }
   else if (msg.type === 'message') proc?.emit('message', msg.data);
   else if (msg.type === 'wt-message') threads.deliver(msg.data);
   else if (msg.type === 'ws-open') wsOpen(msg);
@@ -662,6 +728,37 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
 });
 
 const sockets = new Map<number, { socket: UpgradeSocket; codec: WsClientCodec }>();
+
+/**
+ * Servers in nested runtimes (child processes, worker threads) are reachable like this runtime's own:
+ * requests and WebSockets for their ports go down to them, and their replies come back up.
+ */
+const nestedPorts = new Map<number, globalThis.Worker>();
+const nestedSockets = new Map<number, globalThis.Worker>();
+function relayFromNested(m: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean {
+  switch (m.type) {
+    case 'listening':
+      nestedPorts.set(m.port as number, from);
+      post(m as FromWorker);
+      return true;
+    case 'response-chunk':
+      post(m as FromWorker, [(m.chunk as Uint8Array).buffer as ArrayBuffer]);
+      return true;
+    case 'response-start':
+    case 'response-end':
+    case 'response-error':
+    case 'ws-accept':
+    case 'ws-message':
+      post(m as FromWorker);
+      return true;
+    case 'ws-reject':
+    case 'ws-closed':
+      nestedSockets.delete(m.id as number);
+      post(m as FromWorker);
+      return true;
+  }
+  return false;
+}
 
 /** Opens a WebSocket to a virtual server: an upgrade request, then the WebSocket protocol over the socket. */
 function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {

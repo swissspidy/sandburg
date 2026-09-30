@@ -20,3 +20,4 @@ declare module 'browserify-zlib' {
   export = zlib;
 }
 declare module '@napi-rs/wasm-runtime';
+declare module '@pkgjs/parseargs';

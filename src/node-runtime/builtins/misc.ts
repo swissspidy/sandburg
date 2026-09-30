@@ -140,72 +140,7 @@ export const dns = {
 
 // --- processes and threads ---------------------------------------------------------------
 
-class ChildProcess extends EventEmitter {
-  pid = undefined;
-  stdin = new Writable({ write: (_c, _e, cb) => cb() });
-  stdout = new Readable({ read() { this.push(null); } });
-  stderr = new Readable({ read() { this.push(null); } });
-  exitCode: number | null = null;
-  killed = false;
-  constructor(command: string) {
-    super();
-    timers.setTimeout(() => {
-      this.emit('error', Object.assign(notSupported(`spawning "${command}"`), { path: command, spawnargs: [] }));
-      this.exitCode = -38;
-      this.emit('close', -38, null);
-    }, 0);
-  }
-  kill() { this.killed = true; return true; }
-  ref() {}
-  unref() {}
-  disconnect() {}
-  send() { return false; }
-}
-const cbError = (command: string, cb?: unknown) => {
-  const child = new ChildProcess(command);
-  if (typeof cb === 'function') child.on('error', (e) => (cb as (e: unknown, o: string, er: string) => void)(e, '', ''));
-  else child.on('error', () => {});
-  return child;
-};
-export const childProcess = {
-  ChildProcess,
-  spawn: (cmd: string) => new ChildProcess(cmd),
-  fork: (mod: string) => new ChildProcess(mod),
-  exec: (cmd: string, opts?: unknown, cb?: unknown) => cbError(cmd, typeof opts === 'function' ? opts : cb),
-  execFile: (cmd: string, args?: unknown, opts?: unknown, cb?: unknown) => cbError(cmd, [args, opts, cb].find((x) => typeof x === 'function')),
-  spawnSync: (cmd: string) => ({ pid: 0, status: null, signal: null, output: [], stdout: '', stderr: '', error: notSupported(`spawning "${cmd}"`) }),
-  execSync: (cmd: string) => {
-    throw notSupported(`running "${cmd}"`);
-  },
-  execFileSync: (cmd: string) => {
-    throw notSupported(`running "${cmd}"`);
-  },
-};
-
-export const workerThreads = {
-  isMainThread: true,
-  isInternalThread: false,
-  parentPort: null,
-  workerData: null,
-  threadId: 0,
-  resourceLimits: {},
-  SHARE_ENV: Symbol('SHARE_ENV'),
-  MessageChannel,
-  MessagePort,
-  BroadcastChannel,
-  Worker: class {
-    constructor(file: string) {
-      throw notSupported(`worker_threads.Worker(${file})`);
-    }
-  },
-  markAsUntransferable: () => {},
-  isMarkedAsUntransferable: () => false,
-  moveMessagePortToContext: (p: unknown) => p,
-  receiveMessageOnPort: () => undefined,
-  getEnvironmentData: () => undefined,
-  setEnvironmentData: () => {},
-};
-
+// child_process: see ../child-process.ts; worker_threads: ../threads.ts.
 export const cluster = { isPrimary: true, isMaster: true, isWorker: false, workers: {}, fork: () => { throw notSupported('cluster.fork'); }, on() {}, setupPrimary() {} };
 
 // --- vm -------------------------------------------------------------------------------------

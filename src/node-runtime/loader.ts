@@ -34,11 +34,13 @@ export interface LoaderHost {
   tsRunner?: boolean;
   /** A replacement for an installed package's module (native addons such as better-sqlite3), or undefined. */
   packageOverride?(filename: string): unknown;
+  /** User conditions (node --conditions), for both require and import. */
+  conditions?: string[];
 }
 
-const REQUIRE_CONDITIONS = ['require', 'node', 'module-sync', 'node-addons', 'default'];
+let REQUIRE_CONDITIONS = ['require', 'node', 'module-sync', 'node-addons', 'default'];
 /** Conditions for `import` (ES modules are converted to CommonJS, but resolve as imports). */
-const IMPORT_CONDITIONS = ['import', 'node', 'module-sync', 'node-addons', 'default'];
+let IMPORT_CONDITIONS = ['import', 'node', 'module-sync', 'node-addons', 'default'];
 /** The conditions of the resolution in progress (resolution is synchronous). */
 let conditions = REQUIRE_CONDITIONS;
 /** First line of code compiled from an ES module (src/adapters/node/compile.ts, install.ts). */
@@ -56,6 +58,11 @@ interface PackageJson {
 
 export function createModuleSystem(host: LoaderHost) {
   const { vfs } = host;
+  if (host.conditions?.length) {
+    REQUIRE_CONDITIONS = [...host.conditions, ...REQUIRE_CONDITIONS];
+    IMPORT_CONDITIONS = [...host.conditions, ...IMPORT_CONDITIONS];
+    conditions = REQUIRE_CONDITIONS;
+  }
   const pkgCache = new Map<string, PackageJson | null>();
 
   const isFile = (p: string) => {

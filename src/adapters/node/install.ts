@@ -22,7 +22,7 @@ import type { Project } from '../../types.ts';
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 const TRANSFORM_VERSION = 6;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 3;
+const LAYOUT_VERSION = 4;
 
 export interface InstallInfo {
   key: string;
@@ -249,16 +249,23 @@ async function placeWasiBindings(dir: string, log: (line: string) => void): Prom
   await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(missing) }));
   // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
   await run('npm', ['install', '--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
+  // Each binding goes to the top level with its dependencies (napi-rs's wasm runtime, emnapi) nested
+  // inside it, so versions the project already has elsewhere cannot shadow the ones it was built with.
   const sideNm = join(side, 'node_modules');
-  const copy = async (name: string) => {
-    if (existsSyncSafe(join(nm, name, 'package.json'))) return;
-    await cp(join(sideNm, name), join(nm, name), { recursive: true });
-  };
+  const sidePackages: string[] = [];
   for (const entry of await readdir(sideNm, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-    if (entry.name.startsWith('@')) {
-      for (const sub of await readdir(join(sideNm, entry.name))) await copy(`${entry.name}/${sub}`);
-    } else await copy(entry.name);
+    if (entry.name.startsWith('@')) for (const sub of await readdir(join(sideNm, entry.name))) sidePackages.push(`${entry.name}/${sub}`);
+    else sidePackages.push(entry.name);
+  }
+  for (const [binding] of missing) {
+    if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
+    await cp(join(sideNm, binding), join(nm, binding), { recursive: true });
+    for (const dep of sidePackages) {
+      if (dep in wanted) continue;
+      const to = join(nm, binding, 'node_modules', dep);
+      if (!existsSyncSafe(join(to, 'package.json'))) await cp(join(sideNm, dep), to, { recursive: true });
+    }
   }
   await rm(side, { recursive: true, force: true });
   log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);

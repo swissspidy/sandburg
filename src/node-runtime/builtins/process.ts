@@ -29,6 +29,7 @@ const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
 
 class Timeout {
   private id: ReturnType<typeof nativeSetTimeout> | null = null;
+  private refed = true;
   private fn: () => void;
   private ms: number;
   private repeat: boolean;
@@ -46,9 +47,19 @@ class Timeout {
     (this.repeat ? nativeClearInterval : nativeClearTimeout)(this.id);
     this.id = null;
   }
-  ref() { return this; }
-  unref() { return this; }
-  hasRef() { return true; }
+  ref() {
+    this.refed = true;
+    return this;
+  }
+  unref() {
+    this.refed = false;
+    return this;
+  }
+  hasRef() { return this.refed; }
+  /** Whether it keeps the process alive (see activeHandles). */
+  get alive() {
+    return this.refed && this.id !== null;
+  }
   refresh() {
     this.clear();
     this.start();
@@ -88,6 +99,18 @@ function clear(t: unknown) {
     if (found) found.clear();
     else nativeClearTimeout(t);
   }
+}
+
+/**
+ * Whether anything scheduled keeps the process alive: ref'd timers, immediates, and async work
+ * others report (in-flight fetches, see `pendingWork`). Used to end child processes whose event loop
+ * has drained, as Node does.
+ */
+export const pendingWork = { count: 0 };
+export function timersActive(): boolean {
+  if (immediateQueue.length || pendingWork.count > 0) return true;
+  for (const t of byId.values()) if (t.alive) return true;
+  return false;
 }
 
 class Immediate {

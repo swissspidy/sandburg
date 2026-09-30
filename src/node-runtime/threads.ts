@@ -19,6 +19,8 @@ export interface ThreadInit {
   argv: string[];
   /** The thread's entry script; it starts right after init (the parent may be blocked meanwhile). */
   main: string;
+  /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
+  process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
 }
 
 // --- the shared VFS ----------------------------------------------------------------------
@@ -173,6 +175,36 @@ export interface ThreadHost {
   self: ThreadInit | null;
   /** Sends to this thread's parent (child side). */
   postToParent(msg: unknown, transfer?: Transferable[]): void;
+  /** Messages of a nested runtime about servers it runs (listening, responses, WebSockets), which this runtime passes on. */
+  relay(msg: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean;
+}
+
+/**
+ * Starts a nested runtime (a worker thread or a child process) and serves its file system calls.
+ * Its other messages go to `onMessage`, apart from those about servers it runs (see ThreadHost.relay).
+ */
+/** Nested runtimes (threads and child processes) that are running: they keep this process alive. */
+export const liveRuntimes = new Set<globalThis.Worker>();
+
+export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: { type: string; [k: string]: unknown }) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
+  const worker = new globalThis.Worker(`${host.base()}/node-worker.js`);
+  worker.onmessage = (e: MessageEvent) => {
+    const m = e.data as { type: string; [k: string]: unknown };
+    if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m as unknown as Parameters<typeof serveVfsCall>[1]);
+    else if (!host.relay(m, worker)) onMessage(m);
+  };
+  worker.onerror = (e) => {
+    e.preventDefault?.();
+    onError(e.message);
+  };
+  worker.postMessage(host.childInit(init), transfer);
+  liveRuntimes.add(worker);
+  const terminate = worker.terminate.bind(worker);
+  worker.terminate = () => {
+    liveRuntimes.delete(worker);
+    terminate();
+  };
+  return worker;
 }
 
 let nextThreadId = 1;
@@ -204,14 +236,16 @@ export function createWorkerThreads(host: ThreadHost) {
       }
       const env = options.env === SHARE_ENV || options.env === undefined ? host.env() : (options.env as Record<string, string>);
       const thread: ThreadInit = { id: this.threadId, workerData: options.workerData, env: { ...env }, argv: (options.argv ?? []).map(String), main };
-      this.worker = new globalThis.Worker(`${host.base()}/node-worker.js`);
-      this.worker.onmessage = (e: MessageEvent) => this.onChild(e.data);
-      this.worker.onerror = (e) => {
-        e.preventDefault?.();
-        this.emit('error', new Error(e.message));
-        this.finish(1);
-      };
-      this.worker.postMessage(host.childInit(thread), options.transferList ?? []);
+      this.worker = startRuntime(
+        host,
+        thread,
+        (m) => this.onChild(m),
+        (message) => {
+          this.emit('error', new Error(message));
+          this.finish(1);
+        },
+        options.transferList ?? [],
+      );
     }
 
     private onChild(m: { type: string; [k: string]: unknown }) {
@@ -219,9 +253,6 @@ export function createWorkerThreads(host: ThreadHost) {
         case 'ready':
           // The thread runs its entry on its own (see ThreadInit.main).
           queueMicrotask(() => this.emit('online'));
-          break;
-        case 'vfs-rpc':
-          serveVfsCall(host.vfs(), m as unknown as Parameters<typeof serveVfsCall>[1]);
           break;
         case 'wt-message':
           this.emit('message', m.data);
@@ -263,6 +294,8 @@ export function createWorkerThreads(host: ThreadHost) {
     ref() {
       return this;
     }
+    // A thread keeps its process alive even when unref'd: napi-rs unrefs its WebAssembly threads, and in
+    // Node their pending async work keeps the event loop alive instead, which this runtime cannot see.
     unref() {
       return this;
     }

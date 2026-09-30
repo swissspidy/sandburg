@@ -43,6 +43,7 @@
     "util": "^0.12.5"
   },
   "devDependencies": {
+    "@pkgjs/parseargs": "^0.11.0",
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2"
   }

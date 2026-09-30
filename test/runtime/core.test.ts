@@ -208,3 +208,71 @@ test('worker_threads: workerData, messages, a shared file system, SharedArrayBuf
   assert.ok(lines.includes('error event: boom in thread'), out.stdout);
   assert.ok(lines.includes('eval exit 1'), out.stdout);
 });
+
+test('child_process: node children with stdio, exit codes, --conditions, fork() IPC and exec()', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { spawn, fork, exec } = require('child_process');
+        const fs = require('fs');
+        fs.writeFileSync('/app/from-parent.txt', 'shared');
+        const c = spawn(process.execPath, ['--conditions=custom', 'child.js', 'one', 'two'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GREETING: 'hello' } });
+        let text = '';
+        c.stdout.on('data', (d) => (text += d));
+        c.on('exit', (code) => {
+          console.log('child exit', code);
+          console.log('child said', JSON.stringify(text.trim()));
+          const f = fork('./ipc.js');
+          f.on('message', (m) => {
+            console.log('from fork', m.pong);
+            f.disconnect();
+          });
+          f.on('exit', (code) => {
+            console.log('fork exit', code);
+            exec('node -e "console.log(6 * 7)"', (err, stdout) => {
+              console.log('exec', err, stdout.trim());
+              exec('git status', (err) => {
+                console.log('git', err.code);
+                process.exit(0);
+              });
+            });
+          });
+          f.send({ ping: 1 });
+        });`,
+      'child.js': `
+        const fs = require('fs');
+        console.log(JSON.stringify({ argv: process.argv.slice(2), env: process.env.GREETING, execArgv: process.execArgv, pkg: require('pkg'), read: fs.readFileSync('/app/from-parent.txt', 'utf8') }));
+        process.exitCode = 3;
+        setTimeout(() => process.exit(), 10);`,
+      'ipc.js': `
+        process.on('message', (m) => process.send({ pong: m.ping + 1 }));
+        process.on('disconnect', () => process.exit(5));`,
+      'node_modules/pkg/package.json': JSON.stringify({ name: 'pkg', exports: { custom: './custom.js', default: './default.js' } }),
+      'node_modules/pkg/custom.js': `module.exports = 'custom';`,
+      'node_modules/pkg/default.js': `module.exports = 'default';`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.ok(lines.includes('child exit 3'), out.stdout + out.stderr);
+  assert.ok(lines.includes(`child said ${JSON.stringify(JSON.stringify({ argv: ['one', 'two'], env: 'hello', execArgv: ['--conditions=custom'], pkg: 'custom', read: 'shared' }))}`), out.stdout);
+  assert.ok(lines.includes('from fork 2'), out.stdout);
+  assert.ok(lines.includes('fork exit 5'), out.stdout);
+  assert.ok(lines.includes('exec null 42'), out.stdout);
+  assert.ok(lines.includes('git ENOSYS'), out.stdout);
+});
+
+test('child_process: servers in a child process are reachable', async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').spawn(process.execPath, ['server.js'], { stdio: 'inherit' });`,
+      'server.js': `require('http').createServer((req, res) => res.end('from the child: ' + req.url)).listen(4000, () => console.log('child listening'));`,
+    },
+    '/app/main.js',
+    [{ url: '/hello' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.match(out.stdout, /child listening/);
+  assert.deepEqual(out.responses[0], { status: 200, body: 'from the child: /hello', chunks: 1 });
+});
