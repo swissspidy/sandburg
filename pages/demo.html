@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-demo="{{name}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · Sandburg demo</title>
+<meta name="description" content="{{description}}">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body class="demo">
+<header class="bar">
+  <a class="brand" href="../../">Sandburg</a>
+  <div class="heading">
+    <h1>{{title}}</h1>
+    <p>{{description}}</p>
+  </div>
+  <div class="clock"><span id="status" data-state="active">Starting</span><span id="elapsed">0.0 s</span></div>
+</header>
+<ol class="steps">
+  <li data-step="load"><span class="name">Load runtime</span><span class="time"></span></li>
+  <li data-step="mount"><span class="name">Mount project</span><span class="time"></span></li>
+  <li data-step="install"><span class="name">Install packages</span><span class="time"></span></li>
+  <li data-step="start"><span class="name">Start <code>{{command}}</code></span><span class="time"></span></li>
+  <li data-step="ready"><span class="name">Render app</span><span class="time"></span></li>
+</ol>
+<main class="stage">
+  <section class="frame">
+    <div class="chrome"><span class="dots"><i></i><i></i><i></i></span><span class="url">http://localhost/</span></div>
+    <iframe id="app" title="{{title}} app"></iframe>
+    <div id="overlay" hidden><div><h2>The demo stopped</h2><p></p><a href="">Try again</a></div></div>
+  </section>
+  <section class="console" aria-label="Runtime output">
+    <div class="chrome"><span>Terminal</span></div>
+    <div id="terminal" role="log"></div>
+  </section>
+</main>
+<footer class="note">
+  <p>{{stack}} Nothing runs on a server: this tab runs Node.js 24 (Sandburg's runtime, in a Web Worker), which runs the project's own dev server; a service worker hands the app's requests to it. <code>npm install</code> ran when this page was built; the installed files and module compilations it produced are replayed from static files.</p>
+  <p><a href="https://github.com/swissspidy/sandburg/tree/main/{{fixture}}">Project source</a> · <a href="https://github.com/swissspidy/sandburg">Sandburg on GitHub</a></p>
+</footer>
+<script type="module" src="../../demo.js"></script>
+</body>
+</html>

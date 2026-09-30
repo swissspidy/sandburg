@@ -27,6 +27,14 @@ export interface NodeProcessOptions {
 /** A file of a dev server's cache: text, or binary as base64. */
 export type CacheFile = string | { base64: string };
 
+/**
+ * Where the runtime reaches the host (worker script, installed files, compiles). /__sandburg on a
+ * sandbox origin; a page may set another (the static demos serve it under their own path).
+ */
+export function hostBase(): string {
+  return (globalThis as { __sandburgBase?: string }).__sandburgBase ?? '/__sandburg';
+}
+
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
   readonly ports: number[] = [];
@@ -46,10 +54,11 @@ export class NodeProcess {
 
   constructor(opts: NodeProcessOptions) {
     this.label = opts.label ?? 'the app';
-    this.worker = new Worker('/__sandburg/node-worker.js');
+    const base = hostBase();
+    this.worker = new Worker(`${base}/node-worker.js`);
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
-    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, base: '/__sandburg', tsRunner: opts.tsRunner });
+    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, base, tsRunner: opts.tsRunner });
   }
 
   /** Resolves when the runtime has loaded. */

@@ -12,6 +12,12 @@
  */
 let port = null;
 let waiting = [];
+/**
+ * A static deployment (the demos, site/) sets these before it imports this file: its own answers to
+ * host requests (fetch returns true when it responded), where its host page is, the app's path
+ * prefix, and markup to put before the WebSocket shim.
+ */
+const hooks = self.sandburgHooks ?? {};
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
@@ -27,7 +33,8 @@ async function getPort() {
   if (port) return port;
   const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
   for (const client of clients) {
-    if (new URL(client.url).pathname.startsWith('/__sandburg/')) client.postMessage({ type: 'sandburg-need-port' });
+    const at = new URL(client.url);
+    if (hooks.isHost ? hooks.isHost(at) : at.pathname.startsWith('/__sandburg/')) client.postMessage({ type: 'sandburg-need-port' });
   }
   return new Promise((resolve, reject) => {
     waiting.push(resolve);
@@ -38,6 +45,7 @@ async function getPort() {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
+  if (hooks.fetch && hooks.fetch(event, url)) return;
   if (url.pathname.startsWith('/__sandburg/') || url.pathname === '/__sw__.js') return;
   // Top-level navigations are the host page; the app navigates inside its frame.
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
@@ -45,7 +53,7 @@ self.addEventListener('fetch', (event) => {
 });
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
-const SHIM = '<script src="/__sandburg/ws-shim.js"></script>';
+const SHIM = (hooks.shim ?? '') + '<script src="/__sandburg/ws-shim.js"></script>';
 
 /**
  * Inserts the WebSocket shim (ws-shim.js) into an HTML page, first thing in <head>, so it runs
@@ -92,7 +100,7 @@ async function forward(request, url) {
   request.headers.forEach((value, name) => headers.push([name, value]));
   // Forbidden headers are not in request.headers; servers read Referer (SolidStart's single-flight actions).
   if (request.referrer && request.referrer !== 'about:client' && !headers.some(([n]) => n === 'referer')) headers.push(['referer', request.referrer]);
-  p.postMessage({ type: 'request', method: request.method, url: url.pathname + url.search, headers, body }, body ? [port2, body] : [port2]);
+  p.postMessage({ type: 'request', method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [port2, body] : [port2]);
   return new Promise((resolve) => {
     let controller;
     const stream = new ReadableStream({
