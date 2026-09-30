@@ -276,3 +276,78 @@ test('child_process: servers in a child process are reachable', async () => {
   assert.match(out.stdout, /child listening/);
   assert.deepEqual(out.responses[0], { status: 200, body: 'from the child: /hello', chunks: 1 });
 });
+
+test('http: requests to localhost and local sockets reach virtual servers, also in threads', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const http = require('http');
+        const { Worker } = require('worker_threads');
+        const get = (opts) => new Promise((resolve, reject) => {
+          http.get(opts, (res) => {
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('end', () => resolve(res.statusCode + ' ' + body));
+          }).on('error', reject);
+        });
+        http.createServer((req, res) => res.end('own ' + req.url + ' ' + req.headers.host)).listen(4100, async () => {
+          console.log(await get('http://localhost:4100/a'));
+          const w = new Worker(require('path').join(__dirname, 'thread.js'));
+          w.on('message', async (address) => {
+            console.log(await get({ socketPath: address, path: '/b', headers: { 'x-test': '1' } }));
+            process.exit(0);
+          });
+        });`,
+      'thread.js': `
+        const http = require('http');
+        const server = http.createServer((req, res) => res.end('thread ' + req.url + ' ' + req.headers['x-test']));
+        server.listen('\\0test.sock', () => require('worker_threads').parentPort.postMessage(server.address()));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.ok(lines.includes('200 own /a localhost:4100'), out.stdout + out.stderr);
+  assert.ok(lines.includes('200 thread /b 1'), out.stdout + out.stderr);
+});
+
+test('net: local servers and sockets, also between a thread and its parent', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const net = require('net');
+        const { Worker } = require('worker_threads');
+        const echo = (tag) => (socket) => socket.on('data', (d) => socket.write(tag + ':' + d)).on('end', () => socket.end());
+        const talk = (target, text) => new Promise((resolve, reject) => {
+          let got = '';
+          const c = net.createConnection(target, () => c.end(text));
+          c.on('data', (d) => (got += d)).on('end', () => resolve(got)).on('error', reject);
+        });
+        net.createServer(echo('parent')).listen('/tmp/parent.sock', async () => {
+          console.log(await talk(4200, 'x').catch((e) => e.code));
+          net.createServer(echo('local')).listen(4200, async () => {
+            console.log(await talk({ port: 4200, host: '127.0.0.1' }, 'hi'));
+            const w = new Worker(require('path').join(__dirname, 'thread.js'));
+            w.on('message', async (m) => {
+              if (m.fromThread) return console.log('thread got', m.fromThread);
+              console.log(await talk(m.path, 'down'));
+              process.exit(0);
+            });
+          });
+        });`,
+      'thread.js': `
+        const net = require('net');
+        const { parentPort } = require('worker_threads');
+        const c = net.connect('/tmp/parent.sock', () => c.end('up'));
+        let got = '';
+        c.on('data', (d) => (got += d)).on('end', () => {
+          parentPort.postMessage({ fromThread: got });
+          net.createServer((s) => s.on('data', (d) => s.end('thread:' + d))).listen('\\0thread.sock', () => parentPort.postMessage({ path: '\\0thread.sock' }));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.deepEqual(lines, ['ECONNREFUSED', 'local:hi', 'thread got parent:up', 'thread:down'], out.stdout + out.stderr);
+});

@@ -22,7 +22,7 @@ import type { Project } from '../../types.ts';
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 const TRANSFORM_VERSION = 6;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 4;
+const LAYOUT_VERSION = 7;
 
 export interface InstallInfo {
   key: string;
@@ -90,6 +90,7 @@ export class Installer {
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
       await placeNextSwcWasm(tmp);
       await placeWasiBindings(tmp, log);
+      await placeWasmBuilds(tmp, log);
       await writeFile(join(tmp, '.sandburg-complete'), new Date().toISOString());
       await rm(dir, { recursive: true, force: true });
       await rename(tmp, dir);
@@ -287,6 +288,98 @@ function existsSyncSafe(path: string): boolean {
     return statSync(path).isFile();
   } catch {
     return false;
+  }
+}
+
+/**
+ * Packages whose native code has a WebAssembly build of the same version with the same API. Each
+ * installed copy gets that build installed next to it (in its own node_modules), and the file that
+ * loads the native code is replaced by one that loads the WebAssembly build.
+ */
+const WASM_BUILDS: { name: string; wasm: string; file: string; applies(version: string): boolean; shim: string }[] = [
+  {
+    // Rollup 4's parser (@rollup/rollup-<platform>).
+    name: 'rollup',
+    wasm: '@rollup/wasm-node',
+    file: 'dist/native.js',
+    applies: (v) => /^4\./.test(v),
+    shim: "// sandburg: rollup's WebAssembly build (@rollup/wasm-node)\nmodule.exports = require('../node_modules/@rollup/wasm-node/dist/native.js');\n",
+  },
+  {
+    // esbuild's Go binary (@esbuild/<platform>): its browser build, which runs the compiler in this thread.
+    name: 'esbuild',
+    wasm: 'esbuild-wasm',
+    file: 'lib/main.js',
+    applies: (v) => /^0\.(1[89]|[2-9]\d)\./.test(v),
+    shim: `// sandburg: esbuild's WebAssembly build (esbuild-wasm). The synchronous API needs a separate thread and is unavailable.
+const fs = require('fs');
+const path = require('path');
+const dir = path.join(__dirname, '../node_modules/esbuild-wasm');
+// Its in-thread service reads the worker global \`self\`, which the runtime leaves undefined (as in Node).
+const browser = { exports: {} };
+new Function('self', 'module', 'exports', 'require', fs.readFileSync(path.join(dir, 'lib/browser.js'), 'utf8'))(globalThis, browser, browser.exports, require);
+const esbuild = browser.exports;
+let ready;
+const init = () =>
+  (ready ??= esbuild.initialize({ wasmModule: new WebAssembly.Module(fs.readFileSync(path.join(dir, 'esbuild.wasm'))), worker: false }));
+const later = (name) => (...args) => init().then(() => esbuild[name](...args));
+const sync = (name) => () => {
+  throw new Error('esbuild.' + name + '() is not available in the browser runtime (esbuild-wasm has no synchronous API there); use the asynchronous API');
+};
+module.exports = {
+  version: esbuild.version,
+  build: later('build'),
+  context: later('context'),
+  transform: later('transform'),
+  formatMessages: later('formatMessages'),
+  analyzeMetafile: later('analyzeMetafile'),
+  buildSync: sync('buildSync'),
+  transformSync: sync('transformSync'),
+  formatMessagesSync: sync('formatMessagesSync'),
+  analyzeMetafileSync: sync('analyzeMetafileSync'),
+  initialize: () => init().then(() => undefined),
+  stop: () => Promise.resolve(),
+};
+`,
+  },
+];
+
+async function placeWasmBuilds(dir: string, log: (line: string) => void): Promise<void> {
+  const found: { dir: string; version: string; build: (typeof WASM_BUILDS)[number] }[] = [];
+  const walk = async (nm: string, depth: number) => {
+    let entries;
+    try {
+      entries = await readdir(nm, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue;
+      const pkgDirs = e.name.startsWith('@') ? (await readdir(join(nm, e.name))).map((sub) => join(nm, e.name, sub)) : [join(nm, e.name)];
+      for (const pkgDir of pkgDirs) {
+        const build = WASM_BUILDS.find((b) => pkgDir.endsWith(`${sep}${b.name.split('/').join(sep)}`) && existsSyncSafe(join(pkgDir, b.file)));
+        if (build) {
+          const version = (JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8')) as { version: string }).version;
+          if (build.applies(version)) found.push({ dir: pkgDir, version, build });
+        }
+        if (depth < 4) await walk(join(pkgDir, 'node_modules'), depth + 1);
+      }
+    }
+  };
+  await walk(join(dir, 'node_modules'), 0);
+  for (const { dir: pkgDir, version, build } of found) {
+    const target = join(pkgDir, 'node_modules', build.wasm);
+    if (!existsSyncSafe(join(target, 'package.json'))) {
+      const side = join(dir, '.sandburg-wasm-build');
+      await rm(side, { recursive: true, force: true });
+      await mkdir(side, { recursive: true });
+      await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasm-build', private: true, dependencies: { [build.wasm]: version } }));
+      await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
+      await cp(join(side, 'node_modules', build.wasm), target, { recursive: true });
+      await rm(side, { recursive: true, force: true });
+    }
+    await writeFile(join(pkgDir, build.file), build.shim);
+    log(`${build.name} ${version}: using ${build.wasm}`);
   }
 }
 

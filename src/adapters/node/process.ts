@@ -110,7 +110,8 @@ export class NodeProcess {
         this.ready = true;
         break;
       case 'listening':
-        if (!this.ports.includes(m.port)) this.ports.push(m.port);
+        // TCP ports only (the runtime keeps servers on local sockets to itself).
+        if (typeof m.port === 'number' && !this.ports.includes(m.port)) this.ports.push(m.port);
         break;
       case 'fatal':
         // The runtime could not load one of its own parts: infrastructure, not the app.

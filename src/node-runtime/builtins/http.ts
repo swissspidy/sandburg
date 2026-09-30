@@ -24,9 +24,19 @@ export interface BridgeResponse {
   end(): void;
 }
 
-/** Ports with listening servers; the runtime's request dispatcher reads this. */
-export const servers = new Map<number, Server>();
+/** Listening servers by port, or by path for servers on a local socket; the runtime's request dispatcher reads this. */
+export const servers = new Map<number | string, Server>();
 export const serverEvents = new EventEmitter();
+
+/**
+ * Requests to this machine (localhost, or a socketPath) are delivered to virtual servers directly,
+ * without the network: this runtime's own (`servers`), and through `loopback.route` those of other
+ * runtimes (threads, child processes: see worker.ts). Anything else goes through fetch().
+ */
+export const loopback: {
+  route?(target: number | string, method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse & { error(message: string): void }): boolean;
+} = {};
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', '']);
 
 class FakeSocket extends EventEmitter {
   /** The server that accepted the connection (Next.js finds its HTTP server through req.socket.server). */
@@ -257,7 +267,7 @@ export class ServerResponse extends Writable {
 
 export class Server extends EventEmitter {
   listening = false;
-  private port = 0;
+  private port: number | string = 0;
   timeout = 0;
   keepAliveTimeout = 5000;
   headersTimeout = 60000;
@@ -271,23 +281,31 @@ export class Server extends EventEmitter {
   listen(...args: unknown[]) {
     const cb = typeof args.at(-1) === 'function' ? (args.pop() as () => void) : undefined;
     const first = args[0];
-    const port = typeof first === 'object' && first ? Number((first as { port?: number }).port ?? 0) : Number(first ?? 0);
-    this.port = port || 3000;
-    while (servers.has(this.port) && servers.get(this.port) !== this) this.port++;
+    // A local socket (a path, or an abstract \0name) or a TCP port.
+    const path = typeof first === 'string' && !/^\d+$/.test(first) ? first : typeof first === 'object' && first && typeof (first as { path?: unknown }).path === 'string' ? (first as { path: string }).path : null;
+    if (path !== null) this.port = path;
+    else {
+      const port = typeof first === 'object' && first ? Number((first as { port?: number }).port ?? 0) : Number(first ?? 0);
+      let p = port || 3000;
+      while (servers.has(p) && servers.get(p) !== this) p++;
+      this.port = p;
+    }
     servers.set(this.port, this);
     this.listening = true;
     queueMicrotask(() => {
+      // The runtime learns of the server first, so it is reachable when the program is told.
+      serverEvents.emit('listening', this.port);
       this.emit('listening');
       cb?.();
-      serverEvents.emit('listening', this.port);
     });
     return this;
   }
   address() {
-    return this.listening ? { address: '127.0.0.1', family: 'IPv4', port: this.port } : null;
+    if (!this.listening) return null;
+    return typeof this.port === 'string' ? this.port : { address: '127.0.0.1', family: 'IPv4', port: this.port };
   }
   close(cb?: (e?: Error) => void) {
-    servers.delete(this.port);
+    if (servers.get(this.port) === this) servers.delete(this.port);
     this.listening = false;
     queueMicrotask(() => {
       this.emit('close');
@@ -307,7 +325,7 @@ export class Server extends EventEmitter {
     // Requests surfaced in a service worker carry no Content-Length; a real connection would.
     // Body parsers (e.g. Express') use it to decide whether a request has a body.
     if (body && !headers.some(([k]) => /^(content-length|transfer-encoding)$/i.test(k))) headers = [...headers, ['content-length', String(body.length)]];
-    const req = new IncomingMessage(method, url, headers, this.port);
+    const req = new IncomingMessage(method, url, headers, typeof this.port === 'number' ? this.port : 0);
     (req.socket as FakeSocket).server = this;
     const res = new ServerResponse(req, bridge);
     if (body?.length) req.push(Buffer.from(body));
@@ -322,9 +340,9 @@ export class Server extends EventEmitter {
    */
   upgrade(url: string, headers: [string, string][], sink: UpgradeSink): UpgradeSocket | null {
     if (!this.listenerCount('upgrade')) return null;
-    const socket = new UpgradeSocket(this.port, sink);
+    const socket = new UpgradeSocket(typeof this.port === 'number' ? this.port : 0, sink);
     socket.server = this;
-    const req = new IncomingMessage('GET', url, headers, this.port);
+    const req = new IncomingMessage('GET', url, headers, typeof this.port === 'number' ? this.port : 0);
     req.socket = req.connection = socket;
     req.push(null);
     req.complete = true;
@@ -360,20 +378,42 @@ class ClientRequest extends Writable {
   path: string;
   host: string;
   private url: string;
+  /** A server on this machine: a port on localhost, or a socket path. */
+  private target: number | string | null;
+  socket: FakeSocket;
+  connection: FakeSocket;
   private controller = new AbortController();
   aborted = false;
-  constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void) {
+  constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void, socketPath?: string) {
     super();
     const u = new URL(url);
     this.url = url;
+    this.target = socketPath ?? (LOCAL_HOSTS.has(u.hostname) ? Number(u.port || (u.protocol === 'https:' ? 443 : 80)) : null);
+    // As in Node, the request gets its (connected) socket on a later tick; proxies (httpxy) wait for it.
+    this.socket = this.connection = Object.assign(new FakeSocket(0), { pending: false, connecting: false });
+    queueMicrotask(() => this.emit('socket', this.socket));
     this.method = method;
     this.path = u.pathname + u.search;
     this.host = u.host;
     for (const [k, v] of Object.entries(headers)) this.headers[k.toLowerCase()] = String(v);
     if (cb) this.once('response', cb);
   }
-  setHeader(k: string, v: string) { this.headers[k.toLowerCase()] = String(v); }
+  headersSent = false;
+  setHeader(k: string, v: string | number | string[]) {
+    this.headers[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v);
+    return this;
+  }
+  appendHeader(k: string, v: string | string[]) {
+    const key = k.toLowerCase();
+    const add = Array.isArray(v) ? v.join(', ') : String(v);
+    this.headers[key] = key in this.headers ? `${this.headers[key]}, ${add}` : add;
+    return this;
+  }
   getHeader(k: string) { return this.headers[k.toLowerCase()]; }
+  hasHeader(k: string) { return k.toLowerCase() in this.headers; }
+  getHeaders() { return { ...this.headers }; }
+  getHeaderNames() { return Object.keys(this.headers); }
+  getRawHeaderNames() { return Object.keys(this.headers); }
   removeHeader(k: string) { delete this.headers[k.toLowerCase()]; }
   setTimeout() { return this; }
   setNoDelay() {}
@@ -391,8 +431,37 @@ class ClientRequest extends Writable {
     this.chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, enc) : (chunk as Uint8Array));
     cb();
   }
+  /** Delivers the request to a server on this machine, if there is one. */
+  private local(body: Uint8Array | null): boolean {
+    let res: IncomingMessage | null = null;
+    const bridge = {
+      start: (status: number, statusText: string, headers: [string, string][]) => {
+        res = new IncomingMessage(this.method, this.path, headers, 0);
+        res.statusCode = status;
+        res.statusMessage = statusText;
+        this.emit('response', res);
+      },
+      chunk: (data: Uint8Array) => res?.push(Buffer.from(data)),
+      end: () => {
+        if (res) {
+          res.complete = true;
+          res.push(null);
+        }
+      },
+      error: (message: string) => this.emit('error', Object.assign(new Error(message), { code: 'ECONNRESET' })),
+    };
+    const headers: [string, string][] = Object.entries(this.headers);
+    if (!('host' in this.headers)) headers.push(['host', this.host || 'localhost']);
+    const server = servers.get(this.target!);
+    if (server) {
+      queueMicrotask(() => server.dispatch(this.method, this.path, headers, body, bridge));
+      return true;
+    }
+    return loopback.route?.(this.target!, this.method, this.path, headers, body, bridge) ?? false;
+  }
   _final(cb: () => void) {
     const body = this.chunks.length ? Buffer.concat(this.chunks) : undefined;
+    if (this.target !== null && this.local(body ?? null)) return cb();
     fetch(this.url, { method: this.method, headers: this.headers, body: this.method === 'GET' || this.method === 'HEAD' ? undefined : body, signal: this.controller.signal, redirect: 'manual' })
       .then(async (r) => {
         const headers: [string, string][] = [];
@@ -411,7 +480,7 @@ class ClientRequest extends Writable {
         }
         msg.push(null);
       })
-      .catch((e) => this.emit('error', Object.assign(e instanceof Error ? e : new Error(String(e)), { code: 'ECONNREFUSED' })));
+      .catch((e) => this.emit('error', Object.assign(new Error((e as Error)?.message ?? String(e), { cause: e }), { code: 'ECONNREFUSED' })));
     cb();
   }
 }
@@ -431,7 +500,7 @@ export function makeClient(defaultProtocol: 'http:' | 'https:') {
       const host = (o.hostname as string) ?? (o.host as string) ?? 'localhost';
       url = `${protocol}//${host}${o.port ? `:${o.port}` : ''}${(o.path as string) ?? '/'}`;
     }
-    return new ClientRequest(url, ((o.method as string) ?? 'GET').toUpperCase(), (o.headers as Record<string, string>) ?? {}, cb);
+    return new ClientRequest(url, ((o.method as string) ?? 'GET').toUpperCase(), (o.headers as Record<string, string>) ?? {}, cb, typeof o.socketPath === 'string' ? o.socketPath : undefined);
   }
   function get(input: string | URL | Record<string, unknown>, opts?: unknown, cb?: (res: IncomingMessage) => void) {
     const req = request(input, opts, cb);

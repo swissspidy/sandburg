@@ -27,9 +27,10 @@ import zlibBrowserify from 'browserify-zlib';
 import { parseArgs } from '@pkgjs/parseargs';
 import { asyncHooks, installAsyncContext } from './async-context.ts';
 import { createFs } from './builtins/fs.ts';
-import { http, https, servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
+import { http, https, loopback, servers, serverEvents, type BridgeResponse, type UpgradeSocket } from './builtins/http.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
 import * as misc from './builtins/misc.ts';
+import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
@@ -55,7 +56,9 @@ export type ToWorker =
   | { type: 'run'; main: string; argv?: string[]; preload?: string[] }
   /** The parent closed this child process's IPC channel. */
   | { type: 'disconnect' }
-  | { type: 'request'; id: number; port: number; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
+  /** A net connection between runtimes (see netMessage). */
+  | NetMessage
+  | { type: 'request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
   /** A message for the program (with init.ipc): process.on('message'). */
   | { type: 'message'; data: unknown }
   /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
@@ -67,7 +70,7 @@ export type ToWorker =
 
 export type FromWorker =
   | { type: 'log'; stream: 'stdout' | 'stderr'; text: string }
-  | { type: 'listening'; port: number }
+  | { type: 'listening'; port: number | string }
   | { type: 'response-start'; id: number; status: number; statusText: string; headers: [string, string][] }
   | { type: 'response-chunk'; id: number; chunk: Uint8Array }
   | { type: 'response-end'; id: number }
@@ -192,7 +195,8 @@ function buildBuiltins() {
   });
   path.posix = path;
   path.win32 = path;
-  path.default = path;
+  // Node's path has no enumerable 'default' (tools copy its keys: @vercel/nft).
+  Object.defineProperty(path, 'default', { value: path, enumerable: false, writable: true, configurable: true });
 
   // Like Node, the module itself is the legacy Stream class (an EventEmitter with pipe());
   // libraries such as `send` inherit from it.
@@ -294,7 +298,20 @@ function buildBuiltins() {
     urlToHttpOptions: (u: URL) => ({ protocol: u.protocol, hostname: u.hostname, hash: u.hash, search: u.search, pathname: u.pathname, path: u.pathname + u.search, href: u.href, port: u.port ? Number(u.port) : undefined }),
   };
 
+  // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
+  const withBase64Url = <A extends unknown[]>(make: (...a: A) => { digest(enc?: string): Buffer | string }) => (...args: A) => {
+    const h = make(...args);
+    const digest = h.digest.bind(h);
+    h.digest = (enc?: string) => (enc === 'base64url' ? (digest() as Buffer).toString('base64url') : digest(enc));
+    return h;
+  };
+  const createHash = withBase64Url(cryptoBrowserify.createHash as never);
+  const createHmac = withBase64Url(cryptoBrowserify.createHmac as never);
   const crypto = Object.assign(Object.create(null), cryptoBrowserify, {
+    createHash,
+    createHmac,
+    Hash: createHash,
+    Hmac: createHmac,
     webcrypto: globalThis.crypto,
     subtle: globalThis.crypto.subtle,
     getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
@@ -307,7 +324,7 @@ function buildBuiltins() {
     getHashes: () => ['md5', 'sha1', 'sha256', 'sha384', 'sha512'],
     getCiphers: () => [],
     constants: {},
-    hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => cryptoBrowserify.createHash(alg).update(data).digest(enc),
+    hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
   });
 
   const zlibUnsupported = (name: string) => () => {
@@ -370,7 +387,7 @@ function buildBuiltins() {
     zlib: () => zlib,
     os: () => misc.os,
     tty: () => misc.tty,
-    net: () => misc.net,
+    net: () => net,
     tls: () => misc.tls,
     dns: () => misc.dns,
     'dns/promises': () => misc.dns.promises,
@@ -609,7 +626,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       write('stderr', `Uncaught (in promise) ${e.reason?.stack ?? e.reason}\n`);
     }
   });
-  serverEvents.on('listening', (port: number) => post({ type: 'listening', port }));
+  serverEvents.on('listening', (port: number | string) => announce(port));
   hideWorkerGlobals();
   post({ type: 'ready' });
   // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
@@ -634,7 +651,7 @@ function exitWhenIdle() {
   globalThis.fetch = track(globalThis.fetch.bind(globalThis));
   const wasm = WebAssembly as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
   for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) if (wasm[name]) wasm[name] = track(wasm[name].bind(WebAssembly));
-  const busy = () => timersActive() || servers.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
+  const busy = () => timersActive() || servers.size > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
   let idle = 0;
   const timer = nativeSetInterval(() => {
     idle = busy() ? 0 : idle + 1;
@@ -705,6 +722,7 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
     nestedSockets.set(msg.id, nestedPorts.get(msg.port)!);
     nestedSockets.get(msg.id)!.postMessage(msg);
   } else if ((msg.type === 'ws-send' || msg.type === 'ws-close') && nestedSockets.has(msg.id)) nestedSockets.get(msg.id)!.postMessage(msg);
+  else if (msg.type.startsWith('net-')) netMessage(msg as NetMessage, (x, t) => realPostMessage(x, t ?? []), null);
   else if (msg.type === 'disconnect' && proc?.connected) {
     proc.connected = false;
     proc.emit('disconnect');
@@ -730,16 +748,135 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
 const sockets = new Map<number, { socket: UpgradeSocket; codec: WsClientCodec }>();
 
 /**
+ * net connections between runtimes (see net.ts): a socket here, its peer in the parent or a nested
+ * runtime. A connection starts with net-connect to the runtime that has the server; then either
+ * side sends data, end (half close) and close.
+ */
+type NetMessage =
+  | { type: 'net-connect'; id: number; key: number | string }
+  | { type: 'net-connected'; id: number }
+  | { type: 'net-refused'; id: number; message: string }
+  | { type: 'net-data'; id: number; data: ArrayBuffer }
+  | { type: 'net-end'; id: number }
+  | { type: 'net-close'; id: number }
+  | { type: 'net-listening'; key: number | string };
+type Send = (m: NetMessage, transfer?: Transferable[]) => void;
+const netConns = new Map<number, NetSocket>();
+/** Net servers in nested runtimes. */
+const nestedNet = new Map<number | string, globalThis.Worker>();
+let nextNetId = -1 - Math.floor(Math.random() * 2 ** 40);
+
+function bindRemote(socket: NetSocket, id: number, send: Send) {
+  netConns.set(id, socket);
+  socket.peer = {
+    data: (chunk) => {
+      const buf = chunk.slice().buffer as ArrayBuffer;
+      send({ type: 'net-data', id, data: buf }, [buf]);
+    },
+    end: () => send({ type: 'net-end', id }),
+    close: () => {
+      netConns.delete(id);
+      send({ type: 'net-close', id });
+    },
+  };
+  socket.once('close', () => netConns.delete(id));
+}
+
+netLinks.connect = (key, socket) => {
+  const nested = nestedNet.get(key);
+  // A server in a nested runtime, else ask the parent (it may have one).
+  const send: Send | null = nested ? (m, t) => nested.postMessage(m, t ?? []) : thread ? (m, t) => realPostMessage(m, t ?? []) : null;
+  if (!send) return false;
+  const id = nextNetId--;
+  bindRemote(socket, id, send);
+  send({ type: 'net-connect', id, key });
+  return true;
+};
+netEvents.on('listening', (key: number | string) => {
+  if (thread) realPostMessage({ type: 'net-listening', key } satisfies NetMessage);
+});
+
+/** A net message from another runtime; `reply` goes back to it. */
+function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker | null): void {
+  switch (m.type) {
+    case 'net-connect': {
+      const server = netServers.get(m.key);
+      if (!server) return reply({ type: 'net-refused', id: m.id, message: `connect ECONNREFUSED ${typeof m.key === 'string' ? m.key : `127.0.0.1:${m.key}`}` });
+      const socket = new NetSocket();
+      bindRemote(socket, m.id, reply);
+      socket.connecting = false;
+      socket.pending = false;
+      server.accept(socket);
+      return reply({ type: 'net-connected', id: m.id });
+    }
+    case 'net-connected':
+      return void netConns.get(m.id)?.established();
+    case 'net-refused': {
+      const socket = netConns.get(m.id);
+      netConns.delete(m.id);
+      return socket?.refuse(m.message);
+    }
+    case 'net-data':
+      return netConns.get(m.id)?.receive(new Uint8Array(m.data));
+    case 'net-end':
+      return netConns.get(m.id)?.receive(null);
+    case 'net-close': {
+      const socket = netConns.get(m.id);
+      netConns.delete(m.id);
+      if (socket) {
+        socket.peer = null;
+        socket.destroy();
+      }
+      return;
+    }
+    case 'net-listening':
+      if (from) nestedNet.set(m.key, from);
+      return;
+  }
+}
+
+/**
  * Servers in nested runtimes (child processes, worker threads) are reachable like this runtime's own:
  * requests and WebSockets for their ports go down to them, and their replies come back up.
  */
-const nestedPorts = new Map<number, globalThis.Worker>();
+const nestedPorts = new Map<number | string, globalThis.Worker>();
 const nestedSockets = new Map<number, globalThis.Worker>();
+/** Requests this runtime's programs made to servers in nested runtimes (http.request to localhost). */
+const loopbackRequests = new Map<number, BridgeResponse & { error(message: string): void }>();
+let nextLoopbackId = -1 - Math.floor(Math.random() * 2 ** 40);
+loopback.route = (target, method, url, headers, body, bridge) => {
+  const worker = nestedPorts.get(target);
+  if (!worker) return false;
+  const id = nextLoopbackId--;
+  loopbackRequests.set(id, bridge);
+  const buf = body ? (body.slice().buffer as ArrayBuffer) : null;
+  worker.postMessage({ type: 'request', id, port: target, method, url, headers, body: buf } satisfies ToWorker, buf ? [buf] : []);
+  return true;
+};
+/** Only TCP ports are the host's business; a nested runtime's parent also learns its socket paths. */
+const announce = (port: number | string) => {
+  if (typeof port === 'number' || thread) post({ type: 'listening', port });
+};
 function relayFromNested(m: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean {
+  if (m.type.startsWith('net-')) {
+    netMessage(m as unknown as NetMessage, (x, t) => from.postMessage(x, t ?? []), from);
+    return true;
+  }
+  const own = loopbackRequests.get(m.id as number);
+  if (own && m.type.startsWith('response-')) {
+    if (m.type === 'response-start') own.start(m.status as number, m.statusText as string, m.headers as [string, string][]);
+    else if (m.type === 'response-chunk') own.chunk(m.chunk as Uint8Array);
+    else {
+      loopbackRequests.delete(m.id as number);
+      if (m.type === 'response-end') own.end();
+      else own.error(String(m.message));
+    }
+    return true;
+  }
   switch (m.type) {
     case 'listening':
-      nestedPorts.set(m.port as number, from);
-      post(m as FromWorker);
+      nestedPorts.set(m.port as number | string, from);
+      announce(m.port as number | string);
       return true;
     case 'response-chunk':
       post(m as FromWorker, [(m.chunk as Uint8Array).buffer as ArrayBuffer]);

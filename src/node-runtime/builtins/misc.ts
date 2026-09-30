@@ -5,8 +5,9 @@
  * so libraries that merely import them, or probe and fall back, keep working.
  */
 import { EventEmitter } from 'events';
-import { Duplex, Readable, Writable } from 'readable-stream';
+import { Readable, Writable } from 'readable-stream';
 import { timers } from './process.ts';
+import { net, NetServer, Socket } from './net.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
 
@@ -49,64 +50,7 @@ export const tty = { isatty: () => false, WriteStream, ReadStream: Readable };
 
 // --- net / tls / dns ------------------------------------------------------------------
 
-const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
-const isIPv4 = (s: string) => IPV4.test(s);
-const isIPv6 = (s: string) => {
-  if (!/^[0-9a-fA-F:.]+$/.test(s) || !s.includes(':')) return false;
-  try {
-    new URL(`http://[${s}]/`);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-class Socket extends Duplex {
-  remoteAddress?: string;
-  connecting = false;
-  constructor() {
-    super();
-  }
-  connect(..._args: unknown[]) {
-    timers.setTimeout(() => this.destroy(Object.assign(new Error('connect ECONNREFUSED (raw sockets are not available in the browser runtime)'), { code: 'ECONNREFUSED' })), 0);
-    return this;
-  }
-  _read() {}
-  _write(_c: unknown, _e: unknown, cb: () => void) { cb(); }
-  setTimeout() { return this; }
-  setNoDelay() { return this; }
-  setKeepAlive() { return this; }
-  ref() { return this; }
-  unref() { return this; }
-  address() { return {}; }
-}
-
-class NetServer extends EventEmitter {
-  listen() {
-    timers.setTimeout(() => this.emit('error', notSupported('net.Server.listen')), 0);
-    return this;
-  }
-  close(cb?: () => void) { cb?.(); return this; }
-  address() { return null; }
-  ref() { return this; }
-  unref() { return this; }
-}
-
-export const net = {
-  isIP: (s: string) => (isIPv4(s) ? 4 : isIPv6(s) ? 6 : 0),
-  isIPv4,
-  isIPv6,
-  Socket,
-  Stream: Socket,
-  Server: NetServer,
-  createServer: () => new NetServer(),
-  connect: () => new Socket().connect(),
-  createConnection: () => new Socket().connect(),
-  BlockList: class { addAddress() {} check() { return false; } },
-  SocketAddress: class {},
-  getDefaultAutoSelectFamily: () => true,
-  setDefaultAutoSelectFamily: () => {},
-};
+// net: see net.ts.
 
 export const tls = {
   ...net,
