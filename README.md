@@ -21,12 +21,13 @@ Vue + Express + SQLite app, running in your browser.
 - **Contained.** A sandbox reaches the network only through a caching gateway and a per-sandbox
   allowlist, and tests prove it.
 
-| 100-app study ([v5](docs/fidelity/v5-node-vs-truth.md)) | Median run, cold | Median run, warm |
+| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md)) | Median run, cold | Median run, warm |
 |---|---|---|
-| Vite, vanilla (33 apps) | 3.7 s | 3.3 s |
-| Vite + React (34) | 19.6 s | 5.7 s |
-| Next.js 15 (33) | 16.2 s | 13.9 s |
-| All 100 | 14.4 s | 6.8 s |
+| Vite, vanilla (33 apps) | 3.4 s | 3.2 s |
+| Vite + React (34) | 16.1 s | 5.9 s |
+| Next.js 15 (33) | 14.4 s | 13.0 s |
+| All 100 | 13.2 s | 6.5 s |
+| Whole corpus, 3 tabs | 533 s | 289 s |
 
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
 from empty Sandburg caches. A Next.js app that has never run, with a new install, runs in
