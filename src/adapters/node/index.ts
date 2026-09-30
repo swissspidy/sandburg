@@ -14,7 +14,7 @@ import { detectFramework, projectFromFiles } from '../../project.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
-import { TRANSFORM_VERSION, sharedInstaller } from './install.ts';
+import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import type { HostInstall } from './browser.ts';
 
 const installer = sharedInstaller();
@@ -164,7 +164,7 @@ async function cacheBundle(key: string): Promise<Buffer | null> {
   const length = Buffer.alloc(4);
   length.writeUInt32LE(head.length);
   const bundle = Buffer.concat([length, head, ...bodies]);
-  const tmp = `${bin}.${process.pid}.tmp`;
+  const tmp = `${bin}.${tmpSuffix()}.tmp`;
   await writeFile(tmp, bundle);
   await rename(tmp, bin);
   return bundle;
@@ -181,7 +181,7 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
   }
   await mkdir(devCacheRoot(), { recursive: true });
   const file = join(devCacheRoot(), `${key}.json`);
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  const tmp = `${file}.${tmpSuffix()}.tmp`;
   await writeFile(tmp, JSON.stringify(files));
   await rename(tmp, file);
   return true;
@@ -223,7 +223,7 @@ function markDirty(key: string) {
     for (const k of [...preloadDirty]) {
       preloadDirty.delete(k);
       const file = preloadListPath(k);
-      const tmp = `${file}.${process.pid}.tmp`;
+      const tmp = `${file}.${tmpSuffix()}.tmp`;
       await writeFile(tmp, JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])]))
         .then(() => rename(tmp, file))
         .catch(() => {});
@@ -343,7 +343,7 @@ async function preloadBundle(key: string, hash: string): Promise<Buffer | null> 
   for (const old of await readdir(devCacheRoot()).catch(() => [] as string[])) {
     if (old.startsWith(`preload-${key}-`) && old.endsWith('.bin')) await rm(join(devCacheRoot(), old), { force: true });
   }
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = `${file}.${tmpSuffix()}.tmp`;
   await writeFile(tmp, bundle);
   await rename(tmp, file);
   return bundle;

@@ -10,7 +10,7 @@
  */
 import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
@@ -41,6 +41,9 @@ export function sharedInstaller(): Installer {
   return (shared ??= new Installer(resolve(process.env.SANDBURG_INSTALL_DIR ?? '.sandburg/installs')));
 }
 let shared: Installer | undefined;
+
+/** A name for a temporary file no other write uses, even of the same file at the same time. */
+export const tmpSuffix = () => `${process.pid}-${randomBytes(6).toString('hex')}`;
 
 interface Manifest {
   dependencies?: Record<string, string>;
@@ -249,7 +252,7 @@ export class Installer {
     }
     const body = Buffer.from(await transformForRuntime(source, rel, esm));
     await mkdir(join(cached, '..'), { recursive: true });
-    const tmp = `${cached}.${process.pid}.tmp`;
+    const tmp = `${cached}.${tmpSuffix()}.tmp`;
     await writeFile(tmp, body);
     await rename(tmp, cached);
     return { body, type: 'text/javascript' };
