@@ -50,6 +50,8 @@ export interface ChecksInput {
   appErrors: () => PageError[];
   appConsole: () => ConsoleEntry[];
   network: () => { failed: NetworkEntry[]; blocked: NetworkEntry[] };
+  /** The document the app frame shows (its last navigation), if it was seen. */
+  appDocument?: () => { url: string; status: number } | null;
 }
 
 export interface ChecksOutput {
@@ -91,6 +93,17 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
     );
   }
 
+  results.push(
+    await timed('document', 'document', 'The page is not a server error', true, async () => {
+      const doc = input.appDocument?.() ?? null;
+      const bad = doc !== null && doc.status >= 500;
+      return {
+        status: bad ? 'failed' : 'passed',
+        message: bad ? `${doc.url} responded with ${doc.status}` : undefined,
+        details: doc ? { status: doc.status } : undefined,
+      };
+    }),
+  );
   results.push(
     await timed('console', 'console', 'No uncaught errors in the app', true, async () => {
       const errors = input.appErrors();

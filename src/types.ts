@@ -117,7 +117,7 @@ export interface SerializedError {
   stack?: string;
 }
 
-export type CheckKind = 'functional' | 'console' | 'network' | 'axe' | 'a11y-snapshot' | 'screenshot';
+export type CheckKind = 'functional' | 'document' | 'console' | 'network' | 'axe' | 'a11y-snapshot' | 'screenshot';
 export type CheckStatus = 'passed' | 'failed' | 'error' | 'skipped';
 
 export interface CheckResult {

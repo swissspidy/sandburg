@@ -200,6 +200,7 @@ export class Session {
         proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
       });
       recordRequestFailures(context, run);
+      recordDocuments(context, run);
       const page = await context.newPage();
       if (node) {
         await this.runNode(node, run, context, page, project, runId, outDir, timeouts, checks, options);
@@ -307,6 +308,7 @@ async function runChecksPhase(
       appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
       appConsole: () => run.console.filter((c) => c.source === 'app'),
       network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
+      appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
     }),
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
@@ -374,6 +376,15 @@ function recordRequestFailures(context: BrowserContext, run: RunState): void {
   });
 }
 
+/** The status of each document the app's frames load (a server-rendered error page is a 5xx). */
+function recordDocuments(context: BrowserContext, run: RunState): void {
+  context.on('response', (res) => {
+    const req = res.request();
+    if (!req.isNavigationRequest() || run.documents.length >= 200) return;
+    run.documents.push({ frame: res.frame(), url: res.url(), status: res.status() });
+  });
+}
+
 /** base64 sha256 of each certificate's SubjectPublicKeyInfo, as Chromium's SPKI list expects. */
 function spkiHashes(pemPath: string): string[] {
   const pem = readFileSync(pemPath, 'utf8');
@@ -401,6 +412,7 @@ class RunState {
   network: EgressStats | null = null;
   console: ConsoleEntry[] = [];
   pageErrors: PageError[] = [];
+  documents: { frame: Frame; url: string; status: number }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];

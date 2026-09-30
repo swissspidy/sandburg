@@ -89,7 +89,7 @@
         "required": ["id", "kind", "name", "status", "blocking", "durationMs"],
         "properties": {
           "id": { "type": "string" },
-          "kind": { "enum": ["functional", "console", "network", "axe", "a11y-snapshot", "screenshot"] },
+          "kind": { "enum": ["functional", "document", "console", "network", "axe", "a11y-snapshot", "screenshot"] },
           "name": { "type": "string" },
           "status": { "enum": ["passed", "failed", "error", "skipped"] },
           "blocking": { "type": "boolean" },
