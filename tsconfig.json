@@ -23,6 +23,7 @@
     "src",
     "test",
     "scripts/pages",
+    "pages/compile.ts",
     "fixtures/vite-react-counter/checks.spec.ts"
   ]
 }

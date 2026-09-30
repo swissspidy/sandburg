@@ -19,6 +19,8 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
+import { createRequire } from 'node:module';
+import * as esbuild from 'esbuild';
 import { chromium } from 'playwright-core';
 import { Session } from '../../src/index.ts';
 import { node } from '../../src/adapters/node/index.ts';
@@ -28,6 +30,7 @@ import type { HostInstall } from '../../src/adapters/node/browser.ts';
 import type { Project } from '../../src/types.ts';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const require = createRequire(import.meta.url);
 
 const DEMOS = [
   { name: 'nextjs', fixture: 'fixtures/next-app-router', title: 'Next.js 15', command: 'next dev', description: 'An App Router app with a server component, an API route and client-side navigation, on next dev with webpack and SWC.', stack: 'Next.js 15, React 19, webpack and SWC (WebAssembly).' },
@@ -122,6 +125,30 @@ async function build(): Promise<void> {
   // The host page and the service worker (the node runtime's, behind pages/sw.js).
   await writeFile(join(out, 'host.js'), await bundleHost(node));
   await cp(join(ROOT, 'src/adapters/node/sw.js'), join(out, 'sw-core.js'));
+  // The compiler for what was not recorded (pages/compile.ts), with esbuild's WebAssembly build.
+  await esbuild.build({
+    entryPoints: [join(ROOT, 'pages/compile.ts')],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2022',
+    minify: true,
+    outfile: join(out, 'compile.js'),
+    logLevel: 'warning',
+    plugins: [
+      {
+        // The host's synchronous path (native esbuild, a cache hashed with node:crypto) is not used here.
+        name: 'host-only',
+        setup(b) {
+          b.onResolve({ filter: /^(node:crypto|esbuild)$/ }, (a) => ({ path: a.path, namespace: 'stub' }));
+          b.onLoad({ filter: /.*/, namespace: 'stub' }, (a) => ({
+            contents: a.path === 'esbuild' ? 'export const transformSync = () => { throw new Error("no synchronous esbuild in the browser"); };' : 'export const createHash = () => { throw new Error("no node:crypto in the browser"); };',
+          }));
+        },
+      },
+    ],
+  });
+  await cp(require.resolve('esbuild-wasm/esbuild.wasm'), join(out, 'esbuild.wasm'));
   for (const file of ['sw.js', 'demo.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
   await writeFile(join(out, '.nojekyll'), '');
   await writeFile(manifestFile, JSON.stringify(manifest));
@@ -135,7 +162,7 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 }
 
-const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.gz': 'application/gzip' };
+const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.gz': 'application/gzip', '.wasm': 'application/wasm' };
 
 /** Loads every demo from a static server under /sandburg/ (as on GitHub Pages); fails on unrecorded requests. */
 async function verify(): Promise<void> {

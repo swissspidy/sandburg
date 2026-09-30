@@ -22,6 +22,11 @@ function entries() {
   return manifest;
 }
 
+/** Shows a line in the demo's terminal. */
+function tell(message) {
+  self.clients.matchAll({ type: 'window' }).then((all) => all.forEach((c) => c.postMessage({ type: 'sandburg-demo', message })));
+}
+
 async function sha256(buffer) {
   const digest = await crypto.subtle.digest('SHA-256', buffer);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -32,7 +37,8 @@ async function host(request, url) {
   const path = url.pathname.slice(url.pathname.indexOf('/__sandburg/'));
   // The runtime saves dev-server caches after a run; a demo has nowhere to keep them.
   if (request.method === 'POST' && path.startsWith('/__sandburg/dev-cache/')) return new Response('saved');
-  const key = request.method === 'POST' ? `POST ${path}?${new URLSearchParams(url.search)} ${await sha256(await request.arrayBuffer())}` : path;
+  const body = request.method === 'POST' ? await request.arrayBuffer() : null;
+  const key = body ? `POST ${path}?${new URLSearchParams(url.search)} ${await sha256(body)}` : path;
   const all = await entries();
   let entry = all[key];
   if (!entry && request.method === 'POST' && path === '/__sandburg/compile') {
@@ -41,10 +47,11 @@ async function host(request, url) {
     const p = q.get('path') ?? '';
     entry = all[`POST /__sandburg/compile#${q.get('kind')}|${q.get('async') ?? ''}|${p.endsWith('x') ? 'x' : ''}|${/\.m[jt]s$/.test(p) ? 'm' : ''} ${key.slice(key.lastIndexOf(' ') + 1)}`];
   }
+  if (!entry && request.method === 'POST' && path === '/__sandburg/compile') return compile(body, url);
   if (!entry) {
     const message = `not recorded: ${key.slice(0, 200)}`;
     console.warn(`[sandburg demo] ${message}`);
-    self.clients.matchAll({ type: 'window' }).then((all) => all.forEach((c) => c.postMessage({ type: 'sandburg-demo', message })));
+    tell(message);
     return new Response('not recorded when this demo was built', { status: 404, headers: { 'content-type': 'text/plain' } });
   }
   const [blob, type, status] = entry;
@@ -55,6 +62,18 @@ async function host(request, url) {
     // The runtime's workers must be cross-origin isolated too, as the host server's answers are.
     headers: { 'content-type': type, 'cross-origin-resource-policy': 'same-origin', 'cross-origin-embedder-policy': 'credentialless', 'cross-origin-opener-policy': 'same-origin' },
   });
+}
+
+/** Compiles what was not recorded (code that changes from run to run), as the host would. */
+async function compile(body, url) {
+  const q = new URLSearchParams(url.search);
+  try {
+    const code = await self.sandburgCompile(new TextDecoder().decode(body), q.get('path') ?? '/unknown.js', q.get('kind') ?? 'cjs', q.get('async') === '1', new URL('esbuild.wasm', site).href);
+    tell(`compiled in the browser: ${q.get('path')}`);
+    return new Response(code, { headers: { 'content-type': 'text/javascript; charset=utf-8' } });
+  } catch (e) {
+    return new Response(String(e?.message ?? e), { status: 400, headers: { 'content-type': 'text/plain' } });
+  }
 }
 
 /** The demo page, cross-origin isolated. */
@@ -106,4 +125,4 @@ self.sandburgHooks = {
 })();</script>`,
 };
 
-importScripts('sw-core.js');
+importScripts('compile.js', 'sw-core.js');

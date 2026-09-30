@@ -72,7 +72,7 @@ async function boot() {
     console[level] = (...args) => {
       const m = typeof args[0] === 'string' && /^\[runtime:(stdout|stderr)\] ([\s\S]*)$/.exec(args[0]);
       if (m) print(m[2], m[1] === 'stderr' ? 'err' : 'out');
-      else if (typeof args[0] === 'string' && args[0].startsWith('[sandburg demo]')) print(args[0], 'err');
+      else if (typeof args[0] === 'string' && args[0].startsWith('[sandburg demo]')) print(args[0], /not recorded/.test(args[0]) ? 'err' : 'dim');
       original(...args);
     };
   }

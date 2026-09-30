@@ -84,6 +84,7 @@ code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 #terminal { flex: 1; overflow: auto; padding: 10px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--term-ink); white-space: pre-wrap; word-break: break-word; max-height: calc(100vh - 190px); }
 #terminal .err { color: #f0a58f; }
 #terminal .ok { color: #8fd6a8; }
+#terminal .dim { color: #8a8578; }
 #overlay { position: absolute; inset: 36px 0 0; display: grid; place-items: center; background: color-mix(in srgb, var(--panel) 92%, transparent); padding: 16px; text-align: center; }
 #overlay[hidden] { display: none; }
 #overlay h2 { margin: 0 0 8px; font-size: 18px; }

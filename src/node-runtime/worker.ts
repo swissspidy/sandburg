@@ -693,6 +693,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     compiledNodeModule(path: string) {
       if (!installKey) return null;
       const rel = path.slice(projectRoot.length + 1);
+      // A file the program wrote itself (Vite's node_modules/.vite-temp/…): the host has no transform of it.
+      if (nodeModulesIndex && !(rel in nodeModulesIndex)) return null;
       const res = syncGet(`${base}/nm/${installKey}/t/${rel}`, false);
       return res.status === 200 ? (res.body as string) : null;
     },

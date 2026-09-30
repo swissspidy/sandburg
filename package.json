@@ -43,6 +43,7 @@
   "devDependencies": {
     "@pkgjs/parseargs": "^0.11.0",
     "@types/node": "^26.6.3",
+    "esbuild-wasm": "0.28.2",
     "typescript": "^7.0.2"
   }
 }
