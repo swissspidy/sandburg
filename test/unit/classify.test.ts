@@ -112,3 +112,25 @@ test('a runtime that cannot fetch its own code while booting is infra', () => {
   // The same text once the app is running is not infra.
   assert.notEqual(classify(input({ phases: failedAt('ready', 'Failed to fetch dynamically imported module: https://esm.sh/x') }))?.class, 'infra');
 });
+
+test('a dependency version that does not exist is an app bug', () => {
+  const f = classify(input({ phases: failedAt('install', 'npm install failed (exit 1): npm error code ETARGET\nnpm error notarget No matching version found for canvas-confetti@^99.0.0.') }));
+  assert.deepEqual([f?.class, f?.rule], ['app-bug', 'unresolvable-dependency']);
+});
+
+test('a render crash in a Next.js page (webpack-internal frames) is an app bug', () => {
+  const f = classify(
+    input({
+      phases: failedAt('ready', "app threw before rendering: Cannot read properties of undefined (reading 'theme')"),
+      pageErrors: [{ source: 'app', message: "Cannot read properties of undefined (reading 'theme')", stack: 'TypeError: x\n    at Home (webpack-internal:///(pages-dir-node)/./pages/index.tsx:16:28)\n    at renderWithHooks (file:///app/node_modules/react-dom/cjs/react-dom-server.edge.development.js:3626:20)' }],
+    }),
+  );
+  assert.deepEqual([f?.class, f?.rule], ['app-bug', 'app-error-before-ready']);
+});
+
+test('a package that does not exist is an app bug; a missing tarball of a listed version is infra', () => {
+  const missing = classify(input({ phases: failedAt('install', 'npm install failed (exit 1): npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/left-padd - Not found') }));
+  assert.deepEqual([missing?.class, missing?.rule], ['app-bug', 'unresolvable-dependency']);
+  const tarball = classify(input({ phases: failedAt('install', 'npm install failed (exit 1): npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.443.tgz - Not found') }));
+  assert.equal(tarball?.class, 'infra');
+});

@@ -60,9 +60,26 @@ app's own compilers.
   Study v3 below measures `auto` against the corpus's ground truth. Docker was
   not available for it, so it has no agreement figure. Rerun
   `sandburg compare` where Docker is available.
+- The node runtime may reach registry.npmjs.org: `next dev` checks it for a
+  newer version of itself on every start.
 - Offline runs no longer need esm.sh in the cache: every runtime installs
   from the npm registry on the host.
 
 ## Study v3: `--runtime auto` vs ground truth
 
-Running; results will be added here.
+The same 100-app corpus ran on `auto`: the esbuild adapter for the Vite apps and the node runtime for
+the Next.js apps. The full report is in [docs/fidelity/v3-auto-vs-truth.md](../fidelity/v3-auto-vs-truth.md).
+
+| Framework | Runtime | Right vs ground truth | Median run |
+|---|---|---|---|
+| vite-vanilla | esbuild | 33/33 | 2.7 s |
+| vite-react | esbuild | 31/34 | 13.4 s |
+| nextjs | node | 33/33 | 38.4 s |
+
+- **97/100 right, with no false alarms.** The three misses are the phantom-dependency apps whose labels
+  the earlier studies found wrong. npm hoists `nanoid`, so they pass under real Node and the Docker
+  reference too.
+- **The first run found two runtime gaps, both fixed.** Tailwind CSS v4 in Next.js failed (lightningcss,
+  and threads started while their parent was blocked). Pages Router chunks were taken for ES modules.
+- **Three caught faults were classified `unknown`.** They led to the `unresolvable-dependency` rule and
+  to webpack frames counting as project code.

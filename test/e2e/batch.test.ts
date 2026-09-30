@@ -56,7 +56,9 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
     assert.equal(summary.totals.passed, 10, JSON.stringify(results.filter((r) => r.status !== 'passed').map((r) => [r.failure, r.checks.filter((c) => c.status !== 'passed')]), null, 2));
     assert.equal(summary.runs.length, 10);
     assert.equal(new Set(summary.runs.map((r) => r.snapshotId)).size, 10);
-    assert.ok(summary.totals.cacheHits > 0);
+    // One npm install on the host serves all ten (they share their dependencies).
+    const installs = results.map((r) => r.timings.installMs ?? Infinity).sort((a, b) => a - b);
+    assert.ok(installs[5] < 5000, `median install ${installs[5]} ms`);
     assert.ok(summary.speedup > 1.5, `speed-up ${summary.speedup}`);
   } finally {
     await session.close();

@@ -26,7 +26,13 @@ export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
 ];
 
 /** A runtime's own download came back broken (an error page instead of an archive, a reset). */
-const INFRA_SIGNATURE = /runtime asset failed to load|Could not unzip file\. Error code: \d+\. File size: \d+ bytes|ERR_TUNNEL_CONNECTION_FAILED|ECONNRESET|socket hang up|upstream proxy refused/i;
+const INFRA_SIGNATURE = /runtime asset failed to load|404 Not Found - GET https:\/\/registry\.npmjs\.org\/\S+\/-\/\S+\.tgz|Could not unzip file\. Error code: \d+\. File size: \d+ bytes|ERR_TUNNEL_CONNECTION_FAILED|ECONNRESET|socket hang up|upstream proxy refused/i;
+
+/**
+ * npm cannot find a package or version (ETARGET, or E404 for a package document). A 404 for a tarball
+ * (`/-/name-1.2.3.tgz`) of a version the registry lists is the registry catching up, not the app.
+ */
+const UNRESOLVABLE_DEPENDENCY = /No matching version found for|404 Not Found - GET https:\/\/registry\.npmjs\.org\/(?:@[^/\s]+%2[fF]|@[^/\s]+\/)?[^/\s-][^/\s]* - Not found/;
 
 const RUNTIME_BOOT_FETCH = /Failed to fetch dynamically imported module|WebWorker failed to load|Failed to register a ServiceWorker/i;
 
@@ -79,6 +85,8 @@ export function classify(input: ClassifyInput): Failure | null {
   if (failedPhase) {
     const err = failedPhase.error;
     const message = err?.message ?? `${failedPhase.name} failed`;
+    // A dependency version or package that does not exist on the registry fails the same way everywhere.
+    if (UNRESOLVABLE_DEPENDENCY.test(message)) return failure('app-bug', failedPhase.name, 'unresolvable-dependency', message.split('\n').slice(0, 3).join('\n'), [message]);
     if (err?.code === 'UNSUPPORTED') return failure('runtime-unsupported', failedPhase.name, 'adapter-code:UNSUPPORTED', message, []);
     if (err?.code === 'APP') return failure('app-bug', failedPhase.name, 'adapter-code:APP', message, []);
     const evidence = [message, ...appErrors];
@@ -120,9 +128,14 @@ function matchSignature(texts: string[]): string | null {
   return null;
 }
 
-/** An error whose stack runs through served project files (not dependencies or runtime code). */
+/**
+ * An error whose stack runs through the project's own files (not dependencies or runtime code): served
+ * to the page, bundled by webpack (webpack-internal:///(…)/./pages/index.tsx), or run in the runtime.
+ */
+const PROJECT_FRAME = /(?:https?:\/\/[^/\s]+\/|webpack-internal:\/\/\/(?:\([^)]*\)\/)?\.\/|file:\/\/\/app\/)(?!@|node_modules\/|__sandburg\/|\.next\/|_next\/)[^\s:?()]+\.(?:[cm]?[jt]sx?|vue|svelte|astro)\b/;
+
 function hasProjectStack(errors: PageError[]): boolean {
-  return errors.some((e) => e.source === 'app' && /https?:\/\/[^/\s]+\/(?!@|node_modules\/|__sandburg\/)[^\s:?]+\.(?:[cm]?[jt]sx?|vue|svelte|astro)/.test(e.stack ?? ''));
+  return errors.some((e) => e.source === 'app' && PROJECT_FRAME.test(e.stack ?? ''));
 }
 
 function failure(cls: Failure['class'], phase: PhaseName, rule: string, message: string, evidence: string[]): Failure {

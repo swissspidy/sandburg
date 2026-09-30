@@ -107,7 +107,8 @@ export const node: AdapterDescriptor = {
   browserEntry: fileURLToPath(new URL('./browser.ts', import.meta.url)),
   assets: { '/__sw__.js': fileURLToPath(new URL('./sw.js', import.meta.url)) },
   // The app's own server-side fetches (e.g. next/font/google) go through the gateway.
-  egress: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'],
+  // The npm registry: dev servers check it for newer versions of themselves (next dev does, on every start).
+  egress: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com', 'https://registry.npmjs.org'],
   // WebAssembly threads (rolldown and other Rust tools' WASI builds) need shared memory.
   crossOriginIsolation: 'credentialless',
   // A cold npm install of a Next.js app and its first webpack compile take a while.
