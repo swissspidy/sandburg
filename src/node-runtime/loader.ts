@@ -390,7 +390,20 @@ export function createModuleSystem(host: LoaderHost) {
 
   const readText = (filename: string) => stripBOM(new TextDecoder().decode(vfs.read(filename)));
   const inNodeModules = (f: string) => f.includes('/node_modules/');
-  const looksEsm = (code: string) => /^\s*(import\s*[\w{*'"]|export\s+[\w{*]|export\s*\{)/m.test(code) || /\bimport\.meta\b/.test(code);
+  /**
+   * Node's syntax detection for a .js file outside a "type" package: it is an ES module only if it does
+   * not parse as CommonJS (import/export, import.meta or top-level await). The regex is a cheap first test;
+   * bundles (webpack chunks) can match it with code inside strings.
+   */
+  const looksEsm = (code: string) => {
+    if (!/^\s*(import\s*[\w{*'"]|export\s+[\w{*]|export\s*\{)/m.test(code) && !/\bimport\.meta\b/.test(code) && !/\bawait\b/.test(code)) return false;
+    try {
+      new Function(code);
+      return false;
+    } catch {
+      return true;
+    }
+  };
   const needsLowering = (code: string) => /\basync\b|\bawait\b|\beval\("/.test(code);
 
   const loadJs = (m: Mod, filename: string) => {
