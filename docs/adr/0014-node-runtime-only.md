@@ -97,9 +97,10 @@ classified as `compile-error` app bugs at that location.
 **Disk.** An install records its layout version, and installs of an earlier layout are removed.
 
 **Speed.** Vite's pre-bundled dependencies (`node_modules/.vite/deps` of each package) are kept on
-the host after a run and restored before the next run of a project with the same installed
-packages and the same imported packages. Vite checks the cache against the lockfile and its config
-before it uses it.
+the host after a run and restored before the next run of the same project (the same installed
+packages and files). Vite checks the cache against the lockfile and its config before it uses it.
+The page uploads the cache, so the host accepts it only under the key it issued to that run, for
+the cache directories, up to 64 MB: one project cannot plant pre-bundled code in another's runs.
 
 The runtime reads installed files with one synchronous request each, about 7 ms apiece: `next dev`
 loads ~1,750 files (12 s of its start), svelte-vite's Vite ~700 in each of two runtimes. The host

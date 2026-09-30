@@ -122,7 +122,7 @@ as `npm run dev` would.
 
 The page is the server that answers `/` with HTML; a crash of one of the dev script's servers
 while the rest comes up is an app bug. Installed files that earlier runs loaded arrive as one bundle, and Vite's pre-bundled dependencies are kept between runs of
-projects that import the same packages.
+the same project.
 
 ## Fidelity
 

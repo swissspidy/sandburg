@@ -7,7 +7,7 @@
 import { fileURLToPath } from 'node:url';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expandScript, findFullStack, isTsRunner } from './scripts.ts';
 import { detectFramework } from '../../project.ts';
@@ -92,33 +92,65 @@ function packageDirs(project: Project): string[] {
 /**
  * Dev servers' dependency caches, kept between runs: Vite's pre-bundled dependencies
  * (node_modules/.vite/deps of each package). Vite checks that a cache matches the lockfile and its
- * config before it uses one, so a stale cache costs a re-optimization, not a wrong result. The key
- * covers the installed packages and the packages the sources import (what Vite's scan finds), so
- * projects that import the same packages share a cache and a run does not start with a cache that
- * lacks one of its imports.
+ * config before it uses one, so a stale cache costs a re-optimization, not a wrong result. A run
+ * writes its cache from the page, which runs the project's code, so a cache is only ever used by
+ * runs of the same project (its installed packages and every file): one project cannot plant
+ * pre-bundled code in another's run.
  */
 const DEV_CACHE_DIRS = ['node_modules/.vite/deps'];
 const devCacheRoot = () => join(installer.root, '..', 'dev-cache');
 
 function devCacheKey(project: Project, installKey: string): string {
   const h = createHash('sha256').update(installKey);
-  const imports = new Set<string>();
-  for (const [path, content] of Object.entries(project.files)) {
-    if (typeof content !== 'string' || path.includes('node_modules/')) continue;
-    if (/(^|\/)(vite|svelte|astro|nuxt|react-router)\.config\.[cm]?[jt]s$|(^|\/)package\.json$/.test(path)) h.update(path).update('\0').update(content);
-    else if (/\.([cm]?[jt]sx?|vue|svelte|astro|html)$/.test(path)) {
-      for (const m of content.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"]([^'"./][^'"]*)['"]/g)) imports.add(m[1]);
-    }
+  for (const path of Object.keys(project.files).sort()) {
+    const content = project.files[path];
+    h.update(path).update('\0').update(typeof content === 'string' ? content : JSON.stringify(content)).update('\0');
   }
-  return h.update([...imports].sort().join('\n')).digest('hex').slice(0, 24);
+  return h.digest('hex').slice(0, 24);
 }
 
-async function readDevCache(key: string): Promise<Record<string, string> | null> {
-  try {
-    return JSON.parse(await readFile(join(devCacheRoot(), `${key}.json`), 'utf8')) as Record<string, string>;
-  } catch {
-    return null;
+/**
+ * Cache keys issued to runs, with the directories their caches may hold. A run can only store a
+ * cache under a key it was given, and only files under those directories (the page can reach the
+ * endpoint, so what it sends is untrusted).
+ */
+const issuedCaches = new Map<string, string[]>();
+const DEV_CACHE_MAX = 64 << 20;
+
+/** The entries of a cache that are text files under `dirs`. */
+function cacheEntries(value: unknown, dirs: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!value || typeof value !== 'object') return out;
+  for (const [path, content] of Object.entries(value)) {
+    if (typeof content !== 'string' || path.split('/').includes('..')) continue;
+    if (dirs.some((d) => path.startsWith(`${d}/`))) out[path] = content;
   }
+  return out;
+}
+
+async function readDevCache(key: string, dirs: string[]): Promise<Record<string, string>> {
+  try {
+    return cacheEntries(JSON.parse(await readFile(join(devCacheRoot(), `${key}.json`), 'utf8')), dirs);
+  } catch {
+    return {};
+  }
+}
+
+async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
+  const dirs = issuedCaches.get(key);
+  if (!dirs || body.length > DEV_CACHE_MAX) return false;
+  let files: Record<string, string>;
+  try {
+    files = cacheEntries(JSON.parse(body.toString('utf8')), dirs);
+  } catch {
+    return false;
+  }
+  await mkdir(devCacheRoot(), { recursive: true });
+  const file = join(devCacheRoot(), `${key}.json`);
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, JSON.stringify(files));
+  await rename(tmp, file);
+  return true;
 }
 
 /**
@@ -245,9 +277,8 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   // The dev servers' caches of a finished run (see DEV_CACHE_DIRS): project-relative path → text.
   const cache = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})$/.exec(req.path);
   if (cache && req.method === 'POST') {
-    await mkdir(devCacheRoot(), { recursive: true });
-    await writeFile(join(devCacheRoot(), `${cache[1]}.json`), await req.body());
-    return { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' };
+    const saved = await writeDevCache(cache[1], await req.body());
+    return saved ? { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' } : { status: 403, headers: { 'content-type': 'text/plain' }, body: 'not a cache of this run' };
   }
   const pre = /^\/__sandburg\/preload\/([0-9a-f]{24})\/([0-9a-f]{16})$/.exec(req.path);
   if (pre) {
@@ -310,7 +341,9 @@ export const node: AdapterDescriptor = {
     }
     const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
     const cacheKey = devCacheKey(project, key);
-    const devCache = { key: cacheKey, dirs: parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d))), files: (await readDevCache(cacheKey)) ?? {} };
+    const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
+    issuedCaches.set(cacheKey, cacheDirs);
+    const devCache = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
     return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, preload: await preloadUrl(key) };
   },
   serve,

@@ -316,6 +316,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     let last = 0;
     let background = 0;
     let finished = false;
+    let reachedEnd = false;
     const finish = (code: number) => {
       if (finished) return;
       finished = true;
@@ -325,6 +326,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       if (killed) return finish(143);
       if (i >= list.length) {
         // A script ends when its background commands (a & b) end too, as `wait` would.
+        reachedEnd = true;
         if (background === 0) finish(last);
         return;
       }
@@ -335,7 +337,8 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         background++;
         command(step.words, cwd, { ...env, ...shellEnv }, () => {
           background--;
-          if (i === list.length - 1 || background === 0) next(list.length, false);
+          // Only once the foreground commands are done too (`node seed.js & vite` runs until vite ends).
+          if (reachedEnd && background === 0) finish(last);
         });
         return next(i + 1, false);
       }

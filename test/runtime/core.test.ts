@@ -487,3 +487,52 @@ test('worker_threads: a blocked thread takes replies with receiveMessageOnPort (
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout.trim(), JSON.stringify(['/app/node_modules/@angular/material/_index.scss', null, null]), out.stderr);
 });
+
+test('child_process: a shell script ends with its foreground command, not with a background one that ends first', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const c = require('child_process').spawn('node seed.js & node server.js', { shell: true, stdio: 'inherit' });
+        c.on('exit', (code) => console.log('script exited', code));`,
+      'seed.js': `console.log('seeded');`,
+      'server.js': `setTimeout(() => { console.log('server done'); process.exit(3); }, 300);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['seeded', 'server done', 'script exited 3']);
+});
+
+test('worker_threads: receiveMessageOnPort keeps working after more traffic than its mailbox holds', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker, MessageChannel } = require('worker_threads');
+        const { port1, port2 } = new MessageChannel();
+        const signal = new Int32Array(new SharedArrayBuffer(4));
+        const big = 'x'.repeat(40 * 1024);
+        port1.on('message', (n) => setTimeout(() => {
+          port1.postMessage({ n, big });
+          Atomics.store(signal, 0, 1);
+          Atomics.notify(signal, 0);
+        }, 1));
+        const w = new Worker(__dirname + '/thread.js', { workerData: { port: port2, signal }, transferList: [port2] });
+        w.on('message', (m) => { console.log(m); process.exit(0); });`,
+      'thread.js': `
+        const { workerData, parentPort, receiveMessageOnPort } = require('worker_threads');
+        const { port, signal } = workerData;
+        let ok = 0;
+        for (let n = 0; n < 40; n++) {
+          Atomics.store(signal, 0, 0);
+          port.postMessage(n);
+          Atomics.wait(signal, 0, 0);
+          const reply = receiveMessageOnPort(port)?.message;
+          if (reply && reply.n === n && reply.big.length === 40 * 1024) ok++;
+        }
+        parentPort.postMessage('replies ' + ok);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), 'replies 40', out.stderr);
+});

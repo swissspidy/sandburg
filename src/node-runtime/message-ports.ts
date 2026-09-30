@@ -59,9 +59,16 @@ function jsonSafe(v: unknown, depth = 0): boolean {
 function send(mb: Mailbox, message: unknown): number {
   const { h, data, view } = inbox(mb.sab, mb.side === 0 ? 1 : 0);
   const seq = Atomics.add(h, H_SEQ, 1) + 1;
-  if (Atomics.load(h, H_FULL)) return seq;
   const body = message === undefined ? null : jsonSafe(message) ? encoder.encode(JSON.stringify(message)) : null;
   const size = 8 + (body ? (body.length + 3) & ~3 : 0);
+  // Everything sent before this message was read or delivered: the inbox can start again from the top.
+  const drained = Atomics.load(h, H_READ) === Atomics.load(h, H_WRITTEN) && Atomics.load(h, H_DONE) === seq - 1;
+  if (drained && (Atomics.load(h, H_FULL) || Atomics.load(h, H_WRITE) + size > data.length)) {
+    Atomics.store(h, H_READ_AT, 0);
+    Atomics.store(h, H_WRITE, 0);
+    Atomics.store(h, H_FULL, 0);
+  }
+  if (Atomics.load(h, H_FULL)) return seq;
   const at = Atomics.load(h, H_WRITE);
   if (at + size > data.length) {
     Atomics.store(h, H_FULL, 1);
