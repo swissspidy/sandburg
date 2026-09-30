@@ -19,6 +19,8 @@ export interface RuntimeAdapter {
   /** Starts the app and returns the URL to load in the app frame (same-origin, or an allowlisted preview origin). */
   start(ctx: AdapterContext): Promise<StartResult>;
   ready?(ctx: AdapterContext): Promise<void>;
+  /** Requests the app's servers are still answering, and how long the runtime has been quiet. */
+  activity?(): { inflight: number; idleMs: number } | null;
   dispose(): Promise<void>;
 }
 

@@ -189,6 +189,10 @@ export function createAdapter(): RuntimeAdapter {
       return { url: '/' };
     },
 
+    activity() {
+      return proc?.activity() ?? null;
+    },
+
     async dispose() {
       // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
       if (proc && devCache && !proc.failure) {

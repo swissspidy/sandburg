@@ -23,7 +23,7 @@ caches.
 
 **The demo page drives the same lifecycle as a run** (`mount`, `install` with the recorded install,
 `start`, `ready`) through the same host bundle. Its service worker (`pages/sw.js`) sets hooks and then
-imports the node runtime's own service worker (`src/adapters/node/sw.js`). The hooks do three things:
+imports the node runtime's own service worker (`src/adapters/node/sw.js`). The hooks do four things:
 
 - They answer requests under `__sandburg/` from the manifest. Compiles are also keyed without their
   path, because Vite's config file has a timestamp in its name. The output depends on the path only

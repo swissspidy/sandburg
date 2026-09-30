@@ -72,6 +72,7 @@ const api = {
         frame.src = url;
       });
     }),
+  activity: () => call(async () => adapter?.activity?.() ?? null),
   dispose: () =>
     call(async () => {
       controller.abort();

@@ -64,6 +64,10 @@ export interface AdapterDescriptor {
   hostInstall?(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<unknown>;
   /** Extra routes under /__sandburg/ on the sandbox origin (worker bundles, file serving, compile). */
   serve?(request: HostRequest): Promise<HostResponse | null>;
+  /** Small projects on common stacks, run before a batch when not warm (Session.prewarm). */
+  warmups?(): Project[];
+  /** Whether a project's install is already there. */
+  isWarm?(project: Project): Promise<boolean>;
 }
 
 export interface HostInstallOptions {

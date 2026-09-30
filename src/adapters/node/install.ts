@@ -79,10 +79,11 @@ export class Installer {
     }
   }
 
-  /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
-  install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
+  /** The install of `project`'s dependencies plus `extra`: its key, npm's manifest and the lockfile. */
+  private plan(project: Project, extra: Record<string, string>): { key: string; manifest: object; lock: string | null } {
     const pkg = project.packageJson ?? {};
-    const lock = project.files['package-lock.json'];
+    const lockFile = project.files['package-lock.json'];
+    const lock = typeof lockFile === 'string' ? lockFile : null;
     const manifest = {
       name: 'sandburg-install',
       private: true,
@@ -93,12 +94,23 @@ export class Installer {
     const key = createHash('sha256')
       .update(`layout:${LAYOUT_VERSION}\0`)
       .update(JSON.stringify(manifest))
-      .update(typeof lock === 'string' ? lock : '')
+      .update(lock ?? '')
       .digest('hex')
       .slice(0, 24);
+    return { key, manifest, lock };
+  }
+
+  /** Whether `project`'s install (plus `extra`) is finished and cached. */
+  installed(project: Project, extra: Record<string, string>): Promise<boolean> {
+    return access(join(this.root, this.plan(project, extra).key, '.sandburg-complete')).then(() => true, () => false);
+  }
+
+  /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
+  install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
+    const { key, manifest, lock } = this.plan(project, extra);
     let pending = this.pending.get(key);
     if (!pending) {
-      pending = this.doInstall(key, manifest, typeof lock === 'string' ? lock : null, log);
+      pending = this.doInstall(key, manifest, lock, log);
       this.pending.set(key, pending);
       pending.catch(() => this.pending.delete(key));
     }

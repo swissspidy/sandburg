@@ -51,6 +51,8 @@ export class NodeProcess {
   private label: string;
   private partial = { stdout: '', stderr: '' };
   private trees = new Map<number, (files: Record<string, CacheFile>) => void>();
+  /** When the page last sent the runtime a request or heard from it (see activity()). */
+  private lastActivity = performance.now();
 
   constructor(opts: NodeProcessOptions) {
     this.label = opts.label ?? 'the app';
@@ -125,6 +127,7 @@ export class NodeProcess {
     }
     const id = this.nextId++;
     this.pending.set(id, reply);
+    this.lastActivity = performance.now();
     // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
     const headers: [string, string][] = request.headers.filter(([k]) => !/^(cookie|accept-encoding)$/i.test(k));
     if (document.cookie) headers.push(['cookie', document.cookie]);
@@ -173,7 +176,17 @@ export class NodeProcess {
     this.worker.terminate();
   }
 
+  /**
+   * Whether the app's servers are working: requests still being answered, and how long since the
+   * runtime last said anything (a response, a log line). Checks stop waiting for an assertion that
+   * keeps failing once the runtime is idle: nothing is still coming.
+   */
+  activity(): { inflight: number; idleMs: number } {
+    return { inflight: this.pending.size, idleMs: Math.round(performance.now() - this.lastActivity) };
+  }
+
   private onMessage(m: FromWorker, opts: NodeProcessOptions) {
+    this.lastActivity = performance.now();
     switch (m.type) {
       case 'log': {
         // Whole lines: a program may write a line in pieces (concurrently writes its "[name] " prefix first).

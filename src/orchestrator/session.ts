@@ -167,6 +167,20 @@ export class Session {
     }
   }
 
+  /**
+   * Runs the runtime's warm-up projects whose installs are missing (see adapters/node/warmup.ts),
+   * side by side, and returns their names. On a warm machine it only checks.
+   */
+  async prewarm(options: { runtime?: string; log?: (line: string) => void } = {}): Promise<string[]> {
+    const adapter = getAdapter(options.runtime ?? DEFAULT_RUNTIME);
+    const cold: Project[] = [];
+    for (const project of adapter.warmups?.() ?? []) if (!(await adapter.isWarm?.(project))) cold.push(project);
+    if (!cold.length) return [];
+    options.log?.(`warming up ${cold.map((p) => p.name).join(', ')} (once per machine)`);
+    await Promise.all(cold.map((p) => this.run(p, { runtime: options.runtime, outDir: resolve('.sandburg/warmup'), infraRetries: 0 })));
+    return cold.map((p) => p.name);
+  }
+
   /** Runs a seed project (see HostInstallOptions.runSeed); its result goes to .sandburg/seeds. */
   private async runSeed(project: Project, checks: Checks, parent: RunOptions): Promise<void> {
     const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds') });
@@ -249,7 +263,12 @@ export class Session {
             await failFastOnAppError(waitForRender(frame, options.readySelector), run);
             return frame;
           });
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options);
+          // The app is idle: no request in flight and the runtime quiet for a moment (see settlingExpect).
+          const appIdle = async () => {
+            const a = (await host('activity')) as { inflight: number; idleMs: number } | null;
+            return !!a && a.inflight === 0 && a.idleMs >= APP_IDLE_MS;
+          };
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, appIdle);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
@@ -309,6 +328,7 @@ async function runChecksPhase(
   timeouts: Record<PhaseName | 'check' | 'expect', number>,
   outDir: string,
   options: RunOptions,
+  appIdle?: () => Promise<boolean>,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -317,6 +337,7 @@ async function runChecksPhase(
       checks,
       checkTimeoutMs: timeouts.check,
       expectTimeoutMs: timeouts.expect,
+      appIdle,
       artifactsDir: outDir,
       appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
       appConsole: () => run.console.filter((c) => c.source === 'app'),
@@ -326,6 +347,9 @@ async function runChecksPhase(
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
 }
+
+/** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
+const APP_IDLE_MS = 1_500;
 
 /** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
 export function launchOptions(options: SessionOptions): LaunchOptions {

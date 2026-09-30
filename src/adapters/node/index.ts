@@ -16,6 +16,8 @@ import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, 
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import type { HostInstall } from './browser.ts';
+import { VITE_SEED_DIRS, VITE_SEED_WAIT, viteSeed } from './vite-seed.ts';
+import { warmups } from './warmup.ts';
 
 const installer = sharedInstaller();
 const WS_SHIM = fileURLToPath(new URL('./ws-shim.js', import.meta.url));
@@ -387,6 +389,27 @@ function nextSeedProject(versions: Record<string, string>): { project: Project; 
   return { project, checks: checks as never };
 }
 
+/**
+ * The key of the Vite seed for an app (see vite-seed.ts), and whether its cache exists: seeding it
+ * first if needed, once per key, as for Next.js.
+ */
+async function viteSeedCache(project: Project, installKey: string, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean } | null> {
+  const seed = viteSeed(project, installKey, `${NODE_VERSION}\0${TRANSFORM_VERSION}`);
+  if (!seed) return null;
+  const stored = () => stat(join(devCacheRoot(), `${seed.key}.json`)).then(() => true, () => false);
+  if (options?.seed) return { key: seed.key, ready: false };
+  if (!(await stored()) && options?.runSeed) {
+    let pending = seeding.get(seed.key);
+    if (!pending) {
+      log(`pre-bundling the app's packages in a seed run (shared by apps with the same packages and config)`);
+      pending = options.runSeed(seed.project, {}).catch((e: Error) => log(`seeding failed: ${e.message}`));
+      seeding.set(seed.key, pending);
+    }
+    await pending;
+  }
+  return { key: seed.key, ready: await stored() };
+}
+
 /** The key of the Next.js seed cache for an install's versions, and whether it exists (seeding it first if needed). */
 async function nextSeedCache(resolved: Record<string, string>, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean } | null> {
   const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
@@ -539,7 +562,20 @@ export const node: AdapterDescriptor = {
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
       }
     }
+    // A Vite app without a cache of its own starts from the seed for its packages and config.
+    if (project.framework === 'vite' && parts.length === 1 && (options?.seed || !Object.keys(devCache.files).length)) {
+      const seed = await viteSeedCache(project, info.key, options, log);
+      if (seed && options?.seed) {
+        issuedCaches.set(seed.key, VITE_SEED_DIRS);
+        devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, waitFor: VITE_SEED_WAIT };
+      } else if (seed?.ready) {
+        readableCaches.set(seed.key, VITE_SEED_DIRS);
+        filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
+      }
+    }
     return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, preload: await preloadUrl(key) };
   },
   serve,
+  warmups,
+  isWarm: (project) => installer.installed(project, extraDependencies(project)),
 };
