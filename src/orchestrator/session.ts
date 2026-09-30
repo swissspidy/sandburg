@@ -177,7 +177,9 @@ export class Session {
     for (const project of adapter.warmups?.() ?? []) if (!(await adapter.isWarm?.(project))) cold.push(project);
     if (!cold.length) return [];
     options.log?.(`warming up ${cold.map((p) => p.name).join(', ')} (once per machine)`);
-    await Promise.all(cold.map((p) => this.run(p, { runtime: options.runtime, outDir: resolve('.sandburg/warmup'), infraRetries: 0 })));
+    // A warm-up that fails costs its batch little: it only makes later apps slower.
+    const timeouts = { start: 60_000, ready: 60_000 };
+    await Promise.all(cold.map((p) => this.run(p, { runtime: options.runtime, outDir: resolve('.sandburg/warmup'), infraRetries: 0, timeouts })));
     return cold.map((p) => p.name);
   }
 
@@ -608,7 +610,8 @@ async function waitForRender(frame: Frame, selector?: string): Promise<void> {
     (sel) => {
       if (sel) return !!document.querySelector(sel);
       const root = document.querySelector('#root, #app, #__next');
-      if (root) return root.childElementCount > 0;
+      // Rendered: elements, or text (an app may set only textContent).
+      if (root) return root.childElementCount > 0 || (root.textContent ?? '').trim().length > 0;
       return (document.body?.innerText ?? '').trim().length > 0;
     },
     selector ?? null,

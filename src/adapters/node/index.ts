@@ -398,6 +398,14 @@ async function viteSeedCache(project: Project, installKey: string, options: Host
   if (!seed) return null;
   const stored = () => stat(join(devCacheRoot(), `${seed.key}.json`)).then(() => true, () => false);
   if (options?.seed) return { key: seed.key, ready: false };
+  // Seeded when a second app with this key comes: most keys belong to one app, which would pay for
+  // a seed run it gains nothing from. The first app pre-bundles on its own, as without seeds.
+  const seen = join(devCacheRoot(), `vite-seen-${seed.key}`);
+  if (!(await stored()) && !(await stat(seen).then(() => true, () => false))) {
+    await mkdir(devCacheRoot(), { recursive: true });
+    await writeFile(seen, '');
+    return { key: seed.key, ready: false };
+  }
   if (!(await stored()) && options?.runSeed) {
     let pending = seeding.get(seed.key);
     if (!pending) {

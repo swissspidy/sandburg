@@ -20,7 +20,7 @@ export function warmups(): Project[] {
       {
         'package.json': pkg('sandburg-warmup-vite', {}, VITE),
         'index.html': '<!doctype html>\n<html><head><meta charset="utf-8"><title>Warm-up</title></head><body><div id="app"></div><script type="module" src="/src/main.ts"></script></body></html>\n',
-        'src/main.ts': `document.querySelector<HTMLDivElement>('#app')!.textContent = 'Vite';\n`,
+        'src/main.ts': `document.querySelector<HTMLDivElement>('#app')!.innerHTML = '<h1>Vite</h1>';\n`,
       },
       { name: 'sandburg-warmup-vite', path: 'sandburg:warmup/vite' },
     ),
