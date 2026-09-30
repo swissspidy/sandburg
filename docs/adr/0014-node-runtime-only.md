@@ -72,11 +72,17 @@ classified as `compile-error` app bugs at that location.
 - esbuild's WebAssembly build under the runtime: Go's file system is the runtime's `fs`, and
   `write: true` (the default under Node) writes the output files. Vite 5's dependency optimizer
   and config loading depend on both.
-- piscina (the Angular CLI's worker pool) waits for tasks with `Atomics.wait` and reads them with
-  `receiveMessageOnPort`, which needs a synchronous look into a `MessagePort`; browsers have none.
-  Its workers are switched to their message-event mode when their source is served, as under
-  WebContainers. `worker_threads` MessagePorts are EventEmitters (`port.on('message')`), and
-  `events.EventEmitterAsyncResource` exists.
+- `receiveMessageOnPort` takes a message synchronously, while the thread is blocked in
+  `Atomics.wait`; a browser delivers messages only through its event loop. Each `MessageChannel`
+  made in the runtime therefore also has a mailbox in shared memory
+  (`src/node-runtime/message-ports.ts`). A sender numbers every message and also writes it there
+  when it can be encoded as JSON. `receiveMessageOnPort` reads the mailbox, and the event loop
+  skips what was read. The mailbox travels with a transferred port. Angular's Sass worker needs
+  this: it asks the main thread to resolve each `@use` of a package this way.
+- piscina (the Angular CLI's worker pool) can wait for tasks the same way, but in a loop that
+  never lets its event loop run. Its workers are switched to their message-event mode when their
+  source is served, as under WebContainers. `worker_threads` MessagePorts are EventEmitters
+  (`port.on('message')`), and `events.EventEmitterAsyncResource` exists.
 - `import()` inside `new Function` source and in plain CommonJS files goes through the runtime's
   loader with import conditions. A module with top-level await is thenable until it has
   evaluated, so `await import()` from CommonJS waits for it.
@@ -84,6 +90,8 @@ classified as `compile-error` app bugs at that location.
   exits when its event loop is empty, as child processes already did.
 - The service worker's requests carry a `Host` header (Vite 5's `allowedHosts` check rejects a
   request without one). Worker threads find the `node_modules` of `client/` and `server/`.
+
+**Disk.** An install records its layout version, and installs of an earlier layout are removed.
 
 **Speed.** Vite's pre-bundled dependencies (`node_modules/.vite/deps` of each package) are kept on
 the host after a run and restored before the next run of a project with the same installed
@@ -99,9 +107,8 @@ before it uses it.
   Solid and Tailwind integrations, and the Angular adapter's build.
 - Client-side Vite apps take longer than on the esbuild adapter: they now start a real dev server.
   See the measurements below.
-- Sass importers in Angular (`@use` of a package) send each import to the main thread and wait
-  for the answer with `Atomics.wait` and `receiveMessageOnPort`. That needs a synchronous
-  `MessagePort`, which the runtime does not have yet. Relative `@use` and plain SCSS work.
+- `receiveMessageOnPort` can only take messages that can be encoded as JSON; it returns nothing
+  for the others (typed arrays, shared memory, ports), which arrive through the event loop.
 - Scripts that pipe or redirect output run only their first command.
 
 ## Measurements

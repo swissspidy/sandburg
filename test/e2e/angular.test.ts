@@ -72,3 +72,24 @@ test('Tailwind CSS v4 via @tailwindcss/postcss is applied', async () => {
   const result = await session.run(project, { checks, outDir });
   assert.equal(result.status, 'passed', failures(result));
 });
+
+test('Sass @use of a package (the Angular CDK) is resolved by the CLI\'s importer', async () => {
+  const dir = fixture('angular-19-zone');
+  const base = await loadProject(dir);
+  const pkg = JSON.parse(base.files['package.json'] as string);
+  pkg.dependencies['@angular/cdk'] = '^19.2.0';
+  const project = projectFromFiles(
+    {
+      ...base.files,
+      'package.json': JSON.stringify(pkg),
+      'src/styles.scss': "@use '@angular/cdk' as cdk;\n\n@include cdk.a11y-visually-hidden();\n",
+      'src/index.html': (base.files['src/index.html'] as string).replace('<body>', '<body>\n  <span class="cdk-visually-hidden" data-testid="hidden">only for screen readers</span>'),
+    },
+    { name: 'angular-sass-package', path: dir },
+  );
+  const tmp = await mkdtemp(join(tmpdir(), 'sandburg-ng-sass-'));
+  const checks = join(tmp, 'checks.spec.ts');
+  await writeFile(checks, `export default { 'the CDK mixin applies': async ({ app, expect }) => { const el = app.getByTestId('hidden'); await expect(el).toHaveCSS('position', 'absolute'); await expect(el).toHaveCSS('width', '1px'); } };\n`);
+  const result = await session.run(project, { checks, outDir });
+  assert.equal(result.status, 'passed', failures(result));
+});

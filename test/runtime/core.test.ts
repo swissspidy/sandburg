@@ -453,3 +453,37 @@ test('child_process: a program reaches a server another child process runs (a de
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.match(out.stdout, /api GET \/items ECONNREFUSED/, out.stdout + out.stderr);
 });
+
+test('worker_threads: a blocked thread takes replies with receiveMessageOnPort (a synchronous call to the main thread)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker, MessageChannel } = require('worker_threads');
+        const { port1, port2 } = new MessageChannel();
+        const signal = new Int32Array(new SharedArrayBuffer(4));
+        port1.on('message', (url) => {
+          // Answered asynchronously, as Angular resolves a Sass import on its main thread.
+          setTimeout(() => {
+            port1.postMessage(url.startsWith('@') ? '/app/node_modules/' + url + '/_index.scss' : null);
+            Atomics.store(signal, 0, 1);
+            Atomics.notify(signal, 0);
+          }, 10);
+        });
+        const w = new Worker(__dirname + '/thread.js', { workerData: { port: port2, signal }, transferList: [port2] });
+        w.on('message', (m) => { console.log(JSON.stringify(m)); process.exit(0); });`,
+      'thread.js': `
+        const { workerData, parentPort, receiveMessageOnPort } = require('worker_threads');
+        const { port, signal } = workerData;
+        const ask = (url) => {
+          Atomics.store(signal, 0, 0);
+          port.postMessage(url);
+          Atomics.wait(signal, 0, 0);
+          return receiveMessageOnPort(port)?.message;
+        };
+        parentPort.postMessage([ask('@angular/material'), ask('./local'), receiveMessageOnPort(port)]);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), JSON.stringify(['/app/node_modules/@angular/material/_index.scss', null, null]), out.stderr);
+});

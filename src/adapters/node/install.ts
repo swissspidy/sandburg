@@ -50,6 +50,20 @@ export class Installer {
 
   constructor(root: string) {
     this.root = root;
+    void this.sweep();
+  }
+
+  /**
+   * Removes installs of an earlier layout (LAYOUT_VERSION): their keys are never asked for again.
+   * An install records its layout in .sandburg-complete; one without the record is left alone.
+   */
+  private async sweep(): Promise<void> {
+    for (const name of await readdir(this.root).catch(() => [] as string[])) {
+      if (!/^[0-9a-f]{24}$/.test(name)) continue;
+      const done = await readFile(join(this.root, name, '.sandburg-complete'), 'utf8').catch(() => '');
+      const layout = /layout (\d+)/.exec(done)?.[1];
+      if (layout && Number(layout) !== LAYOUT_VERSION) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
@@ -93,7 +107,7 @@ export class Installer {
       await placeWasiBindings(tmp, log);
       await placeWasmBuilds(tmp, log);
       await writeBinIndex(tmp);
-      await writeFile(join(tmp, '.sandburg-complete'), new Date().toISOString());
+      await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
       await rm(dir, { recursive: true, force: true });
       await rename(tmp, dir);
     }

@@ -10,6 +10,7 @@
  */
 import { EventEmitter } from 'events';
 import { FsError, Vfs, type VStat } from './vfs.ts';
+import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
 export interface ThreadInit {
@@ -21,6 +22,8 @@ export interface ThreadInit {
   main: string;
   /** The project's files when the thread started (see projectSnapshot), for reads while the parent is blocked. */
   snapshot?: Record<string, Uint8Array>;
+  /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
+  mailboxes?: ReturnType<typeof mailboxesFor>;
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
   process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
 }
@@ -318,6 +321,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   if (warmTarget) queueMicrotask(refill);
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data as { type: string; [k: string]: unknown };
+    if (m.type === 'wt-message') adoptMailboxes(e.ports, m.mailboxes as Parameters<typeof adoptMailboxes>[1]);
     if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m as unknown as Parameters<typeof serveVfsCall>[1]);
     else if (!host.relay(m, worker)) onMessage(m);
   };
@@ -333,65 +337,6 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
     terminate();
   };
   return worker;
-}
-
-/**
- * MessagePorts as in Node: EventEmitters whose 'message' listeners get the message itself (and
- * start the port), with ref/unref and a 'close' event. Ports from MessageChannel and those that
- * arrive in messages are the browser's, so the prototype gets these methods.
- */
-export function installNodeMessagePorts(): void {
-  const P = MessagePort.prototype as unknown as Record<string, unknown> & { __sandburg?: boolean };
-  if (P.__sandburg) return;
-  P.__sandburg = true;
-  const emitters = new WeakMap<MessagePort, EventEmitter>();
-  const emitterOf = (port: MessagePort) => {
-    let em = emitters.get(port);
-    if (!em) {
-      const e = new EventEmitter();
-      em = e;
-      emitters.set(port, e);
-      port.addEventListener('message', (m) => e.emit('message', (m as MessageEvent).data));
-      port.addEventListener('messageerror', (m) => e.emit('messageerror', (m as MessageEvent).data));
-    }
-    return em;
-  };
-  type Fn = (...a: unknown[]) => unknown;
-  for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener'] as const) {
-    P[name] = function (this: MessagePort, event: string, fn: Fn) {
-      emitterOf(this)[name](event, fn);
-      if (event === 'message') this.start();
-      return this;
-    };
-  }
-  for (const name of ['off', 'removeListener'] as const) {
-    P[name] = function (this: MessagePort, event: string, fn: Fn) {
-      emitters.get(this)?.[name](event, fn);
-      return this;
-    };
-  }
-  P.removeAllListeners = function (this: MessagePort, event?: string) {
-    emitters.get(this)?.removeAllListeners(event);
-    return this;
-  };
-  P.emit = function (this: MessagePort, event: string, ...args: unknown[]) {
-    return emitters.get(this)?.emit(event, ...args) ?? false;
-  };
-  P.listenerCount = function (this: MessagePort, event: string) {
-    return emitters.get(this)?.listenerCount(event) ?? 0;
-  };
-  P.listeners = function (this: MessagePort, event: string) {
-    return emitters.get(this)?.listeners(event) ?? [];
-  };
-  P.ref = P.unref = function (this: MessagePort) {
-    return this;
-  };
-  P.hasRef = () => true;
-  const close = MessagePort.prototype.close;
-  P.close = function (this: MessagePort) {
-    close.call(this);
-    queueMicrotask(() => emitters.get(this)?.emit('close'));
-  };
 }
 
 let nextThreadId = 1;
@@ -422,7 +367,7 @@ export function createWorkerThreads(host: ThreadHost) {
         main = f.startsWith('file:') ? decodeURIComponent(new URL(f).pathname) : host.resolvePath(f);
       }
       const env = options.env === SHARE_ENV || options.env === undefined ? host.env() : (options.env as Record<string, string>);
-      const thread: ThreadInit = { id: this.threadId, workerData: options.workerData, env: { ...env }, argv: (options.argv ?? []).map(String), main };
+      const thread: ThreadInit = { id: this.threadId, workerData: options.workerData, env: { ...env }, argv: (options.argv ?? []).map(String), main, mailboxes: mailboxesFor(options.transferList) };
       this.worker = startRuntime(
         host,
         thread,
@@ -470,7 +415,7 @@ export function createWorkerThreads(host: ThreadHost) {
 
     postMessage(value: unknown, transferList?: Transferable[] | { transfer?: Transferable[] }) {
       const transfer = Array.isArray(transferList) ? transferList : (transferList?.transfer ?? []);
-      this.worker.postMessage({ type: 'wt-message', data: value }, transfer);
+      this.worker.postMessage({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) }, transfer);
     }
 
     terminate(): Promise<number> {
@@ -509,7 +454,7 @@ export function createWorkerThreads(host: ThreadHost) {
     }
     postMessage(value: unknown, transferList?: Transferable[] | { transfer?: Transferable[] }) {
       const transfer = Array.isArray(transferList) ? transferList : (transferList?.transfer ?? []);
-      host.postToParent({ type: 'wt-message', data: value }, transfer);
+      host.postToParent({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) }, transfer);
     }
     start() {}
     close() {}
@@ -532,14 +477,17 @@ export function createWorkerThreads(host: ThreadHost) {
       resourceLimits: {},
       SHARE_ENV,
       Worker,
-      MessageChannel,
+      // The runtime's MessageChannel (see message-ports.ts), installed when the runtime starts.
+      get MessageChannel() {
+        return globalThis.MessageChannel;
+      },
       MessagePort,
       BroadcastChannel,
       markAsUntransferable: () => {},
       isMarkedAsUntransferable: () => false,
       markAsUncloneable: () => {},
       moveMessagePortToContext: (p: unknown) => p,
-      receiveMessageOnPort: () => undefined,
+      receiveMessageOnPort,
       getEnvironmentData: () => undefined,
       setEnvironmentData: () => {},
     },

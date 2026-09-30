@@ -8,7 +8,7 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import { ThreadVfs, createWorkerThreads, installNodeMessagePorts, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
@@ -27,6 +27,7 @@ import cryptoBrowserify from 'crypto-browserify';
 import zlibBrowserify from 'browserify-zlib';
 import { parseArgs } from '@pkgjs/parseargs';
 import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
+import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https, loopback, servers, serverEvents, type BridgeResponse, type UpgradeSocket } from './builtins/http.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
@@ -53,7 +54,7 @@ export type ToWorker =
       inherit?: { asyncModules: boolean; usesSqlite: boolean };
     }
   /** From the parent thread to this worker thread's parentPort. */
-  | { type: 'wt-message'; data: unknown }
+  | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
   | { type: 'run'; main: string; argv?: string[]; preload?: string[] }
   /** The parent closed this child process's IPC channel. */
   | { type: 'disconnect' }
@@ -795,7 +796,10 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
 
 self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
-  if (msg.type === 'init') init(msg);
+  if (msg.type === 'init') {
+    adoptMailboxes(e.ports, msg.thread?.mailboxes);
+    init(msg);
+  }
   else if (msg.type === 'run') run(msg);
   else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) nestedPorts.get(msg.port)!.postMessage(msg, msg.body ? [msg.body] : []);
   else if (msg.type === 'request') request(msg);
@@ -809,7 +813,10 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
     proc.emit('disconnect');
   }
   else if (msg.type === 'message') proc?.emit('message', msg.data);
-  else if (msg.type === 'wt-message') threads.deliver(msg.data);
+  else if (msg.type === 'wt-message') {
+    adoptMailboxes(e.ports, msg.mailboxes);
+    threads.deliver(msg.data);
+  }
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
   else if (msg.type === 'read-tree') {
