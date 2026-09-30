@@ -141,6 +141,8 @@ export interface ProcessOptions {
   env: Record<string, string>;
   argv: string[];
   write(stream: 'stdout' | 'stderr', text: string): void;
+  /** When set, the process has an IPC channel (process.send), as a child forked with one does. */
+  send?(message: unknown): void;
 }
 
 export function createProcess(opts: ProcessOptions) {
@@ -219,6 +221,20 @@ export function createProcess(opts: ProcessOptions) {
       const bound = bindContext(fn as never) as (...a: unknown[]) => void;
       queueMicrotask(() => bound(...args));
     },
+    ...(opts.send
+      ? {
+          connected: true,
+          send(message: unknown, ...rest: unknown[]) {
+            opts.send!(JSON.parse(JSON.stringify(message)));
+            const cb = rest.find((a) => typeof a === 'function') as (() => void) | undefined;
+            if (cb) queueMicrotask(cb);
+            return true;
+          },
+          disconnect() {
+            proc.connected = false;
+          },
+        }
+      : {}),
     emitWarning(warning: string | Error, type?: string | { type?: string }) {
       const text = typeof warning === 'string' ? warning : warning.message;
       const name = typeof type === 'string' ? type : (type?.type ?? 'Warning');

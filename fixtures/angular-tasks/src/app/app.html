@@ -1,0 +1,10 @@
+<header>
+  <h1>{{ title }}</h1>
+  <nav aria-label="Main">
+    <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Tasks</a>
+    <a routerLink="/about" routerLinkActive="active">About</a>
+  </nav>
+</header>
+<main>
+  <router-outlet />
+</main>

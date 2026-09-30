@@ -62,6 +62,7 @@ export function detectFramework(files: FileTree, pkg: PackageJson | null): Frame
   const deps = { ...pkg?.dependencies, ...pkg?.devDependencies };
   const paths = Object.keys(files);
   if ('next' in deps || paths.some((p) => /^next\.config\.[cm]?[jt]s$/.test(p))) return 'next';
+  if ('@angular/core' in deps || 'angular.json' in files) return 'angular';
   if ('vite' in deps || paths.some((p) => /^vite\.config\.[cm]?[jt]s$/.test(p))) return 'vite';
   if (isWordPressPlugin(files) || isWordPressTheme(files)) return 'wordpress';
   if (!pkg && 'index.html' in files) return 'static';

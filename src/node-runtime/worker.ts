@@ -26,9 +26,11 @@ import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
 export type ToWorker =
-  | { type: 'init'; cwd: string; env: Record<string, string>; files: FileTree; installKey: string | null; nodeModules: Record<string, number> | null; base: string }
+  | { type: 'init'; cwd: string; env: Record<string, string>; files: FileTree; installKey: string | null; nodeModules: Record<string, number> | null; base: string; ipc?: boolean }
   | { type: 'run'; main: string; argv?: string[] }
-  | { type: 'request'; id: number; port: number; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null };
+  | { type: 'request'; id: number; port: number; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
+  /** A message for the program (with init.ipc): process.on('message'). */
+  | { type: 'message'; data: unknown };
 
 export type FromWorker =
   | { type: 'log'; stream: 'stdout' | 'stderr'; text: string }
@@ -39,7 +41,9 @@ export type FromWorker =
   | { type: 'response-error'; id: number; message: string }
   | { type: 'exit'; code: number }
   | { type: 'fatal'; message: string; stack?: string }
-  | { type: 'ready' };
+  | { type: 'ready' }
+  /** process.send() from the program (with init.ipc). */
+  | { type: 'message'; data: unknown };
 
 const post = (msg: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(msg, transfer);
 
@@ -305,7 +309,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
   vfs.mkdir('/tmp', true);
 
-  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write });
+  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc ? (data) => post({ type: 'message', data }) : undefined });
   const table = buildBuiltins();
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
@@ -438,6 +442,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
   if (msg.type === 'init') init(msg);
   else if (msg.type === 'run') run(msg);
   else if (msg.type === 'request') request(msg);
+  else if (msg.type === 'message') proc?.emit('message', msg.data);
 };
 
 function hash(s: string): number {

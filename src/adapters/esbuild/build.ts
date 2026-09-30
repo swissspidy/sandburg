@@ -27,6 +27,10 @@ export interface BuildInput {
   nodeModules: Iterable<string>;
   readNodeModule(path: string): Promise<Uint8Array>;
   mode?: string;
+  /** The page to build from, when it is not the project's index.html (Angular's comes from angular.json). */
+  indexHtml?: string;
+  /** Extra compile-time constants (esbuild `define`). */
+  define?: Record<string, string>;
 }
 
 export interface Asset {
@@ -91,7 +95,7 @@ const MODULE_SCRIPT = /<script\b(?=[^>]*\btype\s*=\s*["']module["'])(?=[^>]*\bsr
 export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<BuildOutput> {
   const mode = input.mode ?? 'development';
   const files = input.files;
-  const html = files['index.html'];
+  const html = input.indexHtml ?? files['index.html'];
   if (typeof html !== 'string') throw new BuildError('index.html is missing: a Vite app is served from index.html at the project root');
 
   const fileSet = new Set<string>();
@@ -158,6 +162,7 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
     'process.env.NODE_ENV': nodeEnv,
   };
   for (const [k, v] of Object.entries(env)) define[`import.meta.env.${k}`] = JSON.stringify(v);
+  Object.assign(define, input.define);
   const tsconfig = readTsconfig(files);
 
   let result: esbuildTypes.BuildResult & { metafile: esbuildTypes.Metafile; outputFiles: esbuildTypes.OutputFile[] };

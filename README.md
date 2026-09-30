@@ -10,7 +10,8 @@ with WordPress itself as one of the runtimes.
 - **One tab = one sandbox = one origin.** Many run in parallel in one browser.
 - **Pluggable runtimes** behind one interface: Sandburg's own Node.js 24
   runtime (real Next.js, Express), an esbuild-wasm build for Vite-style apps
-  (real npm packages, Tailwind v4), almostnode (Vite, Next.js), WordPress
+  (real npm packages, Tailwind v4), Angular (AOT with the app's own compiler),
+  almostnode (Vite, Next.js), WordPress
   Playground (plugins and themes), and optionally Nodebox.
 - **Honest about fidelity:** `sandburg compare` runs the same apps in a Docker
   reference and reports how often the two agree, and why they disagree.
@@ -29,6 +30,7 @@ with WordPress itself as one of the runtimes.
 | 5. WordPress Playground | done ([ADR 0005](docs/adr/0005-wordpress-playground.md)) |
 | 6. Own Node.js runtime: real Next.js in the browser | done ([ADR 0006](docs/adr/0006-node-runtime.md)) |
 | 7. esbuild-wasm adapter for Vite-style apps | done ([ADR 0007](docs/adr/0007-esbuild-adapter.md)) |
+| 8. Angular | done ([ADR 0008](docs/adr/0008-angular.md)) |
 
 ## Try it
 
@@ -44,7 +46,7 @@ npm run spike                      # the Vite + React fixture
 ## CLI
 
 ```sh
-sandburg run <project> [--runtime almostnode|esbuild|node|wordpress|nodebox] [--checks checks.spec.ts]
+sandburg run <project> [--runtime almostnode|angular|esbuild|node|wordpress|nodebox] [--checks checks.spec.ts]
 sandburg batch <dir> [--parallel 8]                    # each subdirectory is a project
 sandburg compare <dir> --reference docker [--report path]
 sandburg snapshot <project>                            # store it, print its snapshot id
@@ -103,6 +105,7 @@ the rule that decided it (`src/classify.ts`).
 | Runtime | Runs | Notes |
 |---|---|---|
 | `almostnode` (default) | Vite, Next.js (App and Pages Router) | MIT. Dependencies load from esm.sh. Sandburg patches several gaps (ADR 0003). No Vite plugins or PostCSS, so Tailwind v4 does not apply. |
+| `angular` | Angular CLI apps (tested with Angular 19 and 22; zone.js or zoneless) | The app's own `@angular/compiler-cli` compiles AOT (with template type-checking) in the node runtime; libraries are linked with the Angular Linker and bundled with esbuild-wasm (ADR 0008). Sass and Tailwind v4 work. No SSR, i18n or custom webpack. |
 | `esbuild` | Vite apps (React, vanilla), static sites with module scripts | Built in the browser with esbuild-wasm (ADR 0007) from dependencies installed with npm on the host. Tailwind v4 is compiled with the app's own `tailwindcss`. Other Vite plugins, PostCSS and Tailwind v3 are rejected as unsupported. |
 | `node` | Next.js (real `next dev`, webpack, SWC wasm), Node.js servers (`node server.js`) | Sandburg's own Node.js 24 runtime in a Web Worker (ADR 0006). Dependencies are installed with npm on the host, cached, and fetched lazily. No WebSockets (so no HMR), child processes or native addons. |
 | `wordpress` | WordPress plugins and themes | WordPress Playground, loaded at run time from `SANDBURG_PLAYGROUND_URL` (default: playground.wordpress.net, which rate-limits heavy use, so self-host it for batches). |

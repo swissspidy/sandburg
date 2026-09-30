@@ -67,7 +67,7 @@ export function unsupportedPostcssPlugins(project: Project): string[] {
   return [...new Set(names)].filter((n) => n !== '@tailwindcss/postcss' && n !== 'autoprefixer');
 }
 
-async function serve(req: HostRequest): Promise<HostResponse | null> {
+export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/esbuild.wasm') {
     return { status: 200, headers: { 'content-type': 'application/wasm', 'cache-control': 'max-age=31536000, immutable' }, body: await readFile(join(pkgRoot, 'esbuild.wasm')) };
   }

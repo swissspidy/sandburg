@@ -52,8 +52,8 @@ class DockerRun implements NodeRuntime {
   }
 
   probe(project: Project): ProbeVerdict {
-    if (project.framework !== 'vite' && project.framework !== 'next') {
-      return { verdict: 'unsupported', reason: `the Docker reference runs Vite and Next.js dev servers, not "${project.framework}"` };
+    if (project.framework !== 'vite' && project.framework !== 'next' && project.framework !== 'angular') {
+      return { verdict: 'unsupported', reason: `the Docker reference runs Vite, Next.js and Angular dev servers, not "${project.framework}"` };
     }
     if (!project.packageJson?.scripts?.dev) return { verdict: 'unsupported', reason: 'package.json has no "dev" script' };
     return { verdict: 'supported' };
@@ -110,8 +110,11 @@ class DockerRun implements NodeRuntime {
     const port = this.port;
     // Host network: bind loopback only. Bridge network: bind all interfaces; Docker publishes the port on 127.0.0.1.
     const host = this.hostNetwork ? '127.0.0.1' : '0.0.0.0';
-    const extra = this.project!.framework === 'next' ? ['-H', host, '-p', String(port)] : ['--host', host, '--port', String(port), '--strictPort'];
-    const child = spawn('docker', ['exec', this.id, 'npm', 'run', 'dev', '--', ...extra], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const framework = this.project!.framework;
+    const extra = framework === 'next' ? ['-H', host, '-p', String(port)] : framework === 'angular' ? ['--host', host, '--port', String(port)] : ['--host', host, '--port', String(port), '--strictPort'];
+    // Angular CLI projects have "start": "ng serve" and no "dev" script.
+    const script = framework === 'angular' && !this.project!.packageJson?.scripts?.dev ? 'start' : 'dev';
+    const child = spawn('docker', ['exec', this.id, 'npm', 'run', script, '--', ...extra], { stdio: ['ignore', 'pipe', 'pipe'] });
     this.server = child;
     const onData = (buf: Buffer) => this.record(buf.toString());
     child.stdout!.on('data', onData);

@@ -1,0 +1,17 @@
+<form [formGroup]="form" (ngSubmit)="add()">
+  <label for="new-task">New task</label>
+  <input id="new-task" formControlName="title" placeholder="What needs doing?" />
+  <button type="submit" [disabled]="form.invalid">Add</button>
+</form>
+
+<p role="status">{{ store.remaining() | plural: 'task' }} left</p>
+
+@if (store.tasks().length) {
+  <ul>
+    @for (task of store.tasks(); track task.id) {
+      <li><app-task-item [task]="task" (toggled)="store.toggle($event)" (removed)="store.remove($event)" /></li>
+    }
+  </ul>
+} @else {
+  <p>Nothing to do.</p>
+}

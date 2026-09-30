@@ -12,6 +12,12 @@ import type { EsbuildHostInstall } from './index.ts';
 
 let initialized: Promise<void> | null = null;
 
+/** Starts esbuild-wasm once per page (in its own worker). */
+export function initEsbuild(): Promise<void> {
+  initialized ??= esbuild.initialize({ wasmURL: '/__sandburg/esbuild.wasm', worker: true });
+  return initialized;
+}
+
 /** Limits concurrent requests: a package like lucide-react re-exports ~1,600 modules. */
 class Pool {
   private active = 0;
@@ -52,7 +58,7 @@ const PACKED = /\.(m?js|cjs|json|css)$/;
 const PACK_FILE_MAX = 256 * 1024;
 const packs = new Map<string, Promise<Record<string, string>>>();
 
-async function readNodeModule(host: EsbuildHostInstall, path: string): Promise<Uint8Array> {
+export async function readNodeModule(host: Pick<EsbuildHostInstall, 'key' | 'index'>, path: string): Promise<Uint8Array> {
   const rel = path.slice(1);
   if (PACKED.test(rel) && (host.index[rel] ?? Infinity) <= PACK_FILE_MAX) {
     const dir = rel.slice(0, rel.lastIndexOf('/'));
@@ -68,25 +74,52 @@ async function readNodeModule(host: EsbuildHostInstall, path: string): Promise<U
   return fetchPool.run(() => fetchBytes(`/__sandburg/nm/${host.key}/f/${encodeURI(rel)}`));
 }
 
-export function createAdapter(): RuntimeAdapter {
-  let files: Record<string, string | Uint8Array> = {};
-  let host: EsbuildHostInstall = { key: null, index: {}, resolved: {}, lockfile: false };
-  let assets = new Map<string, Asset>();
-  let html = '';
+/** File contents as strings or bytes (base64 entries decoded). */
+export function decodeTree(tree: FileTree): Record<string, string | Uint8Array> {
+  const files: Record<string, string | Uint8Array> = {};
+  for (const [path, content] of Object.entries(tree)) {
+    files[path] = typeof content === 'string' ? content : Uint8Array.from(atob(content.base64), (c) => c.charCodeAt(0));
+  }
+  return files;
+}
 
-  function respond(request: BridgedRequest, port: MessagePort) {
+/** A directory served at a URL path, like Vite's public/ or an angular.json asset entry. */
+export interface StaticDir {
+  /** Project-relative directory or file ("public", "src/favicon.ico"). */
+  input: string;
+  /** URL path it is served at ("/", "/assets"). */
+  output: string;
+}
+
+export interface Site {
+  assets: Map<string, Asset>;
+  html: string;
+  files: Record<string, string | Uint8Array>;
+  statics: StaticDir[];
+  /** Serve other project files at their paths too (Vite's dev server does; Angular's does not). */
+  projectFiles: boolean;
+}
+
+/** Answers app requests from a build: outputs, static dirs, then index.html for anything that looks like a page (SPA routing). */
+export function createResponder(site: () => Site) {
+  const encode = (v: string | Uint8Array) => (typeof v === 'string' ? new TextEncoder().encode(v) : v);
+  return (request: BridgedRequest, port: MessagePort) => {
+    const { assets, html, files, statics, projectFiles } = site();
     const url = new URL(request.url, location.origin);
     const path = decodeURIComponent(url.pathname);
     let asset: Asset | undefined = assets.get(path);
-    if (!asset) {
-      // Vite serves public/ at the root, then project files as they are.
-      const own = files[`public${path}`] ?? (path.includes('/node_modules/') ? undefined : files[path.slice(1)]);
-      if (own !== undefined && !/\.(html?)$/.test(path)) asset = { body: typeof own === 'string' ? new TextEncoder().encode(own) : own, type: mimeType(path) };
+    for (const dir of statics) {
+      if (asset) break;
+      const prefix = dir.output.endsWith('/') ? dir.output : `${dir.output}/`;
+      const own = path === dir.output ? files[dir.input] : path.startsWith(prefix) ? files[`${dir.input}/${path.slice(prefix.length)}`] : undefined;
+      if (own !== undefined) asset = { body: encode(own), type: mimeType(path) };
     }
-    // Everything else that looks like a page is the SPA's index.html, as in Vite's dev server.
+    if (!asset && projectFiles && !path.includes('/node_modules/') && !/\.html?$/.test(path)) {
+      const own = files[path.slice(1)];
+      if (own !== undefined) asset = { body: encode(own), type: mimeType(path) };
+    }
     if (!asset && (path === '/' || path.endsWith('.html') || !/\.[a-z0-9]+$/i.test(path))) {
-      const page = path === '/' ? null : files[`public${path}`] ?? files[path.slice(1)];
-      asset = { body: new TextEncoder().encode(typeof page === 'string' && path.endsWith('.html') ? page : html), type: 'text/html; charset=utf-8' };
+      asset = { body: new TextEncoder().encode(html), type: 'text/html; charset=utf-8' };
     }
     if (!asset) {
       port.postMessage({ type: 'start', status: 404, statusText: 'Not Found', headers: [['content-type', 'text/plain']] });
@@ -97,29 +130,27 @@ export function createAdapter(): RuntimeAdapter {
     }
     port.postMessage({ type: 'end' });
     port.close();
-  }
+  };
+}
+
+export function createAdapter(): RuntimeAdapter {
+  let files: Record<string, string | Uint8Array> = {};
+  let host: EsbuildHostInstall = { key: null, index: {}, resolved: {}, lockfile: false };
+  let assets = new Map<string, Asset>();
+  let html = '';
+  const respond = createResponder(() => ({ assets, html, files, statics: [{ input: 'public', output: '/' }], projectFiles: true }));
 
   return {
     name: 'esbuild',
 
     async mount(tree: FileTree) {
-      files = {};
-      for (const [path, content] of Object.entries(tree)) {
-        files[path] = typeof content === 'string' || content instanceof Uint8Array ? content : Uint8Array.from(atob(content.base64), (c) => c.charCodeAt(0));
-      }
+      files = decodeTree(tree);
     },
 
     async install(ctx: AdapterContext, hostData?: unknown): Promise<InstallReport> {
       host = (hostData as EsbuildHostInstall | undefined) ?? host;
-      initialized ??= esbuild.initialize({ wasmURL: '/__sandburg/esbuild.wasm', worker: true });
-      await initialized;
-      const deps = Object.keys(ctx.packageJson?.dependencies ?? {}).length + Object.keys(ctx.packageJson?.devDependencies ?? {}).length;
-      return {
-        resolution: host.lockfile ? 'lockfile' : deps ? 'range' : 'none',
-        lockfileHonored: host.lockfile,
-        dependencies: host.resolved,
-        buildMs: null,
-      };
+      await initEsbuild();
+      return installReport(ctx, host);
     },
 
     async start(ctx: AdapterContext) {
@@ -143,5 +174,15 @@ export function createAdapter(): RuntimeAdapter {
     },
 
     async dispose() {},
+  };
+}
+
+export function installReport(ctx: AdapterContext, host: { lockfile: boolean; resolved: Record<string, string> }): InstallReport {
+  const deps = Object.keys(ctx.packageJson?.dependencies ?? {}).length + Object.keys(ctx.packageJson?.devDependencies ?? {}).length;
+  return {
+    resolution: host.lockfile ? 'lockfile' : deps ? 'range' : 'none',
+    lockfileHonored: host.lockfile,
+    dependencies: host.resolved,
+    buildMs: null,
   };
 }

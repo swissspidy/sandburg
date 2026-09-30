@@ -1,0 +1,13 @@
+:host {
+  display: block;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+nav {
+  display: flex;
+  gap: 1rem;
+}
+nav a.active {
+  font-weight: 700;
+}

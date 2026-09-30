@@ -21,7 +21,7 @@ function extraDependencies(project: Project): Record<string, string> {
   return typeof next === 'string' ? { '@next/swc-wasm-nodejs': next } : {};
 }
 
-async function serve(req: HostRequest): Promise<HostResponse | null> {
+export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/node-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleNodeRuntime() };
   }
