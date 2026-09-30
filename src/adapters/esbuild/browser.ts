@@ -7,7 +7,7 @@ import * as esbuild from 'esbuild-wasm';
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker, type BridgedRequest } from '../sw-bridge.ts';
-import { BuildError, buildApp, mimeType, type Asset } from './build.ts';
+import { BuildError, UnsupportedFeature, buildApp, mimeType, type Asset } from './build.ts';
 import type { EsbuildHostInstall } from './index.ts';
 import { isTsRunner, matchProxy } from './backend.ts';
 import { NodeProcess, exposeWebSockets, webSocketPort } from '../node/process.ts';
@@ -249,6 +249,7 @@ export function createAdapter(): RuntimeAdapter {
         html = backend ? out.html.replace(/<head[^>]*>/i, (m) => `${m}\n${localhostRewriter([...new Set([...backend!.ports, ...(host.proxy ?? []).map((r) => r.port)])])}`) : out.html;
         for (const w of out.warnings) ctx.log('stderr', `[esbuild] ${w}`);
       } catch (e) {
+        if (e instanceof UnsupportedFeature) throw new AdapterError('UNSUPPORTED', e.message);
         if (e instanceof BuildError) throw new AdapterError('APP', `build failed:\n${e.message}`);
         throw new AdapterError('INTERNAL', (e as Error).message);
       }

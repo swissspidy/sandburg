@@ -42,15 +42,19 @@ export class Resolver {
   private fs: FileSystem;
   /** Prefix aliases, e.g. { '@': '/src' } (from vite.config or tsconfig paths). */
   private aliases: Record<string, string>;
+  /** Package aliases, e.g. { react: 'preact/compat' } (what @preact/preset-vite sets up). */
+  private packages: Record<string, string>;
 
-  constructor(fs: FileSystem, aliases: Record<string, string> = {}) {
+  constructor(fs: FileSystem, aliases: Record<string, string> = {}, packages: Record<string, string> = {}) {
     this.fs = fs;
     this.aliases = aliases;
+    this.packages = packages;
   }
 
   async resolve(request: string, importer: string, opts: { style?: boolean } = {}): Promise<Resolved> {
     if (/^(https?:|data:|\/\/)/.test(request)) return { external: true };
-    const [bare, query] = splitQuery(request);
+    let [bare, query] = splitQuery(request);
+    if (bare in this.packages) bare = this.packages[bare];
     const dir = importer ? dirname(importer) : '/';
     const alias = this.alias(bare);
     let result: Resolved | null;
@@ -97,7 +101,25 @@ export class Resolver {
     return null;
   }
 
+  /** Package subpath imports ("#client/constants") from the "imports" field of the importer's package. */
+  private async packageImport(request: string, fromDir: string, conditions: string[]): Promise<Resolved | null> {
+    for (let dir = fromDir; ; dir = dirname(dir)) {
+      if (this.fs.isFile(`${dir === '/' ? '' : dir}/package.json`)) {
+        const pkg = (await this.pkg(dir === '/' ? '' : dir)) as (PackageJson & { imports?: unknown }) | null;
+        if (pkg?.imports && typeof pkg.imports === 'object') {
+          const target = resolveExports(pkg.imports, request, conditions);
+          if (target === null) return null;
+          // A target is a path in the package ("./src/x.js") or another package ("#x": "some-pkg").
+          return target.startsWith('./') ? this.file(join(dir === '/' ? '/' : dir, target), false) : this.bare(target, dir, conditions);
+        }
+        if (pkg) return null;
+      }
+      if (dir === '/') return null;
+    }
+  }
+
   private async bare(request: string, fromDir: string, conditions: string[]): Promise<Resolved | null> {
+    if (request.startsWith('#')) return this.packageImport(request, fromDir, conditions);
     const name = request.startsWith('@') ? request.split('/').slice(0, 2).join('/') : request.split('/')[0];
     const sub = request.slice(name.length); // "" or "/x/y"
     const builtin = name.replace(/^node:/, '');
@@ -113,7 +135,7 @@ export class Resolver {
       return (await this.file(join(pkgDir, target), false)) ?? null;
     }
     if (!sub) return pkg ? this.packageEntry(pkgDir, pkg, conditions) : this.file(pkgDir, true);
-    return this.file(join(pkgDir, sub), true);
+    return this.file(join(pkgDir, `.${sub}`), true);
   }
 
   private findPackageDir(name: string, fromDir: string): string | null {
@@ -202,7 +224,7 @@ function exportsMap(exports: unknown): Record<string, unknown> | null {
   if (!exports || typeof exports !== 'object') return null;
   const keys = Object.keys(exports);
   // Conditions at the top level (no "." keys) describe ".".
-  if (keys.length && !keys.some((k) => k.startsWith('.'))) return { '.': exports };
+  if (keys.length && !keys.some((k) => k.startsWith('.') || k.startsWith('#'))) return { '.': exports };
   return exports as Record<string, unknown>;
 }
 
@@ -227,7 +249,9 @@ function pickTarget(target: unknown, star: string, conditions: string[]): string
 }
 
 export function splitQuery(request: string): [string, string] {
-  const i = request.search(/[?#]/);
+  // A leading # is a package subpath import (#client/constants), not a fragment.
+  const i = request.slice(1).search(/[?#]/) + (request.slice(1).search(/[?#]/) === -1 ? 0 : 1);
+  if (i === 0) return [request, ''];
   return i === -1 ? [request, ''] : [request.slice(0, i), request.slice(i)];
 }
 

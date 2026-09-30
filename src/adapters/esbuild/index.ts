@@ -63,7 +63,7 @@ async function installPackage(project: Project, log: (line: string) => void) {
 }
 
 /** Vite config imports that the esbuild build covers by itself. */
-const BUILT_IN = /^(vite|node:.*|path|url|fs|@vitejs\/plugin-(react(-swc)?|vue)|@tailwindcss\/vite)$/;
+const BUILT_IN = /^(vite|node:.*|path|url|fs|@vitejs\/plugin-(react(-swc)?|vue)|@tailwindcss\/vite|@sveltejs\/vite-plugin-svelte|vite-plugin-solid|@preact\/preset-vite)$/;
 
 /** Plugins imported by vite.config that the build cannot apply. */
 export function unsupportedVitePlugins(project: Project): string[] {

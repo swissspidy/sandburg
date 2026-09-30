@@ -7,6 +7,7 @@
  */
 import type { Loader } from 'esbuild';
 import type { Resolver } from './resolve.ts';
+import { UnsupportedFeature } from './build-errors.ts';
 
 /* The parts of @vue/compiler-sfc used here. */
 interface SfcBlock {
@@ -70,7 +71,7 @@ export class VueCompiler {
     const { descriptor, errors } = sfc.parse(source, { filename: path, sourceMap: false });
     if (errors.length) throw new Error(errors.map((e) => format(path, e)).join('\n'));
     for (const block of [descriptor.template, descriptor.script, descriptor.scriptSetup, ...descriptor.styles]) {
-      if (block?.src) throw new Error(`${path}: <… src="${block.src}"> blocks are not supported`);
+      if (block?.src) throw new UnsupportedFeature(`${path}: <… src="${block.src}"> blocks are not supported`);
     }
 
     const id = componentId(path);
@@ -112,8 +113,8 @@ export class VueCompiler {
 
     const styles: string[] = [];
     descriptor.styles.forEach((style, index) => {
-      if (style.lang && style.lang !== 'css') throw new Error(`${path}: <style lang="${style.lang}"> is not supported (plain CSS only)`);
-      if (style.module) throw new Error(`${path}: <style module> is not supported`);
+      if (style.lang && style.lang !== 'css') throw new UnsupportedFeature(`${path}: <style lang="${style.lang}"> is not supported (plain CSS only)`);
+      if (style.module) throw new UnsupportedFeature(`${path}: <style module> is not supported`);
       const out = sfc.compileStyle({ source: style.content, filename: path, id: scopeId, scoped: !!style.scoped, isProd: false });
       if (out.errors.length) throw new Error(out.errors.map((e) => `${path}: ${e.message}`).join('\n'));
       styles.push(out.code);

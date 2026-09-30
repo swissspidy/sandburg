@@ -137,3 +137,21 @@ test('Tailwind: detection and candidate scanning', () => {
   for (const k of ['p-4', 'bg-[#fff]', 'hover:underline']) assert.ok(c.includes(k), k);
   assert.ok(!c.includes('nope-class'));
 });
+
+test('deep imports into packages without exports, and package "imports" (#subpaths)', async () => {
+  const r = new Resolver(
+    memfs({
+      '/node_modules/data-pkg/package.json': JSON.stringify({ name: 'data-pkg' }),
+      '/node_modules/data-pkg/data/envs.json': '{}',
+      '/node_modules/data-pkg/lib/agents.js': '',
+      '/node_modules/svelte-like/package.json': JSON.stringify({ name: 'svelte-like', imports: { '#client/*': './src/internal/client/*.js', '#dev': { development: './dev.js', default: './prod.js' } } }),
+      '/node_modules/svelte-like/src/internal/client/constants.js': '',
+      '/node_modules/svelte-like/src/internal/client/dev/assign.js': '',
+      '/node_modules/svelte-like/dev.js': '',
+    }),
+  );
+  assert.deepEqual(await r.resolve('data-pkg/data/envs.json', '/src/a.ts'), { path: '/node_modules/data-pkg/data/envs.json' });
+  assert.deepEqual(await r.resolve('data-pkg/lib/agents', '/src/a.ts'), { path: '/node_modules/data-pkg/lib/agents.js' });
+  assert.deepEqual(await r.resolve('#client/constants', '/node_modules/svelte-like/src/internal/client/dev/assign.js'), { path: '/node_modules/svelte-like/src/internal/client/constants.js' });
+  assert.deepEqual(await r.resolve('#dev', '/node_modules/svelte-like/src/internal/client/dev/assign.js'), { path: '/node_modules/svelte-like/dev.js' });
+});

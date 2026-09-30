@@ -13,7 +13,7 @@ import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../ho
 import type { FileTree, InstallReport } from '../../types.ts';
 import type { FromWorker } from '../../node-runtime/worker.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
-import { BuildError, buildApp, type Asset } from '../esbuild/build.ts';
+import { BuildError, UnsupportedFeature, buildApp, type Asset } from '../esbuild/build.ts';
 import { createResponder, decodeTree, initEsbuild, installReport, readNodeModule } from '../esbuild/browser.ts';
 import { readAngularWorkspace, type AngularBuild } from './workspace.ts';
 import type { AngularHostInstall } from './index.ts';
@@ -205,7 +205,8 @@ export function createAdapter(): RuntimeAdapter {
       html = out.html;
       for (const w of out.warnings) ctx.log('stderr', `[esbuild] ${w}`);
     } catch (e) {
-      if (e instanceof BuildError) throw new AdapterError('APP', `build failed:\n${e.message}`);
+      if (e instanceof UnsupportedFeature) throw new AdapterError('UNSUPPORTED', e.message);
+        if (e instanceof BuildError) throw new AdapterError('APP', `build failed:\n${e.message}`);
       throw new AdapterError('INTERNAL', (e as Error).message);
     }
     ctx.log('stdout', `bundled in ${Math.round(performance.now() - t1)} ms (${assets.size} files; ${linked} library files linked)`);

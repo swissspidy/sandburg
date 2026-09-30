@@ -18,8 +18,20 @@ import type * as esbuildTypes from 'esbuild';
 import { Resolver, dirname, readAliases, stripJsonComments, type FileSystem } from './resolve.ts';
 import { Tailwind, scanCandidates, usesTailwind } from './tailwind.ts';
 import { STYLE_QUERY, VueCompiler } from './vue.ts';
+import { SvelteCompilerHost, isSvelteModule } from './svelte.ts';
+import { SolidCompiler } from './solid.ts';
+import { UnsupportedFeature } from './build-errors.ts';
 
-type Esbuild = Pick<typeof esbuildTypes, 'build'>;
+export { UnsupportedFeature };
+
+/** Vite plugins whose work the build does itself, detected from vite.config imports. */
+export function viteFrameworks(files: Record<string, string | Uint8Array>) {
+  const config = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'].map((n) => files[n]).find((t) => typeof t === 'string') as string | undefined;
+  const has = (name: string) => !!config && new RegExp(`['"]${name.replace(/[/@-]/g, '\\$&')}['"]`).test(config);
+  return { solid: has('vite-plugin-solid'), preact: has('@preact/preset-vite') };
+}
+
+type Esbuild = Pick<typeof esbuildTypes, 'build' | 'transform'>;
 
 export interface BuildInput {
   /** Project files, keyed by path relative to the project root. */
@@ -124,7 +136,12 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
     isDir: (p) => dirs.has(p),
     readJson: async (p) => JSON.parse(new TextDecoder().decode(await read(p))),
   };
-  const resolver = new Resolver(fs, readAliases(files));
+  const frameworks = viteFrameworks(files);
+  // @preact/preset-vite: React imports go to preact/compat.
+  const packageAliases: Record<string, string> = frameworks.preact
+    ? { react: 'preact/compat', 'react-dom': 'preact/compat', 'react-dom/client': 'preact/compat/client', 'react-dom/test-utils': 'preact/test-utils', 'react/jsx-runtime': 'preact/jsx-runtime', 'react/jsx-dev-runtime': 'preact/jsx-dev-runtime' }
+    : {};
+  const resolver = new Resolver(fs, readAliases(files), packageAliases);
   const warnings: string[] = [];
   const nodeEnv = JSON.stringify(mode === 'production' ? 'production' : 'development');
   // Bundles an installed package (Tailwind, @vue/compiler-sfc) and imports it in this realm.
@@ -137,10 +154,16 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
       write: false,
       logLevel: 'silent',
       define: { 'process.env.NODE_ENV': nodeEnv },
+      // Compilers (Babel in particular) read process.env and friends.
+      banner: { js: 'var process = globalThis.process ?? { env: { NODE_ENV: "development" }, cwd: () => "/", platform: "browser", version: "", versions: {}, argv: [], nextTick: (f, ...a) => queueMicrotask(() => f(...a)) };' },
       plugins: [vfsPlugin(resolver, read, [])],
     });
     return import(/* @vite-ignore */ `data:text/javascript;charset=utf-8,${encodeURIComponent(out.outputFiles[0].text)}`);
   };
+  const stripTypes = async (code: string, path: string) => (await esbuild.transform(code, { loader: path.endsWith('x') ? 'tsx' : 'ts', jsx: 'preserve', target: 'esnext', sourcefile: path })).code;
+  const svelte = new SvelteCompilerHost({ resolver, importPackage, stripTypes });
+  const solid = new SolidCompiler({ resolver, importPackage, stripTypes });
+  let unsupported: UnsupportedFeature | null = null;
   const tailwind = new Tailwind({ resolver, read, importPackage });
   let candidates: string[] | null = null;
   const vue = new VueCompiler({ resolver, files, importPackage });
@@ -189,7 +212,9 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
       metafile: true,
       sourcemap: true,
       jsx: 'automatic',
-      jsxImportSource: tsconfig.jsxImportSource ?? 'react',
+      jsxImportSource: frameworks.preact ? 'preact' : (tsconfig.jsxImportSource ?? 'react'),
+      // The project's TypeScript settings (decorators, class fields); esbuild cannot read tsconfig.json itself here.
+      tsconfigRaw: { compilerOptions: tsconfig.compilerOptions },
       define,
       logLevel: 'silent',
       loader: Object.fromEntries(ASSET_EXTENSIONS.map((e) => [`.${e}`, 'file'])),
@@ -228,12 +253,31 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
             build.onLoad({ filter: /.*/, namespace: 'sandburg-vue-style' }, (args) => ({ contents: sfcStyles.get(args.path), loader: 'css', resolveDir: dirname(args.path) }));
             build.onLoad({ filter: /.*/, namespace: 'sandburg' }, async (args) => {
               const contents = await read(args.path);
+              const own = !args.path.includes('/node_modules/');
+              if (args.path.endsWith('.svelte') || isSvelteModule(args.path)) {
+                try {
+                  const out = await svelte.compile(new TextDecoder().decode(contents), args.path);
+                  warnings.push(...out.warnings);
+                  return { contents: out.code, loader: 'js', resolveDir: dirname(args.path) };
+                } catch (e) {
+                  if (e instanceof UnsupportedFeature) unsupported ??= e;
+                  return { errors: [{ text: (e as Error).message }] };
+                }
+              }
+              if (frameworks.solid && own && /\.[jt]sx$/.test(args.path)) {
+                try {
+                  return { contents: await solid.compile(new TextDecoder().decode(contents), args.path), loader: 'js', resolveDir: dirname(args.path) };
+                } catch (e) {
+                  return { errors: [{ text: (e as Error).message }] };
+                }
+              }
               if (args.path.endsWith('.vue')) {
                 try {
                   const sfc = await vue.compile(new TextDecoder().decode(contents), args.path);
                   sfc.styles.forEach((css, i) => sfcStyles.set(`${args.path}?vue&type=style&index=${i}&lang.css`, css));
                   return { contents: sfc.code, loader: sfc.loader, resolveDir: dirname(args.path) };
                 } catch (e) {
+                  if (e instanceof UnsupportedFeature) unsupported ??= e;
                   return { errors: [{ text: (e as Error).message }] };
                 }
               }
@@ -258,6 +302,7 @@ export async function buildApp(esbuild: Esbuild, input: BuildInput): Promise<Bui
   } catch (e) {
     const failure = e as { errors?: esbuildTypes.Message[] };
     if (readFailure) throw new Error(`runtime asset failed to load: ${(readFailure as Error).message}`);
+    if (unsupported) throw unsupported;
     if (failure.errors?.length) throw new BuildError(failure.errors.slice(0, 10).map(formatMessage).join('\n'));
     throw e;
   }
@@ -305,11 +350,65 @@ function vfsPlugin(resolver: Resolver, read: (path: string) => Promise<Uint8Arra
           return { errors: [{ text: (e as Error).message }] };
         }
       });
-      build.onLoad({ filter: /.*/, namespace: 'sandburg-empty' }, () => ({ contents: 'export default {};', loader: 'js' }));
+      build.onLoad({ filter: /.*/, namespace: 'sandburg-empty' }, (args) => ({ contents: NODE_SHIMS[args.path.replace(/^node:/, '')] ?? 'export default {};', loader: 'js' }));
       build.onLoad({ filter: /.*/, namespace: 'sandburg' }, async (args) => ({ contents: await read(args.path), loader: loaderFor(args.path) }));
     },
   };
 }
+
+/**
+ * Minimal `path`, `url`, `assert` and `util` (CommonJS, as compilers require() them) for compilers bundled into the page (Babel calls path.resolve). App
+ * bundles do not get these: as in Vite, Node built-ins are empty there.
+ */
+const PATH_SHIM = `
+const normalize = (p) => { const abs = p.startsWith('/'); const out = []; for (const s of p.split('/')) { if (!s || s === '.') continue; if (s === '..') out.pop(); else out.push(s); } return (abs ? '/' : '') + out.join('/') || (abs ? '/' : '.'); };
+const isAbsolute = (p) => p.startsWith('/');
+const join = (...p) => normalize(p.filter(Boolean).join('/'));
+const resolve = (...p) => { let r = ''; for (const s of p) if (s) r = s.startsWith('/') ? s : r + '/' + s; return normalize(r.startsWith('/') ? r : '/' + r); };
+const dirname = (p) => { const i = p.replace(/\\/+$/, '').lastIndexOf('/'); return i > 0 ? p.slice(0, i) : i === 0 ? '/' : '.'; };
+const basename = (p, ext) => { const b = p.replace(/\\/+$/, '').split('/').pop() ?? ''; return ext && b.endsWith(ext) ? b.slice(0, -ext.length) : b; };
+const extname = (p) => { const b = basename(p); const i = b.lastIndexOf('.'); return i > 0 ? b.slice(i) : ''; };
+const relative = (from, to) => { const a = resolve(from).split('/').filter(Boolean), b = resolve(to).split('/').filter(Boolean); let i = 0; while (i < a.length && a[i] === b[i]) i++; return [...a.slice(i).map(() => '..'), ...b.slice(i)].join('/'); };
+const parse = (p) => ({ root: p.startsWith('/') ? '/' : '', dir: dirname(p), base: basename(p), ext: extname(p), name: basename(p, extname(p)) });
+const format = (o) => (o.dir ? o.dir + '/' : '') + (o.base ?? (o.name ?? '') + (o.ext ?? ''));
+const path = { sep: '/', delimiter: ':', isAbsolute, join, resolve, dirname, basename, extname, relative, parse, format, normalize, toNamespacedPath: (p) => p };
+path.posix = path;
+path.default = path;
+module.exports = path;
+`;
+const URL_SHIM = `
+module.exports = {
+  fileURLToPath: (u) => decodeURIComponent(new URL(String(u)).pathname),
+  pathToFileURL: (p) => new URL('file://' + encodeURI(p)),
+  URL: globalThis.URL,
+  URLSearchParams: globalThis.URLSearchParams,
+};
+`;
+const ASSERT_SHIM = `
+function fail(message) { throw Object.assign(new Error(message || 'Assertion failed'), { name: 'AssertionError', code: 'ERR_ASSERTION' }); }
+function assert(value, message) { if (!value) fail(message); }
+assert.ok = assert;
+assert.equal = (a, b, m) => { if (a != b) fail(m); };
+assert.strictEqual = (a, b, m) => { if (a !== b) fail(m); };
+assert.notStrictEqual = (a, b, m) => { if (a === b) fail(m); };
+assert.fail = fail;
+assert.strict = assert;
+module.exports = assert;
+`;
+const UTIL_SHIM = `
+const inspect = (v) => { try { return typeof v === 'string' ? v : JSON.stringify(v); } catch { return String(v); } };
+module.exports = {
+  inspect,
+  format: (f, ...a) => String(f).replace(/%[sdifjoO]/g, () => inspect(a.shift())) + (a.length ? ' ' + a.map(inspect).join(' ') : ''),
+  deprecate: (fn) => fn,
+  debuglog: () => () => {},
+  inherits: (c, p) => { Object.setPrototypeOf(c.prototype, p.prototype); Object.setPrototypeOf(c, p); },
+  promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, v) => (e ? rej(e) : res(v)))),
+  isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+  types: {},
+};
+`;
+const NODE_SHIMS: Record<string, string> = { path: PATH_SHIM, 'path/posix': PATH_SHIM, url: URL_SHIM, assert: ASSERT_SHIM, util: UTIL_SHIM };
 
 function stripSourceMapComment(bytes: Uint8Array): Uint8Array {
   const tail = new TextDecoder().decode(bytes.subarray(Math.max(0, bytes.length - 300)));
@@ -365,15 +464,18 @@ export function loadEnv(files: Record<string, string | Uint8Array>, mode: string
   return env;
 }
 
-function readTsconfig(files: Record<string, string | Uint8Array>): { jsxImportSource?: string } {
+function readTsconfig(files: Record<string, string | Uint8Array>): { jsxImportSource?: string; compilerOptions?: Record<string, unknown> } {
+  // The options esbuild honors; "extends" chains are not followed.
+  const keep = ['experimentalDecorators', 'emitDecoratorMetadata', 'useDefineForClassFields', 'verbatimModuleSyntax', 'preserveValueImports', 'importsNotUsedAsValues', 'jsxFactory', 'jsxFragmentFactory', 'target'];
   for (const name of ['tsconfig.app.json', 'tsconfig.json', 'jsconfig.json']) {
     const text = files[name];
     if (typeof text !== 'string') continue;
     try {
-      const json = JSON.parse(stripJsonComments(text)) as { compilerOptions?: { jsxImportSource?: string } };
-      if (json.compilerOptions?.jsxImportSource) return { jsxImportSource: json.compilerOptions.jsxImportSource };
+      const options = (JSON.parse(stripJsonComments(text)) as { compilerOptions?: Record<string, unknown> }).compilerOptions ?? {};
+      const compilerOptions = Object.fromEntries(Object.entries(options).filter(([k]) => keep.includes(k)));
+      return { jsxImportSource: options.jsxImportSource as string | undefined, compilerOptions };
     } catch {
-      // ignore
+      // not JSON(C)
     }
   }
   return {};
