@@ -8,7 +8,7 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import { ThreadVfs, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
@@ -700,7 +700,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -908,6 +908,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   if (thread?.process) exitWhenIdle();
 }
 
+/** The browser's own (the runtime may install worker_threads' in its place). */
+const NativeBroadcastChannel = globalThis.BroadcastChannel;
 const nativeSetInterval = globalThis.setInterval.bind(globalThis);
 const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
 
@@ -982,7 +984,15 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
 /** An uncaught error ends this runtime; a WebAssembly trap in a thread ends its process (threads.ts). */
 function postFatal(e: unknown) {
   const trap = !!thread && e instanceof WebAssembly.RuntimeError;
-  post({ type: 'fatal', message: String((e as Error)?.message ?? e), stack: (e as Error)?.stack, ...(trap && { trap }) });
+  const message = String((e as Error)?.message ?? e);
+  const stack = (e as Error)?.stack;
+  // Straight to the page as well: the parent that would pass the crash on may be blocked.
+  if (trap && thread?.mainProcess) {
+    const channel = new NativeBroadcastChannel(WASM_CRASH_CHANNEL);
+    channel.postMessage({ message: `a WebAssembly thread crashed (worker ${thread.id}): RuntimeError: ${message}`, stack });
+    channel.close();
+  }
+  post({ type: 'fatal', message, stack, ...(trap && { trap }) });
 }
 
 function request(msg: Extract<ToWorker, { type: 'request' }>) {

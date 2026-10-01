@@ -26,7 +26,15 @@ export interface ThreadInit {
   mailboxes?: ReturnType<typeof mailboxesFor>;
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
   process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
+  /** A thread (at any depth) of the app's own process, not of a child process (see WASM_CRASH_CHANNEL). */
+  mainProcess?: boolean;
 }
+
+/**
+ * Where a thread of the app's own process reports a WebAssembly trap to the page directly: its
+ * parent may be blocked (Atomics.wait) and never pass the crash on. process.ts listens.
+ */
+export const WASM_CRASH_CHANNEL = 'sandburg-wasm-thread-crash';
 
 // --- the shared VFS ----------------------------------------------------------------------
 

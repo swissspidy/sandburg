@@ -47,6 +47,7 @@ export class NodeProcess {
   failure: Error | null = null;
   exitCode: number | null = null;
   private worker: Worker;
+  private crashes = new BroadcastChannel('sandburg-wasm-thread-crash');
   private ready = false;
   private waiters = new Set<() => void>();
   private pending = new Map<number, MessagePort>();
@@ -64,6 +65,10 @@ export class NodeProcess {
     this.worker = new Worker(`${base}/node-worker.js`);
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
+    // A WebAssembly thread of the app's process that crashed while its parent was blocked (it
+    // reports here directly; WASM_CRASH_CHANNEL in threads.ts).
+    this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
+      this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
     this.worker.postMessage(
       { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner },
       opts.compilePort ? [opts.compilePort] : [],
@@ -180,6 +185,7 @@ export class NodeProcess {
   }
 
   terminate(): void {
+    this.crashes.close();
     this.worker.terminate();
   }
 
