@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@napi-rs/wasm-runtime": "^1.2.4",
-    "@playwright/test": "1.56.1",
+    "@playwright/test": "1.63.0",
     "@sqlite.org/sqlite-wasm": "3.53.4-build1",
     "acorn": "^8.18.0",
     "assert": "^2.1.0",
@@ -33,7 +33,7 @@
     "esbuild": "^0.28.2",
     "events": "^3.3.0",
     "path-browserify": "^1.0.1",
-    "playwright-core": "1.56.1",
+    "playwright-core": "1.63.0",
     "querystring-es3": "^0.2.1",
     "readable-stream": "^4.7.0",
     "semver": "7.8.5",
