@@ -1,5 +1,7 @@
 # Sandburg
 
+[![CI](https://github.com/swissspidy/sandburg/actions/workflows/ci.yml/badge.svg)](https://github.com/swissspidy/sandburg/actions/workflows/ci.yml)
+
 Run and test generated web apps inside the browser.
 
 Sandburg takes a web project, starts it with its own dev server on a Node.js runtime that runs in a
@@ -135,6 +137,11 @@ node scripts/pages/build.ts --verify   # the demo site, into dist-pages/
 The demo site replays the host's answers from static files, recorded when the site is built
 ([ADR 0015](docs/adr/0015-static-demos.md)). A GitHub Actions workflow builds and deploys it on every
 push to `main`.
+
+CI runs on every pull request and push to `main`. It runs typecheck and unit tests on Node 22 and 24,
+the runtime tests in Chromium, and each e2e file as its own job; the Docker reference tests run there
+too. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
+after a week's cooldown. Every action is pinned to a commit.
 
 On networks that re-terminate TLS, Sandburg trusts the CAs in `$SANDBURG_EXTRA_CA_CERTS` (or
 `$NODE_EXTRA_CA_CERTS`) in the browser too, by pinning their public keys. Certificate verification

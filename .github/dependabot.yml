@@ -1,0 +1,33 @@
+# Dependency updates: npm (the root package; fixtures and the corpus pin their versions on purpose)
+# and the GitHub Actions the workflows use, weekly, grouped, after a week's cooldown.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      # esbuild and esbuild-wasm must stay on the same version (the demos compile with both).
+      esbuild:
+        patterns: ["esbuild", "esbuild-wasm"]
+      playwright:
+        patterns: ["playwright-core", "@playwright/test"]
+      dependencies:
+        dependency-type: production
+        update-types: [minor, patch]
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
