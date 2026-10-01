@@ -138,7 +138,7 @@ The demo site replays the host's answers from static files, recorded when the si
 ([ADR 0015](docs/adr/0015-static-demos.md)). A GitHub Actions workflow builds and deploys it on every
 push to `main`.
 
-CI runs on every pull request and push to `main`. It runs typecheck and unit tests on Node 22 and 24,
+CI runs on every pull request and push to `main`. It runs typecheck and unit tests on Node 24 (LTS),
 the runtime tests in Chromium, and each e2e file as its own job; the Docker reference tests run there
 too. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
 after a week's cooldown. Every action is pinned to a commit.
