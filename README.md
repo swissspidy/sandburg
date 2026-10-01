@@ -104,7 +104,7 @@ point at the file and line where the dev server reported them.
 
 | | |
 |---|---|
-| Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit, Astro, Nuxt, React Router, SolidStart; `next dev` (webpack, SWC); `ng serve` (Angular 19–22); static sites |
+| Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit, Astro, Nuxt, React Router, SolidStart; `next dev` (Next.js 15–16, webpack, SWC); `ng serve` (Angular 22); static sites |
 | Back ends | Express and other Node servers next to the front end, reached through Vite's proxy, from the page (`http://localhost:<port>`) or over WebSockets; SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) |
 | Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn scripts, package binaries, `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly |
 | Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide |

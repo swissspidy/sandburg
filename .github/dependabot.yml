@@ -1,5 +1,6 @@
-# Dependency updates: npm (the root package; fixtures and the corpus pin their versions on purpose)
-# and the GitHub Actions the workflows use, weekly, grouped, after a week's cooldown.
+# Dependency updates, weekly, grouped, after a week's cooldown: npm for the root package and for the
+# fixtures (which test the latest version of every framework; the fidelity corpus pins its versions
+# on purpose), and the GitHub Actions the workflows use.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -21,6 +22,18 @@ updates:
       dev-dependencies:
         dependency-type: development
         update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directories: ["/fixtures/*", "/fixtures/react-express-split/*"]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      # A fixture's updates together, majors included: a new major is what the fixtures are there to test.
+      fixtures:
+        patterns: ["*"]
 
   - package-ecosystem: github-actions
     directory: /

@@ -44,6 +44,14 @@ const START = '.sandburg/start.js';
 /** Where the page reaches the server on a localhost port (see ws-shim.js): /__sandburg_backend/<port>/<path>. */
 const BACKEND_PREFIX = /^\/__sandburg_backend\/(\d+)(\/[^?]*)?(\?.*)?$/;
 
+/**
+ * Next.js in the runtime: SWC's WebAssembly build (there is no native SWC in the browser), and
+ * next.config.ts loaded with Node's own type stripping, as `--experimental-next-config-strip-types`
+ * does. The default path transpiles it with SWC to CommonJS, which SWC's WebAssembly build stopped
+ * doing in Next.js 16 (it leaves the module ESM).
+ */
+const NEXT_ENV = { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 'true' };
+
 /** Entry scripts per framework: the programmatic equivalents of the dev commands. */
 const NEXT_DEV = `// Sandburg: \`next dev\` (webpack) via Next.js' programmatic API, as a custom server runs it.
 const http = require('node:http');
@@ -165,11 +173,10 @@ export function createAdapter(): RuntimeAdapter {
       proc = new NodeProcess({
         tsRunner: host.start?.tsRunner,
         files,
-        // NEXT_TEST_WASM: load SWC's WebAssembly build (there is no native SWC in the browser).
         // PORT only for a single server: the servers of a dev script listen where it says.
         // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
         // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
-        env: { ...DEV_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
+        env: { ...DEV_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? NEXT_ENV : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,

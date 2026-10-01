@@ -21,7 +21,7 @@ import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 11;
+export const TRANSFORM_VERSION = 12;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 14;
 
@@ -253,7 +253,7 @@ export class Installer {
     const abs = join(this.root, key, rel);
     if (!/\.(c|m)?js$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
     // Transforms are kept by content, not by install: every install with the same package version
-    // shares them (a new app with next@15 does not transform Next.js again).
+    // shares them (a new app with next@16 does not transform Next.js again).
     const source = await readFile(abs, 'utf8');
     const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
     const hash = createHash('sha256').update(`${esm ? 'esm' : 'cjs'}\0${rel}\0`).update(source).digest('hex');

@@ -79,8 +79,9 @@ The `angular` runtime (`src/adapters/angular/`) goes through these steps:
   - `angular-tasks` is an Angular 22 CLI app (zoneless, signals, reactive
     forms, `@for`/`@if`, inputs and outputs, a pipe, and a lazily loaded
     route),
-  - `angular-19-zone` is an Angular 19 CLI app (zone.js, SCSS, TypeScript
-    5.7, Babel 7).
+  - `angular-zone` is an Angular 22 CLI app on the older setup (zone.js,
+    SCSS, the `@angular-devkit/build-angular` builders). It was an Angular 19
+    app until the fixtures moved to the latest versions of every framework.
 - Timings for `angular-tasks` with a cached install: about 12 s end to end.
   Compiling takes about 6 s, which includes loading TypeScript in the
   worker. Linking and bundling take about 3.6 s.

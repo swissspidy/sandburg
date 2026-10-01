@@ -22,6 +22,8 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
           rel: path.relative('/a/b/c', '/a/d'), sha: crypto.createHash('sha256').update('abc').digest('hex'),
           gz: zlib.gunzipSync(zlib.gzipSync('zip me')).toString(), node: process.version, platform: os.platform(),
           dirname: __dirname, main: require.main === module, resolved: require.resolve('./lib/greet'),
+          u8: [Buffer.from('abcabc').indexOf(new Uint8Array([99, 97])), Buffer.from('ab').equals(new Uint8Array([97, 98]))],
+          ts: process.features.typescript,
         }));
         const e = new EventEmitter(); once(e, 'x').then(([v]) => console.log('event', v)); e.emit('x', 7);`,
     },
@@ -32,7 +34,7 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
   assert.deepEqual(result, {
     greet: 'hello node', n: 42, read: 'content', list: ['b', 'b/f.txt'], exists: false, rel: '../../d',
     sha: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', gz: 'zip me', node: 'v24.15.0', platform: 'linux',
-    dirname: '/app', main: true, resolved: '/app/lib/greet.js',
+    dirname: '/app', main: true, resolved: '/app/lib/greet.js', u8: [2, true], ts: 'strip',
   });
   assert.match(out.stdout, /event 7/);
 });

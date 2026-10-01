@@ -22,7 +22,7 @@ before(async () => {
 });
 after(() => session?.close());
 
-test('a Next.js 15 app (App Router, API route) runs on the node runtime', async () => {
+test('a Next.js 16 app (App Router, API route) runs on the node runtime', async () => {
   const dir = fixture('next-app-router');
   const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
   assert.equal(result.runtime.name, 'node');

@@ -201,7 +201,7 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
  * host serves them, in the order of first use. A later run fetches them as one bundle instead of
  * one synchronous request each, which dominates start-up (next dev loads ~1,700 files). They are
  * recorded per install and per package version, so an install that was never run still gets a
- * bundle for the packages other installs loaded (a new app with next@15 preloads Next.js).
+ * bundle for the packages other installs loaded (a new app with next@16 preloads Next.js).
  * Files over PRELOAD_FILE_MAX are left out (a few large ones, WebAssembly binaries).
  */
 const PRELOAD_FILE_MAX = 2 << 20;

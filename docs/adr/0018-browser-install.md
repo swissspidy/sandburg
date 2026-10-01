@@ -55,7 +55,7 @@ Fixtures run with `--install-in browser` (warm HTTP cache), for example:
 
 | Fixture | Install | Start | Total |
 |---|---|---|---|
-| angular-19-zone | 8.9 s | 15.2 s | 35.4 s |
+| angular-zone | 8.9 s | 15.2 s | 35.4 s |
 | angular-tasks | 5.0 s | 19.1 s | 29.2 s |
 | nuxt-app | 5.9 s | 5.5 s | 32.2 s |
 

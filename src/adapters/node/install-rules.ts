@@ -167,6 +167,13 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     to: "compression: dev ? 'gzip' : false,\n        readonly: process.env.SANDBURG_WEBPACK_CACHE_READONLY === '1' // sandburg: see SOURCE_PATCHES\n",
   },
   {
+    // Next.js 16 runs Turbopack unless told otherwise, and Turbopack has no WebAssembly build: with
+    // SWC's WebAssembly build (NEXT_TEST_WASM), no bundler flag means webpack. `--turbopack` stays.
+    file: /(^|\/)node_modules\/next\/dist\/(esm\/)?lib\/bundler\.js$/,
+    from: /\/\/ The default is turbopack when nothing is configured\.\n(\s*)if \(bundlerFlags\.size === 0\) \{\n/,
+    to: "// The default is turbopack when nothing is configured.\n$1if (bundlerFlags.size === 0 && process.env.NEXT_TEST_WASM) return 1; // sandburg: see SOURCE_PATCHES\n$1if (bundlerFlags.size === 0) {\n",
+  },
+  {
     file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
     from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
     to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",

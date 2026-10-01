@@ -11,8 +11,8 @@ import type { Project } from '../../types.ts';
 const pkg = (name: string, deps: Record<string, string>, devDeps: Record<string, string>, dev = 'vite') =>
   JSON.stringify({ name, private: true, type: 'module', scripts: { dev }, dependencies: deps, devDependencies: devDeps }, null, 2);
 
-const REACT = { react: '^19.1.0', 'react-dom': '^19.1.0' };
-const VITE = { typescript: '^5.7.2', vite: '^6.0.5' };
+const REACT = { react: '^19.3.0', 'react-dom': '^19.3.0' };
+const VITE = { typescript: '~6.0.2', vite: '^8.3.1' };
 
 export function warmups(): Project[] {
   return [
@@ -26,7 +26,7 @@ export function warmups(): Project[] {
     ),
     projectFromFiles(
       {
-        'package.json': pkg('sandburg-warmup-vite-react', REACT, { ...VITE, '@vitejs/plugin-react': '^4.3.4', '@types/react': '^19.0.0', '@types/react-dom': '^19.0.0' }),
+        'package.json': pkg('sandburg-warmup-vite-react', REACT, { ...VITE, '@vitejs/plugin-react': '^6.1.1', '@types/react': '^19.3.0', '@types/react-dom': '^19.3.0' }),
         'vite.config.ts': `import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\n\nexport default defineConfig({ plugins: [react()] });\n`,
         'index.html': '<!doctype html>\n<html><head><meta charset="utf-8"><title>Warm-up</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>\n',
         'src/main.tsx': `import { StrictMode, useState } from 'react';\nimport { createRoot } from 'react-dom/client';\n\nfunction App() {\n  const [n, setN] = useState(0);\n  return <button onClick={() => setN(n + 1)}>Count {n}</button>;\n}\n\ncreateRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>);\n`,
@@ -35,7 +35,7 @@ export function warmups(): Project[] {
     ),
     projectFromFiles(
       {
-        'package.json': pkg('sandburg-warmup-next', { next: '^15', ...REACT }, { typescript: '^5.7.2', '@types/react': '^19.0.0', '@types/node': '^22' }, 'next dev'),
+        'package.json': pkg('sandburg-warmup-next', { next: '^16', ...REACT }, { typescript: '~6.0.2', '@types/react': '^19.3.0', '@types/node': '^26' }, 'next dev'),
         'app/layout.tsx': `export default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (<html lang="en"><body>{children}</body></html>);\n}\n`,
         'app/page.tsx': `export default function Page() {\n  return <h1>Next.js</h1>;\n}\n`,
       },

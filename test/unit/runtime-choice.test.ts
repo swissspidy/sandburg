@@ -13,7 +13,7 @@ test('the node runtime is the only runtime', () => {
 });
 
 test('every fixture can be started on the node runtime', async () => {
-  const names = ['vite-react-counter', 'svelte-vite', 'vue-express-sqlite', 'react-express-split', 'vite-socketio-chat', 'angular-tasks', 'angular-19-zone', 'next-app-router', 'node-express', 'sveltekit-app', 'astro-app', 'nuxt-app', 'react-router-app', 'solid-start-app'];
+  const names = ['vite-react-counter', 'svelte-vite', 'vue-express-sqlite', 'react-express-split', 'vite-socketio-chat', 'angular-tasks', 'angular-zone', 'next-app-router', 'node-express', 'sveltekit-app', 'astro-app', 'nuxt-app', 'react-router-app', 'solid-start-app'];
   for (const name of names) assert.deepEqual(getAdapter('node').probe(await loadProject(fixture(name))), { verdict: 'supported' }, name);
 });
 
