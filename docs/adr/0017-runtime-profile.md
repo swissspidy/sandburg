@@ -71,23 +71,43 @@ Edit to render, five edits in a row (`scripts/edit-loop.ts`):
 | Vite + React (HMR) | 80–90 ms each | |
 | Svelte + Vite (HMR) | ~90 ms each | |
 | Next.js (Fast Refresh) | first edit 1.05 s (was 1.64 s, median of three sessions), then ~0.2 s | |
-| Angular 22 (`ng serve`, component update) | 1.3–1.8 s each | 0.07–0.12 s rebuild |
+| Angular 22 (`ng serve`, component update) | 1.3–1.8 s each; **~0.3 s** without `CI=1` (below) | 0.08–0.32 s rebuild |
 
 The first Next.js edit loads a new version of the 5.9 MB vendor chunk (webpack adds its hot-reload
 modules). Its host compile went from 543 ms to 98 ms. What remains is evaluating the chunk's
 modules again.
 
-Angular's per-edit cost is esbuild: the Angular CLI rebuilds with esbuild, which runs here as its
-WebAssembly build. That build is Go compiled to WebAssembly: one thread, and every file system call
-crosses into JavaScript. It takes ~0.9 s per rebuild where native esbuild takes under 0.1 s. Vite ≤6's
-first dependency pre-bundling is the same cost at a larger scale.
+Angular's per-edit cost looked like esbuild: the Angular CLI rebuilds with esbuild, which runs here as
+its WebAssembly build (Go compiled to WebAssembly: one thread), ~0.9 s per rebuild. But measured
+outside the browser, on the same machine and fixture, the WebAssembly build is not the problem:
+
+| Angular rebuild after a template edit | without `CI` | with `CI=1` |
+|---|---|---|
+| native esbuild, Node 24 | 0.08–0.32 s | 0.32–0.58 s |
+| esbuild's WebAssembly build, Node 24 | 0.15–0.36 s | 0.85–1.47 s |
+
+Sandburg set `CI=1` for every program it ran (since the first milestone, to keep tools quiet), and
+the Angular CLI turns its build cache off under CI (`cli.cache.environment: 'local'`, the default).
+Without the cache, the WebAssembly build's single thread is what costs. **The runtime no longer sets
+`CI`.** Programs run as on a developer's machine, which is what a dev server expects. Telemetry,
+analytics prompts and update checks are turned off by their own switches instead (`DEV_ENV` in
+`scripts.ts`: Next.js, Nuxt and Astro telemetry, `NG_CLI_ANALYTICS`, `DO_NOT_TRACK`,
+`NO_UPDATE_NOTIFIER`). The Docker reference uses the same environment. Angular's edit to render went
+from 1.3–1.8 s to ~0.3 s (0.8 s for the first edit), still on the WebAssembly build, in the browser.
+
+Vite ≤6's first dependency pre-bundling still runs on esbuild's WebAssembly build without a cache to
+help, which is the cost of a cold start, not of an edit.
 
 ## Consequences
 
 - Next.js runs are a third faster; every stack's fs-heavy start-up gains a little.
 - webpack's cache is no longer written in ordinary runs. A run that wanted to keep `.next/cache` would
   have to say so, as a seed run does.
-- The largest remaining gap to native is esbuild's WebAssembly build: Angular rebuilds and Vite ≤6's
-  first pre-bundling. Closing it means a native esbuild for the browser runtime, speaking the same
-  service protocol the WebAssembly build speaks. That is a project of its own: plugins run in the
-  browser, and esbuild must read the runtime's files, not the host's.
+- The Angular CLI's build cache now lives in the runtime's file system, in memory: more of the
+  browser's memory per Angular run. The CLI turns its cache off on WebContainers for that reason;
+  here the edit loop was worth it.
+- Programs no longer see `CI`. A tool that only stays quiet under CI, with no switch of its own,
+  may print or ask more; none of the fixtures does.
+- Everything that runs the app stays in the browser: no step of a run depends on a native binary
+  for the framework's tools. Measured against Node with the same WebAssembly build, the browser
+  runtime's own overhead on an Angular rebuild is now small.

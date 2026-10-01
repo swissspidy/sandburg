@@ -7,7 +7,7 @@ import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../ho
 import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, webSocketPort } from './process.ts';
-import { matchProxy, type ProxyRule } from './scripts.ts';
+import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 
 export interface HostInstall {
   key: string;
@@ -141,7 +141,7 @@ export function createAdapter(): RuntimeAdapter {
         // PORT only for a single server: the servers of a dev script listen where it says.
         // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
         // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
-        env: { NEXT_TELEMETRY_DISABLED: '1', ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
+        env: { ...DEV_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,

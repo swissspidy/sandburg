@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { contentBytes } from '../store.ts';
+import { DEV_ENV } from '../adapters/node/scripts.ts';
 import { AdapterError } from '../host/types.ts';
 import type { InstallReport, ProbeVerdict, Project } from '../types.ts';
 import type { NodeRuntime } from '../orchestrator/session.ts';
@@ -75,7 +76,8 @@ class DockerRun implements NodeRuntime {
     // A proxy on the host's loopback is only reachable from the host network namespace.
     const hostNetwork = !proxy || /\/\/(127\.|localhost|\[::1\])/.test(proxy);
     const args = ['run', '-d', '--name', this.id, '-v', `${this.dir}:/app`, '-v', `${this.cacheVolume}:/root/.npm`, '-w', '/app'];
-    args.push('-e', 'NEXT_TELEMETRY_DISABLED=1', '-e', 'CI=1', '-e', 'npm_config_update_notifier=false');
+    for (const [k, v] of Object.entries(DEV_ENV)) args.push('-e', `${k}=${v}`);
+    args.push('-e', 'npm_config_update_notifier=false');
     this.port = await freePort();
     if (hostNetwork) args.push('--network', 'host');
     else args.push('-p', `127.0.0.1:${this.port}:${this.port}`);
