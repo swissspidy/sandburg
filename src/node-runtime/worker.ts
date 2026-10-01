@@ -28,7 +28,7 @@ import zlibBrowserify from 'browserify-zlib';
 import { nativeZlib } from './builtins/zlib-native.ts';
 import { parseArgs } from '@pkgjs/parseargs';
 import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
-import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
+import { adoptMailboxes, installNodeMessagePorts, NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https, loopback, servers, serverEvents, type BridgeResponse, type UpgradeSocket } from './builtins/http.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
@@ -52,6 +52,8 @@ export type ToWorker =
       nodeModules: Record<string, number> | null;
       /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
       pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
+      /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
+      compilePort?: MessagePort | null;
       base: string;
       ipc?: boolean;
       tsRunner?: boolean;
@@ -298,6 +300,41 @@ function requestSync(url: string, binary: boolean): { status: number; body: Uint
 }
 
 /** node_modules installed in the browser (see npm/install.ts): read from shared memory, not the host. */
+/**
+ * The page's compiler (adapters/node/compile-worker.ts) when packages were installed in the browser:
+ * a port to it, and this runtime's mailbox, where the answer is written while this thread waits.
+ */
+let pageCompiler: { port: MessagePort; mailbox: SharedArrayBuffer } | null = null;
+const MAILBOX_HEADER = 8;
+
+function compileInPage(request: { op: 'compile'; code: string; path: string; kind: string; asyncModules: boolean } | { op: 'tla'; files: Record<string, string> }): string {
+  const compiler = pageCompiler!;
+  for (;;) {
+    const state = new Int32Array(compiler.mailbox, 0, 2);
+    Atomics.store(state, 0, 0);
+    nativePostMessage.call(compiler.port, { ...request, mailbox: compiler.mailbox }, []);
+    while (Atomics.load(state, 0) === 0) Atomics.wait(state, 0, 0);
+    const status = Atomics.load(state, 0);
+    const length = Atomics.load(state, 1);
+    // Too big for the mailbox: a bigger one, and ask again (the page kept the answer).
+    if (status === 3) {
+      compiler.mailbox = new SharedArrayBuffer(MAILBOX_HEADER + length);
+      continue;
+    }
+    const text = new TextDecoder().decode(new Uint8Array(compiler.mailbox, MAILBOX_HEADER, length).slice());
+    if (status !== 1) throw Object.assign(new SyntaxError(text), { code: 'ERR_COMPILE' });
+    return text;
+  }
+}
+
+/** A port to the page's compiler for a new runtime (a thread or child process): its parent connects it. */
+function connectPageCompiler(): MessagePort | null {
+  if (!pageCompiler) return null;
+  const channel = new NativeMessageChannel();
+  nativePostMessage.call(pageCompiler.port, { op: 'connect', port: channel.port2 }, [channel.port2]);
+  return channel.port1;
+}
+
 let pack: { bytes: Uint8Array; index: Record<string, [number, number]>; message: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } } | null = null;
 
 /** An installed file (path relative to the project), or null. */
@@ -639,7 +676,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     [...Object.keys(msg.nodeModules ?? {}), ...Object.keys(msg.files)].some((rel) => /(^|\/)node_modules\/(better-sqlite3|sqlite3)\/package\.json$/.test(rel)) ||
     Object.values(msg.files).some((c) => typeof c === 'string' && c.includes('node:sqlite'));
   const sources = msg.inherit ? {} : Object.fromEntries(Object.entries(msg.files).filter(([p, c]) => typeof c === 'string' && !p.includes('node_modules/') && /\.[cm]?[jt]sx?$/.test(p) && /\bawait\b/.test(c)));
-  if (Object.keys(sources).length) {
+  pageCompiler = msg.compilePort ? { port: msg.compilePort, mailbox: new SharedArrayBuffer(1 << 20) } : null;
+  if (Object.keys(sources).length && pageCompiler) {
+    asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
+  } else if (Object.keys(sources).length) {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${base}/tla-scan`, false);
     xhr.send(JSON.stringify(sources));
@@ -659,7 +699,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -689,12 +729,19 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     const key = `${kind}:${path}:${code.length}:${hash(code)}`;
     const hit = compiledCache.get(key);
     if (hit !== undefined) return hit;
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
-    xhr.send(code);
-    if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
-    compiledCache.set(key, xhr.responseText);
-    return xhr.responseText;
+    let out: string;
+    // Packages installed in the browser: compiled in the page, on esbuild's WebAssembly build.
+    if (pageCompiler) {
+      out = compileInPage({ op: 'compile', code, path, kind, asyncModules: asyncModules && kind !== 'cjs' });
+    } else {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
+      xhr.send(code);
+      if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
+      out = xhr.responseText;
+    }
+    compiledCache.set(key, out);
+    return out;
   };
   moduleSystem = createModuleSystem({
     vfs,
@@ -896,10 +943,15 @@ function exitWhenIdle() {
 
 function run(msg: Extract<ToWorker, { type: 'run' }>) {
   if (!usesSqlite) return start(msg);
-  loadSqlite(base, realImportScripts).then(
-    () => start(msg),
-    (e) => post({ type: 'fatal', message: `runtime asset failed to load: SQLite WebAssembly (${(e as Error)?.message ?? e})` }),
-  );
+  // Work in progress: a child process that has not started its program yet is not idle (see
+  // exitWhenIdle), however long SQLite's WebAssembly takes to load.
+  pendingWork.count++;
+  loadSqlite(base, realImportScripts)
+    .then(
+      () => start(msg),
+      (e) => post({ type: 'fatal', message: `runtime asset failed to load: SQLite WebAssembly (${(e as Error)?.message ?? e})` }),
+    )
+    .finally(() => pendingWork.count--);
 }
 
 function start(msg: Extract<ToWorker, { type: 'run' }>) {

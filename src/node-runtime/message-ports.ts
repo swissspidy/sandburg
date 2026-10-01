@@ -152,6 +152,13 @@ function makeMessageChannel(Native: typeof MessageChannel): typeof MessageChanne
   };
 }
 
+/**
+ * The browser's own MessageChannel and postMessage, for ports the runtime uses itself rather than the
+ * program (the page's compiler, see worker.ts): plain messages, no Node semantics.
+ */
+export const NativeMessageChannel = globalThis.MessageChannel;
+export const nativePostMessage = MessagePort.prototype.postMessage as (this: MessagePort, message: unknown, transfer: Transferable[]) => void;
+
 export function installNodeMessagePorts(): void {
   const P = MessagePort.prototype as unknown as Record<string, unknown> & { __sandburg?: boolean };
   if (P.__sandburg) return;

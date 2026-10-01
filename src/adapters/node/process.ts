@@ -19,6 +19,8 @@ export interface NodeProcessOptions {
   nodeModules: Record<string, number> | null;
   /** node_modules installed in the browser: one block of shared memory and its index (see npm/install.ts). */
   pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
+  /** A port to the page's compiler (compile-worker.ts), when the packages were installed in the browser. */
+  compilePort?: MessagePort | null;
   log(stream: 'stdout' | 'stderr', line: string): void;
   /** What the program is, for messages ("the app", "the backend"). */
   label?: string;
@@ -62,7 +64,10 @@ export class NodeProcess {
     this.worker = new Worker(`${base}/node-worker.js`);
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
-    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, base, tsRunner: opts.tsRunner });
+    this.worker.postMessage(
+      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner },
+      opts.compilePort ? [opts.compilePort] : [],
+    );
   }
 
   /** Resolves when the runtime has loaded. */

@@ -19,8 +19,7 @@ import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
-import { createRequire } from 'node:module';
-import * as esbuild from 'esbuild';
+import { bundleBrowserCompiler, ESBUILD_WASM } from '../../src/adapters/node/compile-wasm-bundle.ts';
 import { chromium } from 'playwright-core';
 import { Session } from '../../src/index.ts';
 import { node } from '../../src/adapters/node/index.ts';
@@ -30,7 +29,6 @@ import type { HostInstall } from '../../src/adapters/node/browser.ts';
 import type { Project } from '../../src/types.ts';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const require = createRequire(import.meta.url);
 
 const DEMOS = [
   { name: 'nextjs', fixture: 'fixtures/next-app-router', title: 'Next.js 16', command: 'next dev', description: 'An App Router app with a server component, an API route and client-side navigation, on next dev with webpack and SWC.', stack: 'Next.js 16, React 19, webpack and SWC (WebAssembly).' },
@@ -126,29 +124,8 @@ async function build(): Promise<void> {
   await writeFile(join(out, 'host.js'), await bundleHost(node));
   await cp(join(ROOT, 'src/adapters/node/sw.js'), join(out, 'sw-core.js'));
   // The compiler for what was not recorded (pages/compile.ts), with esbuild's WebAssembly build.
-  await esbuild.build({
-    entryPoints: [join(ROOT, 'pages/compile.ts')],
-    bundle: true,
-    format: 'iife',
-    platform: 'browser',
-    target: 'es2022',
-    minify: true,
-    outfile: join(out, 'compile.js'),
-    logLevel: 'warning',
-    plugins: [
-      {
-        // The host's synchronous path (native esbuild, a cache hashed with node:crypto) is not used here.
-        name: 'host-only',
-        setup(b) {
-          b.onResolve({ filter: /^(node:crypto|esbuild)$/ }, (a) => ({ path: a.path, namespace: 'stub' }));
-          b.onLoad({ filter: /.*/, namespace: 'stub' }, (a) => ({
-            contents: a.path === 'esbuild' ? 'export const transformSync = () => { throw new Error("no synchronous esbuild in the browser"); };' : 'export const createHash = () => { throw new Error("no node:crypto in the browser"); };',
-          }));
-        },
-      },
-    ],
-  });
-  await cp(require.resolve('esbuild-wasm/esbuild.wasm'), join(out, 'esbuild.wasm'));
+  await writeFile(join(out, 'compile.js'), await bundleBrowserCompiler(join(ROOT, 'pages/compile.ts')));
+  await cp(ESBUILD_WASM, join(out, 'esbuild.wasm'));
   for (const file of ['sw.js', 'demo.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
   await writeFile(join(out, '.nojekyll'), '');
   await writeFile(manifestFile, JSON.stringify(manifest));

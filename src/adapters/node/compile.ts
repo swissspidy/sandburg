@@ -32,15 +32,33 @@ const cache = new Map<string, string>();
 /** Whether any of the project's source files uses top-level await (TypeScript is stripped first). */
 export function projectHasTopLevelAwait(files: Record<string, string>): boolean {
   return Object.entries(files).some(([path, code]) => {
-    if (!/\bawait\b/.test(code)) return false;
-    const loader: esbuild.Loader = /\.[cm]?tsx$/.test(path) ? 'tsx' : /\.[cm]?ts$/.test(path) ? 'ts' : /\.jsx$/.test(path) ? 'jsx' : 'js';
+    const loader = tlaLoader(path, code);
+    if (!loader) return false;
     try {
-      const js = loader === 'js' ? code : esbuild.transformSync(code, { loader, target: 'esnext', logLevel: 'silent' }).code;
-      return hasTopLevelAwait(js);
+      return hasTopLevelAwait(loader === 'js' ? code : esbuild.transformSync(code, { loader, target: 'esnext', logLevel: 'silent' }).code);
     } catch {
       return false;
     }
   });
+}
+
+/** projectHasTopLevelAwait with an asynchronous transform (esbuild's WebAssembly build in a browser). */
+export async function projectHasTopLevelAwaitAsync(files: Record<string, string>, transform: (code: string, options: esbuild.TransformOptions) => Promise<string>): Promise<boolean> {
+  for (const [path, code] of Object.entries(files)) {
+    const loader = tlaLoader(path, code);
+    if (!loader) continue;
+    try {
+      if (hasTopLevelAwait(loader === 'js' ? code : await transform(code, { loader, target: 'esnext', logLevel: 'silent' }))) return true;
+    } catch {
+      // not valid code: not this file
+    }
+  }
+  return false;
+}
+
+function tlaLoader(path: string, code: string): esbuild.Loader | null {
+  if (!/\bawait\b/.test(code)) return null;
+  return /\.[cm]?tsx$/.test(path) ? 'tsx' : /\.[cm]?ts$/.test(path) ? 'ts' : /\.jsx$/.test(path) ? 'jsx' : 'js';
 }
 
 const MODULE_SYNTAX = /^\s*(import\s*[\w{*'"]|export\s+[\w{*]|export\s*\{)/m;

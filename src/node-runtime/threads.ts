@@ -350,7 +350,10 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
     e.preventDefault?.();
     onError(e.message);
   };
-  worker.postMessage(host.childInit({ ...init, snapshot: projectSnapshot(host.vfs(), host.root()) }), transfer);
+  const message = host.childInit({ ...init, snapshot: projectSnapshot(host.vfs(), host.root()) });
+  // The child's own port to the page's compiler, if there is one (worker.ts); last, after the
+  // ports of `transfer` (their mailboxes go by position).
+  worker.postMessage(message, message.compilePort ? [...transfer, message.compilePort as MessagePort] : transfer);
   liveRuntimes.add(worker);
   const terminate = worker.terminate.bind(worker);
   worker.terminate = () => {
