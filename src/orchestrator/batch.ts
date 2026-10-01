@@ -46,7 +46,7 @@ export interface BatchSummary {
     cacheMisses: number;
     blockedRequests: number;
   };
-  /** Sum of per-run durations divided by wall time: effective parallel speed-up. */
+  /** Sum of per-run durations divided by the time the runs took (after any warm-up): effective parallel speed-up. */
   speedup: number;
   runs: BatchRunSummary[];
 }
@@ -89,6 +89,8 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   let next = 0;
   // The first apps of a stack would otherwise each install and seed it, several tabs at once.
   if (options.prewarm !== false && !options.nodeRuntime) await session.prewarm({ runtime: options.runtime, log: options.log });
+  // The speed-up compares the runs with the time they took, not with the one-time warm-up before them.
+  const runsStarted = performance.now();
 
   async function worker(): Promise<void> {
     while (next < items.length) {
@@ -106,6 +108,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   await Promise.all(Array.from({ length: Math.min(parallel, items.length) }, worker));
 
   const wallMs = Math.round(performance.now() - t0);
+  const runsMs = Math.round(performance.now() - runsStarted);
   const byClass: BatchSummary['totals']['byClass'] = {};
   for (const r of results) if (r.failure) byClass[r.failure.class] = (byClass[r.failure.class] ?? 0) + 1;
   const summary: BatchSummary = {
@@ -125,7 +128,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
       cacheMisses: sum(results.map((r) => r.network.cacheMisses)),
       blockedRequests: sum(results.map((r) => r.network.blocked.length)),
     },
-    speedup: wallMs ? Math.round((sum(results.map((r) => r.timings.totalMs)) / wallMs) * 100) / 100 : 0,
+    speedup: runsMs ? Math.round((sum(results.map((r) => r.timings.totalMs)) / runsMs) * 100) / 100 : 0,
     runs: results.map((r, i) => ({
       label: items[i].label,
       project: r.project.path,
