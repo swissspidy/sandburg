@@ -18,8 +18,7 @@ export interface CheckContext {
   expect: typeof expect;
   /**
    * Resolves an app path against the URL the app first loaded at, so checks
-   * work whatever prefix the runtime serves the app under
-   * (/scope:…/ in WordPress Playground).
+   * work whatever prefix the runtime serves the app under.
    * appUrl('/about') and appUrl('about') are the same.
    */
   appUrl(path: string): string;
@@ -45,6 +44,11 @@ export interface ChecksInput {
   checkTimeoutMs: number;
   /** Default timeout of expect() assertions. */
   expectTimeoutMs?: number;
+  /**
+   * Whether the app's servers are idle (no request in flight, nothing heard for a moment). A failing
+   * assertion stops waiting once it has waited SETTLE_FLOOR_MS and the app is idle (see settlingExpect).
+   */
+  appIdle?: (remainingMs: number) => Promise<boolean>;
   artifactsDir: string;
   /** Read at the end so errors raised during functional checks count. */
   appErrors: () => PageError[];
@@ -87,7 +91,9 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   for (const [name, fn] of Object.entries(input.checks ?? {})) {
     results.push(
       await timed(`functional:${slug(name)}`, 'functional', name, true, async () => {
-        await withTimeout(Promise.resolve(fn({ app, page, expect: input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect, appUrl })), input.checkTimeoutMs, `check "${name}" timed out`);
+        const configured = input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect;
+        const checkExpect = input.appIdle && input.expectTimeoutMs ? settlingExpect(expect, input.expectTimeoutMs, input.appIdle) : configured;
+        await withTimeout(Promise.resolve(fn({ app, page, expect: checkExpect, appUrl })), input.checkTimeoutMs, `check "${name}" timed out`);
         return { status: 'passed' };
       }),
     );
@@ -127,6 +133,71 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
     }),
   );
   return { checks: results, artifacts };
+}
+
+/** A failing assertion waits at least this long, whatever the app does. */
+export const SETTLE_FLOOR_MS = 5_000;
+/** After the floor, it retries in slices this long, and stops when the app is idle between two. */
+const SETTLE_SLICE_MS = 1_000;
+
+/**
+ * expect(), with assertions that stop waiting early once nothing can change their outcome.
+ *
+ * A web-first assertion (toHaveText, toBeVisible, …) retries until its timeout, which must cover a
+ * dev server compiling a route on first request. An app that is broken makes every such assertion
+ * wait the whole timeout. Here an assertion first waits SETTLE_FLOOR_MS; while it keeps failing it
+ * retries in short slices until its timeout, and fails as soon as the app is idle between two slices
+ * (`idle(remainingMs)`: the app's servers have no request in flight and are quiet, the page has no
+ * timer due within the remaining time and has not changed for a moment; see the session). An
+ * assertion with its own `timeout` option, and every other expect() member (poll, soft, …), behave
+ * as in Playwright, with the configured timeout.
+ */
+export function settlingExpect(
+  base: typeof expect,
+  timeoutMs: number,
+  idle: (remainingMs: number) => Promise<boolean>,
+  { floorMs = SETTLE_FLOOR_MS, sliceMs = SETTLE_SLICE_MS } = {},
+): typeof expect {
+  type Chain = Record<string | symbol, unknown>;
+  const matchers = (args: unknown[], path: (string | symbol)[], timeout: number): Chain =>
+    path.reduce<Chain>((m, p) => m[p] as Chain, (base.configure({ timeout }) as unknown as (...a: unknown[]) => Chain)(...args));
+  const settle = async (first: Promise<unknown>, again: (timeout: number) => unknown): Promise<unknown> => {
+    const start = performance.now();
+    let attempt = first;
+    for (;;) {
+      try {
+        return await attempt;
+      } catch (err) {
+        const left = timeoutMs - (performance.now() - start);
+        const timedOut = !!(err as { matcherResult?: { timeout?: number } }).matcherResult?.timeout;
+        if (!timedOut || left < 100) throw err;
+        if (await idle(left).catch(() => false)) {
+          const waited = ((performance.now() - start) / 1000).toFixed(1);
+          if (err instanceof Error) err.message += `\n\nStopped waiting after ${waited} s of ${timeoutMs / 1000} s: the app was idle (no request in flight, no timer due, no change to the page).`;
+          throw err;
+        }
+        attempt = again(Math.min(sliceMs, left)) as Promise<unknown>;
+      }
+    }
+  };
+  const chain = (args: unknown[], path: (string | symbol)[]): Chain =>
+    new Proxy(matchers(args, path, timeoutMs), {
+      get(target, prop) {
+        const value = Reflect.get(target, prop);
+        if (prop === 'not' || prop === 'resolves' || prop === 'rejects') return chain(args, [...path, prop]);
+        if (typeof value !== 'function') return value;
+        return (...margs: unknown[]) => {
+          const own = margs.some((a) => typeof a === 'object' && a !== null && 'timeout' in a);
+          const call = (timeout: number) => (matchers(args, path, timeout)[prop] as (...a: unknown[]) => unknown)(...margs);
+          const first = call(own ? timeoutMs : Math.min(floorMs, timeoutMs));
+          return own || typeof (first as { then?: unknown } | null)?.then !== 'function' ? first : settle(first as Promise<unknown>, call);
+        };
+      },
+    });
+  // Members (poll, soft, …) come from an expect with the configured timeout.
+  return new Proxy(base.configure({ timeout: timeoutMs }), {
+    apply: (_target, _this, args: unknown[]) => chain(args, []),
+  }) as typeof expect;
 }
 
 const require = createRequire(import.meta.url);

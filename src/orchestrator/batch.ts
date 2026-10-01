@@ -56,6 +56,10 @@ export interface BatchOptions extends RunOptions {
   /** Batch summary goes to <batchDir>/<batchId>/summary.json. Default: .sandburg/batches */
   batchDir?: string;
   onResult?: (result: RunResult, item: BatchItem, index: number) => void;
+  /** Warm up common stacks first when their installs are missing (Session.prewarm). Default: true. */
+  prewarm?: boolean;
+  /** Progress lines (warming up). */
+  log?: (line: string) => void;
 }
 
 /** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
@@ -83,6 +87,8 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const t0 = performance.now();
   const results: RunResult[] = new Array(items.length);
   let next = 0;
+  // The first apps of a stack would otherwise each install and seed it, several tabs at once.
+  if (options.prewarm !== false && !options.nodeRuntime) await session.prewarm({ runtime: options.runtime, log: options.log });
 
   async function worker(): Promise<void> {
     while (next < items.length) {

@@ -8,7 +8,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
-import { AUTO, adapterFor } from '../adapters.ts';
+import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
 import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
 import type {
@@ -81,11 +81,18 @@ export interface RunOptions {
   outDir?: string;
   /** CSS selector that must match a rendered element before checks start. */
   readySelector?: string;
+  /**
+   * A failing assertion stops waiting once the app is idle, after at least 5 s (ADR 0016). Default:
+   * true. False: every assertion waits its whole timeout.
+   */
+  failFastChecks?: boolean;
   timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
   /** Re-run a project whose run failed as infra (a flaky download, a crashed tab) this many times. Default 1. */
   infraRetries?: number;
   /** Keep the tab open after checks until it is closed (for `sandburg open`, with a headed browser). */
   hold?: boolean;
+  /** Internal: this run is a seed of shared caches (see HostInstallOptions.seed). */
+  seed?: boolean;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -165,6 +172,28 @@ export class Session {
     }
   }
 
+  /**
+   * Runs the runtime's warm-up projects whose installs are missing (see adapters/node/warmup.ts),
+   * side by side, and returns their names. On a warm machine it only checks.
+   */
+  async prewarm(options: { runtime?: string; log?: (line: string) => void } = {}): Promise<string[]> {
+    const adapter = getAdapter(options.runtime ?? DEFAULT_RUNTIME);
+    const cold: Project[] = [];
+    for (const project of adapter.warmups?.() ?? []) if (!(await adapter.isWarm?.(project))) cold.push(project);
+    if (!cold.length) return [];
+    options.log?.(`warming up ${cold.map((p) => p.name).join(', ')} (once per machine)`);
+    // A warm-up that fails costs its batch little: it only makes later apps slower.
+    const timeouts = { start: 60_000, ready: 60_000 };
+    await Promise.all(cold.map((p) => this.run(p, { runtime: options.runtime, outDir: resolve('.sandburg/warmup'), infraRetries: 0, timeouts })));
+    return cold.map((p) => p.name);
+  }
+
+  /** Runs a seed project (see HostInstallOptions.runSeed); its result goes to .sandburg/seeds. */
+  private async runSeed(project: Project, checks: Checks, parent: RunOptions): Promise<void> {
+    const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds') });
+    if (result.status !== 'passed') throw new Error(`seed ${project.name} did not pass: ${result.failure?.message ?? result.status}`);
+  }
+
   private async runOnce(projectInput: string | Project, options: RunOptions): Promise<RunResult> {
     if (!this.browser) throw new Error('session is not open');
     const runId = `r-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
@@ -172,7 +201,7 @@ export class Session {
     await mkdir(outDir, { recursive: true });
     const project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
     const node = options.nodeRuntime?.() ?? null;
-    const adapter = node ? null : adapterFor(options.runtime ?? AUTO, project);
+    const adapter = node ? null : getAdapter(options.runtime ?? DEFAULT_RUNTIME);
     const runtimeInfo = node ?? adapter!;
     await this.store.put(project.files, project.name);
     const checks = typeof options.checks === 'string' ? await loadChecks(options.checks) : (options.checks ?? null);
@@ -201,6 +230,7 @@ export class Session {
       });
       recordRequestFailures(context, run);
       recordDocuments(context, run);
+      await context.addInitScript(PAGE_QUIET_SCRIPT);
       const page = await context.newPage();
       if (node) {
         await this.runNode(node, run, context, page, project, runId, outDir, timeouts, checks, options);
@@ -226,17 +256,31 @@ export class Session {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
           await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
-            const hostData = adapter!.hostInstall ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line)) : undefined;
+            const hostData = adapter!.hostInstall
+              ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line), {
+                  seed: options.seed,
+                  runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
+                })
+              : undefined;
             return watch(host('install', hostData));
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
           const app = await run.phase('ready', timeouts.ready, async () => {
             await host('ready', url, navigate ?? true);
-            const frame = await appFrame(page, adapter!.appFrameSelectors ?? []);
+            const frame = await appFrame(page);
             await failFastOnAppError(waitForRender(frame, options.readySelector), run);
             return frame;
           });
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options);
+          // The app is idle (see settlingExpect): its servers have no request in flight and have been
+          // quiet for a moment, and its page has no timer due before the assertion's time is up and
+          // has not changed for a moment (PAGE_QUIET_SCRIPT).
+          const appIdle = async (remainingMs: number) => {
+            const a = (await host('activity')) as { inflight: number; idleMs: number } | null;
+            if (!a || a.inflight > 0 || a.idleMs < APP_IDLE_MS) return false;
+            const q = await app.evaluate((h) => (window as unknown as { __sandburgQuiet?: (h: number) => { quiet: boolean; sinceChangeMs: number } }).__sandburgQuiet?.(h) ?? null, remainingMs);
+            return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
+          };
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
@@ -296,6 +340,7 @@ async function runChecksPhase(
   timeouts: Record<PhaseName | 'check' | 'expect', number>,
   outDir: string,
   options: RunOptions,
+  appIdle?: (remainingMs: number) => Promise<boolean>,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -304,6 +349,7 @@ async function runChecksPhase(
       checks,
       checkTimeoutMs: timeouts.check,
       expectTimeoutMs: timeouts.expect,
+      appIdle,
       artifactsDir: outDir,
       appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
       appConsole: () => run.console.filter((c) => c.source === 'app'),
@@ -313,6 +359,35 @@ async function runChecksPhase(
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
 }
+
+/**
+ * Runs first in every document of a run: tracks the page's pending timeouts and when it last changed,
+ * for settlingExpect (window.__sandburgQuiet(horizonMs)). An app that will update itself from a timer
+ * due within the assertion's remaining time is not idle.
+ */
+export const PAGE_QUIET_SCRIPT = `(() => {
+  if (window.__sandburgQuiet) return;
+  const pending = new Map();
+  const set = window.setTimeout, clear = window.clearTimeout;
+  window.setTimeout = function (fn, ms, ...rest) {
+    if (typeof fn !== 'function') return set.call(this, fn, ms, ...rest);
+    let id;
+    id = set.call(this, function (...a) { pending.delete(id); return fn.apply(this, a); }, ms, ...rest);
+    pending.set(id, performance.now() + (Number(ms) || 0));
+    return id;
+  };
+  window.clearTimeout = function (id) { pending.delete(id); return clear.call(this, id); };
+  let changed = performance.now();
+  new MutationObserver(() => { changed = performance.now(); }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+  window.__sandburgQuiet = (horizonMs) => {
+    const now = performance.now();
+    for (const due of pending.values()) if (due <= now + horizonMs) return { quiet: false, sinceChangeMs: now - changed };
+    return { quiet: true, sinceChangeMs: now - changed };
+  };
+})();`;
+
+/** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
+const APP_IDLE_MS = 1_500;
 
 /** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
 export function launchOptions(options: SessionOptions): LaunchOptions {
@@ -498,6 +573,7 @@ class RunState {
         ...this.console.filter((c) => c.source === 'host' && c.type === 'error').map((c) => c.text),
         ...this.runtimeLogs,
       ],
+      runtimeOutput: this.console.filter((c) => c.source === 'host' && /^\[runtime:std(?:out|err)\]/.test(c.text)).map((c) => c.text),
       infraError: this.infraError,
       declaredDependencies: Object.keys({ ...this.project.packageJson?.dependencies, ...this.project.packageJson?.devDependencies }),
     });
@@ -557,13 +633,9 @@ function unwrap<T>(result: RpcResult<T>): T {
   return result.value;
 }
 
-/** The frame the app renders in: the host's #app iframe, then any nested iframes the adapter names. */
-async function appFrame(page: Page, nested: string[]): Promise<Frame> {
-  let frame: Frame | null = await (await page.waitForSelector('#app')).contentFrame();
-  for (const selector of nested) {
-    if (!frame) break;
-    frame = await (await frame.waitForSelector(selector, { state: 'attached', timeout: 0 })).contentFrame();
-  }
+/** The frame the app renders in: the host's #app iframe. */
+async function appFrame(page: Page): Promise<Frame> {
+  const frame = await (await page.waitForSelector('#app')).contentFrame();
   if (!frame) throw new Error('app frame is not attached');
   return frame;
 }
@@ -574,7 +646,8 @@ async function waitForRender(frame: Frame, selector?: string): Promise<void> {
     (sel) => {
       if (sel) return !!document.querySelector(sel);
       const root = document.querySelector('#root, #app, #__next');
-      if (root) return root.childElementCount > 0;
+      // Rendered: elements, or text (an app may set only textContent).
+      if (root) return root.childElementCount > 0 || (root.textContent ?? '').trim().length > 0;
       return (document.body?.innerText ?? '').trim().length > 0;
     },
     selector ?? null,

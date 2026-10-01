@@ -1,7 +1,7 @@
 /**
- * End-to-end: real Chromium, with the default runtime (`auto`): the Vite + React
- * fixture is built by the esbuild adapter and Next.js runs on the node runtime.
- * The first run needs network access to the npm registry; later runs use caches.
+ * End-to-end: real Chromium and the node runtime: the Vite + React fixture runs
+ * on its own Vite dev server, Next.js on next dev. The first run needs network
+ * access to the npm registry; later runs use caches.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,7 +32,7 @@ test('milestone 1: the Vite + React fixture runs and its functional checks pass'
   const result = await session.run(counter, { checks: `${fixtureDir}/checks.spec.ts`, outDir });
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks, null, 2));
   assert.equal(result.failure, null);
-  assert.equal(result.runtime.name, 'esbuild');
+  assert.equal(result.runtime.name, 'node');
   const functional = result.checks.filter((c) => c.kind === 'functional');
   assert.equal(functional.length, 2);
   assert.ok(functional.every((c) => c.status === 'passed'));
@@ -72,12 +72,14 @@ test('requests outside the allowlist are blocked and recorded', async () => {
   const project = variant('exfiltrate', {
     'src/main.tsx':
       (counter.files['src/main.tsx'] as string) +
-      `\nfetch('https://example.com/collect').catch(() => {});\nfetch('http://127.0.0.1:1/').catch(() => {});\n`,
+      `\nfetch('https://example.com/collect').catch(() => {});\nfetch('http://192.0.2.1:8080/').catch(() => {});\nfetch('http://127.0.0.1:1/').catch(() => {});\n`,
   });
   const result = await session.run(project, { outDir });
   const blocked = result.network.blocked.map((b) => new URL(b.url).origin);
   assert.ok(blocked.includes('https://example.com'), JSON.stringify(result.network));
-  assert.ok(blocked.includes('http://127.0.0.1:1'), JSON.stringify(result.network));
+  assert.ok(blocked.includes('http://192.0.2.1:8080'), JSON.stringify(result.network));
+  // localhost is the sandbox: the page's calls to a local port go to its own servers, never out.
+  assert.ok(!JSON.stringify(result.network).includes('127.0.0.1'), JSON.stringify(result.network));
   const networkCheck = result.checks.find((c) => c.kind === 'network');
   assert.equal(networkCheck?.status, 'failed');
   assert.equal(networkCheck?.blocking, false);
@@ -100,12 +102,12 @@ test('a ready deadline produces a timeout', async () => {
   assert.equal(result.phases.find((p) => p.name === 'ready')?.status, 'timeout');
 });
 
-test('projects the adapter cannot run are rejected before a tab opens', async () => {
-  const server = projectFromFiles(
-    { 'package.json': JSON.stringify({ dependencies: { express: '^4.21.0' } }), 'server.js': 'require("express")().listen(3000)' },
-    { name: 'express-app', path: 'express-app' },
+test('projects the runtime cannot start are rejected before a tab opens', async () => {
+  const library = projectFromFiles(
+    { 'package.json': JSON.stringify({ name: 'a-library', scripts: { test: 'node --test' } }), 'lib.js': 'module.exports = 1;' },
+    { name: 'a-library', path: 'a-library' },
   );
-  const result = await session.run(server, { runtime: 'esbuild', outDir });
+  const result = await session.run(library, { outDir });
   assert.equal(result.status, 'error');
   assert.deepEqual([result.failure?.class, result.failure?.rule], ['runtime-unsupported', 'probe-unsupported']);
   assert.equal(result.timings.loadMs, null);

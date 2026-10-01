@@ -1,6 +1,7 @@
 /**
- * Full-stack projects (ADR 0009): finds the backend and the front end of a
- * project the way its dev scripts start them, and the routes between them.
+ * How a project's dev scripts start it (ADR 0009, 0014): the commands they run,
+ * the packages they run them in, and the routes between a front end and its
+ * backend.
  *
  * Typical shapes of generated apps:
  * - one package.json: "dev": "concurrently \"vite\" \"node server/index.js\""

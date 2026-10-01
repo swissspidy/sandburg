@@ -8,7 +8,7 @@ import { renderReport } from './report.ts';
 
 export async function compareCommand(
   target: string,
-  values: { reference?: string; report?: string; json?: boolean; parallel: number; [k: string]: unknown },
+  values: { reference?: string; report?: string; json?: boolean; parallel: number; prewarm?: boolean; [k: string]: unknown },
   sessionOptions: SessionOptions,
   runOptions: RunOptions,
 ): Promise<number> {
@@ -28,6 +28,8 @@ export async function compareCommand(
       ...runOptions,
       reference: { name: 'docker', factory: dockerReference() },
       parallel: values.parallel,
+      prewarm: values.prewarm,
+      log: (line: string) => console.error(line),
       referenceParallel: Math.min(values.parallel, 3),
       onResult: (side, r, item) =>
         console.error(`${side.padEnd(9)} ${r.status.padEnd(6)} ${(r.timings.totalMs / 1000).toFixed(1).padStart(6)}s  ${item.label}${r.failure ? `  [${r.failure.class}: ${r.failure.rule}]` : ''}`),

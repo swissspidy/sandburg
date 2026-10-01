@@ -1,6 +1,6 @@
 # ADR 0005: WordPress Playground adapter and the per-sandbox egress proxy
 
-- Status: Accepted (milestone 5)
+- Status: Accepted (milestone 5); the WordPress Playground adapter was removed in [ADR 0013](0013-runtime-consolidation.md). The per-sandbox egress proxy stays.
 - Date: 2026-09-29
 - Partly supersedes ADR 0002, decision 3. For session contexts, the per-sandbox
   egress proxy replaces the dead-proxy backstop. The dead proxy remains the

@@ -273,13 +273,12 @@ export function createFs(vfs: Vfs, cwd: () => string) {
       const length = typeof rest[1] === 'number' ? rest[1] : b.length - offset;
       bytes = b.subarray(offset, offset + length);
     }
-    if (f.append) vfs.write(f.path, bytes, true);
+    // writeSync(fd, data, offset, length, position): an explicit position does not move the file position.
+    const position = typeof data === 'string' ? rest[0] : rest[2];
+    if (f.append) vfs.writeAt(f.path, bytes, 'end');
+    else if (typeof position === 'number') vfs.writeAt(f.path, bytes, position);
     else {
-      const prev = vfs.exists(f.path) ? vfs.read(f.path) : new Uint8Array();
-      const next = new Uint8Array(Math.max(prev.length, f.pos + bytes.length));
-      next.set(prev);
-      next.set(bytes, f.pos);
-      vfs.write(f.path, next);
+      vfs.writeAt(f.path, bytes, f.pos);
       f.pos += bytes.length;
     }
     return bytes.length;

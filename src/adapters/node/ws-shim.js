@@ -92,3 +92,36 @@
   SandburgWebSocket.__sandburg = true;
   window.WebSocket = SandburgWebSocket;
 })();
+
+/*
+ * HTTP requests to http://localhost:<port>/… (and 127.0.0.1), as a dev setup with a CORS-enabled API
+ * makes them: fetch, XMLHttpRequest and EventSource go to /__sandburg_backend/<port>/…, which the
+ * sandbox serves from the server listening on that port.
+ */
+(() => {
+  if (window.fetch.__sandburg) return;
+  const re = /^(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d+)(\/[^#]*)?/;
+  const map = (u) => {
+    const m = re.exec(String(u instanceof Request ? u.url : u));
+    return m ? `/__sandburg_backend/${m[1]}${m[2] || '/'}` : null;
+  };
+  const fetch = window.fetch;
+  window.fetch = function (input, init) {
+    const to = map(input);
+    if (!to) return fetch.call(this, input, init);
+    return fetch.call(this, input instanceof Request ? new Request(to, input) : to, init);
+  };
+  window.fetch.__sandburg = true;
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    return open.call(this, method, map(url) ?? url, ...rest);
+  };
+  if (window.EventSource) {
+    const ES = window.EventSource;
+    window.EventSource = class extends ES {
+      constructor(url, init) {
+        super(map(url) ?? url, init);
+      }
+    };
+  }
+})();

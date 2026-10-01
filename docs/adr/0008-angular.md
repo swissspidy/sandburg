@@ -1,6 +1,6 @@
 # ADR 0008: Angular adapter (AOT in the Node.js runtime, bundled with esbuild-wasm)
 
-- Status: Accepted
+- Status: Superseded by [ADR 0014](0014-node-runtime-only.md)
 - Date: 2026-09-30
 
 ## Context

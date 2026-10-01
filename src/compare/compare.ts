@@ -21,6 +21,9 @@ export interface CompareOptions extends RunOptions {
   /** vCPUs of the machine running the comparison (default: os.availableParallelism()). */
   vcpus?: number;
   referenceTimeouts?: RunOptions['timeouts'];
+  /** Warm up common stacks before the browser runs (see BatchOptions.prewarm). Default: true. */
+  prewarm?: boolean;
+  log?: (line: string) => void;
   onResult?: (side: 'browser' | 'reference', result: RunResult, item: BatchItem) => void;
 }
 

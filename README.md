@@ -2,92 +2,81 @@
 
 Run and test generated web apps inside the browser.
 
-Sandburg takes a generated web project, runs it in an in-browser runtime, and
-checks it end to end in the same browser tab. It needs no container or microVM
-per run. Think of it as WordPress Playground, generalized to JavaScript apps,
-with WordPress itself as one of the runtimes.
+Sandburg takes a web project, starts it with its own dev server on a Node.js runtime that runs in a
+browser tab, and checks it end to end with Playwright in the same tab. It needs no container or VM
+per run: one browser runs many sandboxes side by side, each on its own origin.
 
-- **One tab = one sandbox = one origin.** Many run in parallel in one browser.
-- **Runtimes chosen per project** (`--runtime auto`, the default):
-  Sandburg's own Node.js 24 runtime runs real dev servers (Next.js; Vite 8
-  with SvelteKit, Astro, Nuxt, React Router and SolidStart; Express; SQLite
-  via WebAssembly). An esbuild-wasm build is the fast path for client-side
-  Vite apps (React, Vue, Svelte, Solid, Preact, Lit, Tailwind v4), with an
-  Express backend in the same sandbox if there is one. Angular apps are
-  compiled AOT with the app's own compiler, and WordPress plugins and themes
-  run in WordPress Playground.
-- **Honest about fidelity:** `sandburg compare` runs the same apps in a Docker
-  reference and reports how often the two agree, and why they disagree.
-- **Nothing leaves the browser** except through a caching egress gateway and a
-  per-sandbox filtering proxy, both enforcing a per-runtime allowlist. Tests
-  prove it.
+**[Try the demos →](https://swissspidy.github.io/sandburg/)** Next.js, Vite + React, SvelteKit, Angular and a
+Vue + Express + SQLite app, running in your browser.
 
-## Status
+## At a glance
 
-| Milestone | State |
-|---|---|
-| 1. Vite + React spike | done ([ADR 0001](docs/adr/0001-runtime-adapters-serving-results.md)) |
-| 2. Parallel batches, cache, network containment | done ([ADR 0002](docs/adr/0002-snapshots-and-batches.md)) |
-| 3. Next.js on almostnode; Nodebox adapter | done, since removed ([ADR 0003](docs/adr/0003-nextjs-and-nodebox.md), [ADR 0013](docs/adr/0013-runtime-consolidation.md)) |
-| 4. Fidelity study vs Docker | done ([ADR 0004](docs/adr/0004-docker-reference-and-fidelity-study.md), [reports](docs/fidelity/README.md)) |
-| 5. WordPress Playground | done ([ADR 0005](docs/adr/0005-wordpress-playground.md)) |
-| 6. Own Node.js runtime: real Next.js in the browser | done ([ADR 0006](docs/adr/0006-node-runtime.md)) |
-| 7. esbuild-wasm adapter for Vite-style apps | done ([ADR 0007](docs/adr/0007-esbuild-adapter.md)) |
-| 8. Angular | done ([ADR 0008](docs/adr/0008-angular.md)) |
-| 9. Full-stack apps (front end + Express), Vue, SQLite | done ([ADR 0009](docs/adr/0009-full-stack-vue-sqlite.md)) |
-| 10. WebSockets and hot reloading; top-level await | done ([ADR 0010](docs/adr/0010-websockets-and-top-level-await.md)) |
-| 11. Svelte, Solid, Preact, Lit | done ([ADR 0011](docs/adr/0011-client-frameworks.md)) |
-| 12. Real Vite: SvelteKit, Astro, React Router, Nuxt, SolidStart | done ([ADR 0012](docs/adr/0012-real-vite-and-meta-frameworks.md)) |
-| 13. One Node.js runtime; `--runtime auto`; almostnode and Nodebox removed | done ([ADR 0013](docs/adr/0013-runtime-consolidation.md)) |
+- **The project's own tools.** `next dev`, Vite 5–8 with its plugins, `ng serve`, Express, and a dev
+  script as written (`concurrently "vite" "node server"`). There is no reimplementation of a framework's build.
+- **Correct answers.** Tested on 100 generated apps with known faults, it gets 97 right, with no false
+  alarms. The three misses are mislabelled apps. `sandburg compare` measures agreement with a Docker
+  reference.
+- **Fast after the first run.** Installs, compiled modules, and dev-server caches carry over between
+  runs and between projects that share packages.
+- **Contained.** A sandbox reaches the network only through a caching gateway and a per-sandbox
+  allowlist, and tests prove it.
 
-## Try it
+| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md)) | Median run, cold | Median run, warm |
+|---|---|---|
+| Vite, vanilla (33 apps) | 3.4 s | 3.2 s |
+| Vite + React (34) | 16.1 s | 5.9 s |
+| Next.js 15 (33) | 14.4 s | 13.0 s |
+| All 100 | 13.2 s | 6.5 s |
+| Whole corpus, 3 tabs | 533 s | 289 s |
 
-Requires Node.js 22.18 or later, which runs the TypeScript sources directly.
-It also needs a Chromium that Playwright 1.56 can launch.
+A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
+from empty Sandburg caches. A Next.js app that has never run, with a new install, runs in
+15.7 s, down from about 45 s. Its first compile takes 2.2 s, where native `next dev` on the same
+machine takes 3.9 s ([ADR 0014](docs/adr/0014-node-runtime-only.md)).
+
+## Quick start
+
+Requires Node.js 22.18 or later and a Chromium that Playwright 1.56 can launch.
 
 ```sh
 npm install
-npx playwright install chromium   # or set SANDBURG_CHROMIUM=/path/to/chrome
-npm run spike                      # the Vite + React fixture
+npx playwright install chromium        # or set SANDBURG_CHROMIUM=/path/to/chrome
+node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts
 ```
 
 ## CLI
 
 ```sh
-sandburg run <project> [--runtime auto|node|esbuild|angular|wordpress] [--checks checks.spec.ts]
-sandburg batch <dir> [--parallel 8]                    # each subdirectory is a project
+sandburg run <project> [--checks checks.spec.ts]
+sandburg batch <dir> [--parallel 8]                     # each subdirectory is a project
 sandburg compare <dir> --reference docker [--report path]
-sandburg snapshot <project>                            # store it, print its snapshot id
-sandburg open <project>                                # load it in a visible tab
+sandburg snapshot <project>                             # store it, print its snapshot id
+sandburg open <project>                                 # load it in a visible tab
 ```
 
-- `<project>` is a directory, a `.zip` (a single top-level folder is stripped, as in GitHub downloads), a JSON file tree (`{ "path": "contents" }`), or
-  `snapshot:<id or prefix>`. Every run stores its project as a
-  content-addressed snapshot, and the result records the snapshot id, so any
-  run can be reopened exactly (`sandburg open snapshot:3f2a…`).
-- A checks file default-exports an object that maps check names to
-  functions. Each function gets the app frame, Playwright's `expect`, and
-  `appUrl(path)`, which resolves a path under whatever prefix the runtime
-  serves the app at:
+- `<project>` is a directory, a `.zip` (a single top-level folder is stripped), a JSON file tree
+  (`{ "path": "contents" }`), or `snapshot:<id>`. Every run stores its project as a
+  content-addressed snapshot, so any run can be reopened exactly.
+- `--offline` answers every request from the HTTP cache (`.sandburg/cache`) and fails on a miss.
+- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks.
 
-  ```ts
-  import type { Checks } from 'sandburg';
+A checks file default-exports named checks. Each gets the app's frame, Playwright's `expect`, and
+`appUrl(path)`:
 
-  export default {
-    'counter increments on click': async ({ app, expect }) => {
-      await app.getByRole('button', { name: /count is/ }).click();
-      await expect(app.getByRole('button', { name: /count is/ })).toHaveText('count is 1');
-    },
-    'about page': async ({ app, expect, appUrl }) => {
-      await app.goto(appUrl('/about'));
-      await expect(app.getByRole('heading', { level: 1 })).toHaveText('About');
-    },
-  } satisfies Checks;
-  ```
-- `--offline` answers every request from the HTTP cache (`.sandburg/cache`)
-  and fails on a miss.
-- Exit codes: `0` passed, `1` failed (the app ran but a blocking check
-  failed), `2` error (the run did not reach the checks).
+```ts
+import type { Checks } from 'sandburg';
+
+export default {
+  'counter increments on click': async ({ app, expect }) => {
+    await app.getByRole('button', { name: /count is/ }).click();
+    await expect(app.getByRole('button', { name: /count is/ })).toHaveText('count is 1');
+  },
+  'about page': async ({ app, expect, appUrl }) => {
+    await app.goto(appUrl('/about'));
+    await expect(app.getByRole('heading', { level: 1 })).toHaveText('About');
+  },
+} satisfies Checks;
+```
 
 ## Library
 
@@ -101,52 +90,56 @@ const reference = await session.run('./project', { nodeRuntime: dockerReference(
 await session.close();
 ```
 
-Each run writes `result.json` (schema:
-[`src/result-schema.json`](src/result-schema.json)), `screenshot.png`,
-`a11y.yaml`, and, for the Docker reference, `runtime.log`, to
-`.sandburg/runs/<runId>/`. Each failure is classified as
-`runtime-unsupported`, `app-bug`, `timeout`, `infra` or `unknown`, and names
-the rule that decided it (`src/classify.ts`).
+Each run writes `result.json` ([schema](src/result-schema.json)), `screenshot.png` and `a11y.yaml`
+to `.sandburg/runs/<runId>/`. Every failure has a class (`app-bug`, `runtime-unsupported`, `timeout`,
+`infra`, `unknown`) and names the rule that decided it ([`src/classify.ts`](src/classify.ts)). App bugs
+point at the file and line where the dev server reported them.
 
-## Runtimes
+## What runs
 
-`--runtime auto` (the default) picks one per project: `wordpress` for
-WordPress plugins and themes, `angular` for Angular CLI apps, `esbuild` for
-projects it can build, and `node` for everything else (ADR 0013).
+| | |
+|---|---|
+| Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit, Astro, Nuxt, React Router, SolidStart; `next dev` (webpack, SWC); `ng serve` (Angular 19–22); static sites |
+| Back ends | Express and other Node servers next to the front end, reached through Vite's proxy, from the page (`http://localhost:<port>`) or over WebSockets; SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) |
+| Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn scripts, package binaries, `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly |
+| Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide |
+| Not supported | Native addons without a WebAssembly build, synchronous child processes, programs other than Node (`git`, `python` exit with 127) |
 
-| Runtime | Runs | Notes |
-|---|---|---|
-| `angular` | Angular CLI apps (tested with Angular 19 and 22; zone.js or zoneless) | The app's own `@angular/compiler-cli` compiles AOT (with template type-checking) in the node runtime; libraries are linked with the Angular Linker and bundled with esbuild-wasm (ADR 0008). Sass and Tailwind v4 work. No SSR, i18n or custom webpack. |
-| `esbuild` | Vite apps (React, Vue, Svelte, Solid, Preact, Lit, vanilla), static sites with module scripts, and full-stack apps with a Node backend (`concurrently`, `client/` + `server/`) | Built in the browser with esbuild-wasm (ADR 0007) from dependencies installed with npm on the host. Vue SFCs, Svelte components, Solid JSX and Tailwind v4 are compiled with the app's own compilers (ADR 0011). A backend runs in the node runtime next to it; Vite's `/api` proxy and `http://localhost:<port>` calls reach it (ADR 0009). Other Vite plugins, PostCSS and Tailwind v3 are rejected as unsupported. |
-| `node` | Next.js (real `next dev`, webpack, SWC wasm); real Vite 8 dev servers: SvelteKit, Astro, React Router (framework mode), Nuxt, SolidStart, and Vite apps with plugins the esbuild build does not apply; Node.js servers (`node server.js`) | Sandburg's own Node.js 24 runtime in a Web Worker (ADR 0006). SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) runs on the official SQLite WebAssembly build (ADR 0009). WebSockets reach its servers (Next.js hot reloading, socket.io) and top-level await works (ADR 0010). `worker_threads`, `node:wasi`, `node` child processes and local sockets work; native packages with WebAssembly builds (rolldown, rollup, esbuild, Astro's compiler) use them (ADR 0012). Dependencies are installed with npm on the host, cached, and fetched lazily. No other programs (shells, npm) or synchronous child processes. |
-| `wordpress` | WordPress plugins and themes | WordPress Playground, loaded at run time from `SANDBURG_PLAYGROUND_URL` (default: playground.wordpress.net, which rate-limits heavy use, so self-host it for batches). |
-| Docker reference | Vite, Next.js | `npm ci` or `npm install` plus the real dev server in `node:22-slim`. The same checks run in the same browser. |
+## How it works
 
-## Fidelity
+1. **The host** (the orchestrator, in Node.js) installs the project's packages with npm
+   (`--ignore-scripts`) and serves them to the browser. It also compiles modules for the runtime and
+   keeps the caches.
+2. **The runtime** is Node.js 24 in a Web Worker: a virtual file system, a CommonJS/ESM loader, and
+   Node's built-in modules. It runs the project's dev script. Child processes and worker threads are
+   more runtimes.
+3. **A service worker** gives the app its origin: the page's requests go to the servers listening
+   in the runtime, with streaming and WebSockets.
+4. **Playwright** runs the checks in the app's frame, and collects screenshots, accessibility trees,
+   console errors and network failures.
 
-`sandburg compare` runs every project in the browser runtime and in the Docker
-reference and pairs the results. The studies in
-[`docs/fidelity`](docs/fidelity/README.md) cover 100 synthetic apps
-(`scripts/corpus/`) across Vite + React, Next.js and vanilla Vite, with seeded
-faults whose expected outcome is known. The first two measured almostnode
-(removed in ADR 0013); the third measures `--runtime auto` against the
-corpus's ground truth.
+The design decisions are recorded in [`docs/adr`](docs/adr). [ADR 0006](docs/adr/0006-node-runtime.md)
+covers the runtime, and [ADR 0014](docs/adr/0014-node-runtime-only.md) covers the single runtime and the
+cold-start work. The study method and every report are in [`docs/fidelity`](docs/fidelity/README.md).
 
-## Tests
+## Development
 
 ```sh
-npm test            # unit tests
-npm run test:runtime # the node runtime's loader and built-ins, in Chromium
-npm run test:e2e    # real Chromium; the first run needs network access to the allowlisted CDNs.
-                    # Docker tests skip without Docker; WordPress tests need SANDBURG_E2E_WORDPRESS=1.
+npm test               # unit tests
+npm run test:runtime   # the runtime's loader and built-ins, in Chromium
+npm run test:e2e       # fixtures end to end (the first run needs network access; Docker tests skip without Docker)
 npm run typecheck
+node scripts/pages/build.ts --verify   # the demo site, into dist-pages/
 ```
 
-On networks that re-terminate TLS, Sandburg trusts the CAs in
-`$SANDBURG_EXTRA_CA_CERTS` (or `$NODE_EXTRA_CA_CERTS`) in the browser too, by
-pinning their public keys. Verification stays on.
+The demo site replays the host's answers from static files, recorded when the site is built
+([ADR 0015](docs/adr/0015-static-demos.md)). A GitHub Actions workflow builds and deploys it on every
+push to `main`.
+
+On networks that re-terminate TLS, Sandburg trusts the CAs in `$SANDBURG_EXTRA_CA_CERTS` (or
+`$NODE_EXTRA_CA_CERTS`) in the browser too, by pinning their public keys. Certificate verification
+stays on.
 
 ## License
 
-Apache-2.0. Runtimes loaded at run time keep their own licenses
-(WordPress Playground: GPL-2.0-or-later).
+Apache-2.0.

@@ -10,19 +10,19 @@
  */
 import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { access, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { renameCommonJsNames } from './esm-names.ts';
-import { esmSourcefile, patchAsyncFunction, patchInterop } from './interop.ts';
+import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-const TRANSFORM_VERSION = 7;
+export const TRANSFORM_VERSION = 10;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 8;
+const LAYOUT_VERSION = 14;
 
 export interface InstallInfo {
   key: string;
@@ -42,19 +42,48 @@ export function sharedInstaller(): Installer {
 }
 let shared: Installer | undefined;
 
+/** A name for a temporary file no other write uses, even of the same file at the same time. */
+export const tmpSuffix = () => `${process.pid}-${randomBytes(6).toString('hex')}`;
+
+interface Manifest {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  overrides?: unknown;
+}
+
 export class Installer {
   readonly root: string;
   private pending = new Map<string, Promise<InstallInfo>>();
   private indexes = new Map<string, Promise<FileIndex>>();
+  private combined = new Map<string, { dir: string; key: string }[]>();
 
   constructor(root: string) {
     this.root = root;
+    void this.sweep();
   }
 
-  /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
-  install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
+  /**
+   * Removes installs of an earlier layout (LAYOUT_VERSION) that have not changed for a day: their
+   * keys are never asked for again.
+   * An install records its layout in .sandburg-complete; one without the record is left alone.
+   */
+  private async sweep(): Promise<void> {
+    for (const name of await readdir(this.root).catch(() => [] as string[])) {
+      if (!/^[0-9a-f]{24}$/.test(name)) continue;
+      const done = await readFile(join(this.root, name, '.sandburg-complete'), 'utf8').catch(() => '');
+      const layout = /layout (\d+)/.exec(done)?.[1];
+      // A day without changes (new transforms are written into an install as it is used), so another
+      // Sandburg process still on that layout is not using it.
+      const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
+      if (layout && Number(layout) !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /** The install of `project`'s dependencies plus `extra`: its key, npm's manifest and the lockfile. */
+  private plan(project: Project, extra: Record<string, string>): { key: string; manifest: object; lock: string | null } {
     const pkg = project.packageJson ?? {};
-    const lock = project.files['package-lock.json'];
+    const lockFile = project.files['package-lock.json'];
+    const lock = typeof lockFile === 'string' ? lockFile : null;
     const manifest = {
       name: 'sandburg-install',
       private: true,
@@ -65,12 +94,23 @@ export class Installer {
     const key = createHash('sha256')
       .update(`layout:${LAYOUT_VERSION}\0`)
       .update(JSON.stringify(manifest))
-      .update(typeof lock === 'string' ? lock : '')
+      .update(lock ?? '')
       .digest('hex')
       .slice(0, 24);
+    return { key, manifest, lock };
+  }
+
+  /** Whether `project`'s install (plus `extra`) is finished and cached. */
+  installed(project: Project, extra: Record<string, string>): Promise<boolean> {
+    return access(join(this.root, this.plan(project, extra).key, '.sandburg-complete')).then(() => true, () => false);
+  }
+
+  /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
+  install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
+    const { key, manifest, lock } = this.plan(project, extra);
     let pending = this.pending.get(key);
     if (!pending) {
-      pending = this.doInstall(key, manifest, typeof lock === 'string' ? lock : null, log);
+      pending = this.doInstall(key, manifest, lock, log);
       this.pending.set(key, pending);
       pending.catch(() => this.pending.delete(key));
     }
@@ -86,12 +126,15 @@ export class Installer {
       await mkdir(tmp, { recursive: true });
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
+      const base = await this.startFromClosest(manifest as Manifest, tmp, lock !== null);
+      if (base) log(`starting from install ${base.key}, which has ${base.shared} of the same dependencies (npm installs the difference)`);
       // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
       await placeNextSwcWasm(tmp);
       await placeWasiBindings(tmp, log);
       await placeWasmBuilds(tmp, log);
-      await writeFile(join(tmp, '.sandburg-complete'), new Date().toISOString());
+      await writeBinIndex(tmp);
+      await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
       await rm(dir, { recursive: true, force: true });
       await rename(tmp, dir);
     }
@@ -106,8 +149,79 @@ export class Installer {
     return { key, dir, resolved, lockfile: lock !== null, fromCache: exists };
   }
 
+  /**
+   * Starts a new install from the finished install that shares most of its dependencies: its
+   * node_modules, hard-linked (instant), and its lockfile, so npm only installs the difference
+   * (~0.5 s instead of ~7 s for a Next.js app). As with the install cache itself, versions that
+   * installs share stay the ones npm picked for the first. Linux only (cp -al); elsewhere npm installs
+   * everything. Files that installs change later are replaced, never written through the links.
+   */
+  private async startFromClosest(manifest: Manifest, tmp: string, hasLock: boolean): Promise<{ key: string; shared: number } | null> {
+    if (process.platform !== 'linux') return null;
+    const wanted = { ...manifest.dependencies, ...manifest.devDependencies };
+    const names = Object.keys(wanted);
+    if (!names.length) return null;
+    let best: { key: string; shared: number; time: number } | null = null;
+    for (const key of await readdir(this.root).catch(() => [] as string[])) {
+      if (!/^[0-9a-f]{24}$/.test(key)) continue;
+      const done = await readFile(join(this.root, key, '.sandburg-complete'), 'utf8').catch(() => '');
+      if (!done.includes(`layout ${LAYOUT_VERSION}`)) continue;
+      let other: Manifest;
+      try {
+        other = JSON.parse(await readFile(join(this.root, key, 'package.json'), 'utf8')) as Manifest;
+      } catch {
+        continue;
+      }
+      if (JSON.stringify(other.overrides ?? null) !== JSON.stringify(manifest.overrides ?? null)) continue;
+      const theirs = { ...other.dependencies, ...other.devDependencies };
+      const shared = names.filter((n) => theirs[n] === wanted[n]).length;
+      const time = Date.parse(done.split(' ')[0]) || 0;
+      if (shared * 2 >= names.length && (!best || shared > best.shared || (shared === best.shared && time > best.time))) best = { key, shared, time };
+    }
+    if (!best) return null;
+    const from = join(this.root, best.key);
+    try {
+      await run('cp', ['-al', join(from, 'node_modules'), join(tmp, 'node_modules')], tmp, () => {});
+      // npm's record of the tree it installed describes the other install: it reads the tree instead.
+      await rm(join(tmp, 'node_modules', '.package-lock.json'), { force: true });
+      if (!hasLock) await cp(join(from, 'package-lock.json'), join(tmp, 'package-lock.json')).catch(() => {});
+    } catch {
+      await rm(join(tmp, 'node_modules'), { recursive: true, force: true });
+      return null;
+    }
+    return { key: best.key, shared: best.shared };
+  }
+
+  /**
+   * Several installs seen as one project tree (a root package and client/, server/ packages): a key
+   * whose index holds each install's files under its directory ("server/node_modules/express/…").
+   */
+  combine(parts: { dir: string; key: string }[]): string {
+    const key = createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 24);
+    this.combined.set(key, parts);
+    return key;
+  }
+
+  /** The install and path within it that a (possibly combined) key's path refers to. */
+  private locate(key: string, rel: string): { key: string; rel: string } | null {
+    const parts = this.combined.get(key);
+    if (!parts) return { key, rel };
+    for (const { dir, key: k } of parts) {
+      if (!dir) {
+        if (rel.startsWith('node_modules/')) return { key: k, rel };
+      } else if (rel.startsWith(`${dir}/node_modules/`)) return { key: k, rel: rel.slice(dir.length + 1) };
+    }
+    return null;
+  }
+
   /** All files under node_modules (paths relative to the install dir, e.g. "node_modules/next/package.json"). */
   index(key: string): Promise<FileIndex> {
+    const parts = this.combined.get(key);
+    if (parts) {
+      return Promise.all(parts.map(async ({ dir, key: k }) => Object.entries(await this.index(k)).map(([rel, size]) => [dir ? `${dir}/${rel}` : rel, size] as const))).then(
+        (lists) => Object.fromEntries(lists.flat()),
+      );
+    }
     let idx = this.indexes.get(key);
     if (!idx) {
       idx = buildIndex(join(this.root, key));
@@ -117,7 +231,10 @@ export class Installer {
   }
 
   /** A file's original bytes (what fs.readFileSync sees). */
-  async raw(key: string, rel: string): Promise<{ body: Buffer; type: string } | null> {
+  async raw(combinedKey: string, combinedRel: string): Promise<{ body: Buffer; type: string } | null> {
+    const at = this.locate(combinedKey, combinedRel);
+    if (!at) return null;
+    const { key, rel } = at;
     if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
     const index = await this.index(key);
     if (!(rel in index)) return null;
@@ -125,23 +242,31 @@ export class Installer {
   }
 
   /** A file for the browser: JavaScript is compiled for the runtime (and cached); everything else is raw. */
-  async file(key: string, rel: string): Promise<{ body: Buffer; type: string } | null> {
+  async file(combinedKey: string, combinedRel: string): Promise<{ body: Buffer; type: string } | null> {
+    const at = this.locate(combinedKey, combinedRel);
+    if (!at) return null;
+    const { key, rel } = at;
     if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
     const index = await this.index(key);
     if (!(rel in index)) return null;
     const abs = join(this.root, key, rel);
     if (!/\.(c|m)?js$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
-    const cached = join(this.root, key, '.sandburg-transformed', `v${TRANSFORM_VERSION}`, rel);
+    // Transforms are kept by content, not by install: every install with the same package version
+    // shares them (a new app with next@15 does not transform Next.js again).
+    const source = await readFile(abs, 'utf8');
+    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
+    const hash = createHash('sha256').update(`${esm ? 'esm' : 'cjs'}\0${rel}\0`).update(source).digest('hex');
+    const cached = join(this.root, '..', 'transforms', `v${TRANSFORM_VERSION}`, hash.slice(0, 2), `${hash.slice(2)}.js`);
     try {
       return { body: await readFile(cached), type: 'text/javascript' };
     } catch {
       // not transformed yet
     }
-    const source = await readFile(abs, 'utf8');
-    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
     const body = Buffer.from(await transformForRuntime(source, rel, esm));
     await mkdir(join(cached, '..'), { recursive: true });
-    await writeFile(cached, body);
+    const tmp = `${cached}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, body);
+    await rename(tmp, cached);
     return { body, type: 'text/javascript' };
   }
 }
@@ -153,8 +278,9 @@ export class Installer {
  * the runtime patches to carry AsyncLocalStorage context.
  */
 export async function transformForRuntime(source: string, path: string, esm: boolean): Promise<string> {
+  for (const patch of SOURCE_PATCHES) if (patch.file.test(path)) source = source.replace(patch.from, patch.to);
   if (esm) source = renameCommonJsNames(source.replace(/^#!.*/, ''));
-  source = patchAsyncFunction(source);
+  source = patchFunctionImport(patchAsyncFunction(source));
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
   const mark = (code: string) => patchInterop(esm ? `/*sandburg:esm*/\n${code}` : code);
   try {
@@ -261,6 +387,7 @@ async function placeWasiBindings(dir: string, log: (line: string) => void): Prom
   }
   for (const [binding] of missing) {
     if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
+    await rm(join(nm, binding), { recursive: true, force: true });
     await cp(join(sideNm, binding), join(nm, binding), { recursive: true });
     for (const dep of sidePackages) {
       if (dep in wanted) continue;
@@ -296,7 +423,20 @@ function existsSyncSafe(path: string): boolean {
  * installed copy gets that build installed next to it (in its own node_modules), and the file that
  * loads the native code is replaced by one that loads the WebAssembly build.
  */
-const WASM_BUILDS: { name: string; wasm: string; file: string; applies(version: string): boolean; shim: string }[] = [
+const WASM_BUILDS: { name: string; wasm: string; file: string; applies(version: string): boolean; shim: string; also?: Record<string, string> }[] = [
+  {
+    // The Dart Sass compiler as a native program (sass-embedded-<platform>, which it runs over a pipe):
+    // the same compiler compiled to JavaScript (sass), with the same API. Angular's CLI and Vite
+    // prefer sass-embedded when it is installed.
+    name: 'sass-embedded',
+    wasm: 'sass',
+    file: 'dist/lib/index.js',
+    applies: (v) => /^1\./.test(v),
+    shim: "// sandburg: Dart Sass compiled to JavaScript (sass) in place of the native embedded compiler\nmodule.exports = require('../../node_modules/sass/sass.node.js');\n",
+    also: {
+      'dist/lib/index.mjs': "// sandburg: Dart Sass compiled to JavaScript (sass) in place of the native embedded compiler\nexport * from '../../node_modules/sass/sass.node.mjs';\nexport { default } from '../../node_modules/sass/sass.node.mjs';\n",
+    },
+  },
   {
     // Rollup 4's parser (@rollup/rollup-<platform>).
     name: 'rollup',
@@ -324,20 +464,68 @@ const fs = require('fs');
 const path = require('path');
 const dir = path.join(__dirname, '../node_modules/esbuild-wasm');
 // Its in-thread service reads the worker global \`self\`, which the runtime leaves undefined (as in Node).
+// Go's file system calls go to that scope's \`fs\`: the runtime's, as esbuild-wasm has under Node.
+// The service sets read (stdin) and writeSync (stdout, stderr) on it for its pipes: those take the
+// pipes' descriptors, the file system keeps the rest. Go writes with fs.write, which goes to writeSync
+// for the pipes (as in esbuild-wasm's own stub fs).
+const scopeFs = Object.create(fs);
+const pipes = { read: null, writeSync: null };
+Object.defineProperty(scopeFs, 'read', {
+  get: () => (fd, ...rest) => (fd === 0 && pipes.read ? pipes.read(fd, ...rest) : fs.read(fd, ...rest)),
+  set: (fn) => (pipes.read = fn),
+});
+Object.defineProperty(scopeFs, 'writeSync', {
+  get: () => (fd, buf, ...rest) => ((fd === 1 || fd === 2) && pipes.writeSync ? pipes.writeSync(fd, buf) : fs.writeSync(fd, buf, ...rest)),
+  set: (fn) => (pipes.writeSync = fn),
+});
+scopeFs.write = (fd, buf, offset, length, position, callback) => {
+  if ((fd !== 1 && fd !== 2) || !pipes.writeSync) return fs.write(fd, buf, offset, length, position, callback);
+  try {
+    callback(null, pipes.writeSync(fd, offset === 0 && length === buf.length ? buf : buf.subarray(offset, offset + length)));
+  } catch (e) {
+    callback(e);
+  }
+};
+// Other globals are read from the real global object (its getters, e.g. location, need it as receiver).
+const scope = new Proxy(Object.create(globalThis, { fs: { value: scopeFs, enumerable: true } }), {
+  get: (target, key) => (key === 'fs' ? scopeFs : Reflect.get(globalThis, key)),
+});
 const browser = { exports: {} };
-new Function('self', 'module', 'exports', 'require', fs.readFileSync(path.join(dir, 'lib/browser.js'), 'utf8'))(globalThis, browser, browser.exports, require);
+new Function('self', 'module', 'exports', 'require', fs.readFileSync(path.join(dir, 'lib/browser.js'), 'utf8'))(scope, browser, browser.exports, require);
 const esbuild = browser.exports;
 let ready;
 const init = () =>
   (ready ??= esbuild.initialize({ wasmModule: new WebAssembly.Module(fs.readFileSync(path.join(dir, 'esbuild.wasm'))), worker: false }));
 const later = (name) => (...args) => init().then(() => esbuild[name](...args));
+// The browser build has no file system of its own, so no \`write: true\` (the default under Node): it
+// builds in memory and the output is written here, as esbuild does under Node.
+const writeOutput = (result, write) => {
+  if (!write || !result || !result.outputFiles) return result;
+  for (const file of result.outputFiles) {
+    fs.mkdirSync(path.dirname(file.path), { recursive: true });
+    fs.writeFileSync(file.path, file.contents);
+  }
+  const { outputFiles, ...rest } = result;
+  return rest;
+};
+const inMemory = (options) => ({ ...options, write: false });
+const build = (options = {}) => init().then(() => esbuild.build(inMemory(options))).then((r) => writeOutput(r, options.write !== false));
+const context = (options = {}) =>
+  init().then(() => esbuild.context(inMemory(options))).then((ctx) => ({
+    ...ctx,
+    rebuild: () => ctx.rebuild().then((r) => writeOutput(r, options.write !== false)),
+    watch: ctx.watch,
+    serve: ctx.serve,
+    cancel: ctx.cancel,
+    dispose: ctx.dispose,
+  }));
 const sync = (name) => () => {
   throw new Error('esbuild.' + name + '() is not available in the browser runtime (esbuild-wasm has no synchronous API there); use the asynchronous API');
 };
 module.exports = {
   version: esbuild.version,
-  build: later('build'),
-  context: later('context'),
+  build,
+  context,
   transform: later('transform'),
   formatMessages: later('formatMessages'),
   analyzeMetafile: later('analyzeMetafile'),
@@ -393,16 +581,65 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
       }
       await rm(side, { recursive: true, force: true });
     }
-    await writeFile(join(pkgDir, build.file), build.shim);
+    await replaceFile(join(pkgDir, build.file), build.shim);
+    for (const [file, shim] of Object.entries(build.also ?? {})) await replaceFile(join(pkgDir, file), shim);
     log(`${build.name} ${version}: using ${build.wasm}`);
   }
+}
+
+/**
+ * Changes to package sources for what the browser cannot do. piscina's workers wait for tasks with
+ * Atomics.wait and take them with receiveMessageOnPort, which needs a synchronous look into a
+ * MessagePort (browsers have none): they use its message-event mode instead, as under WebContainers.
+ */
+const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }[] = [
+  {
+    file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
+    from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
+    to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
+  },
+  {
+    // piscina 4
+    file: /(^|\/)node_modules\/piscina\/dist\/src\/worker\.js$|(^|\/)node_modules\/piscina\/dist\/worker\.js$/,
+    from: /useAtomics = process\.env\.PISCINA_DISABLE_ATOMICS === '1' \? false : message\.useAtomics;/,
+    to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
+  },
+];
+
+/**
+ * Writes a file as a new file: an install may share files with another through hard links (see
+ * Installer.startFromClosest), and writing into one would change both.
+ */
+async function replaceFile(path: string, content: string | Buffer): Promise<void> {
+  await rm(path, { force: true });
+  await writeFile(path, content);
+}
+
+/**
+ * node_modules/.sandburg-bins.json: each package binary (node_modules/.bin/<name>) and the script it
+ * runs, relative to the install directory. The runtime's shell resolves commands with it.
+ */
+async function writeBinIndex(dir: string): Promise<void> {
+  const binDir = join(dir, 'node_modules', '.bin');
+  const bins: Record<string, string> = {};
+  for (const name of await readdir(binDir).catch(() => [] as string[])) {
+    try {
+      const target = await readlink(join(binDir, name));
+      bins[name] = relative(dir, resolve(binDir, target)).split(sep).join('/');
+    } catch {
+      // not a link (npm links every binary)
+    }
+  }
+  await replaceFile(join(dir, 'node_modules', '.sandburg-bins.json'), JSON.stringify(bins));
 }
 
 async function placeNextSwcWasm(dir: string): Promise<void> {
   const from = join(dir, 'node_modules', '@next', 'swc-wasm-nodejs');
   const next = join(dir, 'node_modules', 'next');
   if (!(await access(from).then(() => true, () => false)) || !(await access(next).then(() => true, () => false))) return;
-  await cp(from, join(next, 'wasm', '@next', 'swc-wasm-nodejs'), { recursive: true });
+  const to = join(next, 'wasm', '@next', 'swc-wasm-nodejs');
+  await rm(to, { recursive: true, force: true });
+  await cp(from, to, { recursive: true });
 }
 
 async function buildIndex(dir: string): Promise<FileIndex> {

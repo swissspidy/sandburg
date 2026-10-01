@@ -12,6 +12,10 @@ export interface NodeProcessOptions {
   files: FileTree;
   env: Record<string, string>;
   installKey: string | null;
+  /** The URL of a preload bundle for the install (see adapters/node/index.ts). */
+  preload?: string | null;
+  /** The URL of a bundle of project files to start with. */
+  filesBundle?: string | null;
   nodeModules: Record<string, number> | null;
   log(stream: 'stdout' | 'stderr', line: string): void;
   /** What the program is, for messages ("the app", "the backend"). */
@@ -20,9 +24,22 @@ export interface NodeProcessOptions {
   tsRunner?: boolean;
 }
 
+/** A file of a dev server's cache: text, or binary as base64. */
+export type CacheFile = string | { base64: string };
+
+/**
+ * Where the runtime reaches the host (worker script, installed files, compiles). /__sandburg on a
+ * sandbox origin; a page may set another (the static demos serve it under their own path).
+ */
+export function hostBase(): string {
+  return (globalThis as { __sandburgBase?: string }).__sandburgBase ?? '/__sandburg';
+}
+
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
   readonly ports: number[] = [];
+  /** Commands of the dev script that exited with an error (a backend that crashed, say). */
+  readonly failedCommands: { command: string; code: number; stderr: string }[] = [];
   failure: Error | null = null;
   exitCode: number | null = null;
   private worker: Worker;
@@ -32,13 +49,18 @@ export class NodeProcess {
   private sockets = new Map<number, MessagePort>();
   private nextId = 1;
   private label: string;
+  private partial = { stdout: '', stderr: '' };
+  private trees = new Map<number, (files: Record<string, CacheFile>) => void>();
+  /** When the page last sent the runtime a request or heard from it (see activity()). */
+  private lastActivity = performance.now();
 
   constructor(opts: NodeProcessOptions) {
     this.label = opts.label ?? 'the app';
-    this.worker = new Worker('/__sandburg/node-worker.js');
+    const base = hostBase();
+    this.worker = new Worker(`${base}/node-worker.js`);
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
-    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, nodeModules: opts.nodeModules, base: '/__sandburg', tsRunner: opts.tsRunner });
+    this.worker.postMessage({ type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, base, tsRunner: opts.tsRunner });
   }
 
   /** Resolves when the runtime has loaded. */
@@ -56,6 +78,47 @@ export class NodeProcess {
     return port ?? this.ports[0];
   }
 
+  /**
+   * The port whose server serves the app's page: of the ports the program listens on, the first to
+   * answer GET / with HTML (a dev script may start an API server before or beside the page's). If
+   * none has after `patience` ms without a new port, the first port.
+   */
+  async pagePort(patience = 20_000): Promise<number> {
+    await this.listening();
+    const probed = new Set<number>();
+    let found: number | null = null;
+    let settled = 0;
+    let lastPort = Date.now();
+    const probe = (port: number) => {
+      probed.add(port);
+      lastPort = Date.now();
+      const channel = new MessageChannel();
+      channel.port1.onmessage = (e) => {
+        const m = e.data as { type: string; status?: number; headers?: [string, string][] };
+        if (m.type === 'start' || m.type === 'error') {
+          const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
+          if (m.type === 'start' && m.status! < 400 && /html/.test(type) && found === null) found = port;
+          settled++;
+          channel.port1.close();
+          for (const w of this.waiters) w();
+        }
+      };
+      this.request(port, { method: 'GET', url: '/', headers: [['accept', 'text/html']], body: null }, channel.port2);
+    };
+    const tick = setInterval(() => {
+      for (const w of this.waiters) w();
+    }, 1000);
+    try {
+      await this.until(() => {
+        for (const port of this.ports) if (!probed.has(port)) probe(port);
+        return found !== null || (settled === probed.size && Date.now() - lastPort > patience);
+      });
+    } finally {
+      clearInterval(tick);
+    }
+    return found ?? this.ports[0];
+  }
+
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
   request(port: number, request: BridgedRequest, reply: MessagePort): void {
     if (this.failure && this.exitCode === null) {
@@ -64,9 +127,12 @@ export class NodeProcess {
     }
     const id = this.nextId++;
     this.pending.set(id, reply);
+    this.lastActivity = performance.now();
     // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
     const headers: [string, string][] = request.headers.filter(([k]) => !/^(cookie|accept-encoding)$/i.test(k));
     if (document.cookie) headers.push(['cookie', document.cookie]);
+    // The browser sends Host; a service worker's request does not carry it (dev servers check it: Vite's allowedHosts).
+    if (!headers.some(([k]) => k.toLowerCase() === 'host')) headers.push(['host', location.host]);
     this.worker.postMessage({ type: 'request', id, port, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
   }
 
@@ -97,21 +163,56 @@ export class NodeProcess {
     this.worker.postMessage({ type: 'write-file', path, content });
   }
 
+  /** The text files under project directories, keyed by project-relative path. */
+  readTree(dirs: string[]): Promise<Record<string, CacheFile>> {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      this.trees.set(id, resolve);
+      this.worker.postMessage({ type: 'read-tree', id, dirs });
+    });
+  }
+
   terminate(): void {
     this.worker.terminate();
   }
 
+  /**
+   * Whether the app's servers are working: requests still being answered, and how long since the
+   * runtime last said anything (a response, a log line). Checks stop waiting for an assertion that
+   * keeps failing once the runtime is idle: nothing is still coming.
+   */
+  activity(): { inflight: number; idleMs: number } {
+    return { inflight: this.pending.size, idleMs: Math.round(performance.now() - this.lastActivity) };
+  }
+
   private onMessage(m: FromWorker, opts: NodeProcessOptions) {
+    this.lastActivity = performance.now();
     switch (m.type) {
-      case 'log':
-        for (const line of m.text.replace(/\n$/, '').split('\n')) opts.log(m.stream, line);
+      case 'log': {
+        // Whole lines: a program may write a line in pieces (concurrently writes its "[name] " prefix first).
+        const text = this.partial[m.stream] + m.text;
+        const end = text.lastIndexOf('\n');
+        this.partial[m.stream] = text.slice(end + 1);
+        if (end >= 0) for (const line of text.slice(0, end).split('\n')) opts.log(m.stream, line);
+        if (this.partial[m.stream].length > 65536) {
+          opts.log(m.stream, this.partial[m.stream]);
+          this.partial[m.stream] = '';
+        }
         break;
+      }
       case 'ready':
         this.ready = true;
         break;
       case 'listening':
         // TCP ports only (the runtime keeps servers on local sockets to itself).
         if (typeof m.port === 'number' && !this.ports.includes(m.port)) this.ports.push(m.port);
+        break;
+      case 'tree':
+        this.trees.get(m.id)?.(m.files);
+        this.trees.delete(m.id);
+        break;
+      case 'process-exit':
+        this.failedCommands.push({ command: m.command, code: m.code, stderr: m.stderr });
         break;
       case 'fatal':
         // The runtime could not load one of its own parts: infrastructure, not the app.
@@ -157,7 +258,8 @@ export class NodeProcess {
     for (const w of this.waiters) w();
   }
 
-  private fail(e: Error) {
+  /** Ends the wait for the program (listening(), pagePort()) with an error. */
+  fail(e: Error) {
     this.failure ??= e;
     for (const w of this.waiters) w();
   }

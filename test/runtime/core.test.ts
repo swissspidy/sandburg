@@ -31,7 +31,7 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
   const result = JSON.parse(out.stdout.split('\n')[0]);
   assert.deepEqual(result, {
     greet: 'hello node', n: 42, read: 'content', list: ['b', 'b/f.txt'], exists: false, rel: '../../d',
-    sha: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', gz: 'zip me', node: 'v24.11.0', platform: 'linux',
+    sha: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', gz: 'zip me', node: 'v24.15.0', platform: 'linux',
     dirname: '/app', main: true, resolved: '/app/lib/greet.js',
   });
   assert.match(out.stdout, /event 7/);
@@ -109,6 +109,17 @@ test('top-level await: modules evaluate after the dependencies they await, and r
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.deepEqual(out.stdout.trim().split('\n'), ['db ready', 'repo true', 'main 13']);
+
+  // import() from CommonJS (as a tool loads a config file) resolves once the module has evaluated.
+  const dynamic = await h.run(
+    {
+      'config.mjs': `await new Promise((r) => setTimeout(r, 50));\nexport default { name: 'app' };`,
+      'main.cjs': `import('./config.mjs').then((m) => console.log('config', JSON.stringify(m.default), typeof m.then));`,
+    },
+    '/app/main.cjs',
+  );
+  assert.equal(dynamic.fatal, null, dynamic.fatal ?? dynamic.stderr);
+  assert.equal(dynamic.stdout.trim(), 'config {"name":"app"} undefined', dynamic.stderr);
 
   const failed = await h.run({ 'main.mjs': `await Promise.reject(new Error('cannot connect to the database'));` }, '/app/main.mjs');
   assert.match(failed.fatal ?? '', /cannot connect to the database/);
@@ -260,7 +271,7 @@ test('child_process: node children with stdio, exit codes, --conditions, fork() 
   assert.ok(lines.includes('from fork 2'), out.stdout);
   assert.ok(lines.includes('fork exit 5'), out.stdout);
   assert.ok(lines.includes('exec null 42'), out.stdout);
-  assert.ok(lines.includes('git ENOSYS'), out.stdout);
+  assert.ok(lines.includes('git 127'), out.stdout);
 });
 
 test('child_process: servers in a child process are reachable', async () => {
@@ -392,4 +403,248 @@ test('worker_threads: a thread started while its parent is blocked runs (WebAsse
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout.trim(), 'wait ok 42');
+});
+
+test('child_process: shell commands, npm scripts and package binaries run as Node programs', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { spawn, exec } = require('child_process');
+        const c = spawn('npm run build --prefix server -- --fast && echo "done $GREETING" || echo failed', { shell: true, env: { ...process.env, GREETING: 'hi' } });
+        let text = '';
+        c.stdout.on('data', (d) => (text += d));
+        c.on('exit', (code) => {
+          console.log(JSON.stringify(text.trim().split('\\n')), code);
+          exec('cd server && PORT=4001 greet one "two words"; missing-tool', (err, stdout, stderr) => {
+            console.log(JSON.stringify(stdout.trim().split('\\n')), err && err.code, /missing-tool: not found/.test(stderr));
+            process.exit(0);
+          });
+        });`,
+      'server/package.json': JSON.stringify({ name: 'server', scripts: { prebuild: 'echo pre', build: 'greet built' } }),
+      'server/node_modules/.sandburg-bins.json': JSON.stringify({ greet: 'node_modules/greeter/bin.js' }),
+      'server/node_modules/greeter/bin.js': `console.log('greet ' + process.argv.slice(2).join('|') + ' port=' + (process.env.PORT ?? '-') + ' cwd=' + process.cwd());`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.equal(lines[0], `${JSON.stringify(['pre', 'greet built|--fast port=- cwd=/app/server', 'done hi'])} 0`, out.stdout + out.stderr);
+  assert.equal(lines[1], `${JSON.stringify(['greet one|two words port=4001 cwd=/app/server'])} 127 true`, out.stdout + out.stderr);
+});
+
+test('child_process: a program reaches a server another child process runs (a dev proxy and its API)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').spawn('node api.js & node web.js', { shell: true, stdio: 'inherit' });`,
+      'api.js': `require('http').createServer((req, res) => res.end('api ' + req.method + ' ' + req.url)).listen(4200, () => console.log('api up'));`,
+      'web.js': `
+        const http = require('http');
+        const ask = (port) => new Promise((resolve) => {
+          http.get('http://localhost:' + port + '/items', (res) => {
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('end', () => resolve(body));
+          }).on('error', (e) => resolve(e.code));
+        });
+        setTimeout(async () => console.log(await ask(4200), await ask(4299)), 300);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.match(out.stdout, /api GET \/items ECONNREFUSED/, out.stdout + out.stderr);
+});
+
+test('worker_threads: a blocked thread takes replies with receiveMessageOnPort (a synchronous call to the main thread)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker, MessageChannel } = require('worker_threads');
+        const { port1, port2 } = new MessageChannel();
+        const signal = new Int32Array(new SharedArrayBuffer(4));
+        port1.on('message', (url) => {
+          // Answered asynchronously, as Angular resolves a Sass import on its main thread.
+          setTimeout(() => {
+            port1.postMessage(url.startsWith('@') ? '/app/node_modules/' + url + '/_index.scss' : null);
+            Atomics.store(signal, 0, 1);
+            Atomics.notify(signal, 0);
+          }, 10);
+        });
+        const w = new Worker(__dirname + '/thread.js', { workerData: { port: port2, signal }, transferList: [port2] });
+        w.on('message', (m) => { console.log(JSON.stringify(m)); process.exit(0); });`,
+      'thread.js': `
+        const { workerData, parentPort, receiveMessageOnPort } = require('worker_threads');
+        const { port, signal } = workerData;
+        const ask = (url) => {
+          Atomics.store(signal, 0, 0);
+          port.postMessage(url);
+          Atomics.wait(signal, 0, 0);
+          return receiveMessageOnPort(port)?.message;
+        };
+        parentPort.postMessage([ask('@angular/material'), ask('./local'), receiveMessageOnPort(port)]);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), JSON.stringify(['/app/node_modules/@angular/material/_index.scss', null, null]), out.stderr);
+});
+
+test('child_process: a shell script ends with its foreground command, not with a background one that ends first', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const c = require('child_process').spawn('node seed.js & node server.js', { shell: true, stdio: 'inherit' });
+        c.on('exit', (code) => console.log('script exited', code));`,
+      'seed.js': `console.log('seeded');`,
+      'server.js': `setTimeout(() => { console.log('server done'); process.exit(3); }, 300);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['seeded', 'server done', 'script exited 3']);
+});
+
+test('worker_threads: receiveMessageOnPort keeps working after more traffic than its mailbox holds', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker, MessageChannel } = require('worker_threads');
+        const { port1, port2 } = new MessageChannel();
+        const signal = new Int32Array(new SharedArrayBuffer(4));
+        const big = 'x'.repeat(40 * 1024);
+        port1.on('message', (n) => setTimeout(() => {
+          port1.postMessage({ n, big });
+          Atomics.store(signal, 0, 1);
+          Atomics.notify(signal, 0);
+        }, 1));
+        const w = new Worker(__dirname + '/thread.js', { workerData: { port: port2, signal }, transferList: [port2] });
+        w.on('message', (m) => { console.log(m); process.exit(0); });`,
+      'thread.js': `
+        const { workerData, parentPort, receiveMessageOnPort } = require('worker_threads');
+        const { port, signal } = workerData;
+        let ok = 0;
+        for (let n = 0; n < 40; n++) {
+          Atomics.store(signal, 0, 0);
+          port.postMessage(n);
+          Atomics.wait(signal, 0, 0);
+          const reply = receiveMessageOnPort(port)?.message;
+          if (reply && reply.n === n && reply.big.length === 40 * 1024) ok++;
+        }
+        parentPort.postMessage('replies ' + ok);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), 'replies 40', out.stderr);
+});
+
+test('zlib: gzip, deflate and raw deflate streams (native) interoperate with the synchronous functions', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const zlib = require('zlib');
+        const { pipeline, Readable, Writable } = require('stream');
+        const data = Buffer.from('sandburg '.repeat(2 * 1024 * 1024));
+        const through = (stream, input) => new Promise((resolve, reject) => {
+          const chunks = [];
+          pipeline(Readable.from([input.subarray(0, 1000), input.subarray(1000)]), stream, new Writable({ write(c, e, cb) { chunks.push(c); cb(); } }), (err) => (err ? reject(err) : resolve(Buffer.concat(chunks))));
+        });
+        (async () => {
+          const t = performance.now();
+          const gz = await through(zlib.createGzip(), data);
+          const ms = performance.now() - t;
+          const results = [
+            zlib.gunzipSync(gz).equals(data),
+            (await through(zlib.createGunzip(), zlib.gzipSync(data))).equals(data),
+            zlib.inflateSync(await through(zlib.createDeflate(), data)).equals(data),
+            zlib.inflateRawSync(await through(zlib.createDeflateRaw(), data)).equals(data),
+            await new Promise((r) => zlib.gunzip(gz, (e, b) => r(!e && b.equals(data)))),
+            await through(zlib.createGunzip(), Buffer.from('not gzip at all')).then(() => 'no error', (e) => e.code),
+          ];
+          console.log(JSON.stringify(results), gz.length < data.length / 100, ms < 2000);
+        })();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), `${JSON.stringify([true, true, true, true, true, 'Z_DATA_ERROR'])} true true`, out.stderr);
+});
+
+test('zlib: a flushed compressing stream emits what was written so far (compression middleware)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const zlib = require('zlib');
+        const results = [];
+        const check = (make, inflate) => new Promise((resolve) => {
+          const z = make();
+          const chunks = [];
+          z.on('data', (c) => chunks.push(c));
+          z.write('event: tick\\ndata: 1\\n\\n');
+          z.flush(() => {
+            const sofar = inflate(Buffer.concat(chunks)).toString();
+            z.end();
+            resolve(sofar);
+          });
+        });
+        (async () => {
+          const opts = { finishFlush: zlib.constants.Z_SYNC_FLUSH };
+          results.push(await check(() => zlib.createDeflateRaw(), (b) => zlib.inflateRawSync(b, opts)));
+          // After gzip's 10-byte header, raw deflate.
+          results.push(await check(() => zlib.createGzip(), (b) => zlib.inflateRawSync(b.subarray(10), opts)));
+          console.log(JSON.stringify(results));
+        })();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), JSON.stringify(['event: tick\ndata: 1\n\n', 'event: tick\ndata: 1\n\n']), out.stderr);
+});
+
+test('Buffer: UTF-8 conversions of long strings (native) match Node', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const s = 'héllo wörld 😀 '.repeat(20);
+        const b = Buffer.from(s);
+        const w = Buffer.alloc(10); const written = w.write('😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀');
+        const at = Buffer.alloc(300, 0x2e); const n = at.write(s, 5, 20, 'utf8');
+        const bad = Buffer.concat([Buffer.from('x'.repeat(80)), Buffer.from([0xff, 0xfe, 0xc3])]);
+        console.log(JSON.stringify([
+          b.length, Buffer.byteLength(s), b.toString() === s, b.toString('utf8', 1, 3), b.toString(undefined, 0, 1000).length,
+          written, w.subarray(0, written).toString(), n, at.subarray(0, 26).toString(),
+          bad.toString().endsWith('\\ufffd\\ufffd\\ufffd'), Buffer.from('\\ufeff' + 'a'.repeat(70)).toString().charCodeAt(0),
+        ]));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // The values real Node 22 gives.
+  assert.deepEqual(JSON.parse(out.stdout), [380, 380, true, 'é', 300, 8, '😀😀', 20, '.....héllo wörld 😀 h.', true, 0xfeff]);
+});
+
+test('fs: streamed and positional writes grow a file in place, as in Node', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const fs = require('fs');
+        const fd = fs.openSync('/tmp/f.bin', 'w');
+        fs.writeSync(fd, 'abcdef');
+        fs.writeSync(fd, Buffer.from('XY'), 0, 2, 1); // an explicit position leaves the file position alone
+        fs.writeSync(fd, 'gh');
+        fs.closeSync(fd);
+        const small = fs.readFileSync('/tmp/f.bin', 'utf8');
+        const chunk = Buffer.alloc(64 * 1024, 7);
+        const t = performance.now();
+        const ws = fs.createWriteStream('/tmp/big.bin');
+        for (let i = 0; i < 640; i++) ws.write(chunk);
+        ws.end(() => {
+          const big = fs.readFileSync('/tmp/big.bin');
+          fs.appendFileSync('/tmp/big.bin', 'end');
+          console.log(JSON.stringify([small, big.length, big.every((b) => b === 7), fs.statSync('/tmp/big.bin').size, performance.now() - t < 3000]));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), ['aXYdefgh', 640 * 64 * 1024, true, 640 * 64 * 1024 + 3, true]);
 });

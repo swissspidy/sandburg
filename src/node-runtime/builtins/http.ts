@@ -34,7 +34,7 @@ export const serverEvents = new EventEmitter();
  * runtimes (threads, child processes: see worker.ts). Anything else goes through fetch().
  */
 export const loopback: {
-  route?(target: number | string, method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse & { error(message: string): void }): boolean;
+  route?(target: number | string, method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse & { error(message: string, code?: string): void }): boolean;
 } = {};
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', '']);
 
@@ -448,7 +448,7 @@ class ClientRequest extends Writable {
           res.push(null);
         }
       },
-      error: (message: string) => this.emit('error', Object.assign(new Error(message), { code: 'ECONNRESET' })),
+      error: (message: string, code = 'ECONNRESET') => this.emit('error', Object.assign(new Error(message), { code })),
     };
     const headers: [string, string][] = Object.entries(this.headers);
     if (!('host' in this.headers)) headers.push(['host', this.host || 'localhost']);

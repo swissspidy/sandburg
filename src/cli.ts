@@ -18,10 +18,12 @@ Commands:
 <project> is a directory, a .zip, a JSON file tree, or snapshot:<id-or-prefix>.
 
 Options:
-  --runtime <name>     auto (default: chosen per project), node, esbuild, angular or wordpress
+  --runtime <name>     node (default; the only runtime)
   --checks <file>      Checks file; default export maps check names to functions
                        (batch: a project's own checks.spec.ts takes precedence)
   --parallel <n>       batch/compare: tabs at a time (default: 4)
+  --no-prewarm         batch/compare: do not warm up common stacks first (only runs when their
+                       installs are missing)
   --out <dir>          Results directory (default: .sandburg/runs)
   --cache <dir>        HTTP cache directory (default: .sandburg/cache)
   --store <dir>        Snapshot store directory (default: .sandburg/store)
@@ -34,9 +36,10 @@ Options:
 Exit codes: 0 passed, 1 failed (app ran, a blocking check failed), 2 error (run did not reach checks), 64 usage error.`;
 
 const OPTIONS = {
-  runtime: { type: 'string', default: 'auto' },
+  runtime: { type: 'string', default: 'node' },
   checks: { type: 'string' },
   parallel: { type: 'string', default: '4' },
+  prewarm: { type: 'boolean', default: true },
   out: { type: 'string' },
   cache: { type: 'string' },
   store: { type: 'string' },
@@ -54,7 +57,7 @@ const OPTIONS = {
 export async function main(argv: string[]): Promise<number> {
   let parsed;
   try {
-    parsed = parseArgs({ args: argv, allowPositionals: true, options: OPTIONS });
+    parsed = parseArgs({ args: argv, allowPositionals: true, allowNegative: true, options: OPTIONS });
   } catch (err) {
     console.error(`${(err as Error).message}\n\n${USAGE}`);
     return 64;
@@ -113,6 +116,8 @@ export async function main(argv: string[]): Promise<number> {
         runBatch(s, items, {
           ...runOptions,
           parallel,
+          prewarm: values.prewarm,
+          log: (line) => console.error(line),
           onResult: (r, item) => {
             if (!values.json) console.log(`${r.status.padEnd(6)} ${(r.timings.totalMs / 1000).toFixed(1).padStart(6)}s  ${item.label}${r.failure ? `  [${r.failure.class}: ${r.failure.rule}]` : ''}`);
           },

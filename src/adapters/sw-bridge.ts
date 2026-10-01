@@ -14,7 +14,9 @@ export interface BridgedRequest {
 
 /** Registers the service worker and keeps handing it a port for app requests. */
 export async function connectServiceWorker(onRequest: (r: BridgedRequest, port: MessagePort) => void): Promise<void> {
-  const registration = await navigator.serviceWorker.register('/__sw__.js', { scope: '/' });
+  // A page may name its own service worker (the static demos register theirs under their path).
+  const sw = (globalThis as { __sandburgServiceWorker?: { url: string; scope: string } }).__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
+  const registration = await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
   await navigator.serviceWorker.ready;
   if (!navigator.serviceWorker.controller) {
     await new Promise<void>((resolve) => navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true }));

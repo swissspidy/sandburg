@@ -338,8 +338,47 @@ export function createModuleSystem(host: LoaderHost) {
     } finally {
       if (threw) delete Module._cache[filename];
     }
+    awaitableWhileEvaluating(mod.exports);
     return mod.exports;
   };
+
+  /**
+   * An async module (top-level await, see src/adapters/node/tla.ts) is still evaluating when
+   * require() returns. Its importers among async modules wait for its __sandburg_tla; import() from
+   * anywhere else resolves with what require() returned, so until then the exports are thenable:
+   * \`await import()\` waits for the evaluation, as in Node. (Not enumerable: copies do not get it.)
+   */
+  function awaitableWhileEvaluating(exports: unknown) {
+    const tla = (exports as { __sandburg_tla?: Promise<unknown> } | null)?.__sandburg_tla;
+    if (!tla || typeof tla.then !== 'function' || Object.prototype.hasOwnProperty.call(exports, 'then')) return;
+    const target = exports as Record<string, unknown>;
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      delete target.then;
+    };
+    try {
+      Object.defineProperty(target, 'then', {
+        configurable: true,
+        enumerable: false,
+        value: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
+          tla.then(
+            () => {
+              done();
+              resolve(target);
+            },
+            (e) => {
+              done();
+              reject(e);
+            },
+          ),
+      });
+      tla.then(done, done);
+    } catch {
+      // a frozen exports object: nothing to wait on
+    }
+  }
 
   Module.createRequire = (filename: string | URL) => {
     const file = fileOf(filename);
@@ -404,7 +443,8 @@ export function createModuleSystem(host: LoaderHost) {
       return true;
     }
   };
-  const needsLowering = (code: string) => /\basync\b|\bawait\b|\beval\("/.test(code);
+  // import() too: the browser would fetch the module itself instead of loading it through this loader.
+  const needsLowering = (code: string) => /\basync\b|\bawait\b|\beval\("|\bimport\s*\(/.test(code);
 
   const loadJs = (m: Mod, filename: string) => {
     let code: string;

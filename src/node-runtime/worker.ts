@@ -25,8 +25,10 @@ import querystring from 'querystring-es3';
 import * as stringDecoder from 'string_decoder';
 import cryptoBrowserify from 'crypto-browserify';
 import zlibBrowserify from 'browserify-zlib';
+import { nativeZlib } from './builtins/zlib-native.ts';
 import { parseArgs } from '@pkgjs/parseargs';
-import { asyncHooks, installAsyncContext } from './async-context.ts';
+import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
+import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https, loopback, servers, serverEvents, type BridgeResponse, type UpgradeSocket } from './builtins/http.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
@@ -43,6 +45,10 @@ export type ToWorker =
       env: Record<string, string>;
       files: FileTree;
       installKey: string | null;
+      /** A bundle of the install's files that runs load (see adapters/node/index.ts). */
+      preload?: string | null;
+      /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
+      filesBundle?: string | null;
       nodeModules: Record<string, number> | null;
       base: string;
       ipc?: boolean;
@@ -53,7 +59,7 @@ export type ToWorker =
       inherit?: { asyncModules: boolean; usesSqlite: boolean };
     }
   /** From the parent thread to this worker thread's parentPort. */
-  | { type: 'wt-message'; data: unknown }
+  | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
   | { type: 'run'; main: string; argv?: string[]; preload?: string[] }
   /** The parent closed this child process's IPC channel. */
   | { type: 'disconnect' }
@@ -65,9 +71,16 @@ export type ToWorker =
   /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
   /** Writes a project file, as an editor would (file watchers see the change). */
   | { type: 'write-file'; path: string; content: string }
+  /** The text files under some directories (dev servers' caches, kept for the next run). */
+  | { type: 'read-tree'; id: number; dirs: string[] }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
   | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
-  | { type: 'ws-close'; id: number; code?: number; reason?: string };
+  | { type: 'ws-close'; id: number; code?: number; reason?: string }
+  /** The reply to a loopback request this runtime sent its parent (see loopback.route). */
+  | { type: 'lb-start'; id: number; status: number; statusText: string; headers: [string, string][] }
+  | { type: 'lb-chunk'; id: number; chunk: ArrayBuffer }
+  | { type: 'lb-end'; id: number }
+  | { type: 'lb-error'; id: number; message: string; code?: string };
 
 export type FromWorker =
   | { type: 'log'; stream: 'stdout' | 'stderr'; text: string }
@@ -86,7 +99,31 @@ export type FromWorker =
   | { type: 'ws-accept'; id: number; protocol: string; extensions: string }
   | { type: 'ws-reject'; id: number; status: number; message: string }
   | { type: 'ws-message'; id: number; data: string | ArrayBuffer }
-  | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean };
+  | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
+  /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
+  | { type: 'process-exit'; command: string; code: number; stderr: string }
+  | { type: 'tree'; id: number; files: Record<string, string | { base64: string }> };
+
+/** An EventEmitter whose listeners run in the async context it was created in (events.EventEmitterAsyncResource). */
+class EventEmitterAsyncResource extends EventEmitter {
+  readonly asyncResource: AsyncResource;
+  constructor(options?: { name?: string; captureRejections?: boolean }) {
+    super(options);
+    this.asyncResource = new AsyncResource(options?.name ?? new.target.name);
+  }
+  emit(event: string | symbol, ...args: unknown[]): boolean {
+    return this.asyncResource.runInAsyncScope(() => super.emit(event, ...args));
+  }
+  emitDestroy(): void {
+    this.asyncResource.emitDestroy();
+  }
+  get asyncId(): number {
+    return this.asyncResource.asyncId();
+  }
+  get triggerAsyncId(): number {
+    return this.asyncResource.triggerAsyncId();
+  }
+}
 
 /** The buffer polyfill predates the base64url encoding (Node 15+); hashes and ids use it. */
 function patchBase64Url(): void {
@@ -117,6 +154,69 @@ function patchBase64Url(): void {
 }
 patchBase64Url();
 
+/**
+ * UTF-8 through the browser's TextEncoder/TextDecoder: the buffer polyfill converts in JavaScript
+ * loops, ~13x slower than Node (11 MB: 560 ms instead of 40). Tools convert a lot (webpack's cache,
+ * loaders, source maps).
+ */
+function patchUtf8(): void {
+  const B = Buffer as unknown as {
+    prototype: Record<string, (...a: unknown[]) => unknown> & { length: number; subarray(s: number, e: number): Uint8Array };
+    from(v: unknown, enc?: unknown, len?: unknown): Buffer;
+  };
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+  const isUtf8 = (enc: unknown) => enc === undefined || enc === null || (typeof enc === 'string' && /^utf-?8$/i.test(enc));
+  const { from } = B;
+  const { toString, write } = B.prototype as unknown as Record<string, (this: Uint8Array, ...a: unknown[]) => unknown>;
+  // Short strings stay in JavaScript: the native encoder's call costs more than it saves there.
+  const SHORT = 64;
+  B.from = function (v: unknown, enc?: unknown, len?: unknown) {
+    if (typeof v === 'string' && v.length > SHORT && isUtf8(enc)) {
+      const bytes = encoder.encode(v);
+      return from.call(B, bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    }
+    return from.call(B, v, enc, len);
+  };
+  const slice = (buf: Uint8Array, start?: unknown, end?: unknown) => {
+    const s = typeof start === 'number' && start > 0 ? Math.floor(start) : 0;
+    const e = typeof end === 'number' && end < buf.length ? Math.floor(end) : buf.length;
+    return e <= s ? '' : decoder.decode(buf.subarray(s, e));
+  };
+  B.prototype.toString = function (this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown) {
+    return isUtf8(enc) && this.length > SHORT ? slice(this, start, end) : Reflect.apply(toString, this, [enc, start, end]);
+  };
+  B.prototype.utf8Slice = function (this: Uint8Array, start?: unknown, end?: unknown) {
+    return slice(this, start, end);
+  };
+  const encodeInto = (buf: Uint8Array, str: string, offset: number, length: number) => {
+    const start = Math.max(0, Math.min(offset, buf.length));
+    return encoder.encodeInto(str, buf.subarray(start, Math.min(buf.length, start + length))).written;
+  };
+  // buf.write(string[, offset[, length]][, encoding])
+  B.prototype.write = function (this: Uint8Array, str: unknown, a?: unknown, b?: unknown, c?: unknown) {
+    let offset = 0;
+    let length = this.length;
+    let enc: unknown;
+    if (typeof a === 'string') enc = a;
+    else {
+      if (typeof a === 'number') offset = a;
+      if (typeof b === 'string') enc = b;
+      else {
+        if (typeof b === 'number') length = b;
+        enc = c;
+      }
+    }
+    if (typeof str !== 'string' || str.length <= SHORT || !isUtf8(enc)) return write.call(this, str, a, b, c);
+    return encodeInto(this, str, offset, Math.min(length, this.length - offset));
+  };
+  B.prototype.utf8Write = function (this: Uint8Array, str: unknown, offset?: unknown, length?: unknown) {
+    const o = typeof offset === 'number' ? offset : 0;
+    return encodeInto(this, String(str), o, typeof length === 'number' ? length : this.length - o);
+  };
+}
+patchUtf8();
+
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
 const realPostMessage = (self as unknown as Worker).postMessage.bind(self);
 const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
@@ -139,7 +239,52 @@ let base = '/__sandburg';
 let installKey: string | null = null;
 let projectRoot = '/app';
 
+/**
+ * Installed files come from the host one synchronous request each, or from the install's preload
+ * bundle: once a runtime has asked for PRELOAD_AFTER files (small helper threads never do), it
+ * fetches the bundle in one request (the browser caches it for the other runtimes of the run).
+ */
+let preloadUrl: string | null = null;
+let preloaded: Map<string, Uint8Array> | null = null;
+let installedRequests = 0;
+const PRELOAD_AFTER = 40;
+
+/** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
+function readBundle(url: string): [string, Uint8Array, string][] {
+  const res = requestSync(url, true);
+  if (res.status !== 200) return [];
+  const bytes = res.body as Uint8Array;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const length = view.getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as [string, string, number][];
+  const files: [string, Uint8Array, string][] = [];
+  let at = 4 + length;
+  for (const [mode, rel, size] of header) {
+    files.push([rel, bytes.subarray(at, at + size), mode]);
+    at += size;
+  }
+  return files;
+}
+
+function loadPreload(): void {
+  preloaded = new Map();
+  try {
+    for (const [rel, bytes, mode] of readBundle(preloadUrl!)) preloaded.set(`${mode}/${rel}`, bytes);
+  } catch {
+    // no bundle: files come one by one
+  }
+}
+
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
+  if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
+    if (!preloaded && ++installedRequests > PRELOAD_AFTER) loadPreload();
+    const hit = preloaded?.get(url.slice(base.length + installKey.length + 5));
+    if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+  }
+  return requestSync(url, binary);
+}
+
+function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
@@ -333,7 +478,7 @@ function buildBuiltins() {
   const zlibUnsupported = (name: string) => () => {
     throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
   };
-  const zlib = Object.assign(Object.create(null), zlibBrowserify, {
+  const zlib = Object.assign(Object.create(null), zlibBrowserify, typeof CompressionStream === 'function' ? nativeZlib : {}, {
     createBrotliCompress: zlibUnsupported('createBrotliCompress'),
     createBrotliDecompress: zlibUnsupported('createBrotliDecompress'),
     brotliCompressSync: zlibUnsupported('brotliCompressSync'),
@@ -349,7 +494,9 @@ function buildBuiltins() {
       return ~c >>> 0;
     },
   });
-  zlib.constants = { ...zlibBrowserify.constants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
+  // browserify-zlib has its Z_* constants on the module, not on `constants`.
+  const zConstants = Object.fromEntries(Object.entries(zlibBrowserify).filter(([k, v]) => k.startsWith('Z_') && typeof v === 'number'));
+  zlib.constants = { ...zConstants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
 
   const assertStrict = Object.assign((v: unknown, m?: string) => assert.strict(v, m as string), assert.strict);
 
@@ -360,7 +507,7 @@ function buildBuiltins() {
     'path/posix': () => path,
     'path/win32': () => path,
     buffer: () => ({ Buffer, SlowBuffer: Buffer, kMaxLength: 2 ** 31 - 1, kStringMaxLength: 2 ** 29, constants: { MAX_LENGTH: 2 ** 31 - 1, MAX_STRING_LENGTH: 2 ** 29 }, Blob, File, atob, btoa, isUtf8: () => true, isAscii: (b: Uint8Array) => b.every((x) => x < 128), transcode: (b: Uint8Array) => b, INSPECT_MAX_BYTES: 50 }),
-    events: () => Object.assign(events, { EventEmitter, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), setMaxListeners: () => {}, addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
+    events: () => Object.assign(events, { EventEmitter, EventEmitterAsyncResource, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), setMaxListeners: () => {}, addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
     stream: () => stream,
     'stream/promises': () => stream.promises,
     'stream/web': () => ({ ReadableStream, WritableStream, TransformStream, TextEncoderStream, TextDecoderStream, ByteLengthQueuingStrategy, CountQueuingStrategy, CompressionStream, DecompressionStream }),
@@ -439,9 +586,11 @@ const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4
 function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
+  preloadUrl = msg.preload ?? null;
   projectRoot = msg.cwd;
   thread = msg.thread ?? null;
-  tsRunner = !!msg.tsRunner;
+  // SANDBURG_TS_RUNNER: started by the shell for tsx, ts-node … (see shell.ts).
+  tsRunner = !!msg.tsRunner || msg.env?.SANDBURG_TS_RUNNER === '1';
   // A worker thread shares its parent's file system (installed packages it reads itself).
   if (thread) {
     const installed = new Vfs((path) => {
@@ -457,6 +606,13 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     const abs = `${msg.cwd}/${path}`;
     vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
     vfs.write(abs, typeof content === 'string' ? new TextEncoder().encode(content) : Uint8Array.from(atob(content.base64), (c) => c.charCodeAt(0)));
+  }
+  if (msg.filesBundle) {
+    for (const [rel, bytes] of readBundle(msg.filesBundle)) {
+      const abs = `${msg.cwd}/${rel}`;
+      vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
+      vfs.write(abs, bytes);
+    }
   }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
@@ -485,7 +641,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -498,7 +654,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     relay: relayFromNested,
   };
   threads = createWorkerThreads(nested);
-  childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string });
+  childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string, reportExit: (info) => post({ type: 'process-exit', ...info }) });
   const table = buildBuiltins();
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
@@ -537,6 +693,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     compiledNodeModule(path: string) {
       if (!installKey) return null;
       const rel = path.slice(projectRoot.length + 1);
+      // A file the program wrote itself (Vite's node_modules/.vite-temp/…): the host has no transform of it.
+      if (nodeModulesIndex && !(rel in nodeModulesIndex)) return null;
       const res = syncGet(`${base}/nm/${installKey}/t/${rel}`, false);
       return res.status === 200 ? (res.body as string) : null;
     },
@@ -579,6 +737,25 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   AsyncFunction.prototype = RealAsyncFunction.prototype;
   (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.AsyncFunction')] = AsyncFunction;
+  // import() inside a Function constructor's source (see interop.ts): resolved from the working directory.
+  Object.defineProperty(globalThis, '__sandburg_import', {
+    configurable: true,
+    value: (specifier: string) =>
+      Promise.resolve().then(() => {
+        const spec = String(specifier).startsWith('file:') ? decodeURIComponent(new URL(String(specifier)).pathname) : String(specifier);
+        // An import(), so resolved with import conditions (as from an ES module).
+        type Mod = { filename: string; paths: string[]; esm: boolean };
+        const M = moduleSystem.Module as unknown as { new (id: string, parent: null): Mod; _nodeModulePaths(d: string): string[]; _load(r: string, p: Mod, main: boolean): unknown };
+        const cwd = (proc.cwd as () => string)();
+        const parent = new M(`${cwd}/[import]`, null);
+        parent.filename = `${cwd}/[import]`;
+        parent.paths = M._nodeModulePaths(cwd);
+        parent.esm = true;
+        const mod = M._load(spec, parent, false) as Record<string, unknown> | null;
+        if (mod && typeof mod === 'object' && (mod.__esModule || (globalThis as Record<symbol, WeakSet<object>>)[Symbol.for('sandburg.esm')]?.has(mod))) return mod;
+        return Object.assign(Object.create(null), mod && typeof mod === 'object' ? mod : {}, { default: mod });
+      }),
+  });
 
   // Node's console writes to process.stdout/stderr.
   const nodeUtil = builtin('util') as { format(...a: unknown[]): string; inspect(v: unknown, o?: object): string };
@@ -654,6 +831,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
   });
   serverEvents.on('listening', (port: number | string) => announce(port));
+  installNodeMessagePorts();
   hideWorkerGlobals();
   post({ type: 'ready' });
   // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
@@ -707,6 +885,8 @@ function run(msg: Extract<ToWorker, { type: 'run' }>) {
 
 function start(msg: Extract<ToWorker, { type: 'run' }>) {
   proc.argv = ['/usr/local/bin/node', msg.main, ...(msg.argv ?? [])];
+  // The main program ends like a child process does: when nothing is left to do (a CLI that exits).
+  if (!thread) exitWhenIdle();
   try {
     // --require / --import (loaded in order, before the entry).
     for (const p of msg.preload ?? []) (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(p, null, false);
@@ -741,7 +921,10 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
 
 self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   const msg = e.data;
-  if (msg.type === 'init') init(msg);
+  if (msg.type === 'init') {
+    adoptMailboxes(e.ports, msg.thread?.mailboxes);
+    init(msg);
+  }
   else if (msg.type === 'run') run(msg);
   else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) nestedPorts.get(msg.port)!.postMessage(msg, msg.body ? [msg.body] : []);
   else if (msg.type === 'request') request(msg);
@@ -755,9 +938,42 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
     proc.emit('disconnect');
   }
   else if (msg.type === 'message') proc?.emit('message', msg.data);
-  else if (msg.type === 'wt-message') threads.deliver(msg.data);
+  else if (msg.type === 'wt-message') {
+    adoptMailboxes(e.ports, msg.mailboxes);
+    threads.deliver(msg.data);
+  }
   else if (msg.type === 'ws-open') wsOpen(msg);
-  else if (msg.type === 'write-file') {
+  else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
+  else if (msg.type === 'read-tree') {
+    const files: Record<string, string | { base64: string }> = {};
+    const utf8 = new TextDecoder('utf-8', { fatal: true });
+    const walk = (dir: string) => {
+      for (const name of vfs.readdir(dir)) {
+        const path = `${dir}/${name}`;
+        const st = vfs.stat(path);
+        if (st.kind === 'dir') walk(path);
+        else if (st.size < 64 << 20) {
+          const bytes = vfs.read(path);
+          let text: string | null = null;
+          try {
+            text = utf8.decode(bytes);
+          } catch {
+            // binary (webpack's cache packs)
+          }
+          files[path.slice(projectRoot.length + 1)] = text ?? { base64: Buffer.from(bytes).toString('base64') };
+        }
+      }
+    };
+    for (const dir of msg.dirs) {
+      try {
+        walk(`${projectRoot}/${dir}`);
+      } catch {
+        // not there
+      }
+    }
+    post({ type: 'tree', id: msg.id, files });
+  }
+    else if (msg.type === 'write-file') {
     const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;
     vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
     vfs.write(abs, new TextEncoder().encode(msg.content));
@@ -869,17 +1085,62 @@ function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker | null):
 const nestedPorts = new Map<number | string, globalThis.Worker>();
 const nestedSockets = new Map<number, globalThis.Worker>();
 /** Requests this runtime's programs made to servers in nested runtimes (http.request to localhost). */
-const loopbackRequests = new Map<number, BridgeResponse & { error(message: string): void }>();
+const loopbackRequests = new Map<number, BridgeResponse & { error(message: string, code?: string): void }>();
 let nextLoopbackId = -1 - Math.floor(Math.random() * 2 ** 40);
+/**
+ * A request to a server this runtime does not run: down to the nested runtime that runs it, else up
+ * to the parent, which looks among its own servers and its other children (a Vite dev server
+ * proxying /api to a backend that the same dev script started).
+ */
 loopback.route = (target, method, url, headers, body, bridge) => {
   const worker = nestedPorts.get(target);
-  if (!worker) return false;
+  if (!worker && !thread) return false;
   const id = nextLoopbackId--;
   loopbackRequests.set(id, bridge);
   const buf = body ? (body.slice().buffer as ArrayBuffer) : null;
-  worker.postMessage({ type: 'request', id, port: target, method, url, headers, body: buf } satisfies ToWorker, buf ? [buf] : []);
+  const msg = { id, port: target, method, url, headers, body: buf };
+  if (worker) worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
+  else realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
   return true;
 };
+
+/** The parent's reply to a request sent up by loopback.route. */
+function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
+  const bridge = loopbackRequests.get(m.id);
+  if (!bridge) return;
+  if (m.type === 'lb-start') bridge.start(m.status, m.statusText, m.headers);
+  else if (m.type === 'lb-chunk') bridge.chunk(new Uint8Array(m.chunk));
+  else {
+    loopbackRequests.delete(m.id);
+    if (m.type === 'lb-end') bridge.end();
+    else bridge.error(m.message, m.code);
+  }
+}
+
+/** A loopback request from a nested runtime: served here, or routed on (see loopback.route). */
+function loopbackRequest(m: { id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }, from: globalThis.Worker) {
+  const reply = (x: ToWorker, t: Transferable[] = []) => from.postMessage(x, t);
+  const id = m.id;
+  const bridge = {
+    start: (status: number, statusText: string, headers: [string, string][]) => reply({ type: 'lb-start', id, status, statusText, headers }),
+    chunk: (data: Uint8Array) => {
+      const chunk = data.slice().buffer as ArrayBuffer;
+      reply({ type: 'lb-chunk', id, chunk }, [chunk]);
+    },
+    end: () => reply({ type: 'lb-end', id }),
+    error: (message: string, code?: string) => reply({ type: 'lb-error', id, message, code }),
+  };
+  const body = m.body ? new Uint8Array(m.body) : null;
+  const server = servers.get(m.port);
+  try {
+    if (server) server.dispatch(m.method, m.url, m.headers, body, bridge);
+    else if (nestedPorts.get(m.port) === from || !loopback.route!(m.port, m.method, m.url, m.headers, body, bridge)) {
+      bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
+    }
+  } catch (e) {
+    bridge.error(String((e as Error)?.message ?? e));
+  }
+}
 /** Only TCP ports are the host's business; a nested runtime's parent also learns its socket paths. */
 const announce = (port: number | string) => {
   if (typeof port === 'number' || thread) post({ type: 'listening', port });
@@ -901,6 +1162,12 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
     return true;
   }
   switch (m.type) {
+    case 'process-exit':
+      post(m as FromWorker);
+      return true;
+    case 'lb-request':
+      loopbackRequest(m as unknown as Parameters<typeof loopbackRequest>[0], from);
+      return true;
     case 'listening':
       nestedPorts.set(m.port as number | string, from);
       announce(m.port as number | string);

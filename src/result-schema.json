@@ -15,7 +15,7 @@
       "properties": {
         "name": { "type": "string" },
         "path": { "type": "string" },
-        "framework": { "enum": ["vite", "next", "angular", "astro", "sveltekit", "nuxt", "solid-start", "react-router", "wordpress", "static", "unknown"] },
+        "framework": { "enum": ["vite", "next", "angular", "astro", "sveltekit", "nuxt", "solid-start", "react-router", "static", "unknown"] },
         "snapshotId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "fileCount": { "type": "integer", "minimum": 0 }
       }

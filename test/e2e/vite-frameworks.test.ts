@@ -35,7 +35,7 @@ const cases: [string, string, string][] = [
 for (const [name, framework, what] of cases) {
   test(`${what} runs on the node runtime`, async () => {
     const dir = fixture(name);
-    const result = await session.run(dir, { runtime: 'node', checks: `${dir}/checks.spec.ts`, outDir });
+    const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
     assert.equal(result.project.framework, framework);
     assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
   });
@@ -47,7 +47,7 @@ test('a SvelteKit load() that throws is an app bug', async () => {
     { ...project.files, 'src/routes/+page.server.ts': "export function load() {\n  throw new Error('database offline');\n}\n" },
     { name: 'sveltekit-broken-load', path: fixture('sveltekit-app') },
   );
-  const result = await session.run(broken, { runtime: 'node', outDir });
+  const result = await session.run(broken, { outDir });
   assert.equal(result.status, 'failed');
   assert.equal(result.failure?.class, 'app-bug', JSON.stringify(result.failure, null, 2));
 });

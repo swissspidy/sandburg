@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandburg demos</title>
+<meta name="description" content="Real dev servers (Next.js, Vite, Express, SvelteKit, Angular) running inside a browser tab with Sandburg's Node.js runtime.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="gallery">
+<header class="hero">
+  <h1>Sandburg</h1>
+  <p class="lede">Run and test generated web apps inside the browser. Each demo below starts a real project's own dev server, <code>next dev</code>, Vite, <code>ng serve</code> or Express, on a Node.js runtime inside your browser tab. There's no server and no container.</p>
+  <p><a href="https://github.com/swissspidy/sandburg">Source on GitHub</a></p>
+</header>
+<main>
+  <ul class="cards" id="demos"></ul>
+  <section class="how">
+    <h2>How it works</h2>
+    <ol>
+      <li><strong>A Node.js runtime in a Web Worker:</strong> <code>fs</code>, <code>http</code>, <code>child_process</code>, <code>worker_threads</code> and the rest, in TypeScript. The Rust tools that dev servers use (SWC, rolldown, esbuild, Tailwind's oxide) run on their WebAssembly builds.</li>
+      <li><strong>The project's own dev server:</strong> the dev script runs as written, through a small shell (so <code>concurrently "vite" "node server"</code> works too).</li>
+      <li><strong>A service worker</strong> gives each app its own origin in the tab and hands its requests to the servers in the runtime.</li>
+    </ol>
+    <p>In Sandburg itself, a host process installs packages with npm and compiles modules for the runtime; Playwright then checks the running app. These pages replay the host's answers from static files, recorded when the site was built. Everything else happens in your browser.</p>
+    <p class="small">These demos need a recent Chromium-based browser, Firefox or Safari with service workers and SharedArrayBuffer. They download 5–60 MB.</p>
+  </section>
+</main>
+<script type="module">
+  const demos = await fetch('demos.json').then((r) => r.json());
+  const list = document.getElementById('demos');
+  for (const d of demos) {
+    const li = document.createElement('li');
+    li.innerHTML = `<a href="demos/${d.name}/"><img alt="" loading="lazy" width="640" height="400"><h2></h2><p class="desc"></p><p class="meta"></p></a>`;
+    const img = li.querySelector('img');
+    img.src = `demos/${d.name}/preview.png`;
+    img.onerror = () => img.remove();
+    li.querySelector('h2').textContent = d.title;
+    li.querySelector('.desc').textContent = d.description;
+    li.querySelector('.meta').textContent = `${d.command} · ${(d.downloadBytes / 1e6).toFixed(0)} MB`;
+    list.append(li);
+  }
+</script>
+</body>
+</html>

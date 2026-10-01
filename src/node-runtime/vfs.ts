@@ -40,6 +40,8 @@ const ERRNO: Record<string, number> = { ENOENT: 2, EEXIST: 17, ENOTDIR: 20, EISD
 
 interface FileNode {
   data: Uint8Array | null; // null: not fetched yet (remote)
+  /** Memory this file owns, with room to grow; `data` is its first `size` bytes (see writeAt). */
+  store?: Uint8Array;
   size: number;
   mtimeMs: number;
   ino: number;
@@ -99,19 +101,43 @@ export class Vfs {
     if (!this.dirs.has(dir)) throw new FsError('ENOENT', 'open', path);
     const existing = this.files.get(path);
     const now = Date.now();
-    if (append && existing) {
-      const prev = existing.data ?? this.read(path);
-      const merged = new Uint8Array(prev.length + data.length);
-      merged.set(prev);
-      merged.set(data, prev.length);
-      data = merged;
-    }
+    if (append && existing) return this.writeAt(path, data, 'end');
     this.files.set(path, { data, size: data.length, mtimeMs: now, ino: existing?.ino ?? this.inos++ });
     if (!existing) {
       this.dirs.get(dir)!.add(base(path));
       this.dirMtimes.set(dir, now);
     }
     this.emit(existing ? 'change' : 'rename', path);
+  }
+
+  /**
+   * Writes `data` into a file at `position` ('end' appends), growing it in place: streamed writes
+   * (a 40 MB webpack cache pack in 64 KB chunks) copy each byte once, not the whole file per write.
+   */
+  writeAt(path: string, data: Uint8Array, position: number | 'end'): void {
+    path = norm(path);
+    const existing = this.files.get(path);
+    if (!existing) {
+      const fresh = new Uint8Array((position === 'end' ? 0 : position) + data.length);
+      fresh.set(data, position === 'end' ? 0 : position);
+      return this.write(path, fresh);
+    }
+    const prev = existing.data ?? this.read(path);
+    const at = position === 'end' ? prev.length : position;
+    const size = Math.max(prev.length, at + data.length);
+    // Only memory the file owns is written in place (arrays from elsewhere may be shared).
+    let store = existing.store && existing.data?.buffer === existing.store.buffer ? existing.store : null;
+    if (!store || store.length < size) {
+      const grown = new Uint8Array(Math.max(size, (store?.length ?? prev.length) * 2, 4096));
+      grown.set(prev);
+      store = grown;
+    }
+    store.set(data, at);
+    existing.store = store;
+    existing.data = store.subarray(0, size);
+    existing.size = size;
+    existing.mtimeMs = Date.now();
+    this.emit('change', path);
   }
 
   mkdir(path: string, recursive = false): string | undefined {

@@ -35,3 +35,16 @@ export function patchAsyncFunction(source: string): string {
 export function esmSourcefile(path: string): string {
   return /\.m[jt]s$/.test(path) ? path : `${path}.mjs`;
 }
+
+/**
+ * `new Function('s', 'return import(s)')` (a way to keep a native dynamic import in bundled or
+ * CommonJS code) reaches the browser's module loader, which knows nothing of node_modules. Inside
+ * a Function constructor's string arguments, `import(` goes to the runtime's loader instead
+ * (globalThis.__sandburg_import). Runs on source.
+ */
+export function patchFunctionImport(source: string): string {
+  if (!source.includes('import(') || !/\bFunction\s*\(/.test(source)) return source;
+  return source.replace(/\bFunction\s*\((?:[^()]|\([^()]*\))*\)/g, (call) =>
+    call.replace(/(["'`][^"'`\n]*?)\bimport\(/g, '$1__sandburg_import('),
+  );
+}

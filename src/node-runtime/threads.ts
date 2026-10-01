@@ -10,6 +10,7 @@
  */
 import { EventEmitter } from 'events';
 import { FsError, Vfs, type VStat } from './vfs.ts';
+import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
 export interface ThreadInit {
@@ -21,13 +22,15 @@ export interface ThreadInit {
   main: string;
   /** The project's files when the thread started (see projectSnapshot), for reads while the parent is blocked. */
   snapshot?: Record<string, Uint8Array>;
+  /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
+  mailboxes?: ReturnType<typeof mailboxesFor>;
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
   process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
 }
 
 // --- the shared VFS ----------------------------------------------------------------------
 
-type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
+type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'writeAt' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
 const HEADER = 16;
 const READ_OPS = new Set<VfsOp>(['exists', 'stat', 'read', 'readdir']);
 /** How long a thread waits for its parent before reading from its snapshot instead. */
@@ -109,6 +112,9 @@ export class RemoteVfs extends Vfs {
   override write(path: string, data: Uint8Array, append = false): void {
     this.call('write', [path, data, append]);
   }
+  override writeAt(path: string, data: Uint8Array, position: number | 'end'): void {
+    this.call('writeAt', [path, data, position]);
+  }
   override mkdir(path: string, recursive = false): string | undefined {
     return this.call('mkdir', [path, recursive]) as string | undefined;
   }
@@ -134,7 +140,6 @@ export class RemoteVfs extends Vfs {
  */
 export class ThreadVfs extends RemoteVfs {
   private installed: Vfs;
-  private nm: string;
 
   private snapshot: Vfs | null;
   private root: string;
@@ -142,7 +147,6 @@ export class ThreadVfs extends RemoteVfs {
   constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>) {
     super(post);
     this.installed = installed;
-    this.nm = `${cwd}/node_modules/`;
     this.root = cwd;
     this.snapshot = null;
     if (snapshot) {
@@ -167,7 +171,7 @@ export class ThreadVfs extends RemoteVfs {
       if (op === 'stat') return { value: snap.stat(path, String(args[1] ?? 'stat')) };
       if (op === 'read') return { value: snap.read(path) };
       const names = snap.readdir(path);
-      if (path === this.root && this.installed.exists(this.nm.slice(0, -1)) && !names.includes('node_modules')) names.push('node_modules');
+      if (this.installed.exists(`${path}/node_modules`) && !names.includes('node_modules')) names.push('node_modules');
       return { value: names };
     } catch (e) {
       return { value: e };
@@ -175,7 +179,8 @@ export class ThreadVfs extends RemoteVfs {
   }
 
   private local(path: string): boolean {
-    return path.startsWith(this.nm) && !/\/node_modules\/\.(vite|cache|tmp|astro|svelte-kit)/.test(path) && this.installed.exists(path);
+    // The root's node_modules, and those of packages in it (client/, server/).
+    return path.startsWith(this.root) && path.includes('/node_modules/') && !/\/node_modules\/\.(vite|cache|tmp|astro|svelte-kit)/.test(path) && this.installed.exists(path);
   }
 
   override exists(path: string): boolean {
@@ -319,6 +324,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   if (warmTarget) queueMicrotask(refill);
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data as { type: string; [k: string]: unknown };
+    if (m.type === 'wt-message') adoptMailboxes(e.ports, m.mailboxes as Parameters<typeof adoptMailboxes>[1]);
     if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m as unknown as Parameters<typeof serveVfsCall>[1]);
     else if (!host.relay(m, worker)) onMessage(m);
   };
@@ -364,7 +370,7 @@ export function createWorkerThreads(host: ThreadHost) {
         main = f.startsWith('file:') ? decodeURIComponent(new URL(f).pathname) : host.resolvePath(f);
       }
       const env = options.env === SHARE_ENV || options.env === undefined ? host.env() : (options.env as Record<string, string>);
-      const thread: ThreadInit = { id: this.threadId, workerData: options.workerData, env: { ...env }, argv: (options.argv ?? []).map(String), main };
+      const thread: ThreadInit = { id: this.threadId, workerData: options.workerData, env: { ...env }, argv: (options.argv ?? []).map(String), main, mailboxes: mailboxesFor(options.transferList) };
       this.worker = startRuntime(
         host,
         thread,
@@ -412,7 +418,7 @@ export function createWorkerThreads(host: ThreadHost) {
 
     postMessage(value: unknown, transferList?: Transferable[] | { transfer?: Transferable[] }) {
       const transfer = Array.isArray(transferList) ? transferList : (transferList?.transfer ?? []);
-      this.worker.postMessage({ type: 'wt-message', data: value }, transfer);
+      this.worker.postMessage({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) }, transfer);
     }
 
     terminate(): Promise<number> {
@@ -451,7 +457,7 @@ export function createWorkerThreads(host: ThreadHost) {
     }
     postMessage(value: unknown, transferList?: Transferable[] | { transfer?: Transferable[] }) {
       const transfer = Array.isArray(transferList) ? transferList : (transferList?.transfer ?? []);
-      host.postToParent({ type: 'wt-message', data: value }, transfer);
+      host.postToParent({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) }, transfer);
     }
     start() {}
     close() {}
@@ -474,14 +480,17 @@ export function createWorkerThreads(host: ThreadHost) {
       resourceLimits: {},
       SHARE_ENV,
       Worker,
-      MessageChannel,
+      // The runtime's MessageChannel (see message-ports.ts), installed when the runtime starts.
+      get MessageChannel() {
+        return globalThis.MessageChannel;
+      },
       MessagePort,
       BroadcastChannel,
       markAsUntransferable: () => {},
       isMarkedAsUntransferable: () => false,
       markAsUncloneable: () => {},
       moveMessagePortToContext: (p: unknown) => p,
-      receiveMessageOnPort: () => undefined,
+      receiveMessageOnPort,
       getEnvironmentData: () => undefined,
       setEnvironmentData: () => {},
     },
