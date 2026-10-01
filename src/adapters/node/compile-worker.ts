@@ -52,7 +52,7 @@ function compiler(): void {
 
 function broker(): void {
   const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
-  const workers: { worker: Worker; busy: number }[] = [];
+  const workers: { worker: Worker; busy: number; jobs: Set<number> }[] = [];
   const waiting = new Map<number, (answer: { ok: boolean; text: string }) => void>();
   const results = new Map<string, Promise<{ ok: boolean; text: string }>>();
   const encoder = new TextEncoder();
@@ -69,16 +69,30 @@ function broker(): void {
       if (!entry) return;
       const job = queue.shift()!;
       entry.busy++;
+      entry.jobs.add(job.id);
       entry.worker.postMessage({ id: job.id, wasmModule: module, request: job.request });
     }
   };
   const spawn = () => {
     const worker = new Worker(`${scope.location.href.split('?')[0]}?compiler`);
-    const entry = { worker, busy: 0 };
-    worker.onmessage = (e: MessageEvent<{ id: number; ok: boolean; text: string }>) => {
+    const entry = { worker, busy: 0, jobs: new Set<number>() };
+    const settle = (id: number, answer: { ok: boolean; text: string }) => {
+      if (!entry.jobs.delete(id)) return;
       entry.busy--;
-      waiting.get(e.data.id)?.(e.data);
-      waiting.delete(e.data.id);
+      waiting.get(id)?.(answer);
+      waiting.delete(id);
+    };
+    worker.onmessage = (e: MessageEvent<{ id: number; ok: boolean; text: string }>) => {
+      settle(e.data.id, e.data);
+      void wasmModule?.then(dispatch);
+    };
+    // A compile worker that fails (its script, or esbuild running out of memory): its jobs fail as
+    // compile errors instead of leaving their runtimes waiting, and a new worker takes the queue.
+    worker.onerror = (e: ErrorEvent) => {
+      e.preventDefault();
+      workers.splice(workers.indexOf(entry), 1);
+      worker.terminate();
+      for (const id of [...entry.jobs]) settle(id, { ok: false, text: `the page's compiler failed: ${e.message || 'worker error'}` });
       void wasmModule?.then(dispatch);
     };
     workers.push(entry);
@@ -96,7 +110,8 @@ function broker(): void {
   };
 
   const key = async (request: CompileJob) => {
-    const text = request.op === 'tla' ? JSON.stringify(request.files) : `${request.kind}|${request.asyncModules ? 1 : 0}|${request.path}|${request.code}`;
+    // Serialized structurally: a "|" in a path or in code cannot make two requests one.
+    const text = JSON.stringify(request.op === 'tla' ? [request.op, request.files] : [request.op, request.kind, request.asyncModules, request.path, request.code]);
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text)));
     return `${request.op}:${Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('')}`;
   };

@@ -111,8 +111,9 @@ function connectCompiler(compiler: Worker): MessagePort {
 export function createAdapter(): RuntimeAdapter {
   let files: FileTree = {};
   let proc: NodeProcess | null = null;
-  /** The page's compiler, when the packages are installed in the browser. */
+  /** The page's compiler, when the packages are installed in the browser, and its failure. */
   let compiler: Worker | null = null;
+  let compilerError: AdapterError | null = null;
   let main = `/app/${START}`;
   let argv: string[] = [];
   let shell = false;
@@ -153,7 +154,15 @@ export function createAdapter(): RuntimeAdapter {
       if (host.browserInstall) {
         // Opt-in: the install happens here, from the npm registry (see npm/install.ts), and the runtime
         // compiles in the page (compile-worker.ts), not on the host. Its esbuild loads meanwhile.
-        compiler ??= new Worker('/__sandburg/compile-worker.js');
+        if (!compiler) {
+          compiler = new Worker('/__sandburg/compile-worker.js');
+          // Runtimes wait for its answers: if it fails, so does the run, instead of waiting out a deadline.
+          compiler.onerror = (e) => {
+            e.preventDefault();
+            compilerError = new AdapterError('INTERNAL', `the page's compiler failed: ${e.message || 'worker error'}`);
+            proc?.fail(compilerError);
+          };
+        }
         let result;
         try {
           result = await installInBrowser(host.browserInstall, new Registry(), (line) => ctx.log('stdout', line));
@@ -184,6 +193,7 @@ export function createAdapter(): RuntimeAdapter {
         }
         ctx.log('stdout', `starting: ${host.start.command}`);
       }
+      if (compilerError) throw compilerError;
       proc = new NodeProcess({
         tsRunner: host.start?.tsRunner,
         files,
@@ -271,6 +281,7 @@ export function createAdapter(): RuntimeAdapter {
       proc = null;
       compiler?.terminate();
       compiler = null;
+      compilerError = null;
     },
   };
 }
