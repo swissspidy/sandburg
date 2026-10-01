@@ -241,13 +241,16 @@ let projectRoot = '/app';
 
 /**
  * Installed files come from the host one synchronous request each, or from the install's preload
- * bundle: once a runtime has asked for PRELOAD_AFTER files (small helper threads never do), it
- * fetches the bundle in one request (the browser caches it for the other runtimes of the run).
+ * bundle: once a runtime has asked for a few files, it fetches the bundle in one request (the browser
+ * caches it for the other runtimes of the run). A program's runtime switches after PRELOAD_AFTER
+ * files (each single request costs ~10 ms; next dev's first 40 took 0.4 s); a worker thread after
+ * PRELOAD_AFTER_THREAD, so the small WebAssembly helper threads never hold the bundle.
  */
 let preloadUrl: string | null = null;
 let preloaded: Map<string, Uint8Array> | null = null;
 let installedRequests = 0;
-const PRELOAD_AFTER = 40;
+const PRELOAD_AFTER = 10;
+const PRELOAD_AFTER_THREAD = 40;
 
 /** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
 function readBundle(url: string): [string, Uint8Array, string][] {
@@ -277,7 +280,7 @@ function loadPreload(): void {
 
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
-    if (!preloaded && ++installedRequests > PRELOAD_AFTER) loadPreload();
+    if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
     const hit = preloaded?.get(url.slice(base.length + installKey.length + 5));
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
   }

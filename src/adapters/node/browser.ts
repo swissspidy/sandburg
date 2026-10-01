@@ -139,7 +139,9 @@ export function createAdapter(): RuntimeAdapter {
         files,
         // NEXT_TEST_WASM: load SWC's WebAssembly build (there is no native SWC in the browser).
         // PORT only for a single server: the servers of a dev script listen where it says.
-        env: { NEXT_TELEMETRY_DISABLED: '1', ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
+        // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
+        // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
+        env: { NEXT_TELEMETRY_DISABLED: '1', ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,

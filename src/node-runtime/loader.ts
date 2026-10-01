@@ -65,20 +65,8 @@ export function createModuleSystem(host: LoaderHost) {
   }
   const pkgCache = new Map<string, PackageJson | null>();
 
-  const isFile = (p: string) => {
-    try {
-      return vfs.stat(p).kind === 'file';
-    } catch {
-      return false;
-    }
-  };
-  const isDir = (p: string) => {
-    try {
-      return vfs.stat(p).kind === 'dir';
-    } catch {
-      return false;
-    }
-  };
+  const isFile = (p: string) => vfs.kind(p) === 'file';
+  const isDir = (p: string) => vfs.kind(p) === 'dir';
   const readPackage = (dir: string): PackageJson | null => {
     const file = `${dir}/package.json`;
     if (pkgCache.has(file)) return pkgCache.get(file)!;

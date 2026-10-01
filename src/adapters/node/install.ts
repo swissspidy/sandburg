@@ -20,7 +20,7 @@ import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } 
 import type { Project } from '../../types.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 10;
+export const TRANSFORM_VERSION = 11;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 14;
 
@@ -588,11 +588,18 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
 }
 
 /**
- * Changes to package sources for what the browser cannot do. piscina's workers wait for tasks with
+ * Changes to package sources for what the browser cannot do, or does slowly. piscina's workers wait for tasks with
  * Atomics.wait and take them with receiveMessageOnPort, which needs a synchronous look into a
  * MessagePort (browsers have none): they use its message-event mode instead, as under WebContainers.
  */
 const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }[] = [
+  {
+    // Next.js' webpack cache: read-only unless the run keeps it (a seed run). next dev gzips its cache
+    // packs as it stores them, 2.1 s of a warm run's main thread, for a cache no later run reads.
+    file: /(^|\/)node_modules\/next\/dist\/build\/webpack-config\.js$/,
+    from: /compression: dev \? 'gzip' : false\n/,
+    to: "compression: dev ? 'gzip' : false,\n        readonly: process.env.SANDBURG_WEBPACK_CACHE_READONLY === '1' // sandburg: see SOURCE_PATCHES\n",
+  },
   {
     file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
     from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
