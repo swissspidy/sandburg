@@ -23,6 +23,8 @@
     "src",
     "test",
     "scripts/pages",
+    "scripts/profile.ts",
+    "scripts/edit-loop.ts",
     "pages/compile.ts",
     "fixtures/vite-react-counter/checks.spec.ts"
   ]

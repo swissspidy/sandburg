@@ -34,7 +34,8 @@ Vue + Express + SQLite app, running in your browser.
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
 from empty Sandburg caches. A Next.js app that has never run, with a new install, runs in
 15.7 s, down from about 45 s. Its first compile takes 2.2 s, where native `next dev` on the same
-machine takes 3.9 s ([ADR 0014](docs/adr/0014-node-runtime-only.md)).
+machine takes 3.9 s ([ADR 0014](docs/adr/0014-node-runtime-only.md)). Since study v6, a profile of the runtime made warm
+Next.js runs a third faster, 11.9 s to 8.0 s ([ADR 0017](docs/adr/0017-runtime-profile.md)).
 
 ## Quick start
 
@@ -132,6 +133,8 @@ npm run test:runtime   # the runtime's loader and built-ins, in Chromium
 npm run test:e2e       # fixtures end to end (the first run needs network access; Docker tests skip without Docker)
 npm run typecheck
 node scripts/pages/build.ts --verify   # the demo site, into dist-pages/
+node scripts/profile.ts <project>      # where a run's time goes: V8 CPU profile of every thread, by package
+node scripts/edit-loop.ts               # edit-to-render latency of the fixtures
 ```
 
 The demo site replays the host's answers from static files, recorded when the site is built
