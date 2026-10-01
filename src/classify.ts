@@ -143,20 +143,30 @@ const ANSI = /\x1b\[[0-9;]*m/g;
  */
 export function devServerCompileError(lines: string[]): string | null {
   // Without the stream, and the prefix of a process that concurrently runs ("[client] ").
-  const clean = lines.map((l) => l.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, '').replace(/^\[[\w@:./-]{1,40}\]\s/, ''));
+  const unprefixed = lines.map((l) => l.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, ''));
+  const clean = unprefixed.map((l) => l.replace(/^\[[\w@:./-]{1,40}\]\s/, ''));
   for (let i = 0; i < clean.length; i++) {
     const head = /(?:Internal server error|Pre-transform error): (.+)/.exec(clean[i]);
     if (!head) continue;
     // The location: a "File:" line below, else the path the message starts with ("/app/src/x.tsx: … (2:14)").
     let at: { path: string; loc: string } | null = null;
+    // Vite 8 (oxc, rolldown): "Transform failed with 1 error:", then "[PARSE_ERROR] <message>" and a
+    // code frame headed "╭─[ app/src/App.tsx:3:1 ]".
+    let frame: { path: string; loc: string } | null = null;
+    let coded: string | null = null;
     for (let j = i + 1; j < Math.min(clean.length, i + 12) && !at; j++) {
       const file = /^\s*File: \/app\/(\S+?)(:\d+:\d+)?$/.exec(clean[j].trim() ? clean[j] : '');
       if (file) at = { path: file[1], loc: file[2] ?? '' };
+      const span = /╭─\[\s*\/?app\/(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
+      if (span) frame ??= { path: span[1], loc: span[2] };
+      const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(unprefixed[j]);
+      if (code) coded ??= code[1].trim();
     }
+    if (frame && (!at || (at.path === frame.path && !at.loc))) at = frame;
     const inline = /^\/app\/([^\s:]+)(:\d+:\d+)?:?\s+(.*?)(?:\s+\((\d+):(\d+)\))?$/.exec(head[1].trim());
     if (!at && inline) at = { path: inline[1], loc: inline[2] ?? (inline[4] ? `:${inline[4]}:${inline[5]}` : '') };
     if (!at || /(^|\/)node_modules\//.test(at.path)) continue;
-    const message = inline && inline[1] === at.path ? inline[3] + (inline[4] ? ` (${inline[4]}:${inline[5]})` : '') : head[1].trim();
+    const message = inline && inline[1] === at.path ? inline[3] + (inline[4] ? ` (${inline[4]}:${inline[5]})` : '') : /^Transform failed with \d+ errors?:$/.test(head[1].trim()) && coded ? coded : head[1].trim();
     return `${at.path}${at.loc}: ${message}`;
   }
   // esbuild's format (the Angular CLI, Vite's dependency scan): "✘ [ERROR] <message>", then "/app/<path>:<line>:<column>:".

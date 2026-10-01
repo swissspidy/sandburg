@@ -34,6 +34,10 @@ updates:
       # A fixture's updates together, majors included: a new major is what the fixtures are there to test.
       fixtures:
         patterns: ["*"]
+    ignore:
+      # TypeScript 7 is native code only, and Angular's compiler and svelte-check require 6 (ADR 0019).
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
