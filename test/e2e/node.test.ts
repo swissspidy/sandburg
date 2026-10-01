@@ -77,6 +77,13 @@ const crashCases = {
     `  new Worker('setTimeout(() => ${TRAP})', { eval: true }).on('error', () => {});`,
     '}).listen(3000);',
   ],
+  // The same, trapping in a promise callback (an unhandled rejection, not an uncaught exception).
+  'waits for it (promise callback)': [
+    "const { Worker } = require('node:worker_threads');",
+    "require('node:http').createServer(() => {",
+    `  new Worker('Promise.resolve().then(() => ${TRAP})', { eval: true }).on('error', () => {});`,
+    '}).listen(3000);',
+  ],
   // The parent blocks in Atomics.wait, so it cannot pass the crash on: the thread reports it itself.
   'is blocked': [
     "const { Worker } = require('node:worker_threads');",

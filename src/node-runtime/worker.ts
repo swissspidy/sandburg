@@ -895,6 +895,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if (proc.listenerCount('unhandledRejection')) {
       e.preventDefault();
       proc.emit('unhandledRejection', e.reason, e.promise);
+    } else if (thread && e.reason instanceof WebAssembly.RuntimeError) {
+      // A trap in a promise callback ends the thread (and its process) like one in any other callback.
+      e.preventDefault();
+      postFatal(e.reason);
     } else {
       write('stderr', `Uncaught (in promise) ${e.reason?.stack ?? e.reason}\n`);
     }
