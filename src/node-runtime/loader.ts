@@ -65,20 +65,8 @@ export function createModuleSystem(host: LoaderHost) {
   }
   const pkgCache = new Map<string, PackageJson | null>();
 
-  const isFile = (p: string) => {
-    try {
-      return vfs.stat(p).kind === 'file';
-    } catch {
-      return false;
-    }
-  };
-  const isDir = (p: string) => {
-    try {
-      return vfs.stat(p).kind === 'dir';
-    } catch {
-      return false;
-    }
-  };
+  const isFile = (p: string) => vfs.kind(p) === 'file';
+  const isDir = (p: string) => vfs.kind(p) === 'dir';
   const readPackage = (dir: string): PackageJson | null => {
     const file = `${dir}/package.json`;
     if (pkgCache.has(file)) return pkgCache.get(file)!;
@@ -437,7 +425,8 @@ export function createModuleSystem(host: LoaderHost) {
   const looksEsm = (code: string) => {
     if (!/^\s*(import\s*[\w{*'"]|export\s+[\w{*]|export\s*\{)/m.test(code) && !/\bimport\.meta\b/.test(code) && !/\bawait\b/.test(code)) return false;
     try {
-      new Function(code);
+      // A hashbang (bin scripts) is no syntax error for a module, but is one for a Function body.
+      new Function(code.replace(/^#!.*/, ''));
       return false;
     } catch {
       return true;

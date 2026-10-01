@@ -39,9 +39,9 @@ test('milestone 1: the Vite + React fixture runs and its functional checks pass'
   for (const key of ['loadMs', 'mountMs', 'installMs', 'startMs', 'readyMs', 'checksMs'] as const) {
     assert.equal(typeof result.timings[key], 'number', key);
   }
-  // The versions npm installed for the declared ranges (^18.3.1).
-  assert.match(result.install?.dependencies?.react ?? '', /^18\.\d+\.\d+$/);
-  assert.match(result.install?.dependencies?.['react-dom'] ?? '', /^18\.\d+\.\d+$/);
+  // The versions npm installed for the declared ranges (^19.3.0).
+  assert.match(result.install?.dependencies?.react ?? '', /^19\.\d+\.\d+$/);
+  assert.match(result.install?.dependencies?.['react-dom'] ?? '', /^19\.\d+\.\d+$/);
   assert.ok(result.artifacts.screenshot);
   await access(result.artifacts.screenshot);
 

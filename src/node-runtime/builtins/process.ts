@@ -218,7 +218,7 @@ export function createProcess(opts: ProcessOptions) {
     env: opts.env,
     exitCode: undefined,
     config: { variables: { napi_build_version: '10' } },
-    features: { inspector: false, ipv6: true, tls: false, typescript: false },
+    features: { inspector: false, ipv6: true, tls: false, typescript: 'strip' },
     allowedNodeEnvironmentFlags: new Set<string>(),
     stdout: out('stdout'),
     stderr: out('stderr'),

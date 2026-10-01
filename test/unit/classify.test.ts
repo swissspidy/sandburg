@@ -157,6 +157,30 @@ test('a project file Vite cannot compile is an app bug at its location; a depend
   // Svelte: path and location first, "File:" below with its color codes.
   const svelte = classify(input({ phases: failedAt('ready', '500'), runtimeOutput: ['[runtime:stderr] [vite] Internal server error: /app/src/lib/Counter.svelte:10:2 Unterminated regular expression', '[runtime:stderr]   File: \x1b[36m/app/src/lib/Counter.svelte\x1b[39m:10:2'] }));
   assert.equal(svelte?.message, 'src/lib/Counter.svelte:10:2: Unterminated regular expression');
+  // Vite 8 (oxc): the message on a coded line, the location in a code frame, "File:" without one.
+  const oxc = classify(
+    input({
+      phases: failedAt('ready', '500'),
+      runtimeOutput: [
+        '[runtime:stderr] 10:18:10 AM [vite] Internal server error: Transform failed with 1 error:',
+        '[runtime:stderr] ',
+        "[runtime:stderr] [PARSE_ERROR] Unexpected token. Did you mean `{'}'}` or `&rbrace;`?",
+        '[runtime:stderr]    \x1b[38;5;246m╭\x1b[0m\x1b[38;5;246m─\x1b[0m\x1b[38;5;246m[\x1b[0m app/src/App.tsx:3:1 \x1b[38;5;246m]\x1b[0m',
+        '[runtime:stderr]  3 │ }',
+        '[runtime:stderr]   Plugin: vite:oxc',
+        '[runtime:stderr]   File: /app/src/App.tsx',
+      ],
+    }),
+  );
+  assert.equal(oxc?.message, "src/App.tsx:3:1: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?");
+  // The same from a full-stack dev script, each line behind its process's prefix.
+  const prefixed = classify(
+    input({
+      phases: failedAt('ready', '500'),
+      runtimeOutput: ['[client] [vite] Internal server error: Transform failed with 1 error:', '[client] [PARSE_ERROR] Unexpected token', '[client]    ╭─[ app/client/src/App.tsx:3:1 ]', '[client]   File: /app/client/src/App.tsx'],
+    }),
+  );
+  assert.equal(prefixed?.message, 'client/src/App.tsx:3:1: Unexpected token');
 });
 
 test('ng serve waiting after a failed first build is an app bug at the error\'s location', () => {
@@ -177,4 +201,13 @@ test('an undeclared import that Vite reports while the page waits is an undeclar
     }),
   );
   assert.deepEqual([f?.class, f?.rule], ['app-bug', 'undeclared-import']);
+});
+
+test('an install in the page: a missing package is the app\'s, a registry that fails to answer is not', () => {
+  const missing = classify(input({ phases: failedAt('install', 'npm error 404 Not Found - GET https://registry.npmjs.org/nope - Not found', 'APP') }));
+  assert.deepEqual([missing?.class, missing?.rule], ['app-bug', 'unresolvable-dependency']);
+  const down = classify(input({ phases: failedAt('install', 'npm registry: react: HTTP 503', 'INTERNAL') }));
+  assert.equal(down?.class, 'infra');
+  const corrupt = classify(input({ phases: failedAt('install', 'npm registry: react@19.3.0: integrity check failed', 'INTERNAL') }));
+  assert.equal(corrupt?.class, 'infra');
 });

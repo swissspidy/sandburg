@@ -7,6 +7,7 @@ import { EventEmitter } from 'events';
 import { Readable, Writable } from 'readable-stream';
 import { FsError, norm, type VStat, type Vfs } from '../vfs.ts';
 import { bindContext } from '../async-context.ts';
+import { timers } from './process.ts';
 
 type PathLike = string | Buffer | URL;
 type Encoding = BufferEncoding | null | undefined;
@@ -369,6 +370,19 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   };
 
   // --- callback and promise APIs, derived from the sync ones ---------------------
+  // As in Node: the callback runs on a later turn of the event loop (setImmediate, not setTimeout, which
+  // browsers clamp to 4 ms when nested: webpack's resolver makes thousands of fs calls in a chain), and
+  // an error has no JavaScript stack frames (capturing them was a quarter second of a next dev start).
+  const later = (fn: () => void) => timers.setImmediate(fn);
+  const withoutStack = <T,>(op: () => T): T => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    try {
+      return op();
+    } finally {
+      Error.stackTraceLimit = limit;
+    }
+  };
   const callbackified: Record<string, (...args: unknown[]) => void> = {};
   const promisified: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
   for (const [name, fn] of Object.entries(sync)) {
@@ -379,25 +393,25 @@ export function createFs(vfs: Vfs, cwd: () => string) {
       let result: unknown;
       let error: unknown = null;
       try {
-        result = (fn as (...a: unknown[]) => unknown)(...args);
+        result = withoutStack(() => (fn as (...a: unknown[]) => unknown)(...args));
       } catch (e) {
         error = e;
       }
-      setTimeout(() => (error ? cb(error) : cb(null, result)), 0);
+      later(() => (error ? cb(error) : cb(null, result)));
     };
-    promisified[base] = async (...args: unknown[]) => (fn as (...a: unknown[]) => unknown)(...args);
+    promisified[base] = async (...args: unknown[]) => withoutStack(() => (fn as (...a: unknown[]) => unknown)(...args));
   }
   // fs.read/fs.write callbacks take (err, bytes, buffer)
   callbackified.read = (fd, buffer, offset, length, position, cb) => {
     const done = bindContext(cb as never) as (e: unknown, n?: number, b?: unknown) => void;
     try {
-      const n = readSync(fd as number, buffer as Uint8Array, offset as number, length as number, position as number | null);
-      setTimeout(() => done(null, n, buffer), 0);
+      const n = withoutStack(() => readSync(fd as number, buffer as Uint8Array, offset as number, length as number, position as number | null));
+      later(() => done(null, n, buffer));
     } catch (e) {
-      setTimeout(() => done(e), 0);
+      later(() => done(e));
     }
   };
-  const exists = (p: PathLike, cb: (b: boolean) => void) => setTimeout(() => cb(sync.existsSync(p)), 0);
+  const exists = (p: PathLike, cb: (b: boolean) => void) => later(() => cb(sync.existsSync(p)));
 
   class FileHandle {
     fd: number;
@@ -577,9 +591,9 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     const opts = typeof o === 'object' ? o : {};
     try {
       const matches = globSync(pattern, opts);
-      setTimeout(() => done(null, matches), 0);
+      later(() => done(null, matches));
     } catch (e) {
-      setTimeout(() => done(e as Error), 0);
+      later(() => done(e as Error));
     }
   }
   promisified.glob = ((pattern: string | string[], o?: GlobOpts) => {

@@ -19,6 +19,8 @@ Commands:
 
 Options:
   --runtime <name>     node (default; the only runtime)
+  --install-in <where> host (default: npm on the host) or browser (opt-in: the page installs
+                       from the npm registry itself)
   --checks <file>      Checks file; default export maps check names to functions
                        (batch: a project's own checks.spec.ts takes precedence)
   --parallel <n>       batch/compare: tabs at a time (default: 4)
@@ -37,6 +39,7 @@ Exit codes: 0 passed, 1 failed (app ran, a blocking check failed), 2 error (run 
 
 const OPTIONS = {
   runtime: { type: 'string', default: 'node' },
+  'install-in': { type: 'string', default: 'host' },
   checks: { type: 'string' },
   parallel: { type: 'string', default: '4' },
   prewarm: { type: 'boolean', default: true },
@@ -78,8 +81,13 @@ export async function main(argv: string[]): Promise<number> {
     offline: values.offline,
     headless: !values.headed && command !== 'open',
   };
+  if (values['install-in'] !== 'host' && values['install-in'] !== 'browser') {
+    console.error('--install-in must be host or browser');
+    return 64;
+  }
   const runOptions: RunOptions = {
     runtime: values.runtime,
+    installIn: values['install-in'],
     checks: values.checks,
     outDir: values.out,
     readySelector: values.ready,

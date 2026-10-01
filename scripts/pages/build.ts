@@ -33,8 +33,8 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(import.meta.url);
 
 const DEMOS = [
-  { name: 'nextjs', fixture: 'fixtures/next-app-router', title: 'Next.js 15', command: 'next dev', description: 'An App Router app with a server component, an API route and client-side navigation, on next dev with webpack and SWC.', stack: 'Next.js 15, React 19, webpack and SWC (WebAssembly).' },
-  { name: 'vite-react', fixture: 'fixtures/vite-react-counter', title: 'Vite + React', command: 'vite', description: 'The classic counter on Vite 5 with hot module replacement.', stack: 'Vite 5, React 18, esbuild (WebAssembly).' },
+  { name: 'nextjs', fixture: 'fixtures/next-app-router', title: 'Next.js 16', command: 'next dev', description: 'An App Router app with a server component, an API route and client-side navigation, on next dev with webpack and SWC.', stack: 'Next.js 16, React 19, webpack and SWC (WebAssembly).' },
+  { name: 'vite-react', fixture: 'fixtures/vite-react-counter', title: 'Vite + React', command: 'vite', description: 'The classic counter on Vite 8 with hot module replacement.', stack: 'Vite 8, React 19, rolldown (WebAssembly).' },
   { name: 'vue-express-sqlite', fixture: 'fixtures/vue-express-sqlite', title: 'Vue + Express + SQLite', command: 'concurrently "vite" "node server"', description: 'A full-stack todo app: Vue on Vite, an Express API behind Vite\'s proxy, data in SQLite.', stack: 'Vue 3 and Vite, Express, SQLite (WebAssembly), started by concurrently.' },
   { name: 'sveltekit', fixture: 'fixtures/sveltekit-app', title: 'SvelteKit', command: 'vite dev', description: 'A SvelteKit app with server load functions and form actions, on Vite 8.', stack: 'SvelteKit 2, Svelte 5, Vite 8 with rolldown (WebAssembly).' },
   { name: 'angular', fixture: 'fixtures/angular-tasks', title: 'Angular 22', command: 'ng serve', description: 'A task list on the Angular CLI\'s own dev server, with signals and SCSS.', stack: 'Angular 22, @angular/build with esbuild and Sass.' },

@@ -7,7 +7,10 @@ import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../ho
 import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, webSocketPort } from './process.ts';
-import { matchProxy, type ProxyRule } from './scripts.ts';
+import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
+import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
+import { Registry } from '../../node-runtime/npm/registry.ts';
+import { UnsupportedSpecError } from '../../node-runtime/npm/resolve.ts';
 
 export interface HostInstall {
   key: string;
@@ -32,12 +35,22 @@ export interface HostInstall {
   };
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
   proxy?: ProxyRule[];
-  start?: ({ main: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
+  start?: ({ main: string; argv: string[] } | { bin: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
+  /** Install in the page (opt-in): what each package of the project needs (see npm/install.ts). */
+  browserInstall?: BrowserInstallPart[];
 }
 
 const START = '.sandburg/start.js';
 /** Where the page reaches the server on a localhost port (see ws-shim.js): /__sandburg_backend/<port>/<path>. */
 const BACKEND_PREFIX = /^\/__sandburg_backend\/(\d+)(\/[^?]*)?(\?.*)?$/;
+
+/**
+ * Next.js in the runtime: SWC's WebAssembly build (there is no native SWC in the browser), and
+ * next.config.ts loaded with Node's own type stripping, as `--experimental-next-config-strip-types`
+ * does. The default path transpiles it with SWC to CommonJS, which SWC's WebAssembly build stopped
+ * doing in Next.js 16 (it leaves the module ESM).
+ */
+const NEXT_ENV = { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 'true' };
 
 /** Entry scripts per framework: the programmatic equivalents of the dev commands. */
 const NEXT_DEV = `// Sandburg: \`next dev\` (webpack) via Next.js' programmatic API, as a custom server runs it.
@@ -124,11 +137,37 @@ export function createAdapter(): RuntimeAdapter {
       proxy = host.proxy ?? [];
       devCache = host.devCache ?? null;
       Object.assign(files, devCache?.files);
+      let nodeModules = host.index;
+      let pack: ReturnType<typeof packFiles> | null = null;
+      let resolved = host.resolved;
+      let bins: Record<string, string> = {};
+      if (host.browserInstall) {
+        // Opt-in: the install happens here, from the npm registry (see npm/install.ts).
+        let result;
+        try {
+          result = await installInBrowser(host.browserInstall, new Registry(), (line) => ctx.log('stdout', line));
+        } catch (e) {
+          if (e instanceof UnsupportedSpecError) throw new AdapterError('UNSUPPORTED', e.message);
+          // A package or version the registry does not have is the app's (worded as npm words it, so
+          // classify.ts finds it); the registry failing to answer, or a broken download, is not.
+          throw new AdapterError(/^npm error (?:404|notarget) /.test((e as Error).message) ? 'APP' : 'INTERNAL', (e as Error).message);
+        }
+        pack = packFiles(result.files);
+        nodeModules = Object.fromEntries(Object.entries(pack.index).map(([path, [, length]]) => [path, length]));
+        resolved = result.resolved;
+        host.lockfile = result.lockfile;
+        const index = result.files.get('node_modules/.sandburg-bins.json');
+        if (index) bins = JSON.parse(new TextDecoder().decode(index)) as Record<string, string>;
+      }
       if (ctx.framework !== 'next') {
         if (!host.start) throw new AdapterError('UNSUPPORTED', 'no way to start this project in the node runtime');
         shell = 'shell' in host.start;
         if ('shell' in host.start) files[START] = shellStart(host.start.shell);
-        else {
+        else if ('bin' in host.start) {
+          if (!bins[host.start.bin]) throw new AdapterError('APP', `the dev script runs "${host.start.bin}", which no installed package provides`);
+          main = `/app/${bins[host.start.bin]}`;
+          argv = host.start.argv;
+        } else {
           main = `/app/${host.start.main}`;
           argv = host.start.argv;
         }
@@ -137,13 +176,15 @@ export function createAdapter(): RuntimeAdapter {
       proc = new NodeProcess({
         tsRunner: host.start?.tsRunner,
         files,
-        // NEXT_TEST_WASM: load SWC's WebAssembly build (there is no native SWC in the browser).
         // PORT only for a single server: the servers of a dev script listen where it says.
-        env: { NEXT_TELEMETRY_DISABLED: '1', ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), CI: '1', ...(ctx.framework === 'next' ? { NEXT_TEST_WASM: '1' } : {}) },
+        // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
+        // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
+        env: { ...DEV_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? NEXT_ENV : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
-        nodeModules: host.index,
+        nodeModules,
+        pack,
         log: (stream, line) => {
           ctx.log(stream, line);
           watchBuild(line);
@@ -153,7 +194,7 @@ export function createAdapter(): RuntimeAdapter {
       return {
         resolution: host.lockfile ? 'lockfile' : Object.keys(ctx.packageJson?.dependencies ?? {}).length ? 'range' : 'none',
         lockfileHonored: host.lockfile,
-        dependencies: host.resolved,
+        dependencies: resolved,
         buildMs: null,
       };
     },

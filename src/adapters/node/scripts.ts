@@ -14,6 +14,21 @@
  */
 type Files = Record<string, string | Uint8Array | { base64: string }>;
 
+/**
+ * The environment of the programs a run starts, here and in the Docker reference: a developer's
+ * machine, not CI. CI=1 changes what dev servers do (the Angular CLI turns its build cache off: its
+ * rebuilds took 4-6x as long), so telemetry, analytics prompts and update checks are turned off by
+ * their own switches instead.
+ */
+export const DEV_ENV: Record<string, string> = {
+  NEXT_TELEMETRY_DISABLED: '1',
+  NUXT_TELEMETRY_DISABLED: '1',
+  ASTRO_TELEMETRY_DISABLED: '1',
+  NG_CLI_ANALYTICS: 'false',
+  DO_NOT_TRACK: '1',
+  NO_UPDATE_NOTIFIER: '1',
+};
+
 export interface BackendCommand {
   /** Package directory the command runs in ("" is the project root). */
   dir: string;

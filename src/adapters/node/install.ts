@@ -18,9 +18,10 @@ import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
+import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 10;
+export const TRANSFORM_VERSION = 13;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 14;
 
@@ -252,7 +253,7 @@ export class Installer {
     const abs = join(this.root, key, rel);
     if (!/\.(c|m)?js$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
     // Transforms are kept by content, not by install: every install with the same package version
-    // shares them (a new app with next@15 does not transform Next.js again).
+    // shares them (a new app with next@16 does not transform Next.js again).
     const source = await readFile(abs, 'utf8');
     const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
     const hash = createHash('sha256').update(`${esm ? 'esm' : 'cjs'}\0${rel}\0`).update(source).digest('hex');
@@ -348,11 +349,9 @@ async function placeWasiBindings(dir: string, log: (line: string) => void): Prom
   const visit = async (pkgDir: string) => {
     try {
       const pkg = JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8')) as { optionalDependencies?: Record<string, string> };
-      for (const [name, range] of Object.entries(pkg.optionalDependencies ?? {})) {
-        if (/wasm32-wasi$/.test(name)) wanted[name] = range;
-        // napi-rs platform packages (<name>-linux-x64-gnu): the WebAssembly build is <name>-wasm32-wasi, if published.
-        else if (/-linux-x64-gnu$/.test(name)) candidates[name.replace(/-linux-x64-gnu$/, '-wasm32-wasi')] = range;
-      }
+      const found = wasiBindings(pkg.optionalDependencies);
+      Object.assign(wanted, found.listed);
+      Object.assign(candidates, found.candidates);
     } catch {
       // not a package
     }
@@ -418,128 +417,6 @@ function existsSyncSafe(path: string): boolean {
   }
 }
 
-/**
- * Packages whose native code has a WebAssembly build of the same version with the same API. Each
- * installed copy gets that build installed next to it (in its own node_modules), and the file that
- * loads the native code is replaced by one that loads the WebAssembly build.
- */
-const WASM_BUILDS: { name: string; wasm: string; file: string; applies(version: string): boolean; shim: string; also?: Record<string, string> }[] = [
-  {
-    // The Dart Sass compiler as a native program (sass-embedded-<platform>, which it runs over a pipe):
-    // the same compiler compiled to JavaScript (sass), with the same API. Angular's CLI and Vite
-    // prefer sass-embedded when it is installed.
-    name: 'sass-embedded',
-    wasm: 'sass',
-    file: 'dist/lib/index.js',
-    applies: (v) => /^1\./.test(v),
-    shim: "// sandburg: Dart Sass compiled to JavaScript (sass) in place of the native embedded compiler\nmodule.exports = require('../../node_modules/sass/sass.node.js');\n",
-    also: {
-      'dist/lib/index.mjs': "// sandburg: Dart Sass compiled to JavaScript (sass) in place of the native embedded compiler\nexport * from '../../node_modules/sass/sass.node.mjs';\nexport { default } from '../../node_modules/sass/sass.node.mjs';\n",
-    },
-  },
-  {
-    // Rollup 4's parser (@rollup/rollup-<platform>).
-    name: 'rollup',
-    wasm: '@rollup/wasm-node',
-    file: 'dist/native.js',
-    applies: (v) => /^4\./.test(v),
-    shim: "// sandburg: rollup's WebAssembly build (@rollup/wasm-node)\nmodule.exports = require('../node_modules/@rollup/wasm-node/dist/native.js');\n",
-  },
-  {
-    // lightningcss's native parser (lightningcss-<platform>): Tailwind CSS v4, Vite's CSS minifier.
-    name: 'lightningcss',
-    wasm: 'lightningcss-wasm',
-    file: 'node/index.js',
-    applies: (v) => /^1\./.test(v),
-    shim: "// sandburg: lightningcss's WebAssembly build (lightningcss-wasm), loaded synchronously\nmodule.exports = require('../node_modules/lightningcss-wasm/wasm-node.cjs');\n",
-  },
-  {
-    // esbuild's Go binary (@esbuild/<platform>): its browser build, which runs the compiler in this thread.
-    name: 'esbuild',
-    wasm: 'esbuild-wasm',
-    file: 'lib/main.js',
-    applies: (v) => /^0\.(1[89]|[2-9]\d)\./.test(v),
-    shim: `// sandburg: esbuild's WebAssembly build (esbuild-wasm). The synchronous API needs a separate thread and is unavailable.
-const fs = require('fs');
-const path = require('path');
-const dir = path.join(__dirname, '../node_modules/esbuild-wasm');
-// Its in-thread service reads the worker global \`self\`, which the runtime leaves undefined (as in Node).
-// Go's file system calls go to that scope's \`fs\`: the runtime's, as esbuild-wasm has under Node.
-// The service sets read (stdin) and writeSync (stdout, stderr) on it for its pipes: those take the
-// pipes' descriptors, the file system keeps the rest. Go writes with fs.write, which goes to writeSync
-// for the pipes (as in esbuild-wasm's own stub fs).
-const scopeFs = Object.create(fs);
-const pipes = { read: null, writeSync: null };
-Object.defineProperty(scopeFs, 'read', {
-  get: () => (fd, ...rest) => (fd === 0 && pipes.read ? pipes.read(fd, ...rest) : fs.read(fd, ...rest)),
-  set: (fn) => (pipes.read = fn),
-});
-Object.defineProperty(scopeFs, 'writeSync', {
-  get: () => (fd, buf, ...rest) => ((fd === 1 || fd === 2) && pipes.writeSync ? pipes.writeSync(fd, buf) : fs.writeSync(fd, buf, ...rest)),
-  set: (fn) => (pipes.writeSync = fn),
-});
-scopeFs.write = (fd, buf, offset, length, position, callback) => {
-  if ((fd !== 1 && fd !== 2) || !pipes.writeSync) return fs.write(fd, buf, offset, length, position, callback);
-  try {
-    callback(null, pipes.writeSync(fd, offset === 0 && length === buf.length ? buf : buf.subarray(offset, offset + length)));
-  } catch (e) {
-    callback(e);
-  }
-};
-// Other globals are read from the real global object (its getters, e.g. location, need it as receiver).
-const scope = new Proxy(Object.create(globalThis, { fs: { value: scopeFs, enumerable: true } }), {
-  get: (target, key) => (key === 'fs' ? scopeFs : Reflect.get(globalThis, key)),
-});
-const browser = { exports: {} };
-new Function('self', 'module', 'exports', 'require', fs.readFileSync(path.join(dir, 'lib/browser.js'), 'utf8'))(scope, browser, browser.exports, require);
-const esbuild = browser.exports;
-let ready;
-const init = () =>
-  (ready ??= esbuild.initialize({ wasmModule: new WebAssembly.Module(fs.readFileSync(path.join(dir, 'esbuild.wasm'))), worker: false }));
-const later = (name) => (...args) => init().then(() => esbuild[name](...args));
-// The browser build has no file system of its own, so no \`write: true\` (the default under Node): it
-// builds in memory and the output is written here, as esbuild does under Node.
-const writeOutput = (result, write) => {
-  if (!write || !result || !result.outputFiles) return result;
-  for (const file of result.outputFiles) {
-    fs.mkdirSync(path.dirname(file.path), { recursive: true });
-    fs.writeFileSync(file.path, file.contents);
-  }
-  const { outputFiles, ...rest } = result;
-  return rest;
-};
-const inMemory = (options) => ({ ...options, write: false });
-const build = (options = {}) => init().then(() => esbuild.build(inMemory(options))).then((r) => writeOutput(r, options.write !== false));
-const context = (options = {}) =>
-  init().then(() => esbuild.context(inMemory(options))).then((ctx) => ({
-    ...ctx,
-    rebuild: () => ctx.rebuild().then((r) => writeOutput(r, options.write !== false)),
-    watch: ctx.watch,
-    serve: ctx.serve,
-    cancel: ctx.cancel,
-    dispose: ctx.dispose,
-  }));
-const sync = (name) => () => {
-  throw new Error('esbuild.' + name + '() is not available in the browser runtime (esbuild-wasm has no synchronous API there); use the asynchronous API');
-};
-module.exports = {
-  version: esbuild.version,
-  build,
-  context,
-  transform: later('transform'),
-  formatMessages: later('formatMessages'),
-  analyzeMetafile: later('analyzeMetafile'),
-  buildSync: sync('buildSync'),
-  transformSync: sync('transformSync'),
-  formatMessagesSync: sync('formatMessagesSync'),
-  analyzeMetafileSync: sync('analyzeMetafileSync'),
-  initialize: () => init().then(() => undefined),
-  stop: () => Promise.resolve(),
-};
-`,
-  },
-];
-
 async function placeWasmBuilds(dir: string, log: (line: string) => void): Promise<void> {
   const found: { dir: string; version: string; build: (typeof WASM_BUILDS)[number] }[] = [];
   const walk = async (nm: string, depth: number) => {
@@ -588,25 +465,6 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
 }
 
 /**
- * Changes to package sources for what the browser cannot do. piscina's workers wait for tasks with
- * Atomics.wait and take them with receiveMessageOnPort, which needs a synchronous look into a
- * MessagePort (browsers have none): they use its message-event mode instead, as under WebContainers.
- */
-const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }[] = [
-  {
-    file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
-    from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
-    to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
-  },
-  {
-    // piscina 4
-    file: /(^|\/)node_modules\/piscina\/dist\/src\/worker\.js$|(^|\/)node_modules\/piscina\/dist\/worker\.js$/,
-    from: /useAtomics = process\.env\.PISCINA_DISABLE_ATOMICS === '1' \? false : message\.useAtomics;/,
-    to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
-  },
-];
-
-/**
  * Writes a file as a new file: an install may share files with another through hard links (see
  * Installer.startFromClosest), and writing into one would change both.
  */
@@ -634,10 +492,10 @@ async function writeBinIndex(dir: string): Promise<void> {
 }
 
 async function placeNextSwcWasm(dir: string): Promise<void> {
-  const from = join(dir, 'node_modules', '@next', 'swc-wasm-nodejs');
+  const from = join(dir, NEXT_SWC_WASM.from);
   const next = join(dir, 'node_modules', 'next');
   if (!(await access(from).then(() => true, () => false)) || !(await access(next).then(() => true, () => false))) return;
-  const to = join(next, 'wasm', '@next', 'swc-wasm-nodejs');
+  const to = join(dir, NEXT_SWC_WASM.to);
   await rm(to, { recursive: true, force: true });
   await cp(from, to, { recursive: true });
 }

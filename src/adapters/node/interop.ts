@@ -6,8 +6,10 @@
  * converted ES modules (globalThis[Symbol.for('sandburg.esm')]); the helper skips Node mode for them.
  */
 export function patchInterop(code: string): string {
+  // Every copy not patched yet. A copy inside an eval literal is patched before it is quoted (see
+  // lowerEvalSteps in compile.ts), as this inserts quotes.
   return code.replace(
-    'var __toESM = (mod, isNodeMode, target) => (',
+    /var __toESM = \(mod, isNodeMode, target\) => \((?!isNodeMode = isNodeMode && )/g,
     'var __toESM = (mod, isNodeMode, target) => (isNodeMode = isNodeMode && !(mod != null && globalThis[Symbol.for("sandburg.esm")]?.has(mod)), ',
   );
 }

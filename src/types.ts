@@ -78,6 +78,8 @@ export interface HostInstallOptions {
   seed?: boolean;
   /** Runs a seed project (Sandburg's own, with the given checks) in this session and waits for it. */
   runSeed?(project: Project, checks: unknown): Promise<void>;
+  /** Where dependencies are installed: by npm on the host (default), or in the browser (opt-in). */
+  installIn?: 'host' | 'browser';
 }
 
 export interface HostRequest {

@@ -18,17 +18,12 @@ import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import type { HostInstall } from './browser.ts';
 import { VITE_SEED_DIRS, VITE_SEED_WAIT, viteSeed } from './vite-seed.ts';
 import { warmups } from './warmup.ts';
+import { extraDependencies } from './install-rules.ts';
 
 const installer = sharedInstaller();
 const WS_SHIM = fileURLToPath(new URL('./ws-shim.js', import.meta.url));
 
 /** Extra packages a framework needs in the browser: WebAssembly builds of native tools. */
-function extraDependencies(project: Project): Record<string, string> {
-  const next = project.packageJson?.dependencies?.next ?? project.packageJson?.devDependencies?.next;
-  // SWC's official WebAssembly build replaces the native @next/swc-* binaries (omitted at install).
-  return typeof next === 'string' ? { '@next/swc-wasm-nodejs': next } : {};
-}
-
 /**
  * How the project's dev (or start) script starts it: `node <file>` (or tsx/nodemon …), or a
  * package's CLI (vite, astro, …), following npm run / concurrently like a shell would.
@@ -206,7 +201,7 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
  * host serves them, in the order of first use. A later run fetches them as one bundle instead of
  * one synchronous request each, which dominates start-up (next dev loads ~1,700 files). They are
  * recorded per install and per package version, so an install that was never run still gets a
- * bundle for the packages other installs loaded (a new app with next@15 preloads Next.js).
+ * bundle for the packages other installs loaded (a new app with next@16 preloads Next.js).
  * Files over PRELOAD_FILE_MAX are left out (a few large ones, WebAssembly binaries).
  */
 const PRELOAD_FILE_MAX = 2 << 20;
@@ -518,6 +513,34 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   return null;
 }
 
+/**
+ * An install the page does itself (opt-in, see node-runtime/npm/install.ts): what to install for each
+ * package of the project, and how to start it. Package binaries are found after the install.
+ */
+function browserInstall(project: Project): HostInstall {
+  const part = (dir: string, p: Project) => ({
+    dir,
+    packageJson: { dependencies: p.packageJson?.dependencies, devDependencies: p.packageJson?.devDependencies, overrides: p.packageJson?.overrides as Record<string, unknown> | undefined },
+    lockfile: typeof p.files['package-lock.json'] === 'string' ? (p.files['package-lock.json'] as string) : null,
+    extra: dir ? {} : extraDependencies(p),
+  });
+  const parts = [part('', project)];
+  for (const dir of packageDirs(project)) {
+    const sub = subProject(project, dir);
+    if (Object.keys({ ...sub.packageJson?.dependencies, ...sub.packageJson?.devDependencies }).length) parts.push(part(dir, sub));
+  }
+  let start: HostInstall['start'] = null;
+  if (project.framework !== 'next') {
+    const cmd = startCommand(project);
+    const script = devScript(project);
+    if (cmd && (!script || isSimple(project, script))) start = cmd.bin ? { bin: cmd.bin, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner } : { main: cmd.file!, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
+    else if (script) start = { shell: script, command: script, tsRunner: false };
+  }
+  const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
+  // lockfile: set by the install in the page, to whether the lockfile decided the tree.
+  return { key: '', index: {}, resolved: {}, lockfile: false, start, proxy, browserInstall: parts };
+}
+
 export const node: AdapterDescriptor = {
   name: 'node',
   version: NODE_VERSION,
@@ -541,6 +564,7 @@ export const node: AdapterDescriptor = {
   async hostInstall(project, log, options): Promise<HostInstall> {
     // A static site: no packages, a file server (see browser.ts).
     if (project.framework === 'static') return { key: '', index: {}, resolved: {}, lockfile: false, start: { main: '.sandburg/start.js', argv: [], command: 'a static file server', tsRunner: false } };
+    if (options?.installIn === 'browser') return browserInstall(project);
     const info = await installer.install(project, extraDependencies(project), log);
     // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
     const parts = [{ dir: '', key: info.key }];

@@ -35,8 +35,8 @@ test('an Angular 22 CLI app (signals, forms, lazy route) runs and passes its che
   assert.equal(result.checks.filter((c) => c.kind === 'functional' && c.status === 'passed').length, 4);
 });
 
-test('an Angular 19 CLI app with zone.js and SCSS runs', async () => {
-  const dir = fixture('angular-19-zone');
+test('an Angular 22 CLI app with zone.js, SCSS and the build-angular builders runs', async () => {
+  const dir = fixture('angular-zone');
   const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
   assert.equal(result.status, 'passed', failures(result));
 });

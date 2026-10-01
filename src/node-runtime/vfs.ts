@@ -78,6 +78,12 @@ export class Vfs {
     return this.files.has(path) || this.dirs.has(path);
   }
 
+  /** What is at `path`, without an error when nothing is (module resolution asks about many paths). */
+  kind(path: string): 'file' | 'dir' | null {
+    path = norm(path);
+    return this.files.has(path) ? 'file' : this.dirs.has(path) ? 'dir' : null;
+  }
+
   stat(path: string, syscall = 'stat'): VStat {
     path = norm(path);
     const f = this.files.get(path);

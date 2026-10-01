@@ -106,6 +106,13 @@ export class RemoteVfs extends Vfs {
   override stat(path: string, syscall = 'stat'): VStat {
     return this.call('stat', [path, syscall]) as VStat;
   }
+  override kind(path: string): 'file' | 'dir' | null {
+    try {
+      return this.stat(path).kind as 'file' | 'dir';
+    } catch {
+      return null;
+    }
+  }
   override read(path: string): Uint8Array {
     return this.call('read', [path]) as Uint8Array;
   }
@@ -179,8 +186,16 @@ export class ThreadVfs extends RemoteVfs {
   }
 
   private local(path: string): boolean {
-    // The root's node_modules, and those of packages in it (client/, server/).
-    return path.startsWith(this.root) && path.includes('/node_modules/') && !/\/node_modules\/\.(vite|cache|tmp|astro|svelte-kit)/.test(path) && this.installed.exists(path);
+    // The root's node_modules, and those of packages in it (client/, server/), the node_modules
+    // directories themselves included: asked of a blocked parent, the snapshot (which leaves out
+    // node_modules) would say /app/node_modules does not exist, and module resolution would skip it
+    // (the Angular CLI's TypeScript thread: "Cannot find module '@angular/core'").
+    return (
+      path.startsWith(this.root) &&
+      (path.includes('/node_modules/') || path.endsWith('/node_modules')) &&
+      !/\/node_modules\/\.(vite|cache|tmp|astro|svelte-kit)/.test(path) &&
+      this.installed.exists(path)
+    );
   }
 
   override exists(path: string): boolean {
@@ -188,6 +203,9 @@ export class ThreadVfs extends RemoteVfs {
   }
   override stat(path: string, syscall = 'stat'): VStat {
     return this.local(path) ? this.installed.stat(path, syscall) : super.stat(path, syscall);
+  }
+  override kind(path: string): 'file' | 'dir' | null {
+    return this.local(path) ? this.installed.kind(path) : super.kind(path);
   }
   override read(path: string): Uint8Array {
     return this.local(path) ? this.installed.read(path) : super.read(path);

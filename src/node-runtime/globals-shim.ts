@@ -21,4 +21,15 @@ export const process = new Proxy(early, {
     return real && real !== (process as unknown) ? real[k] : (t as Record<string | symbol, unknown>)[k];
   },
 });
+// Node's Buffer methods take any Uint8Array where the polyfill takes only a Buffer (Next.js 16's
+// compiler searches Buffers for Uint8Arrays).
+const proto = Buffer.prototype as unknown as Record<string, (this: Buffer, value: unknown, ...rest: unknown[]) => unknown>;
+for (const name of ['indexOf', 'lastIndexOf', 'includes', 'equals']) {
+  const original = proto[name];
+  proto[name] = function (this: Buffer, value: unknown, ...rest: unknown[]) {
+    if (value instanceof Uint8Array && !Buffer.isBuffer(value)) value = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    return original.call(this, value, ...rest);
+  };
+}
+
 export { Buffer };

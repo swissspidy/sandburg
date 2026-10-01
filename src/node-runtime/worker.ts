@@ -50,6 +50,8 @@ export type ToWorker =
       /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
       filesBundle?: string | null;
       nodeModules: Record<string, number> | null;
+      /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
+      pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
       base: string;
       ipc?: boolean;
       tsRunner?: boolean;
@@ -241,13 +243,16 @@ let projectRoot = '/app';
 
 /**
  * Installed files come from the host one synchronous request each, or from the install's preload
- * bundle: once a runtime has asked for PRELOAD_AFTER files (small helper threads never do), it
- * fetches the bundle in one request (the browser caches it for the other runtimes of the run).
+ * bundle: once a runtime has asked for a few files, it fetches the bundle in one request (the browser
+ * caches it for the other runtimes of the run). A program's runtime switches after PRELOAD_AFTER
+ * files (each single request costs ~10 ms; next dev's first 40 took 0.4 s); a worker thread after
+ * PRELOAD_AFTER_THREAD, so the small WebAssembly helper threads never hold the bundle.
  */
 let preloadUrl: string | null = null;
 let preloaded: Map<string, Uint8Array> | null = null;
 let installedRequests = 0;
-const PRELOAD_AFTER = 40;
+const PRELOAD_AFTER = 10;
+const PRELOAD_AFTER_THREAD = 40;
 
 /** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
 function readBundle(url: string): [string, Uint8Array, string][] {
@@ -277,7 +282,7 @@ function loadPreload(): void {
 
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
-    if (!preloaded && ++installedRequests > PRELOAD_AFTER) loadPreload();
+    if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
     const hit = preloaded?.get(url.slice(base.length + installKey.length + 5));
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
   }
@@ -292,11 +297,23 @@ function requestSync(url: string, binary: boolean): { status: number; body: Uint
   return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
 }
 
-let vfs: Vfs = new Vfs((path) => {
-  const rel = path.slice(projectRoot.length + 1);
+/** node_modules installed in the browser (see npm/install.ts): read from shared memory, not the host. */
+let pack: { bytes: Uint8Array; index: Record<string, [number, number]>; message: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } } | null = null;
+
+/** An installed file (path relative to the project), or null. */
+function installedFile(rel: string): Uint8Array | null {
+  if (pack) {
+    const at = pack.index[rel];
+    return at ? pack.bytes.slice(at[0], at[0] + at[1]) : null;
+  }
   const res = syncGet(`${base}/nm/${installKey}/f/${rel}`, true);
-  if (res.status !== 200) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
-  return res.body as Uint8Array;
+  return res.status === 200 ? (res.body as Uint8Array) : null;
+}
+
+let vfs: Vfs = new Vfs((path) => {
+  const data = installedFile(path.slice(projectRoot.length + 1));
+  if (!data) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+  return data;
 });
 
 let proc: ReturnType<typeof createProcess>;
@@ -592,11 +609,12 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // SANDBURG_TS_RUNNER: started by the shell for tsx, ts-node … (see shell.ts).
   tsRunner = !!msg.tsRunner || msg.env?.SANDBURG_TS_RUNNER === '1';
   // A worker thread shares its parent's file system (installed packages it reads itself).
+  pack = msg.pack ? { bytes: new Uint8Array(msg.pack.sab), index: msg.pack.index, message: msg.pack } : null;
   if (thread) {
     const installed = new Vfs((path) => {
-      const res = syncGet(`${base}/nm/${installKey}/f/${path.slice(projectRoot.length + 1)}`, true);
-      if (res.status !== 200) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
-      return res.body as Uint8Array;
+      const data = installedFile(path.slice(projectRoot.length + 1));
+      if (!data) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+      return data;
     });
     for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) installed.addRemote(`${msg.cwd}/${rel}`, size);
     vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd, thread.snapshot);
@@ -641,7 +659,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -691,7 +709,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       return undefined;
     },
     compiledNodeModule(path: string) {
-      if (!installKey) return null;
+      // Installed in the browser: compiled as project files are, when they need it.
+      if (!installKey || pack) return null;
       const rel = path.slice(projectRoot.length + 1);
       // A file the program wrote itself (Vite's node_modules/.vite-temp/…): the host has no transform of it.
       if (nodeModulesIndex && !(rel in nodeModulesIndex)) return null;

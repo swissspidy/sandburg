@@ -93,6 +93,11 @@ export interface RunOptions {
   hold?: boolean;
   /** Internal: this run is a seed of shared caches (see HostInstallOptions.seed). */
   seed?: boolean;
+  /**
+   * Where dependencies are installed: 'host' (npm on the host, the default) or 'browser' (opt-in:
+   * the page resolves and fetches packages from the npm registry itself; see node-runtime/npm).
+   */
+  installIn?: 'host' | 'browser';
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -259,6 +264,7 @@ export class Session {
             const hostData = adapter!.hostInstall
               ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line), {
                   seed: options.seed,
+                  installIn: options.installIn,
                   runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
                 })
               : undefined;
