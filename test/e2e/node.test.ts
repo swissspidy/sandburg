@@ -51,13 +51,28 @@ test('a Next.js page that throws on the server is an app bug', async () => {
   assert.equal(result.failure?.class, 'app-bug', JSON.stringify(result.failure, null, 2));
 });
 
+test('a project without dependencies runs (npm creates no node_modules for it)', async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'no-dependencies', private: true, scripts: { dev: 'node server.js' } }),
+      'server.js': "require('node:http').createServer((q, s) => s.end('<h1>no dependencies</h1>')).listen(3000);",
+    },
+    { name: 'no-dependencies', path: 'no-dependencies' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: { renders: async ({ app, expect }) => expect(app.getByRole('heading', { level: 1 })).toHaveText('no dependencies') },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 test('a WebAssembly thread that crashes ends the run at once, as a runtime limitation', async () => {
   // A module whose f() traps (unreachable), run in a thread the page's request waits on, as
   // rolldown's dependency optimizer waits on its threads.
   const trap = [0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 5, 1, 1, 102, 0, 0, 10, 5, 1, 3, 0, 0, 11];
   const project = projectFromFiles(
     {
-      'package.json': JSON.stringify({ name: 'wasm-thread-crash', private: true, scripts: { dev: 'node server.js' }, dependencies: { ms: '^2.1.3' } }),
+      'package.json': JSON.stringify({ name: 'wasm-thread-crash', private: true, scripts: { dev: 'node server.js' } }),
       'server.js': [
         "const { Worker } = require('node:worker_threads');",
         "require('node:http').createServer(() => {",
