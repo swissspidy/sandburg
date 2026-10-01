@@ -12,8 +12,13 @@ export interface BridgedRequest {
   body: ArrayBuffer | null;
 }
 
+/** The current run's handler: a page may run several projects, one after another. */
+let handler: ((r: BridgedRequest, port: MessagePort) => void) | null = null;
+let listening = false;
+
 /** Registers the service worker and keeps handing it a port for app requests. */
 export async function connectServiceWorker(onRequest: (r: BridgedRequest, port: MessagePort) => void): Promise<void> {
+  handler = onRequest;
   // A page may name its own service worker (the static demos register theirs under their path).
   const sw = (globalThis as { __sandburgServiceWorker?: { url: string; scope: string } }).__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
   const registration = await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
@@ -23,11 +28,14 @@ export async function connectServiceWorker(onRequest: (r: BridgedRequest, port: 
   }
   const give = () => {
     const channel = new MessageChannel();
-    channel.port1.onmessage = (e) => onRequest(e.data as BridgedRequest, e.ports[0]);
+    channel.port1.onmessage = (e) => handler?.(e.data as BridgedRequest, e.ports[0]);
     (navigator.serviceWorker.controller ?? registration.active)!.postMessage({ type: 'sandburg-port' }, [channel.port2]);
   };
-  navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data?.type === 'sandburg-need-port') give();
-  });
+  if (!listening) {
+    listening = true;
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type === 'sandburg-need-port') give();
+    });
+  }
   give();
 }

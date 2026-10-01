@@ -11,6 +11,11 @@ per run: one browser runs many sandboxes side by side, each on its own origin.
 **[Try the demos →](https://swissspidy.github.io/sandburg/)** Next.js, Vite + React, SvelteKit, Angular and a
 Vue + Express + SQLite app, running in your browser.
 
+**[Generate an app →](https://swissspidy.github.io/sandburg/generate/)** Describe an app. Claude or Gemini, with
+your own API key, writes it with React, Vue, Svelte, Next.js or Express + SQLite. Your tab then installs it from npm and
+runs it on its own dev server. Later requests change the running app, and errors go back to the model to fix
+([ADR 0021](docs/adr/0021-generate-in-the-browser.md)).
+
 ## At a glance
 
 - **The project's own tools.** `next dev`, Vite 5–8 with its plugins, `ng serve`, Express, and a dev
@@ -141,8 +146,10 @@ node scripts/edit-loop.ts               # edit-to-render latency of the fixtures
 ```
 
 The demo site replays the host's answers from static files, recorded when the site is built
-([ADR 0015](docs/adr/0015-static-demos.md)). A GitHub Actions workflow builds and deploys it on every
-push to `main`.
+([ADR 0015](docs/adr/0015-static-demos.md)). The generator page installs and compiles in the page, so it
+only needs the runtime's own files ([ADR 0021](docs/adr/0021-generate-in-the-browser.md));
+`--verify` runs each of its framework scaffolds, and `--only generate` builds it alone. A GitHub Actions
+workflow builds and deploys the site on every push to `main`.
 
 CI runs on every pull request and push to `main`. It runs typecheck and unit tests on Node 24 (LTS),
 the runtime tests in Chromium, and each e2e file as its own job; the Docker reference tests run there

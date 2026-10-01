@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generate an app · Sandburg</title>
+<meta name="description" content="Describe a web app; a model of your choice writes it, and Sandburg installs and runs it in this browser tab with the project's own dev server.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body class="demo generator">
+<header class="bar">
+  <a class="brand" href="../">Sandburg</a>
+  <div class="heading">
+    <h1>Generate an app</h1>
+    <p>A model writes it from your description; it installs and runs right here, on its own dev server, in this tab.</p>
+  </div>
+  <div class="clock"><span id="status" data-state="idle">Ready</span><span id="elapsed">–</span></div>
+</header>
+<main class="workbench">
+  <aside class="panel" aria-label="Generator">
+    <details class="settings" id="settings" open>
+      <summary>Model and stack</summary>
+      <div class="field-row">
+        <label class="field">Provider
+          <select id="provider">
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="gemini">Google (Gemini)</option>
+          </select>
+        </label>
+        <label class="field grow">Model
+          <span class="with-button">
+            <select id="model"></select>
+            <button type="button" id="load-models" class="icon" title="Load the provider's model list" aria-label="Load the provider's model list">↻</button>
+          </span>
+        </label>
+      </div>
+      <label class="field">API key
+        <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+      </label>
+      <label class="check"><input id="remember" type="checkbox"> Remember the key in this browser</label>
+      <p class="hint" id="key-hint">The key goes from this tab straight to the provider; nothing runs on a server. The generated app and its npm packages run on this page's origin and could read the key: use one with a spending limit.</p>
+      <label class="field">Framework
+        <select id="framework"></select>
+      </label>
+      <label class="check"><input id="autofix" type="checkbox" checked> Send errors back to the model to fix (up to 2 tries)</label>
+    </details>
+    <ol class="conversation" id="conversation" aria-live="polite">
+      <li class="intro">
+        <p>Describe the app you want. Try one of these:</p>
+        <p class="examples">
+          <button type="button" class="example">A to-do app with filters, due dates and drag-to-reorder</button>
+          <button type="button" class="example">A pomodoro timer with a session history chart</button>
+          <button type="button" class="example">A markdown notes app with live preview and search</button>
+          <button type="button" class="example">A mortgage calculator with an amortization table</button>
+        </p>
+      </li>
+    </ol>
+    <form class="composer" id="composer">
+      <label class="visually-hidden" for="task">What should the app do?</label>
+      <textarea id="task" rows="3" placeholder="Describe the app…" required></textarea>
+      <div class="actions">
+        <button type="button" id="new-app" class="quiet" hidden>New app</button>
+        <span class="spacer"></span>
+        <button type="button" id="stop" class="quiet" hidden>Stop</button>
+        <button type="submit" id="generate">Generate</button>
+      </div>
+    </form>
+  </aside>
+  <section class="output">
+    <ol class="steps">
+      <li data-step="write"><span class="name">Write code</span><span class="time"></span></li>
+      <li data-step="mount"><span class="name">Mount</span><span class="time"></span></li>
+      <li data-step="install"><span class="name">npm install</span><span class="time"></span></li>
+      <li data-step="start"><span class="name">Start dev server</span><span class="time"></span></li>
+      <li data-step="ready"><span class="name">Render</span><span class="time"></span></li>
+    </ol>
+    <section class="frame">
+      <div class="chrome">
+        <span class="dots"><i></i><i></i><i></i></span><span class="url" id="url">http://localhost/</span>
+        <span class="spacer"></span>
+        <button type="button" id="fix" class="chip" hidden>Fix errors</button>
+        <button type="button" id="reload" class="chip" disabled>Reload</button>
+        <button type="button" id="download" class="chip" disabled>Download</button>
+      </div>
+      <iframe id="app" title="Generated app"></iframe>
+      <div id="placeholder"><div><h2>Your app runs here</h2><p>Packages install from the npm registry in this tab, and the project's own dev server (Vite, <code>next dev</code>, Express) runs in a Web Worker.</p></div></div>
+    </section>
+    <section class="console" aria-label="Output">
+      <div class="chrome tabs" role="tablist">
+        <button type="button" role="tab" id="tab-terminal" aria-selected="true" aria-controls="terminal">Terminal</button>
+        <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="files">Files</button>
+      </div>
+      <div id="terminal" role="log"></div>
+      <div id="files" hidden><ul id="file-list"></ul><pre id="file-view"></pre></div>
+    </section>
+  </section>
+</main>
+<script type="module" src="generator.js"></script>
+</body>
+</html>
