@@ -537,7 +537,8 @@ function browserInstall(project: Project): HostInstall {
     else if (script) start = { shell: script, command: script, tsRunner: false };
   }
   const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
-  return { key: '', index: {}, resolved: {}, lockfile: parts[0].lockfile !== null, start, proxy, browserInstall: parts };
+  // lockfile: set by the install in the page, to whether the lockfile decided the tree.
+  return { key: '', index: {}, resolved: {}, lockfile: false, start, proxy, browserInstall: parts };
 }
 
 export const node: AdapterDescriptor = {

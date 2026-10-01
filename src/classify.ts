@@ -24,7 +24,7 @@ export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
 ];
 
 /** A runtime's own download came back broken (an error page instead of an archive, a reset). */
-const INFRA_SIGNATURE = /runtime asset failed to load|404 Not Found - GET https:\/\/registry\.npmjs\.org\/\S+\/-\/\S+\.tgz|Could not unzip file\. Error code: \d+\. File size: \d+ bytes|ERR_TUNNEL_CONNECTION_FAILED|ECONNRESET|socket hang up|upstream proxy refused/i;
+const INFRA_SIGNATURE = /^npm registry: |runtime asset failed to load|404 Not Found - GET https:\/\/registry\.npmjs\.org\/\S+\/-\/\S+\.tgz|Could not unzip file\. Error code: \d+\. File size: \d+ bytes|ERR_TUNNEL_CONNECTION_FAILED|ECONNRESET|socket hang up|upstream proxy refused/i;
 
 /**
  * npm cannot find a package or version (ETARGET, or E404 for a package document). A 404 for a tarball
@@ -159,7 +159,8 @@ export function devServerCompileError(lines: string[]): string | null {
       if (file) at = { path: file[1], loc: file[2] ?? '' };
       const span = /╭─\[\s*\/?app\/(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
       if (span) frame ??= { path: span[1], loc: span[2] };
-      const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(unprefixed[j]);
+      // Before and after a process prefix is removed: "[client] [PARSE_ERROR] …" and "[PARSE_ERROR] …".
+      const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(unprefixed[j]);
       if (code) coded ??= code[1].trim();
     }
     if (frame && (!at || (at.path === frame.path && !at.loc))) at = frame;

@@ -182,10 +182,10 @@ function* lowerEvalSteps(code: string): Generator<TransformStep, string, string>
       } catch {
         // not a JSON-style literal: left as it is
       }
-      if (inner !== null && /\basync\b|\bawait\b/.test(inner)) {
+      if (inner !== null && /\basync\b|\bawait\b|\bimport\s*\(/.test(inner)) {
         const sourceUrl = /\n\/\/# sourceURL=[^\n]*$/.exec(inner)?.[0] ?? '';
         const lowered: string | null = yield { code: inner, options: { loader: 'js', target: 'es2022', supported: LOWER, logLevel: 'silent' }, optional: true };
-        if (lowered !== null) replacement = JSON.stringify(lowered + sourceUrl);
+        if (lowered !== null) replacement = JSON.stringify(patchInterop(lowered) + sourceUrl);
       }
       if (loweredEvals.size > 20_000) loweredEvals.clear();
       loweredEvals.set(m[1], replacement);

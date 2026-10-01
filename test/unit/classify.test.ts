@@ -173,6 +173,14 @@ test('a project file Vite cannot compile is an app bug at its location; a depend
     }),
   );
   assert.equal(oxc?.message, "src/App.tsx:3:1: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?");
+  // The same from a full-stack dev script, each line behind its process's prefix.
+  const prefixed = classify(
+    input({
+      phases: failedAt('ready', '500'),
+      runtimeOutput: ['[client] [vite] Internal server error: Transform failed with 1 error:', '[client] [PARSE_ERROR] Unexpected token', '[client]    ╭─[ app/client/src/App.tsx:3:1 ]', '[client]   File: /app/client/src/App.tsx'],
+    }),
+  );
+  assert.equal(prefixed?.message, 'client/src/App.tsx:3:1: Unexpected token');
 });
 
 test('ng serve waiting after a failed first build is an app bug at the error\'s location', () => {
@@ -193,4 +201,13 @@ test('an undeclared import that Vite reports while the page waits is an undeclar
     }),
   );
   assert.deepEqual([f?.class, f?.rule], ['app-bug', 'undeclared-import']);
+});
+
+test('an install in the page: a missing package is the app\'s, a registry that fails to answer is not', () => {
+  const missing = classify(input({ phases: failedAt('install', 'npm error 404 Not Found - GET https://registry.npmjs.org/nope - Not found', 'APP') }));
+  assert.deepEqual([missing?.class, missing?.rule], ['app-bug', 'unresolvable-dependency']);
+  const down = classify(input({ phases: failedAt('install', 'npm registry: react: HTTP 503', 'INTERNAL') }));
+  assert.equal(down?.class, 'infra');
+  const corrupt = classify(input({ phases: failedAt('install', 'npm registry: react@19.3.0: integrity check failed', 'INTERNAL') }));
+  assert.equal(corrupt?.class, 'infra');
 });

@@ -23,16 +23,15 @@ function octal(block: Uint8Array, at: number, length: number): number {
   return text ? parseInt(text, 8) : 0;
 }
 
-/** pax records ("<length> <key>=<value>\n"): the path, if one is given. */
+/** pax records ("<length> <key>=<value>\n", the length in bytes): the path, if one is given. */
 function paxPath(data: Uint8Array): string | null {
-  const text = decoder.decode(data);
   let at = 0;
-  while (at < text.length) {
-    const space = text.indexOf(' ', at);
+  while (at < data.length) {
+    const space = data.indexOf(0x20, at);
     if (space === -1) break;
-    const length = Number(text.slice(at, space));
+    const length = Number(decoder.decode(data.subarray(at, space)));
     if (!length) break;
-    const record = text.slice(space + 1, at + length - 1);
+    const record = decoder.decode(data.subarray(space + 1, at + length - 1));
     const eq = record.indexOf('=');
     if (record.slice(0, eq) === 'path') return record.slice(eq + 1);
     at += length;

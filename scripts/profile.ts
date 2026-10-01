@@ -37,7 +37,7 @@ interface Node {
   parent?: number;
   callFrame: { functionName: string; url?: string; lineNumber?: number };
 }
-const events = JSON.parse(trace.toString('utf8')) as { traceEvents: { name: string; id?: string; args?: { data?: { cpuProfile?: { nodes?: Node[]; samples?: number[] }; timeDeltas?: number[] } } }[] };
+const events = JSON.parse(trace.toString('utf8')) as { traceEvents: { name: string; pid?: number; id?: string; args?: { data?: { cpuProfile?: { nodes?: Node[]; samples?: number[] }; timeDeltas?: number[] } } }[] };
 interface Profile {
   nodes: Map<number, Node>;
   samples: number[];
@@ -46,8 +46,10 @@ interface Profile {
 const profiles = new Map<string, Profile>();
 for (const e of events.traceEvents) {
   if (e.name !== 'ProfileChunk' || !e.id) continue;
-  const p: Profile = profiles.get(e.id) ?? { nodes: new Map(), samples: [], deltas: [] };
-  profiles.set(e.id, p);
+  // Profile ids are per process: the same id in two processes is two profiles.
+  const key = `${e.pid}:${e.id}`;
+  const p: Profile = profiles.get(key) ?? { nodes: new Map(), samples: [], deltas: [] };
+  profiles.set(key, p);
   const data = e.args?.data;
   for (const n of data?.cpuProfile?.nodes ?? []) p.nodes.set(n.id, n);
   p.samples.push(...(data?.cpuProfile?.samples ?? []));

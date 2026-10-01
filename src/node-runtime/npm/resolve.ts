@@ -38,7 +38,7 @@ export class UnsupportedSpecError extends Error {}
 function parseSpec(name: string, spec: string): { name: string; range: string } {
   const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@(.*))?$/.exec(spec);
   if (alias) return { name: alias[1], range: alias[2] || 'latest' };
-  if (/^(file|link|git|git\+[a-z]+|github|https?|workspace):|^[^@][^:]*\/[^:]*$/.test(spec)) {
+  if (/^(file|link|git|git\+[a-z]+|github|gitlab|bitbucket|gist|https?|workspace):|^[^@][^:]*\/[^:]*$/.test(spec)) {
     throw new UnsupportedSpecError(`${name}@${spec}: only registry versions can be installed in the browser (not files, links, git or URLs)`);
   }
   return { name, range: spec.trim() || 'latest' };
@@ -65,10 +65,17 @@ function lookupPaths(from: string, name: string): string[] {
   }
 }
 
-export async function resolveTree(root: RootPackage, registry: Registry, options: { lockfile?: string | null; extra?: Record<string, string>; log?: (line: string) => void } = {}): Promise<Map<string, Placed>> {
+export async function resolveTree(
+  root: RootPackage,
+  registry: Registry,
+  /** `used` is set to whether the lockfile decided the tree (false when it was missing or too old). */
+  options: { lockfile?: string | null; extra?: Record<string, string>; log?: (line: string) => void; used?: { lockfile: boolean } } = {},
+): Promise<Map<string, Placed>> {
+  if (options.used) options.used.lockfile = false;
   if (options.lockfile) {
     const fromLock = await fromLockfile(options.lockfile, registry);
     if (fromLock) {
+      if (options.used) options.used.lockfile = true;
       // Extra packages (the WebAssembly SWC build) go on top of the locked tree.
       for (const [name, spec] of Object.entries(options.extra ?? {})) {
         if (fromLock.has(`node_modules/${name}`)) continue;
@@ -127,6 +134,7 @@ interface LockEntry {
   inBundle?: boolean;
   name?: string;
   bin?: Manifest['bin'];
+  optionalDependencies?: Record<string, string>;
 }
 
 /** A v2/v3 lockfile's tree (its "packages"), or null for older lockfiles. */
@@ -148,11 +156,13 @@ async function fromLockfile(text: string, registry: Registry): Promise<Map<strin
     let bin = entry.bin;
     if (!dist || !/^https:\/\/registry\.npmjs\.org\//.test(dist.tarball)) {
       const manifest = (await registry.packument(name))?.versions[entry.version];
-      if (!manifest) throw new Error(`npm registry: ${name}@${entry.version} from the lockfile is not on the registry`);
+      // Worded as npm words it: a locked version the registry does not have is the project's problem.
+      if (!manifest) throw new Error(`npm error notarget No matching version found for ${name}@${entry.version}.`);
       dist = manifest.dist;
       bin = manifest.bin;
     }
-    placed.set(path, { path, name, version: entry.version, dist, bin });
+    // Kept for the WebAssembly bindings of napi-rs packages, which install.ts finds through them.
+    placed.set(path, { path, name, version: entry.version, dist, bin, optionalDependencies: entry.optionalDependencies });
   }
   return placed;
 }

@@ -22,11 +22,14 @@ function tar(entries: Record<string, string>): Uint8Array {
   const pad = (b: Buffer) => Buffer.concat([b, Buffer.alloc((512 - (b.length % 512)) % 512)]);
   for (const [path, content] of Object.entries(entries)) {
     const name = `package/${path}`;
-    if (name.length > 100) {
+    if (Buffer.byteLength(name) > 100) {
+      // pax lengths count bytes, the length's own digits included
       const record = `path=${name}\n`;
-      let line = `${record.length + 3} ${record}`;
-      line = `${record.length + String(line.length).length + 1} ${record}`;
-      blocks.push(header('PaxHeader', line.length, 'x'), pad(Buffer.from(line)));
+      const bytes = Buffer.byteLength(record);
+      let length = bytes + 2;
+      while (String(length).length + 1 + bytes !== length) length = String(length).length + 1 + bytes;
+      const line = Buffer.from(`${length} ${record}`);
+      blocks.push(header('PaxHeader', line.length, 'x'), pad(line));
     }
     const data = Buffer.from(content);
     blocks.push(header(name, data.length, '0'), pad(data));
@@ -42,6 +45,8 @@ test('untar: files without the top directory, long names, no path escapes', () =
   assert.equal(new TextDecoder().decode(files[2].data), 'module.exports = 1;');
   const odd = untar(tar({ './dist/index.js': 'a', 'lib//x.js': 'b', '../escape.js': 'c' }));
   assert.deepEqual(odd.map((f) => f.path), ['dist/index.js', 'lib/x.js']);
+  const unicode = `lib/${'é'.repeat(60)}.js`; // 120 bytes: a pax path whose length counts bytes, not characters
+  assert.deepEqual(untar(tar({ [unicode]: 'u' })).map((f) => f.path), [unicode]);
 });
 
 /** A registry of a few packages, served from memory. */
@@ -99,17 +104,35 @@ test('resolve: peers installed, optional dependencies left out, unsupported spec
   const tree = await resolveTree({ dependencies: { plugin: '1.0.0' } }, registry);
   assert.equal(tree.get('node_modules/host')?.version, '3.2.0');
   assert.equal(tree.has('node_modules/native'), false);
-  await assert.rejects(resolveTree({ dependencies: { x: 'github:user/x' } }, registry), UnsupportedSpecError);
+  for (const spec of ['github:user/x', 'gitlab:user/x', 'bitbucket:user/x', 'gist:abc123', 'user/x']) {
+    await assert.rejects(resolveTree({ dependencies: { x: spec } }, registry), UnsupportedSpecError, spec);
+  }
   await assert.rejects(resolveTree({ dependencies: { missing: '^1' } }, registry), /404 Not Found - GET https:\/\/registry\.npmjs\.org\/missing - Not found/);
   await assert.rejects(resolveTree({ dependencies: { host: '^9' } }, registry), /No matching version found for host@\^9/);
 });
 
-test('resolve: a v3 lockfile is installed as it is', async () => {
+test('resolve: a v3 lockfile is installed as it is, and says so', async () => {
   const registry = fakeRegistry({ c: { '1.0.0': {}, '1.5.0': {} } });
-  const lock = JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/c': { version: '1.0.0' }, 'node_modules/opt': { version: '1.0.0', optional: true } } });
-  const tree = await resolveTree({ dependencies: { c: '^1' } }, registry, { lockfile: lock });
+  const lock = JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/c': { version: '1.0.0', optionalDependencies: { 'c-wasm32-wasi': '1.0.0' } }, 'node_modules/opt': { version: '1.0.0', optional: true } } });
+  const used = { lockfile: false };
+  const tree = await resolveTree({ dependencies: { c: '^1' } }, registry, { lockfile: lock, used });
   assert.deepEqual([...tree.keys()], ['node_modules/c']);
   assert.equal(tree.get('node_modules/c')?.version, '1.0.0');
+  // Kept: install.ts finds napi-rs WebAssembly bindings through them.
+  assert.deepEqual(tree.get('node_modules/c')?.optionalDependencies, { 'c-wasm32-wasi': '1.0.0' });
+  assert.equal(used.lockfile, true);
+  // A v1 lockfile is not used: the ranges decide, and the report says the lockfile was not honored.
+  await resolveTree({ dependencies: { c: '^1' } }, registry, { lockfile: JSON.stringify({ lockfileVersion: 1, dependencies: {} }), used });
+  assert.equal(used.lockfile, false);
+});
+
+test('registry: a failure to reach it or read its answer is marked as the registry\'s', async () => {
+  const down = new Registry(async () => {
+    throw new TypeError('Failed to fetch');
+  }, 'https://registry.test');
+  await assert.rejects(down.packument('react'), /^Error: npm registry: react: Failed to fetch/);
+  const broken = new Registry(async () => ({ ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }), 'https://registry.test');
+  await assert.rejects(broken.files({ name: 'x', version: '1.0.0', dist: { tarball: 'https://registry.test/x.tgz' } }), /^Error: npm registry: x@1\.0\.0: /);
 });
 
 test('install: files, the binaries index, and one shared block of memory', async () => {

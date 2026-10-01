@@ -24,6 +24,8 @@ export interface BrowserInstall {
   /** The project's direct dependencies and the versions installed (root package). */
   resolved: Record<string, string>;
   packages: number;
+  /** Whether the root package's lockfile decided its tree. */
+  lockfile: boolean;
 }
 
 const CONCURRENCY = 16;
@@ -58,10 +60,13 @@ export async function installInBrowser(parts: BrowserInstallPart[], registry: Re
   const files = new Map<string, Uint8Array>();
   let packages = 0;
   let resolved: Record<string, string> = {};
+  let lockfile = false;
   const started = performance.now();
   for (const part of parts) {
     const prefix = part.dir ? `${part.dir}/` : '';
-    const tree = await resolveTree(part.packageJson, registry, { lockfile: part.lockfile, extra: part.extra, log });
+    const used = { lockfile: false };
+    const tree = await resolveTree(part.packageJson, registry, { lockfile: part.lockfile, extra: part.extra, log, used });
+    if (!part.dir) lockfile = used.lockfile;
     const placed = [...tree.values()];
 
     // WebAssembly bindings of napi-rs packages (rolldown, Tailwind's oxide, …), at the top.
@@ -132,7 +137,7 @@ export async function installInBrowser(parts: BrowserInstallPart[], registry: Re
     }
   }
   log(`installed ${packages} packages in the browser in ${((performance.now() - started) / 1000).toFixed(1)} s`);
-  return { files, resolved, packages };
+  return { files, resolved, packages, lockfile };
 }
 
 /**

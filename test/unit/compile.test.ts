@@ -28,6 +28,15 @@ test('a webpack dev chunk: async code lowered inside its eval literals and aroun
   assert.equal(await a.exports!(), 1);
 });
 
+test('an eval literal whose only dynamic code is import() is lowered too', () => {
+  const src = `exports.m = ((module) => { eval(${JSON.stringify('module.exports = () => import("./x.js");\n//# sourceURL=webpack-internal:///./i.js')}); });`;
+  const out = compileForRuntime(src, '/app/.next/server/chunk3.js', 'cjs');
+  const inner = JSON.parse(/\beval\(("(?:[^"\\\n]|\\.)*")\)/.exec(out)![1]) as string;
+  assert.doesNotMatch(inner, /\bimport\s*\(/);
+  assert.match(inner, /Symbol\.for\("sandburg\.esm"\)/); // the interop patch, inside the literal and quoted with it
+  assert.doesNotThrow(() => new Function('exports', out));
+});
+
 test('the same chunk written again with one module changed compiles that module again', () => {
   compileForRuntime(chunk('10'), '/app/.next/server/chunk2.js', 'cjs');
   const out = compileForRuntime(chunk('20'), '/app/.next/server/chunk2.js', 'cjs');

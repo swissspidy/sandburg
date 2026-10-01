@@ -42,11 +42,12 @@ export class Registry {
   packument(name: string): Promise<Packument | null> {
     let p = this.packuments.get(name);
     if (!p) {
-      p = this.fetchFn(`${this.base}/${name.replace('/', '%2f')}`, { headers: { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8' } }).then(async (res) => {
+      p = (async () => {
+        const res = await transport(name, () => this.fetchFn(`${this.base}/${name.replace('/', '%2f')}`, { headers: { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8' } }));
         if (res.status === 404) return null;
         if (!res.ok) throw new Error(`npm registry: ${name}: HTTP ${res.status}`);
-        return (await res.json()) as Packument;
-      });
+        return transport(name, () => res.json() as Promise<Packument>);
+      })();
       p.catch(() => this.packuments.delete(name));
       this.packuments.set(name, p);
     }
@@ -55,11 +56,24 @@ export class Registry {
 
   /** A version's files (the tarball's, without its top directory), after checking its integrity. */
   async files(manifest: { name: string; version: string; dist: Manifest['dist'] }): Promise<TarFile[]> {
-    const res = await this.fetchFn(manifest.dist.tarball);
-    if (!res.ok) throw new Error(`npm error ${res.status} - GET ${manifest.dist.tarball}${res.status === 404 ? ' (404 Not Found - GET ' + manifest.dist.tarball + ')' : ''}`);
-    const gz = new Uint8Array(await res.arrayBuffer());
-    await verify(gz, manifest.dist, `${manifest.name}@${manifest.version}`);
-    return untar(await gunzip(gz));
+    const what = `${manifest.name}@${manifest.version}`;
+    const res = await transport(what, () => this.fetchFn(manifest.dist.tarball));
+    if (!res.ok) throw new Error(`npm registry: ${what}: HTTP ${res.status} - GET ${manifest.dist.tarball}`);
+    const gz = new Uint8Array(await transport(what, () => res.arrayBuffer()));
+    await verify(gz, manifest.dist, what);
+    return untar(await transport(what, () => gunzip(gz)));
+  }
+}
+
+/**
+ * A failure to reach the registry or to read what it sent (network, HTTP, a truncated download): the
+ * "npm registry:" prefix marks it as the environment's failure, not the app's (classify.ts).
+ */
+async function transport<T>(what: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    throw new Error(`npm registry: ${what}: ${(e as Error).message}`, { cause: e });
   }
 }
 

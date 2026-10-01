@@ -148,11 +148,14 @@ export function createAdapter(): RuntimeAdapter {
           result = await installInBrowser(host.browserInstall, new Registry(), (line) => ctx.log('stdout', line));
         } catch (e) {
           if (e instanceof UnsupportedSpecError) throw new AdapterError('UNSUPPORTED', e.message);
-          throw new AdapterError('APP', (e as Error).message);
+          // A package or version the registry does not have is the app's (worded as npm words it, so
+          // classify.ts finds it); the registry failing to answer, or a broken download, is not.
+          throw new AdapterError(/^npm error (?:404|notarget) /.test((e as Error).message) ? 'APP' : 'INTERNAL', (e as Error).message);
         }
         pack = packFiles(result.files);
         nodeModules = Object.fromEntries(Object.entries(pack.index).map(([path, [, length]]) => [path, length]));
         resolved = result.resolved;
+        host.lockfile = result.lockfile;
         const index = result.files.get('node_modules/.sandburg-bins.json');
         if (index) bins = JSON.parse(new TextDecoder().decode(index)) as Record<string, string>;
       }
