@@ -32,9 +32,9 @@ caught faults are classified `app-bug`, by the same rules.
   (every failing assertion waited out its 20 s timeout) and 117 s in v6. A failing assertion
   now waits 5 s and then stops once the app's servers are idle. Passing apps are unaffected, and
   the answers are the same.
-- **Vite seeds help apps that share a key.** 34 React apps have 20 keys. A seed is made when the
-  second app of a key comes, so 12 seed runs took 165 s, and the apps after them started with the
-  pre-bundled dependencies. vite-react's summed ready time fell from 380 s to 233 s, and its p90
+- **Vite seeds help apps that share a key.** 34 React apps have 20 keys. In this study the second
+  app of a key waited for the key's seed run (12 seed runs, 165 s), and the apps after them started
+  with the pre-bundled dependencies. Since then, apps no longer wait for a seed (ADR 0016). vite-react's summed ready time fell from 380 s to 233 s, and its p90
   from 36.5 s (first v6 attempt, seeding every key) to 28.5 s.
 - **The warm-up** (Vite, Vite + React and Next.js, side by side) took 57 s of the cold pass. The
   first apps of each stack then start from its installs and the Next.js seed.

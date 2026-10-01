@@ -48,7 +48,7 @@ export interface ChecksInput {
    * Whether the app's servers are idle (no request in flight, nothing heard for a moment). A failing
    * assertion stops waiting once it has waited SETTLE_FLOOR_MS and the app is idle (see settlingExpect).
    */
-  appIdle?: () => Promise<boolean>;
+  appIdle?: (remainingMs: number) => Promise<boolean>;
   artifactsDir: string;
   /** Read at the end so errors raised during functional checks count. */
   appErrors: () => PageError[];
@@ -146,14 +146,16 @@ const SETTLE_SLICE_MS = 1_000;
  * A web-first assertion (toHaveText, toBeVisible, …) retries until its timeout, which must cover a
  * dev server compiling a route on first request. An app that is broken makes every such assertion
  * wait the whole timeout. Here an assertion first waits SETTLE_FLOOR_MS; while it keeps failing it
- * retries in short slices until its timeout, and fails as soon as the app's servers are idle between
- * two slices (no request in flight, no output). An assertion with its own `timeout` option, and
- * every other expect() member (poll, soft, …), behave as in Playwright.
+ * retries in short slices until its timeout, and fails as soon as the app is idle between two slices
+ * (`idle(remainingMs)`: the app's servers have no request in flight and are quiet, the page has no
+ * timer due within the remaining time and has not changed for a moment; see the session). An
+ * assertion with its own `timeout` option, and every other expect() member (poll, soft, …), behave
+ * as in Playwright, with the configured timeout.
  */
 export function settlingExpect(
   base: typeof expect,
   timeoutMs: number,
-  idle: () => Promise<boolean>,
+  idle: (remainingMs: number) => Promise<boolean>,
   { floorMs = SETTLE_FLOOR_MS, sliceMs = SETTLE_SLICE_MS } = {},
 ): typeof expect {
   type Chain = Record<string | symbol, unknown>;
@@ -169,9 +171,9 @@ export function settlingExpect(
         const left = timeoutMs - (performance.now() - start);
         const timedOut = !!(err as { matcherResult?: { timeout?: number } }).matcherResult?.timeout;
         if (!timedOut || left < 100) throw err;
-        if (await idle().catch(() => false)) {
+        if (await idle(left).catch(() => false)) {
           const waited = ((performance.now() - start) / 1000).toFixed(1);
-          if (err instanceof Error) err.message += `\n\nStopped waiting after ${waited} s of ${timeoutMs / 1000} s: the app's servers were idle.`;
+          if (err instanceof Error) err.message += `\n\nStopped waiting after ${waited} s of ${timeoutMs / 1000} s: the app was idle (no request in flight, no timer due, no change to the page).`;
           throw err;
         }
         attempt = again(Math.min(sliceMs, left)) as Promise<unknown>;
@@ -192,7 +194,8 @@ export function settlingExpect(
         };
       },
     });
-  return new Proxy(base, {
+  // Members (poll, soft, …) come from an expect with the configured timeout.
+  return new Proxy(base.configure({ timeout: timeoutMs }), {
     apply: (_target, _this, args: unknown[]) => chain(args, []),
   }) as typeof expect;
 }

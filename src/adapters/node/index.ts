@@ -172,21 +172,33 @@ async function cacheBundle(key: string): Promise<Buffer | null> {
   return bundle;
 }
 
+/**
+ * Seed keys (Next.js and Vite seeds) issued to a seed run and not yet written. A seed's key is shared:
+ * later runs learn it (their filesBundle URL), and the host cannot tell runs apart. So a seed key
+ * takes one write, the seed run's own, and is withdrawn before it (restored if the write fails).
+ */
+const pendingSeeds = new Set<string>();
+
 async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
   const dirs = issuedCaches.get(key);
   if (!dirs || body.length > DEV_CACHE_MAX) return false;
-  let files: Record<string, string | { base64: string }>;
+  const seed = pendingSeeds.delete(key);
+  if (seed) issuedCaches.delete(key);
   try {
-    files = cacheEntries(JSON.parse(body.toString('utf8')), dirs);
+    const files = cacheEntries(JSON.parse(body.toString('utf8')), dirs);
+    await mkdir(devCacheRoot(), { recursive: true });
+    const file = join(devCacheRoot(), `${key}.json`);
+    const tmp = `${file}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, JSON.stringify(files));
+    await rename(tmp, file);
+    return true;
   } catch {
+    if (seed) {
+      pendingSeeds.add(key);
+      issuedCaches.set(key, dirs);
+    }
     return false;
   }
-  await mkdir(devCacheRoot(), { recursive: true });
-  const file = join(devCacheRoot(), `${key}.json`);
-  const tmp = `${file}.${tmpSuffix()}.tmp`;
-  await writeFile(tmp, JSON.stringify(files));
-  await rename(tmp, file);
-  return true;
 }
 
 /**
@@ -390,8 +402,8 @@ function nextSeedProject(versions: Record<string, string>): { project: Project; 
 }
 
 /**
- * The key of the Vite seed for an app (see vite-seed.ts), and whether its cache exists: seeding it
- * first if needed, once per key, as for Next.js.
+ * The key of the Vite seed for an app (see vite-seed.ts), and whether its cache exists. A key's
+ * second app starts its seed run; apps never wait for one.
  */
 async function viteSeedCache(project: Project, installKey: string, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean } | null> {
   const seed = viteSeed(project, installKey, `${NODE_VERSION}\0${TRANSFORM_VERSION}`);
@@ -406,16 +418,14 @@ async function viteSeedCache(project: Project, installKey: string, options: Host
     await writeFile(seen, '');
     return { key: seed.key, ready: false };
   }
-  if (!(await stored()) && options?.runSeed) {
-    let pending = seeding.get(seed.key);
-    if (!pending) {
-      log(`pre-bundling the app's packages in a seed run (shared by apps with the same packages and config)`);
-      pending = options.runSeed(seed.project, {}).catch((e: Error) => log(`seeding failed: ${e.message}`));
-      seeding.set(seed.key, pending);
-    }
-    await pending;
+  if (await stored()) return { key: seed.key, ready: true };
+  // Made beside the app, which does not wait for it: an app pre-bundles its packages in about the
+  // time a seed run takes, so waiting would only gain for large packages. Later apps use the seed.
+  if (options?.runSeed && !seeding.has(seed.key)) {
+    log(`pre-bundling the app's packages in a seed run, for later apps with the same packages and config`);
+    seeding.set(seed.key, options.runSeed(seed.project, {}).catch((e: Error) => log(`seeding failed: ${e.message}`)));
   }
-  return { key: seed.key, ready: await stored() };
+  return { key: seed.key, ready: false };
 }
 
 /** The key of the Next.js seed cache for an install's versions, and whether it exists (seeding it first if needed). */
@@ -564,6 +574,7 @@ export const node: AdapterDescriptor = {
       if (seed && options?.seed) {
         // The seed run keeps its webpack cache under the shared key.
         issuedCaches.set(seed.key, NEXT_SEED_DIRS);
+        pendingSeeds.add(seed.key);
         devCache = { key: seed.key, dirs: NEXT_SEED_DIRS, files: {}, waitFor: ['.next/cache/webpack/client-development/index.pack.gz', '.next/cache/webpack/server-development/index.pack.gz'] };
       } else if (seed?.ready) {
         readableCaches.set(seed.key, NEXT_SEED_DIRS);
@@ -575,6 +586,7 @@ export const node: AdapterDescriptor = {
       const seed = await viteSeedCache(project, info.key, options, log);
       if (seed && options?.seed) {
         issuedCaches.set(seed.key, VITE_SEED_DIRS);
+        pendingSeeds.add(seed.key);
         devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, waitFor: VITE_SEED_WAIT };
       } else if (seed?.ready) {
         readableCaches.set(seed.key, VITE_SEED_DIRS);

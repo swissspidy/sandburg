@@ -81,6 +81,11 @@ export interface RunOptions {
   outDir?: string;
   /** CSS selector that must match a rendered element before checks start. */
   readySelector?: string;
+  /**
+   * A failing assertion stops waiting once the app is idle, after at least 5 s (ADR 0016). Default:
+   * true. False: every assertion waits its whole timeout.
+   */
+  failFastChecks?: boolean;
   timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
   /** Re-run a project whose run failed as infra (a flaky download, a crashed tab) this many times. Default 1. */
   infraRetries?: number;
@@ -225,6 +230,7 @@ export class Session {
       });
       recordRequestFailures(context, run);
       recordDocuments(context, run);
+      await context.addInitScript(PAGE_QUIET_SCRIPT);
       const page = await context.newPage();
       if (node) {
         await this.runNode(node, run, context, page, project, runId, outDir, timeouts, checks, options);
@@ -265,12 +271,16 @@ export class Session {
             await failFastOnAppError(waitForRender(frame, options.readySelector), run);
             return frame;
           });
-          // The app is idle: no request in flight and the runtime quiet for a moment (see settlingExpect).
-          const appIdle = async () => {
+          // The app is idle (see settlingExpect): its servers have no request in flight and have been
+          // quiet for a moment, and its page has no timer due before the assertion's time is up and
+          // has not changed for a moment (PAGE_QUIET_SCRIPT).
+          const appIdle = async (remainingMs: number) => {
             const a = (await host('activity')) as { inflight: number; idleMs: number } | null;
-            return !!a && a.inflight === 0 && a.idleMs >= APP_IDLE_MS;
+            if (!a || a.inflight > 0 || a.idleMs < APP_IDLE_MS) return false;
+            const q = await app.evaluate((h) => (window as unknown as { __sandburgQuiet?: (h: number) => { quiet: boolean; sinceChangeMs: number } }).__sandburgQuiet?.(h) ?? null, remainingMs);
+            return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, appIdle);
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
@@ -330,7 +340,7 @@ async function runChecksPhase(
   timeouts: Record<PhaseName | 'check' | 'expect', number>,
   outDir: string,
   options: RunOptions,
-  appIdle?: () => Promise<boolean>,
+  appIdle?: (remainingMs: number) => Promise<boolean>,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -349,6 +359,32 @@ async function runChecksPhase(
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
 }
+
+/**
+ * Runs first in every document of a run: tracks the page's pending timeouts and when it last changed,
+ * for settlingExpect (window.__sandburgQuiet(horizonMs)). An app that will update itself from a timer
+ * due within the assertion's remaining time is not idle.
+ */
+export const PAGE_QUIET_SCRIPT = `(() => {
+  if (window.__sandburgQuiet) return;
+  const pending = new Map();
+  const set = window.setTimeout, clear = window.clearTimeout;
+  window.setTimeout = function (fn, ms, ...rest) {
+    if (typeof fn !== 'function') return set.call(this, fn, ms, ...rest);
+    let id;
+    id = set.call(this, function (...a) { pending.delete(id); return fn.apply(this, a); }, ms, ...rest);
+    pending.set(id, performance.now() + (Number(ms) || 0));
+    return id;
+  };
+  window.clearTimeout = function (id) { pending.delete(id); return clear.call(this, id); };
+  let changed = performance.now();
+  new MutationObserver(() => { changed = performance.now(); }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+  window.__sandburgQuiet = (horizonMs) => {
+    const now = performance.now();
+    for (const due of pending.values()) if (due <= now + horizonMs) return { quiet: false, sinceChangeMs: now - changed };
+    return { quiet: true, sinceChangeMs: now - changed };
+  };
+})();`;
 
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;

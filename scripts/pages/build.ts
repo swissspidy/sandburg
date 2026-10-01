@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
@@ -171,7 +171,8 @@ async function verify(): Promise<void> {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     let file = path.startsWith(prefix) ? join(out, decodeURIComponent(path.slice(prefix.length))) : null;
     if (file && (file.endsWith('/') || !extname(file))) file = join(file, 'index.html');
-    const body = file && file.startsWith(out) ? await readFile(file).catch(() => null) : null;
+    const inside = file !== null && !relative(out, file).startsWith('..') && !isAbsolute(relative(out, file));
+    const body = inside ? await readFile(file!).catch(() => null) : null;
     res.writeHead(body ? 200 : 404, { 'content-type': body ? (TYPES[extname(file!)] ?? 'application/octet-stream') : 'text/plain' });
     res.end(body ?? 'not found');
   });

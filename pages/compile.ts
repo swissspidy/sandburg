@@ -10,7 +10,11 @@ let ready: Promise<void> | null = null;
 
 async function compile(code: string, path: string, kind: CompileKind, asyncModules: boolean, wasmURL: string): Promise<string> {
   // A service worker cannot start workers: esbuild runs in it.
-  ready ??= esbuild.initialize({ wasmURL, worker: false });
+  // A failed start (esbuild.wasm did not download) is tried again by the next compile.
+  ready ??= esbuild.initialize({ wasmURL, worker: false }).catch((e: unknown) => {
+    ready = null;
+    throw e;
+  });
   await ready;
   return compileForRuntimeAsync(code, path, kind, { asyncModules }, async (c, options) => (await esbuild.transform(c, options)).code);
 }
