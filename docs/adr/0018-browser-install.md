@@ -76,14 +76,14 @@ All 17 fixtures pass with `--install-in browser`, on the latest framework versio
 
 The install takes a few seconds once the HTTP cache has the tarballs. Starting the dev server takes
 longer than with a host install, because installed packages are not compiled ahead of time. The
-runtime compiles each ESM file (or file that needs lowering) when it loads it, through the host's
-compile endpoint, and without the host install's preload of files it knows a stack will need.
+runtime compiles each ESM file (or file that needs lowering) when it loads it, and without the host
+install's preload of files it knows a stack will need. (These timings are with host compiles; since
+[ADR 0020](0020-compile-in-the-page.md) the page compiles, see there.)
 
 ## Consequences
 
-- An app can now be installed and run without npm on the host. Only one host service is still
-  needed: the compile endpoint (native esbuild). Compiling in the page with esbuild-wasm is the next
-  step toward a run that needs nothing from its host but static files.
+- An app can now be installed and run without npm on the host. The page now compiles modules too
+  ([ADR 0020](0020-compile-in-the-page.md)), so such a run needs nothing from its host but static files.
 - Installs in the browser are not cached across runs, except for the HTTP cache of the requests.
 - Not supported: workspaces and `link:`/`file:` dependencies, git and URL dependencies, install
   scripts (the host install does not run them either), and `overrides` beyond plain

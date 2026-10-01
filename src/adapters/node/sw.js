@@ -46,11 +46,36 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
   if (hooks.fetch && hooks.fetch(event, url)) return;
+  if (url.pathname === '/__sandburg/node-worker.js') {
+    event.respondWith(runtimeScript(event.request));
+    return;
+  }
   if (url.pathname.startsWith('/__sandburg/') || url.pathname === '/__sw__.js') return;
   // Top-level navigations are the host page; the app navigates inside its frame.
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
   event.respondWith(forward(event.request, url));
 });
+
+/**
+ * The node runtime's script, downloaded once and then answered from memory. A runtime starts one per
+ * thread and child process, often dozens at once, and a browser reads a worker's script only as that
+ * worker loads: while a parent runtime is blocked (napi-rs WebAssembly threads), downloads of a few MB
+ * each would hold every connection to the host, and the app's own requests would wait behind them.
+ */
+let runtime = null;
+async function runtimeScript(request) {
+  runtime ??= fetch(request).then(async (res) => {
+    if (!res.ok) throw new Error(`node-worker.js: ${res.status}`);
+    return { body: await res.arrayBuffer(), headers: [...res.headers] };
+  });
+  try {
+    const { body, headers } = await runtime;
+    return new Response(body, { headers });
+  } catch (e) {
+    runtime = null;
+    return new Response(String(e?.message ?? e), { status: 502 });
+  }
+}
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 const SHIM = (hooks.shim ?? '') + '<script src="/__sandburg/ws-shim.js"></script>';

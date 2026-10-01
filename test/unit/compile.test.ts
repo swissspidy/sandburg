@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compileForRuntime } from '../../src/adapters/node/compile.ts';
+import { compileForRuntime, compileForRuntimeAsync, projectHasTopLevelAwait, projectHasTopLevelAwaitAsync } from '../../src/adapters/node/compile.ts';
 
 // A webpack dev chunk: modules as eval("<source>") literals, and code of its own around them.
 const chunk = (body: string) => `"use strict";
@@ -47,4 +47,27 @@ test('an ES module with a hashbang (a bin script) compiles to code that runs', (
   const out = compileForRuntime('#!/usr/bin/env node\nimport process from "node:process";\nexport const x = process.argv.length;\n', '/app/node_modules/tool/bin/index.js', 'esm');
   assert.doesNotMatch(out, /#!/);
   assert.doesNotThrow(() => new Function('require', 'exports', 'module', out));
+});
+
+test('compiled in a browser (esbuild-wasm): the same output as on the host, and the same top-level await scan', async () => {
+  const wasm = await import('esbuild-wasm');
+  await wasm.initialize({});
+  try {
+    const transform = async (code: string, options: Parameters<typeof wasm.transform>[1]) => (await wasm.transform(code, options)).code;
+    const samples: [string, string, 'esm' | 'cjs' | 'ts'][] = [
+      ['import { a } from "./a.js";\nexport const b = async () => await a();\nconst require = 1;\n', '/app/x.mjs', 'esm'],
+      ['const x: number = 1;\nexport default async function f() { for await (const y of []) {} return x; }\n', '/app/y.ts', 'ts'],
+      [chunk('7'), '/app/.next/server/chunk4.js', 'cjs'],
+    ];
+    for (const [code, path, kind] of samples) {
+      // The WebAssembly build first: eval literals are cached once lowered, and must be lowered by it.
+      const inBrowser = await compileForRuntimeAsync(code, path, kind, {}, transform);
+      assert.equal(inBrowser, compileForRuntime(code, path, kind), path);
+    }
+    const files = { 'a.ts': 'const x: number = await Promise.resolve(1);\nexport { x };\n', 'b.js': 'async function f() { await 1; }\n' };
+    assert.equal(await projectHasTopLevelAwaitAsync(files, transform), projectHasTopLevelAwait(files));
+    assert.equal(await projectHasTopLevelAwaitAsync({ 'b.js': files['b.js'] }, transform), false);
+  } finally {
+    await wasm.stop();
+  }
 });

@@ -101,9 +101,18 @@ const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit' }
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
 
+/** A port to the page's compiler for a runtime (each runtime blocks on its own; see compile-worker.ts). */
+function connectCompiler(compiler: Worker): MessagePort {
+  const channel = new MessageChannel();
+  compiler.postMessage({ op: 'connect', port: channel.port2 }, [channel.port2]);
+  return channel.port1;
+}
+
 export function createAdapter(): RuntimeAdapter {
   let files: FileTree = {};
   let proc: NodeProcess | null = null;
+  /** The page's compiler, when the packages are installed in the browser. */
+  let compiler: Worker | null = null;
   let main = `/app/${START}`;
   let argv: string[] = [];
   let shell = false;
@@ -142,7 +151,9 @@ export function createAdapter(): RuntimeAdapter {
       let resolved = host.resolved;
       let bins: Record<string, string> = {};
       if (host.browserInstall) {
-        // Opt-in: the install happens here, from the npm registry (see npm/install.ts).
+        // Opt-in: the install happens here, from the npm registry (see npm/install.ts), and the runtime
+        // compiles in the page (compile-worker.ts), not on the host. Its esbuild loads meanwhile.
+        compiler ??= new Worker('/__sandburg/compile-worker.js');
         let result;
         try {
           result = await installInBrowser(host.browserInstall, new Registry(), (line) => ctx.log('stdout', line));
@@ -185,6 +196,7 @@ export function createAdapter(): RuntimeAdapter {
         filesBundle: host.filesBundle ?? null,
         nodeModules,
         pack,
+        compilePort: compiler ? connectCompiler(compiler) : null,
         log: (stream, line) => {
           ctx.log(stream, line);
           watchBuild(line);
@@ -257,6 +269,8 @@ export function createAdapter(): RuntimeAdapter {
       }
       proc?.terminate();
       proc = null;
+      compiler?.terminate();
+      compiler = null;
     },
   };
 }
