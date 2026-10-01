@@ -51,13 +51,28 @@ allowlist and the HTTP cache apply to them.
 
 ## Results
 
-Fixtures run with `--install-in browser` (warm HTTP cache), for example:
+All 17 fixtures pass with `--install-in browser`, on the latest framework versions
+([ADR 0019](0019-latest-versions.md)), with a warm HTTP cache:
 
 | Fixture | Install | Start | Total |
 |---|---|---|---|
-| angular-zone | 8.9 s | 15.2 s | 35.4 s |
-| angular-tasks | 5.0 s | 19.1 s | 29.2 s |
-| nuxt-app | 5.9 s | 5.5 s | 32.2 s |
+| angular-tasks | 5.2 s | 18.0 s | 27.7 s |
+| angular-zone | 8.7 s | 21.7 s | 34.5 s |
+| astro-app | 3.4 s | 20.1 s | 35.2 s |
+| lit-vite | 1.7 s | 4.4 s | 8.1 s |
+| next-app-router | 4.8 s | 8.2 s | 25.6 s |
+| node-express | 0.9 s | 0.7 s | 2.3 s |
+| nuxt-app | 6.0 s | 5.8 s | 35.1 s |
+| preact-vite | 2.4 s | 5.2 s | 9.8 s |
+| react-express-split | 3.6 s | 8.9 s | 15.0 s |
+| react-router-app | 3.5 s | 11.4 s | 18.6 s |
+| solid-start-app | 2.6 s | 6.7 s | 22.4 s |
+| solid-vite | 2.5 s | 5.8 s | 10.1 s |
+| svelte-vite | 2.0 s | 12.4 s | 16.4 s |
+| sveltekit-app | 2.1 s | 15.6 s | 24.3 s |
+| vite-react-counter | 1.9 s | 4.7 s | 8.8 s |
+| vite-socketio-chat | 2.5 s | 8.2 s | 11.8 s |
+| vue-express-sqlite | 2.6 s | 9.5 s | 14.0 s |
 
 The install takes a few seconds once the HTTP cache has the tarballs. Starting the dev server takes
 longer than with a host install, because installed packages are not compiled ahead of time. The
