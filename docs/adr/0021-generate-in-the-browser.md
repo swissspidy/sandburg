@@ -90,8 +90,9 @@ With Claude Opus 5.5, a to-do app with filters and due dates (React) took 44–5
 and went into the running app by HMR. A guestbook on Express and SQLite took 49 s to write, 17 s to
 install (131 packages) and 13 s to start. To test the fix loop, a broken `App.jsx` was written into
 a running scaffold: the page collected Vite's "Failed to resolve import" error and the browser's
-error, and the model fixed both in 12 s. The Gemini path is implemented but has not been run end
-to end: the test key had no credit.
+error, and the model fixed both in 12 s. With Gemini 3.1 Pro (preview), the same to-do
+app took 79 s to write (11k output tokens, thinking included), and the theme toggle took 53 s and
+went in by HMR.
 
 ## Consequences
 
