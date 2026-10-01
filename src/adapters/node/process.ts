@@ -222,8 +222,10 @@ export class NodeProcess {
         this.failedCommands.push({ command: m.command, code: m.code, stderr: m.stderr });
         break;
       case 'fatal':
-        // The runtime could not load one of its own parts: infrastructure, not the app.
-        this.fail(new AdapterError(m.message.startsWith('runtime asset failed to load') ? 'INTERNAL' : 'APP', m.stack ?? m.message));
+        // The runtime could not load one of its own parts, or a WebAssembly thread crashed:
+        // not the app's code (classify matches the message).
+        if (m.trap) this.fail(new AdapterError('INTERNAL', [m.message, ...(m.stack ?? '').split('\n').slice(1)].join('\n').trim()));
+        else this.fail(new AdapterError(m.message.startsWith('runtime asset failed to load') ? 'INTERNAL' : 'APP', m.stack ?? m.message));
         break;
       case 'exit':
         this.exitCode = m.code;
@@ -263,6 +265,11 @@ export class NodeProcess {
         break;
     }
     for (const w of this.waiters) w();
+  }
+
+  /** Rejects when the program fails, at any point (the page waits on it while the app loads). */
+  failed(): Promise<never> {
+    return this.until(() => false) as Promise<never>;
   }
 
   /** Ends the wait for the program (listening(), pagePort()) with an error. */

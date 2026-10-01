@@ -50,3 +50,29 @@ test('a Next.js page that throws on the server is an app bug', async () => {
   assert.equal(result.status, 'failed');
   assert.equal(result.failure?.class, 'app-bug', JSON.stringify(result.failure, null, 2));
 });
+
+test('a WebAssembly thread that crashes ends the run at once, as a runtime limitation', async () => {
+  // A module whose f() traps (unreachable), run in a thread the page's request waits on, as
+  // rolldown's dependency optimizer waits on its threads.
+  const trap = [0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 5, 1, 1, 102, 0, 0, 10, 5, 1, 3, 0, 0, 11];
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'wasm-thread-crash', private: true, scripts: { dev: 'node server.js' }, dependencies: { ms: '^2.1.3' } }),
+      'server.js': [
+        "const { Worker } = require('node:worker_threads');",
+        "require('node:http').createServer(() => {",
+        `  new Worker('setTimeout(() => new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([${trap}]))).exports.f())', { eval: true }).on('error', () => {});`,
+        '}).listen(3000);',
+      ].join('\n'),
+    },
+    { name: 'wasm-thread-crash', path: 'wasm-thread-crash' },
+  );
+  const started = Date.now();
+  const result = await session.run(project, { outDir });
+  assert.equal(result.status, 'error', JSON.stringify(result.failure, null, 2));
+  assert.equal(result.failure?.phase, 'ready');
+  assert.equal(result.failure?.class, 'runtime-unsupported');
+  assert.equal(result.failure?.rule, 'signature:wasm-thread-crash');
+  assert.match(result.failure?.message ?? '', /a WebAssembly thread crashed \(worker \d+\): RuntimeError: unreachable/);
+  assert.ok(Date.now() - started < 30_000, `the run took ${Date.now() - started} ms`);
+});

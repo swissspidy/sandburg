@@ -305,6 +305,8 @@ export interface ThreadHost {
   postToParent(msg: unknown, transfer?: Transferable[]): void;
   /** Messages of a nested runtime about servers it runs (listening, responses, WebSockets), which this runtime passes on. */
   relay(msg: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean;
+  /** Ends this process with an error: a WebAssembly thread of it crashed (see Worker's 'fatal'). */
+  crash(message: string, stack?: string): void;
 }
 
 /**
@@ -417,6 +419,14 @@ export function createWorkerThreads(host: ThreadHost) {
           host.write(m.stream as 'stdout' | 'stderr', m.text as string);
           break;
         case 'fatal': {
+          // A WebAssembly trap (memory access out of bounds, a Rust panic) in a thread leaves the
+          // module's shared memory, and the threads waiting on it, in a state nothing can resume:
+          // rolldown waits forever for a crashed thread's work. Natively that is a segfault or an
+          // abort, which ends the process, so the process ends here too.
+          if (m.trap) {
+            const crashed = /^a WebAssembly thread crashed/.test(String(m.message));
+            host.crash(crashed ? String(m.message) : `a WebAssembly thread crashed (worker ${this.threadId}): RuntimeError: ${m.message}`, m.stack ? String(m.stack) : undefined);
+          }
           const err = new Error(String(m.message));
           if (m.stack) err.stack = String(m.stack);
           if (this.listenerCount('error')) this.emit('error', err);
