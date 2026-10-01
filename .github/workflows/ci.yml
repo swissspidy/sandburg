@@ -53,7 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         # One job per file: each installs its fixtures cold, and the slow ones run side by side.
-        suite: [angular, batch, frameworks, fullstack, node, reference, run, vite-frameworks, websockets]
+        suite: [angular, batch, browser-install, frameworks, fullstack, node, reference, run, vite-frameworks, websockets]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

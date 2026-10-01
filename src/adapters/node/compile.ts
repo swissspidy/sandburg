@@ -106,6 +106,9 @@ export async function compileForRuntimeAsync(
 
 /** The compilation, yielding each esbuild transform it needs and taking back its output. */
 function* compileSteps(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean }): Generator<TransformStep, string, string> {
+  // A hashbang (a package's bin script) is only valid as the very first line, and the ESM marker
+  // goes before the code: blanked, keeping the line count.
+  code = code.replace(/^#!.*/, '');
   let out = patchFunctionImport(patchAsyncFunction(kind === 'cjs' && /\beval\("/.test(code) ? yield* lowerEvalSteps(code) : code));
   let loader: esbuild.Loader = kind === 'ts' ? (path.endsWith('x') ? 'tsx' : 'ts') : 'js';
   const esmSource = kind === 'esm';

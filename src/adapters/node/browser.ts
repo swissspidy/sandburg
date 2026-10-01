@@ -8,6 +8,9 @@ import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, webSocketPort } from './process.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
+import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
+import { Registry } from '../../node-runtime/npm/registry.ts';
+import { UnsupportedSpecError } from '../../node-runtime/npm/resolve.ts';
 
 export interface HostInstall {
   key: string;
@@ -32,7 +35,9 @@ export interface HostInstall {
   };
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
   proxy?: ProxyRule[];
-  start?: ({ main: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
+  start?: ({ main: string; argv: string[] } | { bin: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
+  /** Install in the page (opt-in): what each package of the project needs (see npm/install.ts). */
+  browserInstall?: BrowserInstallPart[];
 }
 
 const START = '.sandburg/start.js';
@@ -124,11 +129,34 @@ export function createAdapter(): RuntimeAdapter {
       proxy = host.proxy ?? [];
       devCache = host.devCache ?? null;
       Object.assign(files, devCache?.files);
+      let nodeModules = host.index;
+      let pack: ReturnType<typeof packFiles> | null = null;
+      let resolved = host.resolved;
+      let bins: Record<string, string> = {};
+      if (host.browserInstall) {
+        // Opt-in: the install happens here, from the npm registry (see npm/install.ts).
+        let result;
+        try {
+          result = await installInBrowser(host.browserInstall, new Registry(), (line) => ctx.log('stdout', line));
+        } catch (e) {
+          if (e instanceof UnsupportedSpecError) throw new AdapterError('UNSUPPORTED', e.message);
+          throw new AdapterError('APP', (e as Error).message);
+        }
+        pack = packFiles(result.files);
+        nodeModules = Object.fromEntries(Object.entries(pack.index).map(([path, [, length]]) => [path, length]));
+        resolved = result.resolved;
+        const index = result.files.get('node_modules/.sandburg-bins.json');
+        if (index) bins = JSON.parse(new TextDecoder().decode(index)) as Record<string, string>;
+      }
       if (ctx.framework !== 'next') {
         if (!host.start) throw new AdapterError('UNSUPPORTED', 'no way to start this project in the node runtime');
         shell = 'shell' in host.start;
         if ('shell' in host.start) files[START] = shellStart(host.start.shell);
-        else {
+        else if ('bin' in host.start) {
+          if (!bins[host.start.bin]) throw new AdapterError('APP', `the dev script runs "${host.start.bin}", which no installed package provides`);
+          main = `/app/${bins[host.start.bin]}`;
+          argv = host.start.argv;
+        } else {
           main = `/app/${host.start.main}`;
           argv = host.start.argv;
         }
@@ -145,7 +173,8 @@ export function createAdapter(): RuntimeAdapter {
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
-        nodeModules: host.index,
+        nodeModules,
+        pack,
         log: (stream, line) => {
           ctx.log(stream, line);
           watchBuild(line);
@@ -155,7 +184,7 @@ export function createAdapter(): RuntimeAdapter {
       return {
         resolution: host.lockfile ? 'lockfile' : Object.keys(ctx.packageJson?.dependencies ?? {}).length ? 'range' : 'none',
         lockfileHonored: host.lockfile,
-        dependencies: host.resolved,
+        dependencies: resolved,
         buildMs: null,
       };
     },

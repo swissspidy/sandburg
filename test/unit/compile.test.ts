@@ -33,3 +33,9 @@ test('the same chunk written again with one module changed compiles that module 
   const out = compileForRuntime(chunk('20'), '/app/.next/server/chunk2.js', 'cjs');
   assert.match(out, /Promise\.resolve\(20\)/);
 });
+
+test('an ES module with a hashbang (a bin script) compiles to code that runs', () => {
+  const out = compileForRuntime('#!/usr/bin/env node\nimport process from "node:process";\nexport const x = process.argv.length;\n', '/app/node_modules/tool/bin/index.js', 'esm');
+  assert.doesNotMatch(out, /#!/);
+  assert.doesNotThrow(() => new Function('require', 'exports', 'module', out));
+});

@@ -61,6 +61,8 @@ sandburg open <project>                                 # load it in a visible t
   (`{ "path": "contents" }`), or `snapshot:<id>`. Every run stores its project as a
   content-addressed snapshot, so any run can be reopened exactly.
 - `--offline` answers every request from the HTTP cache (`.sandburg/cache`) and fails on a miss.
+- `--install-in browser` (opt-in) has the page install the packages from the npm registry itself,
+  without npm on the host ([ADR 0018](docs/adr/0018-browser-install.md)).
 - Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks.
 
 A checks file default-exports named checks. Each gets the app's frame, Playwright's `expect`, and
@@ -111,8 +113,8 @@ point at the file and line where the dev server reported them.
 ## How it works
 
 1. **The host** (the orchestrator, in Node.js) installs the project's packages with npm
-   (`--ignore-scripts`) and serves them to the browser. It also compiles modules for the runtime and
-   keeps the caches.
+   (`--ignore-scripts`) and serves them to the browser, or the page installs them itself
+   (`--install-in browser`). It also compiles modules for the runtime and keeps the caches.
 2. **The runtime** is Node.js 24 in a Web Worker: a virtual file system, a CommonJS/ESM loader, and
    Node's built-in modules. It runs the project's dev script. Child processes and worker threads are
    more runtimes.
