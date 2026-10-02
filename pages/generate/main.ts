@@ -382,7 +382,8 @@ let runs = 0;
 async function run(files: FileTree): Promise<boolean> {
   const id = ++runs;
   api ??= await loadHost();
-  if (state.running) await api.dispose();
+  // Also a run that failed before it started: it still has a runtime (workers, compiler) to end.
+  await api.dispose();
   state.running = false;
   ui.frame.src = 'about:blank';
   ui.placeholder.hidden = true;
@@ -607,6 +608,16 @@ function restore(): boolean {
 
 function newApp(): void {
   if (state.busy) return;
+  // The next app starts in a runtime of its own: edits must not go into this one.
+  runs++;
+  state.running = false;
+  void api?.dispose();
+  ui.frame.src = 'about:blank';
+  ui.placeholder.hidden = false;
+  ui.reload.disabled = true;
+  ui.download.disabled = true;
+  resetSteps('write');
+  status('Ready', 'idle');
   state.turns = [];
   state.files = {};
   state.errors = [];
