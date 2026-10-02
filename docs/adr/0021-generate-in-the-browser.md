@@ -93,6 +93,17 @@ Nothing else is recorded. `?scaffold=<framework>` runs a scaffold without a mode
   loads a document that no service worker controls, or one it cannot read, it loads the app at that
   address again. The demos use it too.
 
+- **Safari and iOS.** The page becomes cross-origin isolated through headers its service worker
+  adds: `Cross-Origin-Embedder-Policy: credentialless`. WebKit (Safari, and every browser on iOS)
+  does not support `credentialless`, so the page stayed non-isolated and could not start the
+  runtime. In WebKit the service worker now sends `require-corp`; the browser is detected from its
+  user agent. Under `require-corp`, cross-origin resources must opt in with CORS or CORP headers.
+  Module scripts, `fetch` to the model APIs and the npm registry use CORS. A plain `<img>` from a
+  site without those headers does not load. Every scaffold, two demos and a generation through the
+  vault ran with `require-corp` in Chromium, using an iPhone user agent. WebKit itself was not
+  available to test. If a page still is not isolated, it now says why: either the service worker did
+  not handle the page (private window, blocked), or the browser refused isolation.
+
 ## Results
 
 Each scaffold, run from the built site under `/sandburg/` with packages from the npm registry and

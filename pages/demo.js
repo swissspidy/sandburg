@@ -3,6 +3,7 @@
  * install, start, ready), with the host's answers replayed by sw.js.
  */
 import { guardAppFrame } from './frame-guard.js';
+import { isolationFailure } from './isolation.js';
 
 const name = document.documentElement.dataset.demo;
 const scope = new URL('./', location.href);
@@ -61,7 +62,7 @@ async function boot() {
     await navigator.serviceWorker.ready;
     if (sessionStorage.getItem(reloaded)) {
       sessionStorage.removeItem(reloaded);
-      return fail('The page could not be made cross-origin isolated. Reload it normally (not a hard reload).');
+      return fail(isolationFailure());
     }
     sessionStorage.setItem(reloaded, '1');
     location.reload();

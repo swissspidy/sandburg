@@ -32,7 +32,14 @@ async function sha256(buffer) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-const HEADERS = { 'cross-origin-resource-policy': 'same-origin', 'cross-origin-embedder-policy': 'credentialless', 'cross-origin-opener-policy': 'same-origin' };
+/**
+ * The embedder policy that makes pages cross-origin isolated. credentialless lets an app load
+ * cross-origin images and scripts that do not opt in. WebKit (Safari, and every browser on iOS) does
+ * not support it, only require-corp: there, cross-origin resources must send CORS or CORP headers.
+ */
+const ua = self.navigator.userAgent;
+const COEP = /AppleWebKit\//.test(ua) && !/(Chrome|Chromium|Edg)\//.test(ua) ? 'require-corp' : 'credentialless';
+const HEADERS = { 'cross-origin-resource-policy': 'same-origin', 'cross-origin-embedder-policy': COEP, 'cross-origin-opener-policy': 'same-origin' };
 
 /**
  * The runtime's own files, the same for every project (runtime/ on the site): what a run that
@@ -107,11 +114,12 @@ async function isolated(request) {
   const res = await fetch(request);
   const headers = new Headers(res.headers);
   headers.set('cross-origin-opener-policy', 'same-origin');
-  headers.set('cross-origin-embedder-policy', 'credentialless');
+  headers.set('cross-origin-embedder-policy', COEP);
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
 self.sandburgHooks = {
+  coep: COEP,
   fetch(event, url) {
     if (url.pathname.includes('/__sandburg/')) {
       event.respondWith(host(event.request, url));
