@@ -126,7 +126,6 @@ code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .generator button.quiet:hover, .generator button.icon:hover, .generator button.example:hover, .generator .chip:hover:not(:disabled) { border-color: var(--accent); }
 .generator button.icon { padding: 4px 9px; }
 .generator .chip { font-size: 12px; padding: 2px 9px; }
-.generator #fix { border-color: var(--err); color: var(--err); }
 .conversation { flex: 1; min-height: 120px; overflow: auto; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .conversation > li { padding: 8px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); font-size: 14px; }
 .conversation p { margin: 0 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -148,8 +147,9 @@ code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .file-chips li[data-state="deleted"]::before { content: "✕"; color: var(--err); }
 .file-chips li code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 12px; color: var(--muted); }
-.composer { display: flex; flex-direction: column; gap: 6px; }
-.composer .actions { display: flex; gap: 6px; align-items: center; }
+#vault { display: block; width: 100%; height: 260px; border: 0; background: transparent; flex: none; }
+.vault-slot { color: var(--muted); font-size: 13px; }
+#placeholder button { margin-top: 12px; }
 .output { display: grid; grid-template-rows: auto minmax(0, 3fr) minmax(140px, 1.3fr); gap: 10px; min-height: 0; }
 .output .steps { padding: 0; }
 .steps li[data-step="write"]:not([data-state]) { opacity: 0.8; }

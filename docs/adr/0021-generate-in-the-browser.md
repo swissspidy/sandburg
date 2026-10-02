@@ -17,11 +17,10 @@ already deployed.
 visitor picks a provider (Anthropic or Google), a model and a framework, and pastes an API key.
 After they describe an app, the page:
 
-1. **Asks the model** from the page. Both APIs accept cross-origin requests: Anthropic's needs
-   `anthropic-dangerous-direct-browser-access`, and Gemini's takes the key in `x-goog-api-key`.
-   Answers stream as server-sent events over plain `fetch`, so there is no SDK to bundle and one
-   code path covers both providers. The key stays in the tab's session storage, or in local
-   storage if the visitor ticks "remember", and goes to the provider only.
+1. **Asks the model** from a key vault (see below). Both APIs accept cross-origin requests, from an
+   opaque origin too. Anthropic's API needs `anthropic-dangerous-direct-browser-access`, and
+   Gemini's takes the key in `x-goog-api-key`. Answers stream as server-sent events over plain
+   `fetch`, so there is no SDK to bundle and one code path covers both providers.
 2. **Starts the model from a scaffold** for the chosen stack ([`templates.ts`](../../pages/generate/templates.ts)):
    React, Vue or Svelte on Vite, plain HTML, Vue + Express + SQLite, or Next.js. Each uses the
    versions the fixtures use, so the model does not have to guess versions or config. The system
@@ -44,6 +43,29 @@ After they describe an app, the page:
    error lines on the dev server's stderr, and uncaught errors or `console.error` calls in the app's
    frame. "Fix errors" sends these to the model with the current files. Auto-fix does the same on
    its own, at most twice per request.
+
+**The API key never reaches the page.** The generated app runs in a frame on the page's origin,
+because that is how the service worker serves it. The app's code, and every npm package it
+loads, can therefore do anything the page can: read its fields and storage, or wrap its `fetch` to
+catch the next request's headers. Other sites on the same origin (`<user>.github.io`) can read its
+storage too. A key anywhere on that origin is exposed. So the key lives in a vault
+([`vault.ts`](../../pages/generate/vault.ts)). The vault is a sandboxed `srcdoc` frame without
+`allow-same-origin`, which gives it an opaque origin. The page creates it before any generated code
+runs. The vault holds the settings, the key field and the request field, and makes the calls. The
+page sends it the conversation and gets the answers back by `postMessage`
+([`protocol.ts`](../../pages/generate/protocol.ts)), and never gets the key.
+
+- **Calls need a click in the vault.** The vault calls the model once per Generate or Fix click
+  (the page must ask within 10 s). After a Generate click with auto-fix on, it also makes up to two
+  error fixes. An app that takes over the page cannot spend the key on calls of its own. At most, it
+  can trigger those two fixes, and it still never sees the key.
+- **The key is not stored.** An opaque origin has no storage, so the visitor enters the key once
+  per visit. Keys that earlier versions stored on the page's origin are deleted.
+- **A restored app (after a reload of the tab) runs only when the visitor clicks.** Generated code
+  then runs only after the vault is in place.
+- **What remains:** after an app has run, it can remove the vault and draw a fake one that asks for
+  the key. The vault tells the visitor they enter the key once per visit, and to reload if they are
+  asked again.
 
 The site serves the runtime's own files from `runtime/`: the runtime's worker, the compile
 worker, esbuild's and SQLite's WebAssembly, and the WebSocket shim. `sw.js` answers them under any
@@ -98,12 +120,10 @@ went in by HMR.
 
 - The demo site is the product's showcase for its intended use: an app that a model generates and
   that runs in the visitor's browser. It needs only static hosting.
-- The visitor pays for the model with their own key. The generated app runs in a same-origin frame
-  (that is how the service worker serves it), so the app's code, and any npm package it loads, can
-  read the key from the page and from storage. So can other sites on the same origin
-  (`<user>.github.io`). The page says so, and suggests a key with a spending limit. The key is
-  remembered across browser sessions only if the visitor asks. To isolate the key, the app would need
-  an origin of its own, as a Sandburg run gives it.
+- The visitor pays for the model with their own key, and enters it once per visit. Neither the
+  generated app nor the page can read it. A probe run from the app's frame checked this: it searched
+  the page's DOM, fields, storage and state, tried to read the vault, and asked the vault for a call.
+  It did not find the key, could not read the vault, and the call was refused.
 - Each run downloads its packages, so a run on another tab or origin cannot reuse them.
   Compiled modules are not kept between runs (ADR 0020).
 - The generator does not run Playwright checks. The page has no Playwright. Errors reach the model

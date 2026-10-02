@@ -6,13 +6,18 @@
  *
  * Later requests change the running app: files are written into the runtime and the dev server
  * reloads them. A change to packages or to a server's code starts a new run.
+ *
+ * The page never sees the API key. The generated app runs on this page's origin, so whatever the page
+ * can read, the app can too. The key lives in a vault (vault.ts): a sandboxed frame with an opaque
+ * origin, created before any generated code runs. The vault calls the model and sends the answers here.
  */
 import type { HostApi } from '../../src/host/host.ts';
 import type { FileTree, PackageJson, Project } from '../../src/types.ts';
 import { detectFramework } from '../../src/framework.ts';
 import { pageInstall } from '../../src/adapters/node/plan.ts';
 import { applyEdits, needsRestart, parseAnswer, type FileEdit } from './files.ts';
-import { call, listModels, MODELS, type Provider, type Turn } from './llm.ts';
+import type { CallResult, Turn } from './llm.ts';
+import type { FromVault, Prefs, ToVault } from './protocol.ts';
 import { firstMessage, fixMessage, SYSTEM } from './prompt.ts';
 import { template, TEMPLATES } from './templates.ts';
 import { zip } from './zip.ts';
@@ -25,27 +30,13 @@ Object.assign(window, { __sandburgBase: scope.pathname + '__sandburg', __sandbur
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const ui = {
-  provider: $<HTMLSelectElement>('provider'),
-  model: $<HTMLSelectElement>('model'),
-  loadModels: $<HTMLButtonElement>('load-models'),
-  apiKey: $<HTMLInputElement>('api-key'),
-  remember: $<HTMLInputElement>('remember'),
-  keyHint: $('key-hint'),
-  framework: $<HTMLSelectElement>('framework'),
-  autofix: $<HTMLInputElement>('autofix'),
-  settings: $<HTMLDetailsElement>('settings'),
+  vaultSlot: $('vault'),
   conversation: $('conversation'),
-  composer: $<HTMLFormElement>('composer'),
-  task: $<HTMLTextAreaElement>('task'),
-  generate: $<HTMLButtonElement>('generate'),
-  stop: $<HTMLButtonElement>('stop'),
-  newApp: $<HTMLButtonElement>('new-app'),
   status: $('status'),
   elapsed: $('elapsed'),
   frame: $<HTMLIFrameElement>('app'),
   placeholder: $('placeholder'),
   url: $('url'),
-  fix: $<HTMLButtonElement>('fix'),
   reload: $<HTMLButtonElement>('reload'),
   download: $<HTMLButtonElement>('download'),
   terminal: $('terminal'),
@@ -69,16 +60,14 @@ const state = {
   /** What the runtime and the app reported since the last change, for the model to fix. */
   errors: [] as string[],
   fixesLeft: 0,
-  abort: null as AbortController | null,
 };
 
 let api: HostApi | null = null;
 
 // ---------------------------------------------------------------------------------------------
-// Settings
+// The vault: settings, the request, and the calls to the model
 
-const SETTINGS = 'sandburg-generator';
-type Settings = { provider: Provider; models: Partial<Record<Provider, string>>; framework: string; remember: boolean; autofix: boolean; modelLists: Partial<Record<Provider, { id: string; label: string }[]>> };
+const PREFS = 'sandburg-generator';
 
 function storage(kind: 'local' | 'session'): Storage | null {
   try {
@@ -88,99 +77,118 @@ function storage(kind: 'local' | 'session'): Storage | null {
   }
 }
 
-function loadSettings(): Settings {
-  const fallback: Settings = { provider: 'anthropic', models: {}, framework: 'react', remember: false, autofix: true, modelLists: {} };
+/** The vault's settings (it has no storage of its own). None of them is secret. */
+function loadPrefs(): Prefs {
+  const fallback: Prefs = { provider: 'anthropic', models: {}, modelLists: {}, framework: 'react', autofix: true };
   try {
-    return { ...fallback, ...JSON.parse(storage('local')?.getItem(SETTINGS) ?? '{}') };
+    const saved = JSON.parse(storage('local')?.getItem(PREFS) ?? '{}') as Partial<Prefs>;
+    return { ...fallback, ...saved, models: { ...saved.models }, modelLists: { ...saved.modelLists } };
   } catch {
     return fallback;
   }
 }
 
-let settings = loadSettings();
+let prefs = loadPrefs();
+let vault: HTMLIFrameElement | null = null;
+let nextCall = 1;
+const calls = new Map<number, { onStart(model: string): void; onText(d: string): void; onThinking(d: string): void; resolve(r: CallResult): void; reject(e: Error): void }>();
 
-function saveSettings(): void {
-  try {
-    storage('local')?.setItem(SETTINGS, JSON.stringify(settings));
-  } catch {
-    // storage full or blocked: settings last for this visit
-  }
+function toVault(message: ToVault): void {
+  // An opaque origin cannot be named as a target; nothing sent to the vault is secret.
+  vault?.contentWindow?.postMessage(message, '*');
 }
 
-const keyName = (p: Provider) => `sandburg-generator-key:${p}`;
-
-function readKey(p: Provider): string {
-  return storage('session')?.getItem(keyName(p)) ?? storage('local')?.getItem(keyName(p)) ?? '';
+/** The vault, as a sandboxed srcdoc frame: its script is fetched now, before any generated code runs. */
+async function createVault(): Promise<void> {
+  // Earlier versions kept keys in this origin's storage, where a generated app can read them.
+  for (const s of [storage('local'), storage('session')]) for (const p of ['anthropic', 'gemini']) s?.removeItem(`sandburg-generator-key:${p}`);
+  const script = await fetch(new URL('vault.js', scope)).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`vault.js: ${r.status}`))));
+  const frame = document.createElement('iframe');
+  frame.id = 'vault';
+  frame.title = 'Model, API key and request';
+  // No allow-same-origin: an opaque origin, which this page (and the app) cannot read.
+  frame.setAttribute('sandbox', 'allow-scripts allow-forms');
+  frame.srcdoc = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><script>${script.replace(/<\/(script)/gi, '<\\/$1')}</script></body></html>`;
+  window.addEventListener('message', (e: MessageEvent<FromVault>) => {
+    if (!vault || e.source !== vault.contentWindow) return;
+    onVault(e.data);
+  });
+  ui.vaultSlot.replaceWith(frame);
+  vault = frame;
 }
 
-function writeKey(p: Provider, key: string): void {
-  try {
-    // The tab keeps the key (it reloads once for cross-origin isolation); the browser only if asked.
-    storage('session')?.setItem(keyName(p), key);
-    if (settings.remember && key) storage('local')?.setItem(keyName(p), key);
-    else storage('local')?.removeItem(keyName(p));
-  } catch {
-    // blocked: the key lasts as long as the field
-  }
-}
-
-function renderModels(): void {
-  const p = settings.provider;
-  const list = settings.modelLists[p]?.length ? settings.modelLists[p]! : MODELS[p];
-  ui.model.replaceChildren(...list.map((m) => new Option(m.label === m.id ? m.id : `${m.label} (${m.id})`, m.id)));
-  const wanted = settings.models[p] ?? MODELS[p][0].id;
-  if (![...ui.model.options].some((o) => o.value === wanted)) ui.model.add(new Option(wanted, wanted));
-  ui.model.value = wanted;
-  ui.apiKey.value = readKey(p);
-  ui.apiKey.placeholder = p === 'anthropic' ? 'sk-ant-…' : 'AIza…';
-  ui.keyHint.textContent = `The key goes from this tab straight to ${p === 'anthropic' ? 'api.anthropic.com' : 'generativelanguage.googleapis.com'}; nothing runs on a server. The generated app and its npm packages run on this page's origin and could read the key: use one with a spending limit.`;
-}
-
-function setupSettings(): void {
-  ui.framework.replaceChildren(...TEMPLATES.map((t) => new Option(t.label, t.id)));
-  ui.framework.value = TEMPLATES.some((t) => t.id === settings.framework) ? settings.framework : TEMPLATES[0].id;
-  ui.provider.value = settings.provider;
-  ui.remember.checked = settings.remember;
-  ui.autofix.checked = settings.autofix;
-  renderModels();
-  if (readKey(settings.provider)) ui.settings.open = false;
-  ui.provider.addEventListener('change', () => {
-    settings.provider = ui.provider.value as Provider;
-    saveSettings();
-    renderModels();
-  });
-  ui.model.addEventListener('change', () => {
-    settings.models[settings.provider] = ui.model.value;
-    saveSettings();
-  });
-  ui.apiKey.addEventListener('change', () => writeKey(settings.provider, ui.apiKey.value.trim()));
-  ui.remember.addEventListener('change', () => {
-    settings.remember = ui.remember.checked;
-    saveSettings();
-    for (const p of ['anthropic', 'gemini'] as Provider[]) writeKey(p, p === settings.provider ? ui.apiKey.value.trim() : readKey(p));
-  });
-  ui.framework.addEventListener('change', () => {
-    settings.framework = ui.framework.value;
-    saveSettings();
-  });
-  ui.autofix.addEventListener('change', () => {
-    settings.autofix = ui.autofix.checked;
-    saveSettings();
-  });
-  ui.loadModels.addEventListener('click', async () => {
-    const key = ui.apiKey.value.trim();
-    if (!key) return ui.apiKey.focus();
-    ui.loadModels.disabled = true;
-    try {
-      settings.modelLists[settings.provider] = await listModels(settings.provider, key);
-      saveSettings();
-      renderModels();
-    } catch (e) {
-      say('error', `Could not load the model list: ${(e as Error).message}`);
-    } finally {
-      ui.loadModels.disabled = false;
+function onVault(m: FromVault): void {
+  switch (m.type) {
+    case 'ready':
+      toVault({ type: 'init', prefs, frameworks: TEMPLATES.map((t) => ({ id: t.id, label: t.label })) });
+      sendState();
+      break;
+    case 'height':
+      vault!.style.height = `${Math.min(m.height, 900)}px`;
+      break;
+    case 'prefs':
+      prefs = m.prefs;
+      try {
+        storage('local')?.setItem(PREFS, JSON.stringify(prefs));
+      } catch {
+        // storage blocked or full: the settings last for this visit
+      }
+      break;
+    case 'submit':
+      submit(m.text);
+      break;
+    case 'fix':
+      if (!state.busy && state.errors.length) void fix();
+      break;
+    case 'new-app':
+      newApp();
+      break;
+    case 'start':
+      calls.get(m.id)?.onStart(m.model);
+      break;
+    case 'text':
+      calls.get(m.id)?.onText(m.delta);
+      break;
+    case 'thinking':
+      calls.get(m.id)?.onThinking(m.delta);
+      break;
+    case 'done':
+      calls.get(m.id)?.resolve(m.result);
+      calls.delete(m.id);
+      break;
+    case 'error': {
+      const error = new Error(m.message);
+      if (m.aborted) error.name = 'AbortError';
+      calls.get(m.id)?.reject(error);
+      calls.delete(m.id);
+      break;
     }
+  }
+}
+
+/** The page's state, for the vault's buttons. */
+function sendState(): void {
+  toVault({ type: 'state', busy: state.busy, started: state.turns.length > 0, errors: state.errors.length > 0 });
+}
+
+/** Asks the vault to call the model with the conversation: it does when the visitor asked for it there. */
+function callModel(turns: Turn[], fix: boolean, handlers: { onStart(model: string): void; onText(d: string): void; onThinking(d: string): void }): Promise<CallResult> {
+  const id = nextCall++;
+  return new Promise((resolve, reject) => {
+    calls.set(id, { ...handlers, resolve, reject });
+    toVault({ type: 'call', id, system: SYSTEM, turns, fix });
   });
+}
+
+function submit(text: string): void {
+  if (state.busy) return;
+  if (!state.turns.length) {
+    const tpl = template(prefs.framework);
+    state.templateId = tpl.id;
+    state.files = { ...tpl.files };
+    renderFiles();
+    void ask(firstMessage(text, tpl), text);
+  } else void ask(text, text);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -309,7 +317,7 @@ function reportError(text: string): void {
   if (!clean || state.errors.includes(clean)) return;
   state.errors.push(clean);
   if (state.errors.length > 40) state.errors.shift();
-  ui.fix.hidden = state.busy;
+  sendState();
   scheduleAutoFix();
 }
 
@@ -440,7 +448,7 @@ async function apply(edits: FileEdit[]): Promise<void> {
     return;
   }
   state.errors = [];
-  ui.fix.hidden = true;
+  sendState();
   const framework = detectFramework(files, typeof files['package.json'] === 'string' ? safeParse(files['package.json']) : null);
   if (state.running && framework === state.runningFramework && !needsRestart(changed, deleted)) {
     const write = (window as unknown as { __sandburgWriteFile?: (path: string, content: string) => void }).__sandburgWriteFile;
@@ -468,15 +476,7 @@ function safeParse(text: string): PackageJson | null {
 // The model
 
 async function ask(text: string, display: string, isFix = false): Promise<void> {
-  const key = ui.apiKey.value.trim();
-  if (!key) {
-    ui.settings.open = true;
-    ui.apiKey.focus();
-    say('error', 'Add an API key for the provider first.');
-    return;
-  }
-  writeKey(settings.provider, key);
-  if (!isFix) state.fixesLeft = settings.autofix ? 2 : 0;
+  if (!isFix) state.fixesLeft = prefs.autofix ? 2 : 0;
   setBusy(true);
   say(isFix ? 'note' : 'user', display);
   const base = state.turns.length;
@@ -484,34 +484,39 @@ async function ask(text: string, display: string, isFix = false): Promise<void> 
   resetSteps('write');
   step('write', 'active');
   status('Writing code', 'active');
-  const started = performance.now();
-  const model = ui.model.value;
-  const message = modelMessage(model);
-  state.abort = new AbortController();
+  let started = performance.now();
+  let model = '';
+  let message: ReturnType<typeof modelMessage> | null = null;
   try {
-    const result = await call({ provider: settings.provider, model, apiKey: key, system: SYSTEM, turns: state.turns, signal: state.abort.signal, onText: message.onText, onThinking: message.onThinking });
+    const result = await callModel(state.turns, isFix, {
+      onStart(m) {
+        model = m;
+        started = performance.now();
+        message = modelMessage(m);
+      },
+      onText: (d) => message?.onText(d),
+      onThinking: (d) => message?.onThinking(d),
+    });
     state.turns.push(result.turn);
     const parsed = parseAnswer(result.turn.text);
     const served = result.model !== model ? ` · answered by ${result.model}` : '';
-    message.finish(`${seconds(performance.now() - started)} · ${tokens(result.usage.input)} in · ${tokens(result.usage.output)} out${served}`);
+    message!.finish(`${seconds(performance.now() - started)} · ${tokens(result.usage.input)} in · ${tokens(result.usage.output)} out${served}`);
     if (result.stop === 'refusal') throw new Error('The model declined this request.');
     if (result.stop === 'max_tokens') say('error', `The answer was cut off at the output limit${parsed.open ? ` while writing ${parsed.open.path}` : ''}. The complete files are applied; ask for the rest.`);
     if (parsed.rejected.length) say('error', `Ignored files outside the project: ${parsed.rejected.join(', ')}`);
     if (!parsed.edits.length && !Object.keys(state.files).length) throw new Error('The answer had no files.');
     step('write', 'done', seconds(performance.now() - started));
-    state.abort = null;
     // Busy until the run settles: a new request now would start a run beside this one.
     await apply(parsed.edits);
   } catch (e) {
     // The conversation goes back to where it was: it only ever grows by whole exchanges.
     state.turns.length = base;
     const aborted = (e as Error).name === 'AbortError';
-    message.finish(aborted ? 'stopped' : '');
+    (message as ReturnType<typeof modelMessage> | null)?.finish(aborted ? 'stopped' : '');
     step('write', 'failed');
     status(aborted ? 'Stopped' : 'The model did not answer', 'failed');
     if (!aborted) say('error', (e as Error).message);
   } finally {
-    state.abort = null;
     setBusy(false);
     save();
     if (state.errors.length) scheduleAutoFix();
@@ -522,7 +527,7 @@ let autoFixTimer = 0;
 
 /** When the app reports errors and auto-fix is on: send them to the model, a moment later (more may come). */
 function scheduleAutoFix(): void {
-  if (!settings.autofix || state.fixesLeft <= 0 || state.busy || autoFixTimer) return;
+  if (!prefs.autofix || state.fixesLeft <= 0 || state.busy || autoFixTimer) return;
   autoFixTimer = window.setTimeout(() => {
     autoFixTimer = 0;
     if (!state.errors.length || state.busy || state.fixesLeft <= 0) return;
@@ -534,19 +539,12 @@ function scheduleAutoFix(): void {
 function fix(display = 'Fix the errors the app reported.'): Promise<void> {
   const errors = state.errors.slice();
   state.errors = [];
-  ui.fix.hidden = true;
   return ask(fixMessage(errors, state.files), display, true);
 }
 
 function setBusy(busy: boolean): void {
   state.busy = busy;
-  ui.generate.disabled = busy;
-  ui.stop.hidden = !busy;
-  ui.task.disabled = busy;
-  ui.newApp.hidden = busy || !state.turns.length;
-  ui.fix.hidden = busy || !state.errors.length;
-  ui.generate.textContent = state.turns.length ? 'Send' : 'Generate';
-  ui.task.placeholder = state.turns.length ? 'Ask for a change…' : 'Describe the app…';
+  sendState();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -597,7 +595,7 @@ function restore(): boolean {
         m.finish('');
       }
     }
-    say('note', 'Restored this tab\'s app. Running it again.');
+    say('note', 'Restored this tab\'s app. Run it again with the button in the preview.');
     renderFiles();
     ui.download.disabled = false;
     return true;
@@ -626,7 +624,6 @@ function newApp(): void {
   say('note', 'Starting over. Describe the next app.');
   renderFiles();
   setBusy(false);
-  ui.task.focus();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -653,36 +650,14 @@ async function boot(): Promise<void> {
     return;
   }
   storage('session')?.removeItem(reloaded);
+  // The vault comes first: before any generated code runs in this page.
+  await createVault();
   hookConsole();
   watchFrame();
-  setupSettings();
-  setBusy(false);
 
-  ui.composer.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const text = ui.task.value.trim();
-    if (!text || state.busy) return;
-    ui.task.value = '';
-    if (!state.turns.length) {
-      const tpl = template(ui.framework.value);
-      state.templateId = tpl.id;
-      state.files = { ...tpl.files };
-      renderFiles();
-      void ask(firstMessage(text, tpl), text);
-    } else void ask(text, text);
-  });
-  ui.task.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ui.composer.requestSubmit();
-  });
   for (const b of document.querySelectorAll<HTMLButtonElement>('.example')) {
-    b.addEventListener('click', () => {
-      ui.task.value = b.textContent ?? '';
-      ui.task.focus();
-    });
+    b.addEventListener('click', () => toVault({ type: 'fill', text: b.textContent ?? '' }));
   }
-  ui.stop.addEventListener('click', () => state.abort?.abort());
-  ui.newApp.addEventListener('click', newApp);
-  ui.fix.addEventListener('click', () => void fix());
   ui.reload.addEventListener('click', () => ui.frame.contentWindow?.location.reload());
   ui.download.addEventListener('click', () => {
     const a = document.createElement('a');
@@ -716,7 +691,15 @@ async function boot(): Promise<void> {
     await run(state.files);
     return;
   }
-  if (restore()) await run(state.files);
+  // A restored app runs when the visitor asks: generated code runs only after the vault is in place
+  // and the visitor has seen the page as it should be.
+  if (restore()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Run the restored app';
+    button.addEventListener('click', () => void run(state.files), { once: true });
+    ui.placeholder.querySelector('div')!.append(button);
+  }
 }
 
 Object.assign(window, { __generator: state });

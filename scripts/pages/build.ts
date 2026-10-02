@@ -158,6 +158,8 @@ async function buildGenerator(): Promise<void> {
   await mkdir(dir, { recursive: true });
   await cp(join(ROOT, 'pages/generate/index.html'), join(dir, 'index.html'));
   await esbuild.build({ entryPoints: [join(ROOT, 'pages/generate/main.ts')], outfile: join(dir, 'generator.js'), bundle: true, format: 'esm', platform: 'browser', target: 'es2022', minify: true, sourcemap: 'linked', logLevel: 'warning' });
+  // The key vault: inlined into a sandboxed frame by the page (pages/generate/vault.ts).
+  await esbuild.build({ entryPoints: [join(ROOT, 'pages/generate/vault.ts')], outfile: join(dir, 'vault.js'), bundle: true, format: 'iife', platform: 'browser', target: 'es2022', minify: true, logLevel: 'warning' });
 }
 
 function escapeHtml(s: string): string {
