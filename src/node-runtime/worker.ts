@@ -8,7 +8,7 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import { ThreadVfs, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
@@ -94,7 +94,8 @@ export type FromWorker =
   | { type: 'response-end'; id: number }
   | { type: 'response-error'; id: number; message: string }
   | { type: 'exit'; code: number }
-  | { type: 'fatal'; message: string; stack?: string }
+  /** trap: a WebAssembly trap ended a thread of this runtime (or the runtime itself, if it is a thread). */
+  | { type: 'fatal'; message: string; stack?: string; trap?: boolean }
   | { type: 'ready' }
   /** The worker's script has run; it waits for init. */
   | { type: 'booted' }
@@ -699,7 +700,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: t, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -710,6 +711,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     self: child ? null : thread,
     postToParent: (m, transfer) => realPostMessage(m as FromWorker, transfer ?? []),
     relay: relayFromNested,
+    // Up to this process's main thread, and from there to the page (or the parent process).
+    crash: (message, stack) => post({ type: 'fatal', message, stack, trap: true }),
   };
   threads = createWorkerThreads(nested);
   childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string, reportExit: (info) => post({ type: 'process-exit', ...info }) });
@@ -876,7 +879,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     // In a worker thread an uncaught exception ends the thread ('error' on its Worker), as in Node.
     if (thread && !proc.listenerCount('uncaughtException')) {
       e.preventDefault();
-      return post({ type: 'fatal', message: String(e.error?.message ?? e.message), stack: e.error?.stack });
+      return postFatal(e.error ?? e.message);
     }
     if ((proc.env as Record<string, string>).SANDBURG_DEBUG_ERRORS) write('stderr', `[sandburg] uncaught: ${e.error?.stack ?? e.message}\n`);
     if (proc.listenerCount('uncaughtException')) {
@@ -892,6 +895,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if (proc.listenerCount('unhandledRejection')) {
       e.preventDefault();
       proc.emit('unhandledRejection', e.reason, e.promise);
+    } else if (thread && e.reason instanceof WebAssembly.RuntimeError) {
+      // A trap in a promise callback ends the thread (and its process) like one in any other callback.
+      e.preventDefault();
+      postFatal(e.reason);
     } else {
       write('stderr', `Uncaught (in promise) ${e.reason?.stack ?? e.reason}\n`);
     }
@@ -905,6 +912,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   if (thread?.process) exitWhenIdle();
 }
 
+/** The browser's own (the runtime may install worker_threads' in its place). */
+const NativeBroadcastChannel = globalThis.BroadcastChannel;
 const nativeSetInterval = globalThis.setInterval.bind(globalThis);
 const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
 
@@ -967,13 +976,27 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
     if (tla && typeof tla.then === 'function') {
       tla.catch((e: unknown) => {
         if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
-        post({ type: 'fatal', message: String((e as Error)?.message ?? e), stack: (e as Error)?.stack });
+        postFatal(e);
       });
     }
   } catch (e) {
     if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
-    post({ type: 'fatal', message: String((e as Error)?.message ?? e), stack: (e as Error)?.stack });
+    postFatal(e);
   }
+}
+
+/** An uncaught error ends this runtime; a WebAssembly trap in a thread ends its process (threads.ts). */
+function postFatal(e: unknown) {
+  const trap = !!thread && e instanceof WebAssembly.RuntimeError;
+  const message = String((e as Error)?.message ?? e);
+  const stack = (e as Error)?.stack;
+  // Straight to the page as well: the parent that would pass the crash on may be blocked.
+  if (trap && thread?.mainProcess) {
+    const channel = new NativeBroadcastChannel(WASM_CRASH_CHANNEL);
+    channel.postMessage({ message: `a WebAssembly thread crashed (worker ${thread.id}): RuntimeError: ${message}`, stack });
+    channel.close();
+  }
+  post({ type: 'fatal', message, stack, ...(trap && { trap }) });
 }
 
 function request(msg: Extract<ToWorker, { type: 'request' }>) {

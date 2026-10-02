@@ -12,6 +12,8 @@ import { HostServer } from '../../src/orchestrator/host-server.ts';
 import { getAdapter } from '../../src/adapters.ts';
 import { runBatch, type BatchItem } from '../../src/orchestrator/batch.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
+import { sharedInstaller } from '../../src/adapters/node/install.ts';
+import { extraDependencies } from '../../src/adapters/node/install-rules.ts';
 import type { Project } from '../../src/types.ts';
 
 const fixtureDir = fileURLToPath(new URL('../../fixtures/vite-react-counter', import.meta.url));
@@ -52,15 +54,29 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
         },
       };
     });
-    const { summary, results } = await runBatch(session, items, { parallel: 8, outDir, batchDir });
+    // The installs the host starts (each runs npm unless the install is on disk already). Without the
+    // warm-up (which may install the same dependencies), the batch's ten requests must share one.
+    const installer = sharedInstaller() as unknown as {
+      doInstall: (key: string, ...rest: unknown[]) => Promise<unknown>;
+      plan: (project: Project, extra: Record<string, string>) => { key: string };
+    };
+    const doInstall = installer.doInstall;
+    const started: string[] = [];
+    installer.doInstall = (key, ...rest) => (started.push(key), doInstall.call(installer, key, ...rest));
+    const { summary, results } = await runBatch(session, items, { parallel: 8, outDir, batchDir, prewarm: false });
     assert.equal(summary.totals.passed, 10, JSON.stringify(results.filter((r) => r.status !== 'passed').map((r) => [r.failure, r.checks.filter((c) => c.status !== 'passed')]), null, 2));
     assert.equal(summary.runs.length, 10);
     assert.equal(new Set(summary.runs.map((r) => r.snapshotId)).size, 10);
-    // One npm install on the host serves all ten (they share their dependencies).
-    const installs = results.map((r) => r.timings.installMs ?? Infinity).sort((a, b) => a - b);
-    assert.ok(installs[5] < 5000, `median install ${installs[5]} ms`);
+    // One install on the host serves all ten (they share their dependencies): the runs that start
+    // after it finished take it from the cache. How long the install itself takes depends on npm's
+    // cache, so its time is not checked.
+    const batchKey = installer.plan(items[0].project as Project, extraDependencies(items[0].project as Project)).key;
+    assert.equal(started.filter((k) => k === batchKey).length, 1, 'installs of the batch started on the host');
+    const later = results.slice(8).map((r) => r.timings.installMs ?? Infinity);
+    assert.ok(later.every((ms) => ms < 5000), `the two runs after the first eight installed in ${later.join(', ')} ms`);
     assert.ok(summary.speedup > 1.5, `speed-up ${summary.speedup}`);
   } finally {
+    delete (sharedInstaller() as unknown as { doInstall?: unknown }).doInstall;
     await session.close();
   }
 });
