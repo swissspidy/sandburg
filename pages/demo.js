@@ -3,6 +3,7 @@
  * install, start, ready), with the host's answers replayed by sw.js.
  */
 import { guardAppFrame } from './frame-guard.js';
+import { isolationFailure } from './isolation.js';
 
 const name = document.documentElement.dataset.demo;
 const scope = new URL('./', location.href);
@@ -55,13 +56,13 @@ async function phase(id, fn) {
 async function boot() {
   if (!('serviceWorker' in navigator)) return fail('This demo needs service workers (not available in this browser or in private windows of some browsers).');
   const reloaded = `sandburg-reloaded:${name}`;
-  if (!crossOriginIsolated) {
+  if (!self.crossOriginIsolated) {
     // First visit: the service worker gives this page the headers for shared memory.
     await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
     await navigator.serviceWorker.ready;
     if (sessionStorage.getItem(reloaded)) {
       sessionStorage.removeItem(reloaded);
-      return fail('The page could not be made cross-origin isolated. Reload it normally (not a hard reload).');
+      return fail(isolationFailure());
     }
     sessionStorage.setItem(reloaded, '1');
     location.reload();

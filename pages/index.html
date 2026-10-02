@@ -27,7 +27,7 @@
       <li><strong>A service worker</strong> gives each app its own origin in the tab and hands its requests to the servers in the runtime.</li>
     </ol>
     <p>In Sandburg itself, a host process installs packages with npm and compiles modules for the runtime; Playwright then checks the running app. These pages replay the host's answers from static files, recorded when the site was built. Everything else happens in your browser.</p>
-    <p class="small">These demos need a recent Chromium-based browser, Firefox or Safari with service workers and SharedArrayBuffer. They download 5–60 MB.</p>
+    <p class="small">These demos need a recent Chrome, Edge or Firefox; Safari and browsers on iOS use a stricter isolation mode (see ADR 0021) and are less tested. They download 5–60 MB.</p>
   </section>
 </main>
 <script type="module">

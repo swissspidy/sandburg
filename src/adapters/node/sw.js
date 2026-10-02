@@ -15,7 +15,8 @@ let waiting = [];
 /**
  * A static deployment (the demos, site/) sets these before it imports this file: its own answers to
  * host requests (fetch returns true when it responded), where its host page is, the app's path
- * prefix, and markup to put before the WebSocket shim.
+ * prefix, markup to put before the WebSocket shim, and the embedder policy for app documents
+ * (coep: require-corp where the browser has no credentialless).
  */
 const hooks = self.sandburgHooks ?? {};
 
@@ -143,7 +144,7 @@ async function forward(request, url) {
         const h = new Headers();
         for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
         // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
-        if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', 'credentialless');
+        if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', hooks.coep ?? 'credentialless');
         if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
         // App pages get the WebSocket shim (the host page relays their WebSockets to the runtime).

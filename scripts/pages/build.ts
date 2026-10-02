@@ -134,7 +134,7 @@ async function build(): Promise<void> {
   // The compiler for what was not recorded (pages/compile.ts), with esbuild's WebAssembly build.
   await writeFile(join(out, 'compile.js'), await bundleBrowserCompiler(join(ROOT, 'pages/compile.ts')));
   await cp(ESBUILD_WASM, join(out, 'esbuild.wasm'));
-  for (const file of ['sw.js', 'demo.js', 'frame-guard.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
+  for (const file of ['sw.js', 'demo.js', 'frame-guard.js', 'isolation.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
   await buildGenerator();
   await writeFile(join(out, '.nojekyll'), '');
   await writeFile(manifestFile, JSON.stringify(manifest));

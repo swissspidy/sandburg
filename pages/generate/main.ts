@@ -22,6 +22,7 @@ import { firstMessage, fixMessage, SYSTEM } from './prompt.ts';
 import { template, TEMPLATES } from './templates.ts';
 import { zip } from './zip.ts';
 import { guardAppFrame } from '../frame-guard.js';
+import { isolationFailure } from '../isolation.js';
 
 const scope = new URL('./', location.href);
 const site = new URL('../', location.href);
@@ -635,14 +636,14 @@ async function boot(): Promise<void> {
     return;
   }
   const reloaded = 'sandburg-reloaded:generate';
-  if (!crossOriginIsolated) {
+  if (!self.crossOriginIsolated) {
     // First visit: the service worker gives this page the headers for shared memory.
     await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
     await navigator.serviceWorker.ready;
     if (storage('session')?.getItem(reloaded)) {
       storage('session')?.removeItem(reloaded);
       status('Not isolated', 'failed');
-      say('error', 'The page could not be made cross-origin isolated. Reload it normally (not a hard reload).');
+      say('error', isolationFailure());
       return;
     }
     storage('session')?.setItem(reloaded, '1');
