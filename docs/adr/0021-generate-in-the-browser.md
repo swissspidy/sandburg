@@ -120,10 +120,12 @@ went in by HMR.
 
 - The demo site is the product's showcase for its intended use: an app that a model generates and
   that runs in the visitor's browser. It needs only static hosting.
-- The visitor pays for the model with their own key, and enters it once per visit. Neither the
-  generated app nor the page can read it. A probe run from the app's frame checked this: it searched
-  the page's DOM, fields, storage and state, tried to read the vault, and asked the vault for a call.
-  It did not find the key, could not read the vault, and the call was refused.
+- The visitor pays for the model with their own key, and enters it once per visit in the vault.
+  Neither the generated app nor the page can read a key entered there. A probe run from the app's
+  frame checked this: it searched the page's DOM, fields, storage and state, tried to read the vault,
+  and asked the vault for a call. It did not find the key, could not read the vault, and the call was
+  refused. This does not cover a fake vault that an app draws in place of the real one: a key typed
+  there goes to the app (see "What remains" above).
 - Each run downloads its packages, so a run on another tab or origin cannot reuse them.
   Compiled modules are not kept between runs (ADR 0020).
 - The generator does not run Playwright checks. The page has no Playwright. Errors reach the model
