@@ -60,4 +60,5 @@ verification on every push to `main`, then deploys.
   reports it. Compiles do not have this limit.
 - Downloads are what a run fetches: 5–60 MB per demo, shared between demos by content.
 - A full navigation that the page makes by assigning `location` (not a link) leaves the service worker's
-  scope and fails.
+  scope and fails. A reload (a dev server's full reload) leaves it too, but the demo page then loads
+  the app at the same address again ([ADR 0021](0021-generate-in-the-browser.md)).

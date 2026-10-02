@@ -10,6 +10,11 @@
  * install's preload bundle, Vite's pre-bundled dependencies, the Next.js seed cache), and
  * both runs' requests are kept. --verify then loads every demo from a local static server,
  * under a path prefix as on GitHub Pages, and fails on requests that were not recorded.
+ *
+ * The generator page (generate/, pages/generate/) needs no recording: it installs packages from the
+ * npm registry and compiles in the page, and the site serves the runtime's own files (runtime/).
+ * --verify runs each of its framework scaffolds, without a model; that needs the npm registry.
+ * --only generate builds the generator alone.
  */
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -19,7 +24,10 @@ import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
-import { bundleBrowserCompiler, ESBUILD_WASM } from '../../src/adapters/node/compile-wasm-bundle.ts';
+import * as esbuild from 'esbuild';
+import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from '../../src/adapters/node/compile-wasm-bundle.ts';
+import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
+import { TEMPLATES } from '../../pages/generate/templates.ts';
 import { chromium } from 'playwright-core';
 import { Session } from '../../src/index.ts';
 import { node } from '../../src/adapters/node/index.ts';
@@ -126,13 +134,32 @@ async function build(): Promise<void> {
   // The compiler for what was not recorded (pages/compile.ts), with esbuild's WebAssembly build.
   await writeFile(join(out, 'compile.js'), await bundleBrowserCompiler(join(ROOT, 'pages/compile.ts')));
   await cp(ESBUILD_WASM, join(out, 'esbuild.wasm'));
-  for (const file of ['sw.js', 'demo.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
+  for (const file of ['sw.js', 'demo.js', 'frame-guard.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
+  await buildGenerator();
   await writeFile(join(out, '.nojekyll'), '');
   await writeFile(manifestFile, JSON.stringify(manifest));
   const previous = existsSync(join(out, 'demos.json')) ? (JSON.parse(await readFile(join(out, 'demos.json'), 'utf8')) as typeof index) : [];
   const merged = DEMOS.map((d) => index.find((i) => i.name === d.name) ?? previous.find((p) => p.name === d.name)).filter(Boolean);
   await writeFile(join(out, 'demos.json'), JSON.stringify(merged, null, 2));
   console.log(`site: ${out} (${Object.keys(manifest).length} recorded answers)`);
+}
+
+/** The generator page, and the runtime's files that a run installing in the page needs from the site (see pages/sw.js). */
+async function buildGenerator(): Promise<void> {
+  const runtime = join(out, 'runtime');
+  await mkdir(runtime, { recursive: true });
+  await writeFile(join(runtime, 'node-worker.js'), await bundleNodeRuntime());
+  await writeFile(join(runtime, 'compile-worker.js'), await bundleBrowserCompiler(COMPILE_WORKER));
+  await writeFile(join(runtime, 'sqlite3.js'), await bundleSqlite());
+  await cp(ESBUILD_WASM, join(runtime, 'esbuild.wasm'));
+  await cp(SQLITE_WASM, join(runtime, 'sqlite3.wasm'));
+  await cp(join(ROOT, 'src/adapters/node/ws-shim.js'), join(runtime, 'ws-shim.js'));
+  const dir = join(out, 'generate');
+  await mkdir(dir, { recursive: true });
+  await cp(join(ROOT, 'pages/generate/index.html'), join(dir, 'index.html'));
+  await esbuild.build({ entryPoints: [join(ROOT, 'pages/generate/main.ts')], outfile: join(dir, 'generator.js'), bundle: true, format: 'esm', platform: 'browser', target: 'es2022', minify: true, sourcemap: 'linked', logLevel: 'warning' });
+  // The key vault: inlined into a sandboxed frame by the page (pages/generate/vault.ts).
+  await esbuild.build({ entryPoints: [join(ROOT, 'pages/generate/vault.ts')], outfile: join(dir, 'vault.js'), bundle: true, format: 'iife', platform: 'browser', target: 'es2022', minify: true, logLevel: 'warning' });
 }
 
 function escapeHtml(s: string): string {
@@ -186,11 +213,48 @@ async function verify(): Promise<void> {
       if (ok) await page.locator('#app').screenshot({ path: join(out, 'demos', demo.name, 'preview.png') });
       await context.close();
     }
+    if (!args.only || args.only.split(',').includes('generate')) failed = (await verifyGenerator(`http://pages.sandburg.localhost:${port}${prefix}generate/`)) || failed;
   } finally {
     await browser.close();
     server.close();
   }
   if (failed) process.exitCode = 1;
+}
+
+/**
+ * Runs each of the generator's framework scaffolds as the page runs a generated app: packages from
+ * the npm registry, installed and compiled in the page. Returns whether one failed.
+ */
+async function verifyGenerator(url: string): Promise<boolean> {
+  // The page reaches the npm registry itself: no dead proxy (only the environment's own proxy, if any).
+  const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy;
+  const browser = await chromium.launch({ ...launchOptions({}), proxy: proxy ? { server: proxy, bypass: '<-loopback>,*.localhost' } : undefined });
+  let failed = false;
+  try {
+    for (const tpl of TEMPLATES) {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      const page = await context.newPage();
+      if (process.env.DEBUG) page.on('console', (m) => console.log(`  [console] ${m.text().slice(0, 300)}`));
+      const t = Date.now();
+      await page.goto(`${url}?scaffold=${tpl.id}`);
+      const status = await page
+        .waitForFunction(() => ['done', 'failed'].includes(document.getElementById('status')?.dataset.state ?? ''), null, { timeout: 300_000 })
+        .then(() => page.evaluate(() => document.getElementById('status')!.dataset.state))
+        .catch(() => 'timeout');
+      const text = await page.frameLocator('#app').locator('body').innerText({ timeout: 5000 }).catch(() => '');
+      const ok = status === 'done' && /Hello/.test(text);
+      console.log(`verify generator ${tpl.id}: ${status} in ${((Date.now() - t) / 1000).toFixed(1)} s, app text ${JSON.stringify(text.slice(0, 80))}`);
+      if (!ok) {
+        failed = true;
+        console.log((await page.locator('#terminal').innerText().catch(() => '')).split('\n').slice(-25).join('\n'));
+      }
+      await page.screenshot({ path: join(out, 'generate', `screenshot-${tpl.id}.png`) });
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
+  return failed;
 }
 
 if (!args['verify-only']) {

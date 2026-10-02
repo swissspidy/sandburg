@@ -2,6 +2,8 @@
  * Runs one demo: the same lifecycle a Sandburg run drives through window.__sandburg (mount,
  * install, start, ready), with the host's answers replayed by sw.js.
  */
+import { guardAppFrame } from './frame-guard.js';
+
 const name = document.documentElement.dataset.demo;
 const scope = new URL('./', location.href);
 const site = new URL('../../', location.href);
@@ -81,6 +83,8 @@ async function boot() {
   });
   timer = setInterval(() => ($('elapsed').textContent = `${((performance.now() - started) / 1000).toFixed(1)} s`), 100);
   $('status').textContent = 'Running';
+
+  guardAppFrame($('app'), scope.pathname + 'app');
 
   try {
     await phase('load', async () => {

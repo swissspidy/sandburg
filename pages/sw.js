@@ -32,11 +32,37 @@ async function sha256(buffer) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+const HEADERS = { 'cross-origin-resource-policy': 'same-origin', 'cross-origin-embedder-policy': 'credentialless', 'cross-origin-opener-policy': 'same-origin' };
+
+/**
+ * The runtime's own files, the same for every project (runtime/ on the site): what a run that
+ * installs its packages in the page (the generator) needs from its host. Each is downloaded once
+ * and then answered from memory, as sw-core.js does for the runtime's worker: a run starts dozens
+ * of workers, often while their parent is blocked.
+ */
+const RUNTIME_FILES = { 'node-worker.js': 'text/javascript; charset=utf-8', 'compile-worker.js': 'text/javascript; charset=utf-8', 'ws-shim.js': 'text/javascript; charset=utf-8', 'sqlite3.js': 'text/javascript; charset=utf-8', 'esbuild.wasm': 'application/wasm', 'sqlite3.wasm': 'application/wasm' };
+const runtimeFiles = new Map();
+async function runtimeFile(name) {
+  let body = runtimeFiles.get(name);
+  if (!body) {
+    body = fetch(new URL(`runtime/${name}`, site)).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`runtime/${name}: ${r.status}`))));
+    runtimeFiles.set(name, body);
+  }
+  try {
+    return new Response(await body, { headers: { 'content-type': RUNTIME_FILES[name], ...HEADERS } });
+  } catch (e) {
+    runtimeFiles.delete(name);
+    return new Response(String(e?.message ?? e), { status: 502 });
+  }
+}
+
 /** A recorded host answer: installed files, the runtime's worker, compiled modules, … */
 async function host(request, url) {
   const path = url.pathname.slice(url.pathname.indexOf('/__sandburg/'));
   // The runtime saves dev-server caches after a run; a demo has nowhere to keep them.
   if (request.method === 'POST' && path.startsWith('/__sandburg/dev-cache/')) return new Response('saved');
+  const name = path.slice('/__sandburg/'.length);
+  if (request.method === 'GET' && Object.hasOwn(RUNTIME_FILES, name)) return runtimeFile(name);
   const body = request.method === 'POST' ? await request.arrayBuffer() : null;
   const key = body ? `POST ${path}?${new URLSearchParams(url.search)} ${await sha256(body)}` : path;
   const all = await entries();
@@ -60,7 +86,7 @@ async function host(request, url) {
   return new Response(res.body.pipeThrough(new DecompressionStream('gzip')), {
     status: status ?? 200,
     // The runtime's workers must be cross-origin isolated too, as the host server's answers are.
-    headers: { 'content-type': type, 'cross-origin-resource-policy': 'same-origin', 'cross-origin-embedder-policy': 'credentialless', 'cross-origin-opener-policy': 'same-origin' },
+    headers: { 'content-type': type, ...HEADERS },
   });
 }
 

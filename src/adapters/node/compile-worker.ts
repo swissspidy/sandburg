@@ -100,7 +100,7 @@ function broker(): void {
   };
 
   const run = async (request: CompileJob): Promise<{ ok: boolean; text: string }> => {
-    const module = await (wasmModule ??= WebAssembly.compileStreaming(fetch('/__sandburg/esbuild.wasm')));
+    const module = await (wasmModule ??= WebAssembly.compileStreaming(fetch(new URL('esbuild.wasm', scope.location.href))));
     const id = nextId++;
     return new Promise((resolve) => {
       waiting.set(id, resolve);
@@ -153,7 +153,7 @@ function broker(): void {
     };
   };
   // The page starts the broker as the install starts: esbuild loads while the packages download.
-  wasmModule = WebAssembly.compileStreaming(fetch('/__sandburg/esbuild.wasm'));
+  wasmModule = WebAssembly.compileStreaming(fetch(new URL('esbuild.wasm', scope.location.href)));
   void wasmModule.then((module) => spawn().worker.postMessage({ id: 0, wasmModule: module, request: null }), () => (wasmModule = null));
   // The page's port for each runtime it starts.
   serve(scope);

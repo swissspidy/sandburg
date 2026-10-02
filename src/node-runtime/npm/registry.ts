@@ -43,7 +43,7 @@ export class Registry {
     let p = this.packuments.get(name);
     if (!p) {
       p = (async () => {
-        const res = await transport(name, () => this.fetchFn(`${this.base}/${name.replace('/', '%2f')}`, { headers: { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8' } }));
+        const res = await transport(name, () => this.fetchFn(`${this.base}/${name.replace('/', '%2f')}`, { headers: { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8' } }), NO_SUCH_PACKAGE_HINT);
         if (res.status === 404) return null;
         if (!res.ok) throw new Error(`npm registry: ${name}: HTTP ${res.status}`);
         return transport(name, () => res.json() as Promise<Packument>);
@@ -69,13 +69,20 @@ export class Registry {
  * A failure to reach the registry or to read what it sent (network, HTTP, a truncated download): the
  * "npm registry:" prefix marks it as the environment's failure, not the app's (classify.ts).
  */
-async function transport<T>(what: string, fn: () => Promise<T>): Promise<T> {
+async function transport<T>(what: string, fn: () => Promise<T>, hint = ''): Promise<T> {
   try {
     return await fn();
   } catch (e) {
-    throw new Error(`npm registry: ${what}: ${(e as Error).message}`, { cause: e });
+    const failed = typeof document !== 'undefined' && e instanceof TypeError ? hint : '';
+    throw new Error(`npm registry: ${what}: ${(e as Error).message}${failed}`, { cause: e });
   }
 }
+
+/**
+ * The registry answers a package that does not exist with a 404 that has no CORS header: a page
+ * cannot tell it from a failed request (a Sandburg run's gateway can, so this is for pages on the open web).
+ */
+const NO_SUCH_PACKAGE_HINT = ' (or no such package: in a browser, the registry\'s "not found" reads as a failed request)';
 
 async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream('gzip'));

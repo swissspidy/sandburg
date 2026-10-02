@@ -79,7 +79,8 @@ export async function installInBrowser(parts: BrowserInstallPart[], registry: Re
     }
     for (const [name, range] of Object.entries(candidates)) {
       if (name in wanted) continue;
-      const packument = await registry.packument(name);
+      // A guess, so a failed lookup means "not there": from a page, the registry's 404 (no CORS header) reads as a failed request.
+      const packument = await registry.packument(name).catch(() => null);
       if (packument && semver.maxSatisfying(Object.keys(packument.versions), range)) wanted[name] = range;
     }
     for (const [name, range] of Object.entries(wanted)) {

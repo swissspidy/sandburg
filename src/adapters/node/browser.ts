@@ -6,7 +6,7 @@
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, InstallReport } from '../../types.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
-import { NodeProcess, exposeWebSockets, webSocketPort } from './process.ts';
+import { NodeProcess, exposeWebSockets, hostBase, webSocketPort } from './process.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
 import { Registry } from '../../node-runtime/npm/registry.ts';
@@ -155,7 +155,7 @@ export function createAdapter(): RuntimeAdapter {
         // Opt-in: the install happens here, from the npm registry (see npm/install.ts), and the runtime
         // compiles in the page (compile-worker.ts), not on the host. Its esbuild loads meanwhile.
         if (!compiler) {
-          compiler = new Worker('/__sandburg/compile-worker.js');
+          compiler = new Worker(`${hostBase()}/compile-worker.js`);
           // Runtimes wait for its answers: if it fails, so does the run, instead of waiting out a deadline.
           compiler.onerror = (e) => {
             e.preventDefault();
@@ -279,7 +279,7 @@ export function createAdapter(): RuntimeAdapter {
         const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : devCache.dirs.some((d) => `${d}/_metadata.json` in tree!));
         const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
         const changed = complete && Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p]));
-        if (changed) await fetch(`/__sandburg/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
+        if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
       }
       proc?.terminate();
       proc = null;

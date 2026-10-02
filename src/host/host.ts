@@ -13,7 +13,8 @@ export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: Serializ
 let adapter: RuntimeAdapter | null = null;
 let packageJson: PackageJson | null = null;
 let framework: Framework = 'unknown';
-const controller = new AbortController();
+/** Aborted when the run is disposed; a page may run another project after it (the demo site's generator). */
+let controller = new AbortController();
 
 function ctx(): AdapterContext {
   return {
@@ -56,6 +57,7 @@ const api = {
     call(async () => {
       packageJson = pkg;
       framework = fw;
+      if (controller.signal.aborted) controller = new AbortController();
       adapter = createAdapter();
       await adapter.mount(files, ctx());
     }),
