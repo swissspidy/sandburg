@@ -66,13 +66,18 @@ const api = {
   /** Runtime readiness, then load the app URL into the frame and wait for its load event. */
   ready: (url: string, navigate = true) =>
     call(async () => {
-      await current().ready?.(ctx());
+      // A runtime that fails while the app loads (its dev server crashed) ends the wait.
+      const failed = current().failed?.();
+      const unless = <T>(p: Promise<T>) => (failed ? Promise.race([p, failed]) : p);
+      await unless(current().ready?.(ctx()) ?? Promise.resolve());
       if (!navigate) return;
       const frame = appFrame();
-      await new Promise<void>((resolve) => {
-        frame.addEventListener('load', () => resolve(), { once: true });
-        frame.src = url;
-      });
+      await unless(
+        new Promise<void>((resolve) => {
+          frame.addEventListener('load', () => resolve(), { once: true });
+          frame.src = url;
+        }),
+      );
     }),
   activity: () => call(async () => adapter?.activity?.() ?? null),
   dispose: () =>

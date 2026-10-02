@@ -21,6 +21,8 @@ export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
   { rule: 'signature:esbuild-wasm', pattern: /esbuild(-wasm)?.*(initialize|not available)|Cannot find module ['"]esbuild-wasm['"]/i },
   // The runtime's own worker failed to boot.
   { rule: 'signature:runtime-worker', pattern: /Initializing node worker failed/i },
+  // A package's WebAssembly build trapped in one of its threads (a native build would have crashed too).
+  { rule: 'signature:wasm-thread-crash', pattern: /a WebAssembly thread crashed/ },
 ];
 
 /** A runtime's own download came back broken (an error page instead of an archive, a reset). */

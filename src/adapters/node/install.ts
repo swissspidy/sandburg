@@ -131,6 +131,8 @@ export class Installer {
       if (base) log(`starting from install ${base.key}, which has ${base.shared} of the same dependencies (npm installs the difference)`);
       // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
+      // npm creates no node_modules for a project without dependencies; the steps below read it.
+      await mkdir(join(tmp, 'node_modules'), { recursive: true });
       await placeNextSwcWasm(tmp);
       await placeWasiBindings(tmp, log);
       await placeWasmBuilds(tmp, log);

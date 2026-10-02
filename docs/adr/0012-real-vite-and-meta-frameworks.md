@@ -30,6 +30,15 @@ the Node APIs they need.
   Installed packages are read from the host directly, so a thread can start
   while its parent is blocked, as WebAssembly threads require. Messages are
   structured clones (shared memory, `WebAssembly.Module`, ports).
+- A WebAssembly trap in a thread (memory access out of bounds, a Rust panic)
+  ends its process, as a segfault or an abort in a native build would. The
+  module's shared memory and the threads waiting on it cannot recover: a
+  crashed rolldown thread left Vite's dependency optimizer, and the app's
+  page, waiting until the run's deadline. The run now fails at once, as
+  `runtime-unsupported` (`signature:wasm-thread-crash`). A thread of the
+  app's own process also reports the crash to the page directly (a
+  `BroadcastChannel`): its parent may be blocked in `Atomics.wait` and never
+  pass it on.
 - `node:wasi` is `@napi-rs/wasm-runtime`'s WASI on the runtime's `fs`.
 - The page is cross-origin isolated (COEP `credentialless`). The service
   worker adds COEP and CORP headers to the app's responses.
