@@ -56,7 +56,7 @@ async function phase(id, fn) {
 async function boot() {
   if (!('serviceWorker' in navigator)) return fail('This demo needs service workers (not available in this browser or in private windows of some browsers).');
   const reloaded = `sandburg-reloaded:${name}`;
-  if (!crossOriginIsolated) {
+  if (!self.crossOriginIsolated) {
     // First visit: the service worker gives this page the headers for shared memory.
     await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
     await navigator.serviceWorker.ready;

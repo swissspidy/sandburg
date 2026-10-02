@@ -636,7 +636,7 @@ async function boot(): Promise<void> {
     return;
   }
   const reloaded = 'sandburg-reloaded:generate';
-  if (!crossOriginIsolated) {
+  if (!self.crossOriginIsolated) {
     // First visit: the service worker gives this page the headers for shared memory.
     await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
     await navigator.serviceWorker.ready;
