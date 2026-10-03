@@ -75,8 +75,11 @@ export type ToWorker =
   /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
   /** Writes a project file, as an editor would (file watchers see the change). */
   | { type: 'write-file'; path: string; content: string }
-  /** The text files under some directories (dev servers' caches, kept for the next run). */
-  | { type: 'read-tree'; id: number; dirs: string[] }
+  /**
+   * The files under some directories (dev servers' caches, kept for the next run); with match, also
+   * the project's files whose path matches it, outside node_modules and dot directories (an app's databases).
+   */
+  | { type: 'read-tree'; id: number; dirs: string[]; match?: string }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
   | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
   | { type: 'ws-close'; id: number; code?: number; reason?: string }
@@ -1064,6 +1067,21 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
       } catch {
         // not there
       }
+    }
+    if (msg.match) {
+      const pattern = new RegExp(msg.match);
+      const find = (dir: string) => {
+        for (const name of vfs.readdir(dir)) {
+          const path = `${dir}/${name}`;
+          const st = vfs.stat(path);
+          if (st.kind === 'dir') {
+            if (name !== 'node_modules' && !name.startsWith('.')) find(path);
+          } else if (st.size < 64 << 20 && pattern.test(path.slice(projectRoot.length + 1))) {
+            files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
+          }
+        }
+      };
+      find(projectRoot);
     }
     post({ type: 'tree', id: msg.id, files });
   }

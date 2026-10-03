@@ -175,12 +175,15 @@ export class NodeProcess {
     this.worker.postMessage({ type: 'write-file', path, content });
   }
 
-  /** The text files under project directories, keyed by project-relative path. */
-  readTree(dirs: string[]): Promise<Record<string, CacheFile>> {
+  /**
+   * The files under project directories, keyed by project-relative path; with match (a regular
+   * expression's source), also the project's files whose path matches, as base64.
+   */
+  readTree(dirs: string[], match?: string): Promise<Record<string, CacheFile>> {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.trees.set(id, resolve);
-      this.worker.postMessage({ type: 'read-tree', id, dirs });
+      this.worker.postMessage({ type: 'read-tree', id, dirs, match });
     });
   }
 

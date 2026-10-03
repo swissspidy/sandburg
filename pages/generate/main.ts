@@ -58,6 +58,8 @@ const state = {
   /** The framework of the running project (a change of framework needs a new run). */
   runningFramework: '',
   busy: false,
+  /** Files the app wrote that a new run keeps: its SQLite databases (not shown or downloaded with the project). */
+  data: {} as FileTree,
   /** What the runtime and the app reported since the last change, for the model to fix. */
   errors: [] as string[],
   fixesLeft: 0,
@@ -391,6 +393,8 @@ let runs = 0;
 async function run(files: FileTree): Promise<boolean> {
   const id = ++runs;
   api ??= await loadHost();
+  // The app's data outlives a restart (new packages, server code): its databases go into the next run.
+  if (state.running) state.data = { ...state.data, ...(await readData()) };
   // Also a run that failed before it started: it still has a runtime (workers, compiler) to end.
   await api.dispose();
   state.running = false;
@@ -412,7 +416,7 @@ async function run(files: FileTree): Promise<boolean> {
   print(`\n$ npm install && npm run dev   (${framework === 'static' ? 'static site' : framework})`, 'dim');
   status('Installing and starting', 'active');
   try {
-    await phase('mount', () => api!.mount(files, packageJson, framework));
+    await phase('mount', () => api!.mount({ ...files, ...state.data }, packageJson, framework));
     await phase('install', () => api!.install(pageInstall(project)));
     const started = await phase('start', () => api!.start());
     if (id !== runs) return false;
@@ -429,6 +433,20 @@ async function run(files: FileTree): Promise<boolean> {
   status('Running in your browser', 'done');
   ui.reload.disabled = false;
   return true;
+}
+
+/** SQLite databases (and their journals), wherever the app keeps them. */
+const DATA_FILES = String.raw`(^|/)[^/]+\.(db|sqlite3?)(-wal|-shm|-journal)?$`;
+
+/** The running app's databases, as the runtime has them now (nothing if it does not answer in time). */
+async function readData(): Promise<FileTree> {
+  const read = (window as unknown as { __sandburgReadFiles?: (match: string) => Promise<FileTree> }).__sandburgReadFiles;
+  if (!read) return {};
+  const timeout = new Promise<FileTree>((resolve) => setTimeout(() => resolve({}), 3000));
+  const data = await Promise.race([read(DATA_FILES).catch(() => ({})), timeout]);
+  const names = Object.keys(data);
+  if (names.length) print(`keeping the app's data: ${names.join(', ')}`, 'dim');
+  return data;
 }
 
 async function loadHost(): Promise<HostApi> {
@@ -451,13 +469,13 @@ async function apply(edits: FileEdit[]): Promise<void> {
   state.errors = [];
   sendState();
   const framework = detectFramework(files, typeof files['package.json'] === 'string' ? safeParse(files['package.json']) : null);
-  if (state.running && framework === state.runningFramework && !needsRestart(changed, deleted)) {
+  if (state.running && framework === state.runningFramework && !needsRestart(changed, deleted, framework)) {
     const write = (window as unknown as { __sandburgWriteFile?: (path: string, content: string) => void }).__sandburgWriteFile;
     if (write) {
       for (const path of changed) write(path, files[path] as string);
       print(`\nupdated ${changed.join(', ')}`, 'dim');
-      // A static site has no dev server to tell the page: load it again.
-      if (framework === 'static') setTimeout(() => ui.frame.contentWindow?.location.reload(), 150);
+      // A static site or a plain Node server (Express serving public/) has no dev server to tell the page: load it again.
+      if (framework === 'static' || framework === 'unknown') setTimeout(() => ui.frame.contentWindow?.location.reload(), 150);
       status('Updated', 'done');
       return;
     }
@@ -619,6 +637,7 @@ function newApp(): void {
   status('Ready', 'idle');
   state.turns = [];
   state.files = {};
+  state.data = {};
   state.errors = [];
   storage('session')?.removeItem(SAVED);
   ui.conversation.replaceChildren();
