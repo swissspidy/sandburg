@@ -17,7 +17,7 @@ import { join, relative, resolve } from 'node:path';
 import { Session, projectFromFiles } from '../../src/index.ts';
 import type { FileTree, RunResult } from '../../src/types.ts';
 import { applyEdits, parseAnswer } from '../../pages/generate/files.ts';
-import { call, type Provider, type Turn } from '../../pages/generate/llm.ts';
+import { ProviderError, call, type Provider, type Turn } from '../../pages/generate/llm.ts';
 import { SYSTEM, firstMessage, fixMessage } from '../../pages/generate/prompt.ts';
 import { TEMPLATES } from '../../pages/generate/templates.ts';
 import { SUITE, type Task } from './suite.ts';
@@ -163,7 +163,7 @@ async function runCell(session: Session, model: string, stack: string, task: Tas
       turns.push({ role: 'user', text: fixMessage(attempt.errors, files) });
     }
   } catch (err) {
-    cell.excluded = `provider: ${(err as Error).message}`;
+    cell.excluded = `${err instanceof ProviderError ? 'provider' : 'harness'}: ${(err as Error).message.split('\n')[0]}`;
   }
   await writeFile(join(dir, 'files.json'), JSON.stringify(files, null, 2) + '\n');
   await writeFile(join(dir, 'transcript.md'), transcript.join('\n\n') + '\n');
