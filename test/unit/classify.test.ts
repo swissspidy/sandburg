@@ -211,3 +211,11 @@ test('an install in the page: a missing package is the app\'s, a registry that f
   const corrupt = classify(input({ phases: failedAt('install', 'npm registry: react@19.3.0: integrity check failed', 'INTERNAL') }));
   assert.equal(corrupt?.class, 'infra');
 });
+
+test('a WebAssembly trap on the dev server is the runtime, not the app', () => {
+  const f = classify(input({
+    phases: failedAt('ready', 'app did not render after a console error: 500'),
+    runtimeOutput: ['[runtime:stdout] [client] 7:08:10 AM [vite] Internal server error: memory access out of bounds', '[runtime:stdout] [client]   Plugin: builtin:vite-json'],
+  }));
+  assert.deepEqual([f?.class, f?.rule], ['runtime-unsupported', 'signature:wasm-trap']);
+});

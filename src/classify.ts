@@ -34,6 +34,13 @@ const INFRA_SIGNATURE = /^npm registry: |runtime asset failed to load|404 Not Fo
  */
 const UNRESOLVABLE_DEPENDENCY = /No matching version found for|404 Not Found - GET https:\/\/registry\.npmjs\.org\/(?:@[^/\s]+%2[fF]|@[^/\s]+\/)?[^/\s-][^/\s]* - Not found/;
 
+/**
+ * A package's WebAssembly build trapped on the dev server (rolldown's binding in Vite: "memory access
+ * out of bounds"). The project's code does not reach WebAssembly memory, and the same files run when
+ * started again: the runtime's fault, not the app's.
+ */
+const WASM_TRAP = /\b(?:memory access out of bounds|unreachable(?: code should not be)? executed)\b/;
+
 const RUNTIME_BOOT_FETCH = /Failed to fetch dynamically imported module|WebWorker failed to load|Failed to register a ServiceWorker/i;
 
 /** Compile errors reported by dev servers and esbuild for the project's sources. */
@@ -107,6 +114,8 @@ export function classify(input: ClassifyInput): Failure | null {
     const evidence = [message, ...appErrors];
     const sig = matchSignature(evidence);
     if (sig) return failure('runtime-unsupported', failedPhase.name, sig, message, evidence);
+    const trap = output.find((l) => WASM_TRAP.test(l));
+    if (trap) return failure('runtime-unsupported', failedPhase.name, 'signature:wasm-trap', trap.replace(/^\[runtime:std(?:out|err)\] /, ''), [trap, ...evidence]);
     // The project's own source does not compile (dev servers report this for syntax errors).
     const compile = [message, ...appErrors, ...(input.runtimeErrors ?? [])].find((e) => COMPILE_ERROR.test(e));
     if (compile) return failure('app-bug', failedPhase.name, 'compile-error', compile.split('\n').slice(0, 3).join('\n'), evidence);
