@@ -38,8 +38,21 @@ const { values } = parseArgs({
 });
 
 const installIn = values['install-in'] === 'host' ? 'host' : 'browser';
-const maxFixes = Number(values.fixes);
-const tasks = values.tasks ? SUITE.filter((t) => values.tasks!.split(',').includes(t.id)) : SUITE;
+const maxFixes = integerOption('--fixes', values.fixes, 0);
+const parallel = integerOption('--parallel', values.parallel, 1);
+const tasks = values.tasks ? values.tasks.split(',').filter(Boolean).map(taskById) : SUITE;
+
+function integerOption(name: string, value: string, min: number): number {
+  const n = Number(value);
+  if (!value.trim() || !Number.isInteger(n) || n < min) throw new Error(`${name} must be an integer >= ${min}, got "${value}"`);
+  return n;
+}
+
+function taskById(id: string): Task {
+  const task = SUITE.find((t) => t.id === id);
+  if (!task) throw new Error(`unknown task ${id} (${SUITE.map((t) => t.id).join(', ')})`);
+  return task;
+}
 
 /** Error lines on the dev server's stderr, as the page picks them (pages/generate/main.ts). */
 const ERROR_LINE = /\b(error|Error|ERR_|failed|Failed|Cannot find|Could not|not found|Uncaught|SyntaxError|TypeError|ReferenceError)\b/;
@@ -101,8 +114,8 @@ async function main(): Promise<void> {
     const id = new Date().toISOString().replace(/[:.]/g, '-');
     const dir = resolve(values.out, id);
     const jobs = models.flatMap((model) => stacks.flatMap((stack) => tasks.map((task) => ({ model, stack, task }))));
-    console.error(`${jobs.length} cells (${models.length} models × ${stacks.length} stacks × ${tasks.length} tasks), ${values.parallel} at a time → ${relative(process.cwd(), dir)}`);
-    const cells = await pool(jobs, Number(values.parallel), async (job) => {
+    console.error(`${jobs.length} cells (${models.length} models × ${stacks.length} stacks × ${tasks.length} tasks), ${parallel} at a time → ${relative(process.cwd(), dir)}`);
+    const cells = await pool(jobs, parallel, async (job) => {
       const cell = await runCell(session, job.model, job.stack, job.task, join(dir, cellName(job)));
       console.error(line(cell));
       return cell;
@@ -220,7 +233,7 @@ function summarize(r: RunResult): RunSummary {
 /** Runs the stored apps of an earlier eval again with the suite's current checks. No model calls. */
 async function rescore(session: Session, dir: string): Promise<void> {
   const names = (await readdir(dir, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
-  const cells = await pool(names, Number(values.parallel), async (name) => {
+  const cells = await pool(names, parallel, async (name) => {
     const cell = JSON.parse(await readFile(join(dir, name, 'cell.json'), 'utf8')) as Cell;
     const task = SUITE.find((t) => t.id === cell.task);
     if (!task || (cell.excluded?.startsWith('provider') ?? false)) return cell;
@@ -293,11 +306,12 @@ async function report(dir: string, cells: Cell[]): Promise<void> {
       readySeconds: mean(scored.flatMap((c) => c.attempts.filter((a) => a.run).slice(-1).map((a) => (a.run!.timings.totalMs ?? 0) / 1000))),
     };
   });
-  const summary = { suite: 'app-gen', installIn, maxFixes, finishedAt: new Date().toISOString(), rows, cells };
+  // A --rescore changes the final scores only: the first try keeps the checks of the original run.
+  const summary = { suite: 'app-gen', firstTryBasis: 'checks of the original run', installIn, maxFixes, finishedAt: new Date().toISOString(), rows, cells };
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   const md = [
-    '| Model | Stack | Passed | First try | Mean score | Failed: missing element / wrong output | Fixes | Output tokens | Generate | Run |',
+    '| Model | Stack | Passed | First try (original checks) | Mean score | Failed: missing element / wrong output | Fixes | Output tokens | Generate | Run |',
     '|---|---|---|---|---|---|---|---|---|---|',
     ...rows.map((r) => `| ${r.model} | ${r.stack} | ${r.passed}/${r.cells - r.excluded}${r.excluded ? ` (+${r.excluded} excl.)` : ''} | ${r.passedFirstTry} | ${r.meanScore.toFixed(2)} | ${r.missingElement} / ${r.wrongOutput} | ${r.fixes} | ${r.outputTokens} | ${r.genSeconds.toFixed(0)} s | ${r.readySeconds.toFixed(0)} s |`),
     '',

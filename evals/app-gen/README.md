@@ -48,7 +48,8 @@ Behind an HTTPS proxy, set `NODE_USE_ENV_PROXY=1` so that Node's `fetch` uses it
 - **Excluded** cells have no score. Either Sandburg could not run the app (`runtime-unsupported`,
   or an `infra` failure that a retry did not fix), or the provider failed. A runtime gap is
   Sandburg's to fix, so it does not count against the model.
-- **First try** counts cells whose first answer passed with no fix.
+- **First try (original checks)** counts cells whose first answer passed with no fix, with the
+  checks of the original run. `--rescore` updates the final scores with the current checks, not this.
 - **Failed: missing element / wrong output** says why the first failing check of each failed cell
   failed. "Missing element" means the app has no control or list with the name the task asked for
   (or has more than one): it did not follow the spec, though the app may work. "Wrong output" means
