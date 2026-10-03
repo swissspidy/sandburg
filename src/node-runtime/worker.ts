@@ -1076,7 +1076,8 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
           const st = vfs.stat(path);
           if (st.kind === 'dir') {
             if (name !== 'node_modules' && !name.startsWith('.')) find(path);
-          } else if (st.size < 64 << 20 && pattern.test(path.slice(projectRoot.length + 1))) {
+          } else if (pattern.test(path.slice(projectRoot.length + 1))) {
+            // Whole, whatever the size: a database without its journal would lose committed data.
             files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
           }
         }

@@ -393,8 +393,13 @@ let runs = 0;
 async function run(files: FileTree): Promise<boolean> {
   const id = ++runs;
   api ??= await loadHost();
-  // The app's data outlives a restart (new packages, server code): its databases go into the next run.
-  if (state.running) state.data = { ...state.data, ...(await readData()) };
+  // The app's data outlives a restart (new packages, server code): its databases go into the next run,
+  // as the runtime has them now (a database the app deleted stays deleted).
+  if (state.running) {
+    const data = await readData();
+    if (data) state.data = data;
+    else print("Could not read the app's databases from the runtime: the new run starts from the copy kept at the last restart, if any.", 'err');
+  }
   // Also a run that failed before it started: it still has a runtime (workers, compiler) to end.
   await api.dispose();
   state.running = false;
@@ -438,12 +443,13 @@ async function run(files: FileTree): Promise<boolean> {
 /** SQLite databases (and their journals), wherever the app keeps them. */
 const DATA_FILES = String.raw`(^|/)[^/]+\.(db|sqlite3?)(-wal|-shm|-journal)?$`;
 
-/** The running app's databases, as the runtime has them now (nothing if it does not answer in time). */
-async function readData(): Promise<FileTree> {
+/** The running app's databases, as the runtime has them now; null if it could not tell (failed, or no answer in time). */
+async function readData(): Promise<FileTree | null> {
   const read = (window as unknown as { __sandburgReadFiles?: (match: string) => Promise<FileTree> }).__sandburgReadFiles;
-  if (!read) return {};
-  const timeout = new Promise<FileTree>((resolve) => setTimeout(() => resolve({}), 3000));
-  const data = await Promise.race([read(DATA_FILES).catch(() => ({})), timeout]);
+  if (!read) return null;
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000));
+  const data = await Promise.race([read(DATA_FILES).catch(() => null), timeout]);
+  if (!data) return null;
   const names = Object.keys(data);
   if (names.length) print(`keeping the app's data: ${names.join(', ')}`, 'dim');
   return data;

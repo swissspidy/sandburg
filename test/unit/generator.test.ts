@@ -49,6 +49,8 @@ test('edits apply, and only some need a new run', () => {
   assert.equal(needsRestart(['server/index.js'], []), true);
   assert.equal(needsRestart(['server/api/todos.js'], [], 'nuxt'), false);
   assert.equal(needsRestart(['proxy.conf.json'], []), true);
+  assert.equal(needsRestart(['src/proxy.conf.json'], []), true);
+  assert.equal(needsRestart(['src/angular.json'], []), false);
   assert.equal(needsRestart([], ['src/a.js']), true);
 });
 

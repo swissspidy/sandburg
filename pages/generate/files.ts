@@ -97,7 +97,7 @@ export function needsRestart(changed: string[], deleted: string[], framework = '
   if (deleted.length) return true;
   // A plain Node server (Express) has no watcher; Nuxt's server/ is Nitro's, which reloads itself.
   const serverCode = framework === 'nuxt' ? /^$/ : /^(server|api|backend)\//;
-  return changed.some((p) => /(^|\/)package(-lock)?\.json$/.test(p) || /(^|\/)[\w-]+\.config\.[cm]?[jt]s$/.test(p) || /^(angular|proxy\.conf)\.json$/.test(p) || serverCode.test(p) || /^\.env/.test(p));
+  return changed.some((p) => /(^|\/)package(-lock)?\.json$/.test(p) || /(^|\/)[\w-]+\.config\.[cm]?[jt]s$/.test(p) || /^angular\.json$|(^|\/)proxy\.conf\.json$/.test(p) || serverCode.test(p) || /^\.env/.test(p));
 }
 
 /** The project as the model sees it: every text file in the answer format. */
