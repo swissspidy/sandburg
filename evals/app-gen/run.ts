@@ -32,6 +32,7 @@ const { values } = parseArgs({
     'install-in': { type: 'string', default: 'browser' },
     out: { type: 'string', default: '.sandburg/evals' },
     rescore: { type: 'string' },
+    report: { type: 'string' },
     headed: { type: 'boolean', default: false },
   },
 });
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
   await session.open();
   try {
     if (values.rescore) return await rescore(session, resolve(values.rescore));
+    if (values.report) return await report(resolve(values.report), await readCells(resolve(values.report)));
     const models = values.models.split(',').filter(Boolean);
     const stacks = values.stacks.split(',').filter(Boolean);
     for (const s of stacks) if (!TEMPLATES.some((t) => t.id === s)) throw new Error(`unknown stack ${s} (${TEMPLATES.map((t) => t.id).join(', ')})`);
@@ -234,6 +236,30 @@ async function rescore(session: Session, dir: string): Promise<void> {
   await report(dir, cells);
 }
 
+async function readCells(dir: string): Promise<Cell[]> {
+  const names = (await readdir(dir, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
+  const cells = await Promise.all(names.map((n) => readFile(join(dir, n, 'cell.json'), 'utf8').then((t) => JSON.parse(t) as Cell, () => null)));
+  return cells.filter((c) => c !== null);
+}
+
+/**
+ * Why the first failing check of the cell's last run failed: the app has no element with the name
+ * the task asked for (or more than one), or the element is there and shows the wrong text or state.
+ * Later checks often fail because the first did, so only the first counts.
+ */
+async function firstMiss(dir: string, c: Cell): Promise<'element' | 'output' | null> {
+  const run = c.rescored ?? c.attempts.findLast((a) => a.run)?.run;
+  if (!run || c.final.passed || c.excluded) return null;
+  try {
+    const r = JSON.parse(await readFile(join(dir, cellName(c), 'runs', run.runId, 'result.json'), 'utf8')) as RunResult;
+    const check = r.checks.find((x) => x.kind === 'functional' && x.status !== 'passed');
+    if (!check) return null;
+    return /element\(s\) not found|resolved to 0 elements|strict mode violation|waiting for (?:getBy|locator)[^\n]*\n*$/.test(check.message ?? '') ? 'element' : 'output';
+  } catch {
+    return null;
+  }
+}
+
 function line(c: Cell): string {
   const tokens = c.attempts.reduce((n, a) => n + a.tokens.output, 0);
   const verdict = c.excluded ? 'EXCL' : c.final.passed ? 'PASS' : 'FAIL';
@@ -241,6 +267,7 @@ function line(c: Cell): string {
 }
 
 async function report(dir: string, cells: Cell[]): Promise<void> {
+  const misses = new Map(await Promise.all(cells.map(async (c) => [c, await firstMiss(dir, c)] as const)));
   const groups = new Map<string, Cell[]>();
   for (const c of cells) {
     const key = `${c.model}\t${c.stack}`;
@@ -257,6 +284,8 @@ async function report(dir: string, cells: Cell[]): Promise<void> {
       excluded: cs.length - scored.length,
       passed: scored.filter((c) => c.final.passed).length,
       passedFirstTry: scored.filter((c) => c.firstTry?.passed).length,
+      missingElement: scored.filter((c) => misses.get(c) === 'element').length,
+      wrongOutput: scored.filter((c) => misses.get(c) === 'output').length,
       meanScore: mean(scored.map((c) => c.final.score)),
       fixes: scored.reduce((n, c) => n + c.attempts.length - 1, 0),
       outputTokens: Math.round(mean(scored.map((c) => c.attempts.reduce((n, a) => n + a.tokens.output, 0)))),
@@ -268,13 +297,13 @@ async function report(dir: string, cells: Cell[]): Promise<void> {
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   const md = [
-    '| Model | Stack | Passed | First try | Mean score | Fixes | Output tokens | Generate | Run |',
-    '|---|---|---|---|---|---|---|---|---|',
-    ...rows.map((r) => `| ${r.model} | ${r.stack} | ${r.passed}/${r.cells - r.excluded}${r.excluded ? ` (+${r.excluded} excl.)` : ''} | ${r.passedFirstTry} | ${r.meanScore.toFixed(2)} | ${r.fixes} | ${r.outputTokens} | ${r.genSeconds.toFixed(0)} s | ${r.readySeconds.toFixed(0)} s |`),
+    '| Model | Stack | Passed | First try | Mean score | Failed: missing element / wrong output | Fixes | Output tokens | Generate | Run |',
+    '|---|---|---|---|---|---|---|---|---|---|',
+    ...rows.map((r) => `| ${r.model} | ${r.stack} | ${r.passed}/${r.cells - r.excluded}${r.excluded ? ` (+${r.excluded} excl.)` : ''} | ${r.passedFirstTry} | ${r.meanScore.toFixed(2)} | ${r.missingElement} / ${r.wrongOutput} | ${r.fixes} | ${r.outputTokens} | ${r.genSeconds.toFixed(0)} s | ${r.readySeconds.toFixed(0)} s |`),
     '',
     '| Cell | Checks | Fixes | Failure |',
     '|---|---|---|---|',
-    ...cells.map((c) => `| ${cellName(c)} | ${c.final.checksPassed}/${c.final.checksTotal}${c.final.passed ? ' ✓' : ''} | ${c.attempts.length ? c.attempts.length - 1 : '-'} | ${c.excluded ?? failedCheck(c) ?? ''} |`),
+    ...cells.map((c) => `| ${cellName(c)} | ${c.final.checksPassed}/${c.final.checksTotal}${c.final.passed ? ' ✓' : ''} | ${c.attempts.length ? c.attempts.length - 1 : '-'} | ${c.excluded ?? [misses.get(c) && `(${misses.get(c) === 'element' ? 'missing element' : 'wrong output'})`, failedCheck(c)].filter(Boolean).join(' ')} |`),
   ].join('\n');
   await writeFile(join(dir, 'summary.md'), md + '\n');
   console.log(md);

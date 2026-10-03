@@ -38,7 +38,8 @@ Results go to `.sandburg/evals/<timestamp>/`:
   too) and `runs/` (Sandburg's `result.json`, screenshot and accessibility tree for each run).
 
 `--rescore <dir>` runs the stored apps again with the suite's current checks and no model calls.
-Use it after fixing a check, or to see whether a newer Sandburg runs the same apps.
+Use it after fixing a check, or to see whether a newer Sandburg runs the same apps. `--report <dir>`
+writes the summary again from the stored results.
 
 Behind an HTTPS proxy, set `NODE_USE_ENV_PROXY=1` so that Node's `fetch` uses it.
 
@@ -48,6 +49,11 @@ Behind an HTTPS proxy, set `NODE_USE_ENV_PROXY=1` so that Node's `fetch` uses it
   or an `infra` failure that a retry did not fix), or the provider failed. A runtime gap is
   Sandburg's to fix, so it does not count against the model.
 - **First try** counts cells whose first answer passed with no fix.
+- **Failed: missing element / wrong output** says why the first failing check of each failed cell
+  failed. "Missing element" means the app has no control or list with the name the task asked for
+  (or has more than one): it did not follow the spec, though the app may work. "Wrong output" means
+  the element is there but shows the wrong text or state. Checks run in order against one app, so a
+  first failure often fails the checks after it too.
 - **Generate** is the time spent waiting for the model, summed over all attempts. **Run** is
   Sandburg's total time for the last run: install, start, ready and checks.
 
