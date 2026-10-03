@@ -242,7 +242,8 @@ async function verifyGenerator(url: string): Promise<boolean> {
         .then(() => page.evaluate(() => document.getElementById('status')!.dataset.state))
         .catch(() => 'timeout');
       const text = await page.frameLocator('#app').locator('body').innerText({ timeout: 5000 }).catch(() => '');
-      const ok = status === 'done' && /Hello/.test(text);
+      // Each scaffold reads the SQLite version through its backend.
+      const ok = status === 'done' && /Hello/.test(text) && /SQLite \d/.test(text);
       console.log(`verify generator ${tpl.id}: ${status} in ${((Date.now() - t) / 1000).toFixed(1)} s, app text ${JSON.stringify(text.slice(0, 80))}`);
       if (!ok) {
         failed = true;

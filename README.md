@@ -12,7 +12,7 @@ per run: one browser runs many sandboxes side by side, each on its own origin.
 Vue + Express + SQLite app, running in your browser.
 
 **[Generate an app →](https://swissspidy.github.io/sandburg/generate/)** Describe an app. Claude or Gemini, with
-your own API key, writes it with React, Vue, Svelte, Next.js or Express + SQLite. Your tab then installs it from npm and
+your own API key, writes it with React, Vue, Angular, SvelteKit, SolidStart, Next.js, Nuxt or Astro, with a backend and SQLite. Your tab then installs it from npm and
 runs it on its own dev server. Later requests change the running app, and errors go back to the model to fix
 ([ADR 0021](docs/adr/0021-generate-in-the-browser.md)).
 

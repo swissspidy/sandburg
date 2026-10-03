@@ -47,6 +47,10 @@ test('edits apply, and only some need a new run', () => {
   assert.equal(needsRestart(['package.json'], []), true);
   assert.equal(needsRestart(['vite.config.js'], []), true);
   assert.equal(needsRestart(['server/index.js'], []), true);
+  assert.equal(needsRestart(['server/api/todos.js'], [], 'nuxt'), false);
+  assert.equal(needsRestart(['proxy.conf.json'], []), true);
+  assert.equal(needsRestart(['src/proxy.conf.json'], []), true);
+  assert.equal(needsRestart(['src/angular.json'], []), false);
   assert.equal(needsRestart([], ['src/a.js']), true);
 });
 
@@ -57,15 +61,17 @@ test('the scaffold, formatted for the model, parses back to itself', () => {
   }
 });
 
-test('each scaffold has a way to start in the page', () => {
+test('each scaffold has a way to start in the page, and a backend with SQLite', () => {
   for (const t of TEMPLATES) {
     const pkg = typeof t.files['package.json'] === 'string' ? (JSON.parse(t.files['package.json']) as PackageJson) : null;
+    // A plain Node server (Express) is "unknown" to detection, and starts from its dev script.
     const framework = detectFramework(t.files, pkg);
-    assert.notEqual(framework, 'unknown', t.id);
+    assert.ok(framework !== 'unknown' || pkg?.scripts?.dev, t.id);
     const plan = pageInstall({ name: t.id, path: t.id, files: t.files, packageJson: pkg, framework, snapshotId: '' } as Project);
     if (framework === 'next') assert.equal(plan.start, null, t.id);
     else assert.ok(plan.start, t.id);
     if (framework !== 'static') assert.ok(plan.browserInstall?.length, t.id);
+    assert.ok(Object.values(t.files).some((c) => typeof c === 'string' && c.includes("from 'node:sqlite'")), t.id);
   }
 });
 

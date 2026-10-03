@@ -234,6 +234,8 @@ export function createAdapter(): RuntimeAdapter {
       });
       // Edits to the running app (sandburg open, checks that exercise hot reloading).
       (window as unknown as Record<string, unknown>).__sandburgWriteFile = (path: string, content: string) => p.writeFile(path, content);
+      // Files the app wrote (a page that runs the project again keeps its SQLite databases).
+      (window as unknown as Record<string, unknown>).__sandburgReadFiles = (match: string) => p.readTree([], match);
       // WebSockets (e.g. Next.js' HMR at /_next/webpack-hmr) go to the app's server too.
       exposeWebSockets((url) => {
         const target = webSocketPort(url, p.ports, (path) => {

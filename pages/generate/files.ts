@@ -93,9 +93,11 @@ export function applyEdits(files: FileTree, edits: FileEdit[]): { files: FileTre
  * reloads it), or needs a new run: new packages, a deleted file, a dev server's or the backend's
  * own config or code.
  */
-export function needsRestart(changed: string[], deleted: string[]): boolean {
+export function needsRestart(changed: string[], deleted: string[], framework = ''): boolean {
   if (deleted.length) return true;
-  return changed.some((p) => /(^|\/)package(-lock)?\.json$/.test(p) || /(^|\/)[\w-]+\.config\.[cm]?[jt]s$/.test(p) || /^(server|api|backend)\//.test(p) || /^\.env/.test(p));
+  // A plain Node server (Express) has no watcher; Nuxt's server/ is Nitro's, which reloads itself.
+  const serverCode = framework === 'nuxt' ? /^$/ : /^(server|api|backend)\//;
+  return changed.some((p) => /(^|\/)package(-lock)?\.json$/.test(p) || /(^|\/)[\w-]+\.config\.[cm]?[jt]s$/.test(p) || /^angular\.json$|(^|\/)proxy\.conf\.json$/.test(p) || serverCode.test(p) || /^\.env/.test(p));
 }
 
 /** The project as the model sees it: every text file in the answer format. */

@@ -22,9 +22,17 @@ After they describe an app, the page:
    Gemini's takes the key in `x-goog-api-key`. Answers stream as server-sent events over plain
    `fetch`, so there is no SDK to bundle and one code path covers both providers.
 2. **Starts the model from a scaffold** for the chosen stack ([`templates.ts`](../../pages/generate/templates.ts)):
-   React, Vue or Svelte on Vite, plain HTML, Vue + Express + SQLite, or Next.js. Each uses the
-   versions the fixtures use, so the model does not have to guess versions or config. The system
-   prompt ([`prompt.ts`](../../pages/generate/prompt.ts)) says what runs in Sandburg's runtime.
+   React, Vue or Angular 22, SvelteKit, SolidStart 2, Next.js 16, Nuxt 4, Astro 7, or plain HTML,
+   CSS and JavaScript. Each uses the versions the fixtures use, so the model does not have to guess
+   versions or config. Every scaffold has a backend and a SQLite database. React, Vue, Angular and
+   plain HTML get an Express API in `server/`, behind the dev server's proxy (Express serves the
+   plain HTML too). The full-stack frameworks use their own server code: SvelteKit `load()`, Next.js
+   server components and route handlers, Nuxt server routes, Astro frontmatter and endpoints,
+   SolidStart `"use server"` functions. Every scaffold reaches the database through `node:sqlite`.
+   It is built into Node.js, so no bundler has to treat a native package specially, and the runtime
+   implements it on SQLite's WebAssembly build. The system prompt
+   ([`prompt.ts`](../../pages/generate/prompt.ts)) says what runs in Sandburg's runtime and how to
+   use the database.
 3. **Reads files from the answer.** The model writes each file whole between
    `<file path="…">` and `</file>`, and deletes a file with `<delete path="…" />`
    ([`files.ts`](../../pages/generate/files.ts)). The format can be parsed while it streams, so the
@@ -36,7 +44,10 @@ After they describe an app, the page:
    on a project's files, moved out of `index.ts` so that a page can bundle it.
 5. **Applies later requests to the running app.** Files are written into the runtime and the dev
    server reloads them (Vite's HMR, Next.js' Fast Refresh). Some changes need a new run in the same
-   page: a change to `package.json` or a config file, server code, or a deleted file. The
+   page: a change to `package.json` or a config file, an Express server's code, or a deleted file.
+   Nuxt reloads its own `server/` code. A new run keeps the app's data: the page reads the SQLite
+   files the app wrote from the runtime that is ending (`__sandburgReadFiles`) and mounts them into
+   the next one. The
    conversation is append-only, and each Claude turn, thinking blocks included, is sent back exactly
    as the model wrote it. Each request then reads the earlier turns from the prompt cache.
 6. **Feeds errors back to the model.** The page collects three kinds of error: the run failing,
@@ -111,12 +122,22 @@ no model involved:
 
 | Scaffold | Run |
 |---|---|
-| HTML, CSS & JavaScript | 0.6 s |
-| Vue + Vite | 13.6 s |
-| React + Vite | 14.6 s |
-| Svelte + Vite | 19.0 s |
-| Vue + Express + SQLite | 25.4 s |
-| Next.js 16 | 28.0 s |
+| HTML, CSS & JavaScript (Express) | 5.4 s |
+| Vue (+ Express) | 17.5 s |
+| SvelteKit | 18.2 s |
+| Next.js 16 | 21.1 s |
+| React (+ Express) | 23.1 s |
+| SolidStart 2 | 28.4 s |
+| Astro 7 | 32.8 s |
+| Angular 22 (+ Express) | 48.2 s |
+| Nuxt 4 | 62.4 s |
+
+Each scaffold shows the SQLite version it read through its backend, and the build checks that it
+does. Claude Opus 5.5 then wrote a to-do app on each of the nine stacks, with tasks stored in SQLite
+through the backend. A task added in the app was still listed after the app was loaded again with
+its browser storage cleared, so it came from the database. None needed a fix. A follow-up that
+changed the schema (a priority column) went into Nuxt live, and restarted the Express servers of
+Angular and plain HTML. Their task survived the restart.
 
 With Claude Opus 5.5, a to-do app with filters and due dates (React) took 44–55 s to write
 (about 6k output tokens) and 12 s to install and start. A request for a theme toggle took 48–63 s
