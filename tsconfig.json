@@ -27,6 +27,7 @@
     "scripts/edit-loop.ts",
     "pages/compile.ts",
     "pages/generate",
+    "evals",
     "fixtures/vite-react-counter/checks.spec.ts"
   ]
 }

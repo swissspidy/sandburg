@@ -544,8 +544,10 @@ class RunState {
   }
 
   capture(page: Page, origin: string): void {
+    // An install in the browser fetches from the npm registry, and looks up names that may not exist
+    // (napi-rs' wasm32-wasi packages): the browser logs those 404s, and they are not the app's.
     const sourceOf = (url: string): 'app' | 'host' =>
-      url.startsWith(`${origin}/__sandburg/`) || url.startsWith(`${origin}/__sw__`) || url.includes('esbuild-wasm') ? 'host' : 'app';
+      url.startsWith(`${origin}/__sandburg/`) || url.startsWith(`${origin}/__sw__`) || url.includes('esbuild-wasm') || url.startsWith('https://registry.npmjs.org/') ? 'host' : 'app';
     page.on('console', (msg) => {
       if (this.console.length >= 500) return;
       const url = msg.location().url;
