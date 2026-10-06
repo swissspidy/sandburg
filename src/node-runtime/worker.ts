@@ -91,7 +91,8 @@ export type ToWorker =
 
 export type FromWorker =
   | { type: 'log'; stream: 'stdout' | 'stderr'; text: string }
-  | { type: 'listening'; port: number | string }
+  /** ephemeral: a port the system picked (port 0), not one the program asked for (see http.ts). */
+  | { type: 'listening'; port: number | string; ephemeral?: boolean }
   | { type: 'response-start'; id: number; status: number; statusText: string; headers: [string, string][] }
   | { type: 'response-chunk'; id: number; chunk: Uint8Array }
   | { type: 'response-end'; id: number }
@@ -906,7 +907,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       write('stderr', `Uncaught (in promise) ${e.reason?.stack ?? e.reason}\n`);
     }
   });
-  serverEvents.on('listening', (port: number | string) => announce(port));
+  serverEvents.on('listening', (port: number | string, ephemeral?: boolean) => announce(port, ephemeral));
   installNodeMessagePorts();
   hideWorkerGlobals();
   post({ type: 'ready' });
@@ -1255,8 +1256,8 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
   }
 }
 /** Only TCP ports are the host's business; a nested runtime's parent also learns its socket paths. */
-const announce = (port: number | string) => {
-  if (typeof port === 'number' || thread) post({ type: 'listening', port });
+const announce = (port: number | string, ephemeral?: boolean) => {
+  if (typeof port === 'number' || thread) post({ type: 'listening', port, ...(ephemeral && { ephemeral }) });
 };
 function relayFromNested(m: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean {
   if (m.type.startsWith('net-')) {
@@ -1283,7 +1284,7 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
       return true;
     case 'listening':
       nestedPorts.set(m.port as number | string, from);
-      announce(m.port as number | string);
+      announce(m.port as number | string, m.ephemeral as boolean | undefined);
       return true;
     case 'response-chunk':
       post(m as FromWorker, [(m.chunk as Uint8Array).buffer as ArrayBuffer]);

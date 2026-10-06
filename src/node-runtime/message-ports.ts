@@ -270,6 +270,12 @@ export function installNodeMessagePorts(): void {
     return this;
   };
   P.hasRef = () => true;
+  // Node's BroadcastChannel has them too (@nuxt/cli 4 unrefs its error channel).
+  const B = BroadcastChannel.prototype as unknown as Record<string, unknown>;
+  B.ref = B.unref = function (this: BroadcastChannel) {
+    return this;
+  };
+  B.hasRef = () => true;
   const close = MessagePort.prototype.close;
   P.close = function (this: MessagePort) {
     close.call(this);
