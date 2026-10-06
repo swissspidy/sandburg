@@ -160,7 +160,8 @@ export const SUITE: Task[] = [
         await app.getByLabel('Name', { exact: true }).fill('Nobody');
         await app.getByLabel('Message', { exact: true }).fill('');
         await app.getByRole('button', { name: 'Sign' }).click();
-        await expect(app.getByRole('alert')).toBeVisible();
+        // An alert with text: Next.js keeps an empty one of its own (the route announcer).
+        await expect(app.getByRole('alert').filter({ hasText: /\S/ })).toBeVisible();
         await expect(app.getByRole('list', { name: 'Entries' }).getByRole('listitem')).toHaveCount(2);
       },
       'entries come from the database': async (ctx) => {
