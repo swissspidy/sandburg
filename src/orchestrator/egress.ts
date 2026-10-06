@@ -7,7 +7,7 @@
  * a miss; everything else is aborted and recorded.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { request as playwrightRequest, type APIRequestContext, type BrowserContext, type Request } from 'playwright-core';
 import type { NetworkEntry } from '../types.ts';
@@ -32,6 +32,8 @@ interface CachedResponse {
   status: number;
   headers: Record<string, string>;
   body: Buffer;
+  /** When the entry was written (cache reads only). */
+  fetchedAt?: number;
 }
 
 interface CacheMeta {
@@ -56,6 +58,21 @@ export function newEgressStats(): EgressStats {
  */
 function cacheable(status: number): boolean {
   return (status >= 200 && status < 300) || status === 404 || status === 410;
+}
+
+/**
+ * An npm package's document (https://registry.npmjs.org/<name>) lists the versions published so far,
+ * so it changes with every publish: a cached one would hide a version that a newer dependent needs
+ * (`No matching version found`). Tarballs and other files do not change.
+ */
+const PACKUMENT = /^https:\/\/registry\.npmjs\.org\/(?:@[^/]+(?:\/|%2[fF]))?[^/@]+\/?$/;
+
+/** A cached package document older than this is fetched again (or used as is, offline or when the registry cannot be reached). */
+export const PACKUMENT_MAX_AGE_MS = 10 * 60_000;
+
+/** Whether a cached answer for `url`, written at `fetchedAt`, may be served without asking upstream. */
+export function isFresh(url: string, fetchedAt: number, now = Date.now()): boolean {
+  return !PACKUMENT.test(url) || now - fetchedAt < PACKUMENT_MAX_AGE_MS;
 }
 
 export type OriginMatcher = (origin: string) => boolean;
@@ -153,7 +170,8 @@ export class EgressGateway {
     const path = join(this.options.cacheDir, key.slice(0, 2), key);
 
     const cached = await readCache(path);
-    if (cached && cacheable(cached.status)) return { response: cached, hit: true };
+    const usable = cached && cacheable(cached.status) ? cached : null;
+    if (usable && (this.options.offline || isFresh(req.url(), usable.fetchedAt ?? 0))) return { response: usable, hit: true };
     if (this.options.offline) throw new OfflineMissError(req.url());
 
     let pending = this.inflight.get(key);
@@ -162,7 +180,10 @@ export class EgressGateway {
       this.inflight.set(key, pending);
       pending.finally(() => this.inflight.delete(key)).catch(() => {});
     }
-    return { response: await pending, hit: false };
+    if (!usable) return { response: await pending, hit: false };
+    // A stale package document: the registry's answer if it has a good one, else the cached one.
+    const fresh = await pending.catch(() => null);
+    return fresh && cacheable(fresh.status) ? { response: fresh, hit: false } : { response: usable, hit: true };
   }
 
   private async fetchUpstream(
@@ -214,7 +235,7 @@ async function readCache(path: string): Promise<CachedResponse | null> {
   try {
     const meta = JSON.parse(await readFile(`${path}.json`, 'utf8')) as CacheMeta;
     const body = await readFile(`${path}.body`);
-    return { status: meta.status, headers: meta.headers, body };
+    return { status: meta.status, headers: meta.headers, body, fetchedAt: (await stat(`${path}.json`)).mtimeMs };
   } catch {
     return null;
   }
