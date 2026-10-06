@@ -5,6 +5,11 @@
  * decide the score. Failing checks are never shown to the model: like the page, it hears only
  * about errors.
  *
+ * A task can have a follow-up request: once the app passes, the model gets it in the same
+ * conversation, as a visitor's next request on the page. The changed app runs again with the
+ * database its first run left behind, as the page keeps it across a restart, and the follow-up's
+ * checks decide whether the change works and the earlier data survived it.
+ *
  *   ANTHROPIC_API_KEY=… GEMINI_API_KEY=… node evals/app-gen/run.ts \
  *     --models claude-opus-5-5,gemini-3.1-pro-preview --stacks vanilla,react,sveltekit
  *   node evals/app-gen/run.ts --rescore .sandburg/evals/<id>   (run stored apps again, no model)
@@ -16,7 +21,8 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { Session, projectFromFiles } from '../../src/index.ts';
 import type { FileTree, RunResult } from '../../src/types.ts';
-import { applyEdits, parseAnswer } from '../../pages/generate/files.ts';
+import type { Checks } from '../../src/index.ts';
+import { applyEdits, DATA_FILES, needsRestart, parseAnswer } from '../../pages/generate/files.ts';
 import { ProviderError, call, type Provider, type Turn } from '../../pages/generate/llm.ts';
 import { SYSTEM, firstMessage, fixMessage } from '../../pages/generate/prompt.ts';
 import { TEMPLATES } from '../../pages/generate/templates.ts';
@@ -25,7 +31,7 @@ import { SUITE, type Task } from './suite.ts';
 const { values } = parseArgs({
   options: {
     models: { type: 'string', default: 'claude-opus-5-5' },
-    stacks: { type: 'string', default: 'vanilla,react,sveltekit' },
+    stacks: { type: 'string', default: 'vanilla,react,sveltekit,nextjs,nuxt,angular' },
     tasks: { type: 'string' },
     fixes: { type: 'string', default: '2' },
     parallel: { type: 'string', default: '3' },
@@ -58,7 +64,7 @@ function taskById(id: string): Task {
 const ERROR_LINE = /\b(error|Error|ERR_|failed|Failed|Cannot find|Could not|not found|Uncaught|SyntaxError|TypeError|ReferenceError)\b/;
 
 interface Attempt {
-  kind: 'generate' | 'fix';
+  kind: 'generate' | 'edit' | 'fix';
   model: string;
   genMs: number;
   tokens: { input: number; output: number };
@@ -79,17 +85,36 @@ interface RunSummary {
   axeViolations: number | null;
 }
 
-export interface Cell {
-  task: string;
-  stack: string;
-  model: string;
+/** One request and the fixes after it. */
+interface Stage {
   attempts: Attempt[];
   final: Score;
   firstTry: Score | null;
-  /** Why the cell has no score: the provider failed, or the runtime could not run the app (not the model's fault). */
+  /** Why the stage has no score: the provider failed, or the runtime could not run the app (not the model's fault). */
   excluded: string | null;
   /** The last --rescore run of the stored app, when there was one. */
   rescored?: RunSummary;
+}
+
+/** The follow-up request. */
+interface Edit extends Stage {
+  /** Why it did not run: the first request's app did not pass. */
+  skipped: string | null;
+  /**
+   * Whether the generator page would have written the first answer's change into the running app
+   * (its dev server reloads it) rather than starting the app again (needsRestart).
+   */
+  live: boolean | null;
+  /** The database files carried over from the first request's last run. */
+  dataFiles: string[];
+}
+
+/** The first request is the cell's own stage; the follow-up, if the task has one, is `edit`. */
+export interface Cell extends Stage {
+  task: string;
+  stack: string;
+  model: string;
+  edit?: Edit;
 }
 
 interface Score {
@@ -130,24 +155,69 @@ function cellName(c: { task: Task | string; stack: string; model: string }): str
   return `${c.model}__${c.stack}__${typeof c.task === 'string' ? c.task : c.task.id}`;
 }
 
+/** The conversation and the project as they stand. */
+interface Conversation {
+  model: string;
+  turns: Turn[];
+  files: FileTree;
+  transcript: string[];
+}
+
 async function runCell(session: Session, model: string, stack: string, task: Task, dir: string): Promise<Cell> {
   const tpl = TEMPLATES.find((t) => t.id === stack)!;
-  const cell: Cell = { task: task.id, stack, model, attempts: [], final: zero(task), firstTry: null, excluded: null };
+  const cell: Cell = { task: task.id, stack, model, ...newStage(task.checks) };
   await mkdir(dir, { recursive: true });
-  let files: FileTree = { ...tpl.files };
-  const turns: Turn[] = [{ role: 'user', text: firstMessage(task.prompt, tpl) }];
-  const transcript: string[] = [];
+  const conv: Conversation = { model, turns: [{ role: 'user', text: firstMessage(task.prompt, tpl) }], files: { ...tpl.files }, transcript: [] };
+  const name = cellName({ task, stack, model });
+  const data = await runStage(session, conv, cell, { name, dir, checks: task.checks, data: {}, kind: 'generate' });
+  await writeFile(join(dir, 'files.json'), JSON.stringify(conv.files, null, 2) + '\n');
+  if (data) await writeFile(join(dir, 'data.json'), JSON.stringify(data) + '\n');
+
+  if (task.followUp) {
+    const edit: Edit = { ...newStage(task.followUp.checks), skipped: null, live: null, dataFiles: Object.keys(data ?? {}) };
+    cell.edit = edit;
+    if (cell.excluded || !cell.final.passed) edit.skipped = 'the first request did not pass';
+    else {
+      conv.turns.push({ role: 'user', text: task.followUp.prompt });
+      await runStage(session, conv, edit, { name: `${name}__edit`, dir, checks: task.followUp.checks, data: data ?? {}, kind: 'edit', stack });
+      await writeFile(join(dir, 'files-edit.json'), JSON.stringify(conv.files, null, 2) + '\n');
+    }
+  }
+  await writeFile(join(dir, 'transcript.md'), conv.transcript.join('\n\n') + '\n');
+  await writeFile(join(dir, 'cell.json'), JSON.stringify(cell, null, 2) + '\n');
+  return cell;
+}
+
+function newStage(checks: Checks): Stage {
+  return { attempts: [], final: zero(checks), firstTry: null, excluded: null };
+}
+
+/**
+ * Asks the model (the conversation ends with the request), runs the app with `data` mounted over
+ * its files, and sends the errors back until it passes or runs out of fixes. Returns the database
+ * files of the last run, as it left them.
+ */
+async function runStage(
+  session: Session,
+  conv: Conversation,
+  stage: Stage | Edit,
+  o: { name: string; dir: string; checks: Checks; data: FileTree; kind: 'generate' | 'edit'; stack?: string },
+): Promise<FileTree | null> {
+  let data: FileTree | null = null;
   try {
     for (let i = 0; i <= maxFixes; i++) {
       const started = Date.now();
-      const answer = await call({ provider: providerOf(model), model, apiKey: keyFor(providerOf(model)), system: SYSTEM, turns, onText: () => {} });
-      turns.push(answer.turn);
-      transcript.push(`## ${i === 0 ? 'Request' : `Fix ${i}`}\n\n${turns.at(-2)!.text.slice(0, i === 0 ? 2000 : 6000)}\n\n## Answer (${answer.model})\n\n${answer.turn.text}`);
+      const provider = providerOf(conv.model);
+      const answer = await call({ provider, model: conv.model, apiKey: keyFor(provider), system: SYSTEM, turns: conv.turns, onText: () => {} });
+      conv.turns.push(answer.turn);
+      const title = i > 0 ? `Fix ${i}` : o.kind === 'edit' ? 'Follow-up request' : 'Request';
+      conv.transcript.push(`## ${title}\n\n${conv.turns.at(-2)!.text.slice(0, o.kind === 'generate' && i === 0 ? 2000 : 6000)}\n\n## Answer (${answer.model})\n\n${answer.turn.text}`);
       const parsed = parseAnswer(answer.turn.text);
-      const applied = applyEdits(files, parsed.edits);
-      files = applied.files;
+      const applied = applyEdits(conv.files, parsed.edits);
+      conv.files = applied.files;
+      if (i === 0 && o.kind === 'edit' && o.stack) (stage as Edit).live = !needsRestart(applied.changed, applied.deleted, o.stack);
       const attempt: Attempt = {
-        kind: i === 0 ? 'generate' : 'fix',
+        kind: i > 0 ? 'fix' : o.kind,
         model: answer.model,
         genMs: Date.now() - started,
         tokens: answer.usage,
@@ -157,33 +227,33 @@ async function runCell(session: Session, model: string, stack: string, task: Tas
         run: null,
         errors: [],
       };
-      cell.attempts.push(attempt);
+      stage.attempts.push(attempt);
       if (answer.stop === 'refusal') break;
 
-      const result = await session.run(projectFromFiles(files, { name: cellName({ task, stack, model }), path: dir }), {
+      data = null;
+      const result = await session.run(projectFromFiles({ ...conv.files, ...o.data }, { name: o.name, path: o.dir }), {
         installIn,
-        checks: task.checks,
-        outDir: join(dir, 'runs'),
+        checks: o.checks,
+        outDir: join(o.dir, 'runs'),
+        collectFiles: DATA_FILES,
+        onAppFiles: (files) => (data = files),
       });
       attempt.run = summarize(result);
-      cell.final = score(task, result);
-      if (i === 0) cell.firstTry = cell.final;
+      stage.final = score(o.checks, result);
+      if (i === 0) stage.firstTry = stage.final;
       if (result.failure?.class === 'runtime-unsupported' || result.failure?.class === 'infra') {
-        cell.excluded = `${result.failure.class}: ${result.failure.rule}`;
+        stage.excluded = `${result.failure.class}: ${result.failure.rule}`;
         break;
       }
-      if (cell.final.passed) break;
+      if (stage.final.passed) break;
       attempt.errors = errorsOf(result);
       if (!attempt.errors.length || i === maxFixes) break;
-      turns.push({ role: 'user', text: fixMessage(attempt.errors, files) });
+      conv.turns.push({ role: 'user', text: fixMessage(attempt.errors, conv.files) });
     }
   } catch (err) {
-    cell.excluded = `${err instanceof ProviderError ? 'provider' : 'harness'}: ${(err as Error).message.split('\n')[0]}`;
+    stage.excluded = `${err instanceof ProviderError ? 'provider' : 'harness'}: ${(err as Error).message.split('\n')[0]}`;
   }
-  await writeFile(join(dir, 'files.json'), JSON.stringify(files, null, 2) + '\n');
-  await writeFile(join(dir, 'transcript.md'), transcript.join('\n\n') + '\n');
-  await writeFile(join(dir, 'cell.json'), JSON.stringify(cell, null, 2) + '\n');
-  return cell;
+  return data;
 }
 
 /** What the page would have collected from this run, for the model to fix. */
@@ -201,9 +271,9 @@ function errorsOf(r: RunResult): string[] {
   return [...new Set(errors.filter(Boolean))].slice(-40);
 }
 
-function score(task: Task, r: RunResult): Score {
+function score(checks: Checks, r: RunResult): Score {
   const functional = r.checks.filter((c) => c.kind === 'functional');
-  const checksTotal = Object.keys(task.checks).length;
+  const checksTotal = Object.keys(checks).length;
   const checksPassed = functional.filter((c) => c.status === 'passed').length;
   return {
     passed: r.status === 'passed' && checksPassed === checksTotal,
@@ -214,8 +284,8 @@ function score(task: Task, r: RunResult): Score {
   };
 }
 
-function zero(task: Task): Score {
-  return { passed: false, checksPassed: 0, checksTotal: Object.keys(task.checks).length, score: 0, failureClass: null };
+function zero(checks: Checks): Score {
+  return { passed: false, checksPassed: 0, checksTotal: Object.keys(checks).length, score: 0, failureClass: null };
 }
 
 function summarize(r: RunResult): RunSummary {
@@ -238,15 +308,36 @@ async function rescore(session: Session, dir: string): Promise<void> {
     const task = SUITE.find((t) => t.id === cell.task);
     if (!task || (cell.excluded?.startsWith('provider') ?? false)) return cell;
     const files = JSON.parse(await readFile(join(dir, name, 'files.json'), 'utf8')) as FileTree;
-    const result = await session.run(projectFromFiles(files, { name, path: join(dir, name) }), { installIn, checks: task.checks, outDir: join(dir, name, 'runs') });
-    cell.final = score(task, result);
-    cell.rescored = summarize(result);
-    cell.excluded = result.failure?.class === 'runtime-unsupported' || result.failure?.class === 'infra' ? `${result.failure.class}: ${result.failure.rule}` : null;
+    const data = await rescoreStage(session, cell, files, {}, task.checks, name, join(dir, name));
+    const edited = await readFile(join(dir, name, 'files-edit.json'), 'utf8').then((t) => JSON.parse(t) as FileTree, () => null);
+    if (task.followUp && cell.edit && edited) {
+      if (!cell.final.passed || cell.excluded) cell.edit.skipped = 'the first request did not pass';
+      else {
+        cell.edit.skipped = null;
+        cell.edit.dataFiles = Object.keys(data ?? {});
+        await rescoreStage(session, cell.edit, edited, data ?? {}, task.followUp.checks, `${name}__edit`, join(dir, name));
+      }
+    }
     await writeFile(join(dir, name, 'cell.json'), JSON.stringify(cell, null, 2) + '\n');
     console.error(line(cell));
     return cell;
   });
   await report(dir, cells);
+}
+
+async function rescoreStage(session: Session, stage: Stage, files: FileTree, data: FileTree, checks: Checks, name: string, dir: string): Promise<FileTree | null> {
+  let collected: FileTree | null = null;
+  const result = await session.run(projectFromFiles({ ...files, ...data }, { name, path: dir }), {
+    installIn,
+    checks,
+    outDir: join(dir, 'runs'),
+    collectFiles: DATA_FILES,
+    onAppFiles: (f) => (collected = f),
+  });
+  stage.final = score(checks, result);
+  stage.rescored = summarize(result);
+  stage.excluded = result.failure?.class === 'runtime-unsupported' || result.failure?.class === 'infra' ? `${result.failure.class}: ${result.failure.rule}` : null;
+  return collected;
 }
 
 async function readCells(dir: string): Promise<Cell[]> {
@@ -260,9 +351,9 @@ async function readCells(dir: string): Promise<Cell[]> {
  * the task asked for (or more than one), or the element is there and shows the wrong text or state.
  * Later checks often fail because the first did, so only the first counts.
  */
-async function firstMiss(dir: string, c: Cell): Promise<'element' | 'output' | null> {
-  const run = c.rescored ?? c.attempts.findLast((a) => a.run)?.run;
-  if (!run || c.final.passed || c.excluded) return null;
+async function firstMiss(dir: string, c: Cell, stage: Stage): Promise<'element' | 'output' | null> {
+  const run = stage.rescored ?? stage.attempts.findLast((a) => a.run)?.run;
+  if (!run || stage.final.passed || stage.excluded) return null;
   try {
     const r = JSON.parse(await readFile(join(dir, cellName(c), 'runs', run.runId, 'result.json'), 'utf8')) as RunResult;
     const check = r.checks.find((x) => x.kind === 'functional' && x.status !== 'passed');
@@ -273,14 +364,31 @@ async function firstMiss(dir: string, c: Cell): Promise<'element' | 'output' | n
   }
 }
 
+/** Whether the follow-up ran and has a score. */
+function editRan(c: Cell): c is Cell & { edit: Edit } {
+  return !!c.edit && !c.edit.skipped && !c.edit.excluded;
+}
+
 function line(c: Cell): string {
-  const tokens = c.attempts.reduce((n, a) => n + a.tokens.output, 0);
-  const verdict = c.excluded ? 'EXCL' : c.final.passed ? 'PASS' : 'FAIL';
-  return `${verdict} ${c.model} ${c.stack} ${c.task}: ${c.final.checksPassed}/${c.final.checksTotal} checks, ${c.attempts.length - 1} fixes, ${tokens} output tokens${c.excluded ? ` [${c.excluded}]` : c.final.failureClass ? ` [${c.final.failureClass}]` : ''}`;
+  const stages: Stage[] = c.edit ? [c, c.edit] : [c];
+  const tokens = stages.reduce((n, st) => n + st.attempts.reduce((m, a) => m + a.tokens.output, 0), 0);
+  const verdict = c.excluded ? 'EXCL' : c.final.passed && (!c.edit || (editRan(c) && c.edit.final.passed)) ? 'PASS' : 'FAIL';
+  const fixes = stages.reduce((n, st) => n + Math.max(st.attempts.length - 1, 0), 0);
+  return `${verdict} ${c.model} ${c.stack} ${c.task}: ${c.final.checksPassed}/${c.final.checksTotal} checks, edit ${editCell(c)}, ${fixes} fixes, ${tokens} output tokens${c.excluded ? ` [${c.excluded}]` : c.final.failureClass ? ` [${c.final.failureClass}]` : ''}`;
+}
+
+/** The follow-up in a few words: its checks and how the page would have applied it. */
+function editCell(c: Cell): string {
+  const e = c.edit;
+  if (!e) return '-';
+  if (e.skipped) return 'skipped';
+  if (e.excluded) return e.excluded;
+  return `${e.final.checksPassed}/${e.final.checksTotal}${e.final.passed ? ' ✓' : ''}${e.live === null ? '' : e.live ? ' (live)' : ' (restart)'}`;
 }
 
 async function report(dir: string, cells: Cell[]): Promise<void> {
-  const misses = new Map(await Promise.all(cells.map(async (c) => [c, await firstMiss(dir, c)] as const)));
+  const misses = new Map(await Promise.all(cells.map(async (c) => [c, await firstMiss(dir, c, c)] as const)));
+  const editMisses = new Map(await Promise.all(cells.map(async (c) => [c, c.edit && !c.edit.skipped ? await firstMiss(dir, c, c.edit) : null] as const)));
   const groups = new Map<string, Cell[]>();
   for (const c of cells) {
     const key = `${c.model}\t${c.stack}`;
@@ -300,9 +408,12 @@ async function report(dir: string, cells: Cell[]): Promise<void> {
       missingElement: scored.filter((c) => misses.get(c) === 'element').length,
       wrongOutput: scored.filter((c) => misses.get(c) === 'output').length,
       meanScore: mean(scored.map((c) => c.final.score)),
-      fixes: scored.reduce((n, c) => n + c.attempts.length - 1, 0),
-      outputTokens: Math.round(mean(scored.map((c) => c.attempts.reduce((n, a) => n + a.tokens.output, 0)))),
-      genSeconds: mean(scored.map((c) => c.attempts.reduce((n, a) => n + a.genMs, 0) / 1000)),
+      fixes: scored.reduce((n, c) => n + c.attempts.length - 1 + Math.max((c.edit?.attempts.length ?? 0) - 1, 0), 0),
+      editsRun: cs.filter(editRan).length,
+      editsPassed: cs.filter(editRan).filter((c) => c.edit.final.passed).length,
+      editsLive: cs.filter(editRan).filter((c) => c.edit.live).length,
+      outputTokens: Math.round(mean(scored.map((c) => [...c.attempts, ...(c.edit?.attempts ?? [])].reduce((n, a) => n + a.tokens.output, 0)))),
+      genSeconds: mean(scored.map((c) => [...c.attempts, ...(c.edit?.attempts ?? [])].reduce((n, a) => n + a.genMs, 0) / 1000)),
       readySeconds: mean(scored.flatMap((c) => c.attempts.filter((a) => a.run).slice(-1).map((a) => (a.run!.timings.totalMs ?? 0) / 1000))),
     };
   });
@@ -311,21 +422,34 @@ async function report(dir: string, cells: Cell[]): Promise<void> {
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   const md = [
-    '| Model | Stack | Passed | First try (original checks) | Mean score | Failed: missing element / wrong output | Fixes | Output tokens | Generate | Run |',
-    '|---|---|---|---|---|---|---|---|---|---|',
-    ...rows.map((r) => `| ${r.model} | ${r.stack} | ${r.passed}/${r.cells - r.excluded}${r.excluded ? ` (+${r.excluded} excl.)` : ''} | ${r.passedFirstTry} | ${r.meanScore.toFixed(2)} | ${r.missingElement} / ${r.wrongOutput} | ${r.fixes} | ${r.outputTokens} | ${r.genSeconds.toFixed(0)} s | ${r.readySeconds.toFixed(0)} s |`),
+    '| Model | Stack | Passed | First try (original checks) | Mean score | Failed: missing element / wrong output | Follow-up passed | Follow-up live | Fixes | Output tokens | Generate | Run |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|',
+    ...rows.map((r) => `| ${r.model} | ${r.stack} | ${r.passed}/${r.cells - r.excluded}${r.excluded ? ` (+${r.excluded} excl.)` : ''} | ${r.passedFirstTry} | ${r.meanScore.toFixed(2)} | ${r.missingElement} / ${r.wrongOutput} | ${r.editsPassed}/${r.editsRun} | ${r.editsLive}/${r.editsRun} | ${r.fixes} | ${r.outputTokens} | ${r.genSeconds.toFixed(0)} s | ${r.readySeconds.toFixed(0)} s |`),
     '',
-    '| Cell | Checks | Fixes | Failure |',
-    '|---|---|---|---|',
-    ...cells.map((c) => `| ${cellName(c)} | ${c.final.checksPassed}/${c.final.checksTotal}${c.final.passed ? ' ✓' : ''} | ${c.attempts.length ? c.attempts.length - 1 : '-'} | ${c.excluded ?? [misses.get(c) && `(${misses.get(c) === 'element' ? 'missing element' : 'wrong output'})`, failedCheck(c)].filter(Boolean).join(' ')} |`),
+    '| Cell | Checks | Follow-up | Fixes | Failure |',
+    '|---|---|---|---|---|',
+    ...cells.map((c) => `| ${cellName(c)} | ${c.final.checksPassed}/${c.final.checksTotal}${c.final.passed ? ' ✓' : ''} | ${editCell(c)} | ${c.attempts.length ? c.attempts.length - 1 : '-'}${c.edit?.attempts.length ? ` + ${c.edit.attempts.length - 1}` : ''} | ${failureCell(c, misses.get(c) ?? null, editMisses.get(c) ?? null)} |`),
   ].join('\n');
   await writeFile(join(dir, 'summary.md'), md + '\n');
   console.log(md);
 }
 
-function failedCheck(c: Cell): string | null {
-  const run = c.rescored ?? c.attempts.findLast((a) => a.run)?.run;
-  if (!run) return null;
+/** Why the cell failed: the first request's failure, else the follow-up's. */
+function failureCell(c: Cell, miss: 'element' | 'output' | null, editMiss: 'element' | 'output' | null): string {
+  if (c.excluded) return c.excluded;
+  const label = (m: 'element' | 'output' | null) => m && `(${m === 'element' ? 'missing element' : 'wrong output'})`;
+  const first = failedCheck(c);
+  if (first) return [label(miss), first].filter(Boolean).join(' ');
+  if (c.edit && editRan(c)) {
+    const edit = failedCheck(c.edit);
+    if (edit) return ['follow-up:', label(editMiss), edit].filter(Boolean).join(' ');
+  }
+  return '';
+}
+
+function failedCheck(stage: Stage): string | null {
+  const run = stage.rescored ?? stage.attempts.findLast((a) => a.run)?.run;
+  if (!run || stage.final.passed) return null;
   const check = run.checks.find((x) => x.status !== 'passed');
   return check ? `${check.name}: ${(check.message ?? check.status).slice(0, 120).replace(/\|/g, '\\|')}` : run.failure ? `${run.failure.class} [${run.failure.rule}]` : null;
 }

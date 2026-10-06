@@ -13,6 +13,7 @@ import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
 import type {
   ConsoleEntry,
+  FileTree,
   InstallReport,
   PageError,
   PhaseName,
@@ -98,6 +99,13 @@ export interface RunOptions {
    * the page resolves and fetches packages from the npm registry itself; see node-runtime/npm).
    */
   installIn?: 'host' | 'browser';
+  /**
+   * After the checks, the app's files whose path matches this pattern (a RegExp source), as they
+   * are in the runtime then, go to onAppFiles: for example its SQLite databases, to mount them into
+   * the next run as the generator page does. In-browser runtimes only.
+   */
+  collectFiles?: string;
+  onAppFiles?: (files: FileTree) => void;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -289,6 +297,12 @@ export class Session {
           await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle);
         };
         await steps().catch(() => {}); // failures are recorded per phase
+        if (options.collectFiles && options.onAppFiles) {
+          const files = await page
+            .evaluate((match) => (window as unknown as { __sandburgReadFiles?: (m: string) => Promise<FileTree> }).__sandburgReadFiles?.(match) ?? null, options.collectFiles)
+            .catch(() => null);
+          if (files) options.onAppFiles(files);
+        }
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
       }
       run.skipRemaining();

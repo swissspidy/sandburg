@@ -15,7 +15,7 @@ import type { HostApi } from '../../src/host/host.ts';
 import type { FileTree, PackageJson, Project } from '../../src/types.ts';
 import { detectFramework } from '../../src/framework.ts';
 import { pageInstall } from '../../src/adapters/node/plan.ts';
-import { applyEdits, needsRestart, parseAnswer, type FileEdit } from './files.ts';
+import { applyEdits, DATA_FILES, needsRestart, parseAnswer, type FileEdit } from './files.ts';
 import type { CallResult, Turn } from './llm.ts';
 import type { FromVault, Prefs, ToVault } from './protocol.ts';
 import { firstMessage, fixMessage, SYSTEM } from './prompt.ts';
@@ -439,9 +439,6 @@ async function run(files: FileTree): Promise<boolean> {
   ui.reload.disabled = false;
   return true;
 }
-
-/** SQLite databases (and their journals), wherever the app keeps them. */
-const DATA_FILES = String.raw`(^|/)[^/]+\.(db|sqlite3?)(-wal|-shm|-journal)?$`;
 
 /** The running app's databases, as the runtime has them now; null if it could not tell (failed, or no answer in time). */
 async function readData(): Promise<FileTree | null> {

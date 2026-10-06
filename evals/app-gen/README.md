@@ -16,6 +16,14 @@ the [generator page](../../pages/generate) does:
 4. The task's checks ([`suite.ts`](suite.ts)) decide the score: the share of checks that pass, and
    whether the cell passed (all of its checks, and Sandburg's own blocking checks).
 
+5. If the task has a follow-up request and the app passed, the model gets the follow-up in the
+   same conversation, as the visitor's next request on the page. The changed app runs again with the
+   SQLite files its last run left behind, as the page keeps them across a restart. The follow-up
+   gets its own fixes and checks. Its checks run in a fresh browser, so earlier data they find came
+   through the change, which usually means migrating a table that already has rows. The eval also
+   records whether the page would have written the change into the running app (its dev server
+   reloads it) or started the app again.
+
 Each task names the accessible names the checks use ("a text field labeled 'New task'"), so checks
 can find controls by role and label without depending on how the model built them. Tasks that
 store data check this by loading the app again with its browser storage cleared. What is still
@@ -26,7 +34,7 @@ there then came from the database.
 ```sh
 ANTHROPIC_API_KEY=… GEMINI_API_KEY=… node evals/app-gen/run.ts \
   --models claude-opus-5-5,gemini-3.1-pro-preview \
-  --stacks vanilla,react,sveltekit \
+  [--stacks vanilla,react,sveltekit,nextjs,nuxt,angular] \
   [--tasks todo,guestbook] [--fixes 2] [--parallel 3] [--install-in browser|host]
 ```
 
@@ -34,10 +42,13 @@ Results go to `.sandburg/evals/<timestamp>/`:
 
 - `summary.md`, `summary.json`: one row per model and stack, and one per cell.
 - `<model>__<stack>__<task>/`: `cell.json` (each attempt's tokens, time, files, run summary and the
-  errors sent back), `transcript.md`, `files.json` (the final app, which `sandburg run` can run
-  too) and `runs/` (Sandburg's `result.json`, screenshot and accessibility tree for each run).
+  errors sent back; the follow-up under `edit`), `transcript.md`, `files.json` (the app after the
+  first request, which `sandburg run` can run too), `data.json` (its database after its checks),
+  `files-edit.json` (the app after the follow-up) and `runs/` (Sandburg's `result.json`, screenshot
+  and accessibility tree for each run).
 
-`--rescore <dir>` runs the stored apps again with the suite's current checks and no model calls.
+`--rescore <dir>` runs the stored apps again with the suite's current checks and no model calls (the
+follow-up's app with the database of the first app's new run).
 Use it after fixing a check, or to see whether a newer Sandburg runs the same apps. `--report <dir>`
 writes the summary again from the stored results.
 
@@ -55,12 +66,17 @@ Behind an HTTPS proxy, set `NODE_USE_ENV_PROXY=1` so that Node's `fetch` uses it
   (or has more than one): it did not follow the spec, though the app may work. "Wrong output" means
   the element is there but shows the wrong text or state. Checks run in order against one app, so a
   first failure often fails the checks after it too.
+- **Follow-up passed** counts the follow-ups that passed, out of those that ran (the first request
+  passed and the runtime could run the app). **Follow-up live** counts those the page would have
+  applied to the running app without starting it again.
 - **Generate** is the time spent waiting for the model, summed over all attempts. **Run** is
   Sandburg's total time for the last run: install, start, ready and checks.
 
 ## Writing a task
 
-Add a task to `SUITE` in [`suite.ts`](suite.ts) with a `prompt` and `checks`. Checks are Sandburg
+Add a task to `SUITE` in [`suite.ts`](suite.ts) with a `prompt` and `checks`, and optionally a
+`followUp` with its own `prompt` and `checks`. The follow-up's checks start from the data the first
+checks left. Checks are Sandburg
 checks (`{ app, expect, appUrl }`) and run in order against one app. Before trusting a new check,
 make sure a correct app passes it. A check that acts faster than a person would is a common cause
 of false failures: wait for the result of one action before starting the next.
