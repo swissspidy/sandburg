@@ -150,6 +150,8 @@ async function forward(request, url) {
         // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
         if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', hooks.coep ?? 'credentialless');
         if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
+        // A redirect to one of the app's own paths (/login) stays where the deployment serves the app.
+        if (hooks.sitePath && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
         // App pages get the WebSocket shim (the host page relays their WebSockets to the runtime).
         if (body && request.mode === 'navigate' && /text\/html/i.test(h.get('content-type') ?? '')) {

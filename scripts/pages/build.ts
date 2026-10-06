@@ -16,7 +16,7 @@
  * --verify runs each of its framework scaffolds, without a model; that needs the npm registry.
  * --only generate builds the generator alone.
  */
-import { createHash } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { createServer } from 'node:https';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -182,31 +182,39 @@ const VERIFY_HOST = 'pages.sandburg.test';
  * A throwaway certificate for VERIFY_HOST: service workers need a secure origin, and only localhost
  * is one over plain HTTP (Chromium ignores --unsafely-treat-insecure-origin-as-secure headless).
  */
-async function verifyCertificate(): Promise<{ key: Buffer; cert: Buffer }> {
+async function verifyCertificate(): Promise<{ key: Buffer; cert: Buffer; spki: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-pages-'));
   try {
     execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', `/CN=${VERIFY_HOST}`, '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem')], { stdio: 'ignore' });
-    return { key: await readFile(join(dir, 'key.pem')), cert: await readFile(join(dir, 'cert.pem')) };
+    const cert = await readFile(join(dir, 'cert.pem'));
+    // The browser trusts this certificate alone, by its public key (other hosts' certificates are checked).
+    const spki = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+    return { key: await readFile(join(dir, 'key.pem')), cert, spki };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-/** A browser that reaches VERIFY_HOST on this machine and accepts its certificate. */
-function verifyBrowser(extra: Parameters<typeof chromium.launch>[0] = {}) {
+/** A browser that reaches VERIFY_HOST on this machine and accepts its certificate (`spki`). */
+function verifyBrowser(spki: string, extra: Parameters<typeof chromium.launch>[0] = {}) {
   const options = { ...launchOptions({}), ...extra };
   const proxy = options.proxy && { ...options.proxy, bypass: `${options.proxy.bypass},${VERIFY_HOST}` };
+  // One --ignore-certificate-errors-spki-list: launchOptions may have one for an extra CA.
+  const SPKI = '--ignore-certificate-errors-spki-list=';
+  const others = (options.args ?? []).filter((a) => !a.startsWith(SPKI));
+  const keys = [...(options.args ?? []).filter((a) => a.startsWith(SPKI)).map((a) => a.slice(SPKI.length)), spki];
   return chromium.launch({
     ...options,
     proxy,
-    args: [...(options.args ?? []), `--host-resolver-rules=MAP ${VERIFY_HOST} 127.0.0.1`, '--ignore-certificate-errors'],
+    args: [...others, `--host-resolver-rules=MAP ${VERIFY_HOST} 127.0.0.1`, `${SPKI}${keys.join(',')}`],
   });
 }
 
 /** Loads every demo from a static server under /sandburg/ (as on GitHub Pages); fails on unrecorded requests. */
 async function verify(): Promise<void> {
   const prefix = '/sandburg/';
-  const server = createServer(await verifyCertificate(), async (req, res) => {
+  const certificate = await verifyCertificate();
+  const server = createServer(certificate, async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     let file = path.startsWith(prefix) ? join(out, decodeURIComponent(path.slice(prefix.length))) : null;
     if (file && (file.endsWith('/') || !extname(file))) file = join(file, 'index.html');
@@ -217,7 +225,7 @@ async function verify(): Promise<void> {
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as { port: number }).port;
-  const browser = await verifyBrowser();
+  const browser = await verifyBrowser(certificate.spki);
   let failed = false;
   try {
     for (const demo of demos) {
@@ -251,7 +259,7 @@ async function verify(): Promise<void> {
       if (ok) await page.locator('#app').screenshot({ path: join(out, 'demos', demo.name, 'preview.png') });
       await context.close();
     }
-    if (!args.only || args.only.split(',').includes('generate')) failed = (await verifyGenerator(`https://${VERIFY_HOST}:${port}${prefix}generate/`)) || failed;
+    if (!args.only || args.only.split(',').includes('generate')) failed = (await verifyGenerator(certificate.spki, `https://${VERIFY_HOST}:${port}${prefix}generate/`)) || failed;
   } finally {
     await browser.close();
     server.close();
@@ -281,10 +289,10 @@ async function demoChecks(page: import('playwright-core').Page, fixture: string)
  * Runs each of the generator's framework scaffolds as the page runs a generated app: packages from
  * the npm registry, installed and compiled in the page. Returns whether one failed.
  */
-async function verifyGenerator(url: string): Promise<boolean> {
+async function verifyGenerator(spki: string, url: string): Promise<boolean> {
   // The page reaches the npm registry itself: no dead proxy (only the environment's own proxy, if any).
   const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy;
-  const browser = await verifyBrowser({ proxy: proxy ? { server: proxy, bypass: '<-loopback>,*.localhost' } : undefined });
+  const browser = await verifyBrowser(spki, { proxy: proxy ? { server: proxy, bypass: '<-loopback>,*.localhost' } : undefined });
   let failed = false;
   try {
     // VERIFY_TEMPLATES=angular,nuxt: only those scaffolds (when debugging one).

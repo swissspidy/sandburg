@@ -141,6 +141,11 @@ self.sandburgHooks = {
     const inApp = url.pathname === appPrefix || url.pathname.startsWith(appPrefix + '/');
     return (inApp ? url.pathname.slice(appPrefix.length) || '/' : url.pathname) + url.search;
   },
+  // The reverse, for a redirect's Location: an absolute path of the app goes under the demo's path.
+  sitePath(location) {
+    if (!location.startsWith('/') || location.startsWith('//') || location === appPrefix || location.startsWith(appPrefix + '/')) return location;
+    return appPrefix + location;
+  },
   // The app sees itself at /: its router reads location. Links that would leave the demo's
   // path (a full navigation, which this worker would not see) come back under it.
   shim: `<script>(() => {

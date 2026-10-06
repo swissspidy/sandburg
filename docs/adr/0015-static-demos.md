@@ -36,7 +36,7 @@ imports the node runtime's own service worker (`src/adapters/node/sw.js`). The h
   on the first visit, and the replayed answers carry the same headers, so the runtime's workers are too.
 - They put the app under the demo's path (`…/demos/<name>/app/`), which the worker controls, and
   inject a script that makes the app see itself at `/`. Links that would do a full navigation outside
-  that path are sent back under it.
+  that path are sent back under it, and so is a redirect to one of the app's paths (`Location: /login`).
 
 Two small hooks in the product make this possible: the page may name the runtime's base path
 (`__sandburgBase`) and its service worker (`__sandburgServiceWorker`). A worker's script must be in
@@ -55,8 +55,8 @@ also blocks its own dev scripts, so its page loaded without hydrating, and witho
 `.localhost`. A redirect to `http://localhost:<port>/…` comes back as a path on the page's origin.
 
 **The build verifies itself.** `--verify` serves the site under `/sandburg/`, as GitHub Pages does,
-from a host that is not localhost (`pages.sandburg.test`, over HTTPS with a throwaway certificate:
-service workers need a secure origin). It loads every demo in Chromium behind the dead proxy that
+from a host that is not localhost (`pages.sandburg.test`, over HTTPS with a throwaway certificate
+that the browser trusts by its public key: service workers need a secure origin). It loads every demo in Chromium behind the dead proxy that
 Sandburg runs use, and runs the demo fixture's own checks against the app. It fails if a check
 fails, an app does not render, or a request was not recorded. `.github/workflows/pages.yml` runs the build and the
 verification on every push to `main`, then deploys.
