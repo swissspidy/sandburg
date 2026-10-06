@@ -263,7 +263,8 @@ async function verify(): Promise<void> {
 async function demoChecks(page: import('playwright-core').Page, fixture: string): Promise<string[]> {
   const app = await (await page.$('#app'))?.contentFrame();
   if (!app) return ['the app frame is missing'];
-  const base = new URL('.', app.url()).href;
+  // The app's address under the demo (pages/sw.js): the app itself sees /.
+  const base = new URL('app/', page.url()).href;
   const appUrl = (path: string) => new URL(path.replace(/^\/+/, ''), base).href;
   const failures: string[] = [];
   for (const [name, fn] of Object.entries(await loadChecks(join(ROOT, fixture, 'checks.spec.ts')))) {
@@ -286,7 +287,8 @@ async function verifyGenerator(url: string): Promise<boolean> {
   const browser = await verifyBrowser({ proxy: proxy ? { server: proxy, bypass: '<-loopback>,*.localhost' } : undefined });
   let failed = false;
   try {
-    for (const tpl of TEMPLATES) {
+    // VERIFY_TEMPLATES=angular,nuxt: only those scaffolds (when debugging one).
+    for (const tpl of TEMPLATES.filter((t) => !process.env.VERIFY_TEMPLATES || process.env.VERIFY_TEMPLATES.split(',').includes(t.id))) {
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
       const page = await context.newPage();
       if (process.env.DEBUG) page.on('console', (m) => console.log(`  [console] ${m.text().slice(0, 300)}`));
