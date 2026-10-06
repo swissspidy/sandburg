@@ -25,7 +25,6 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
           u8: [Buffer.from('abcabc').indexOf(new Uint8Array([99, 97])), Buffer.from('ab').equals(new Uint8Array([97, 98]))],
           slices: (() => { const b = Buffer.from([0x63, 0x61, 0x66, 0xe9]); const w = Buffer.alloc(4); w.latin1Write('caf\u00e9', 0, 4);
             return [b.latin1Slice(0, 4), b.asciiSlice(0, 3), b.hexSlice(1, 3), b.base64Slice(0, 4), w.equals(b)]; })(),
-          channel: (() => { const c = new BroadcastChannel('t'); const same = c.unref() === c && c.ref() === c; c.close(); return same; })(),
           ts: process.features.typescript,
         }));
         const e = new EventEmitter(); once(e, 'x').then(([v]) => console.log('event', v)); e.emit('x', 7);`,
@@ -38,7 +37,7 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
     greet: 'hello node', n: 42, read: 'content', list: ['b', 'b/f.txt'], exists: false, rel: '../../d',
     sha: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', gz: 'zip me', node: 'v24.15.0', platform: 'linux',
     dirname: '/app', main: true, resolved: '/app/lib/greet.js', u8: [2, true], ts: 'strip',
-    slices: ['caf\u00e9', 'caf', '6166', 'Y2Fm6Q==', true], channel: true,
+    slices: ['caf\u00e9', 'caf', '6166', 'Y2Fm6Q==', true],
   });
   assert.match(out.stdout, /event 7/);
 });
@@ -70,6 +69,37 @@ test('http server with AsyncLocalStorage across awaits, concurrent requests', as
     [200, { id: '/three', inner: '/three' }],
   ]);
   assert.ok(out.responses.every((r) => r.chunks === 2), 'responses stream chunk by chunk');
+});
+
+test('http listen: port 0, a taken port and reusePort as in Node; BroadcastChannel ref/unref', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const http = require('http');
+        const listen = (options) => new Promise((resolve) => {
+          const s = http.createServer();
+          s.once('error', (e) => resolve({ error: e.code }));
+          s.listen(options, () => resolve({ port: s.address().port, server: s }));
+        });
+        (async () => {
+          const app = await listen({ port: 3000 });
+          const any = await listen({ port: 0 });
+          const taken = await listen({ port: 3000 });
+          const reuse = await listen({ port: 0, reusePort: true });
+          const channel = new BroadcastChannel('x');
+          console.log(JSON.stringify({
+            app: app.port, any: any.port !== 3000 && any.port >= 1024, taken: taken.error, reuse: reuse.error,
+            unref: channel.unref() === channel && channel.ref() === channel,
+          }));
+          channel.close();
+          app.server.close();
+          any.server.close();
+        })();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.deepEqual(JSON.parse(out.stdout.split('\n')[0]), { app: 3000, any: true, taken: 'EADDRINUSE', reuse: 'ENOTSUP', unref: true });
 });
 
 test('ESM and TypeScript files load like in Node 24', async () => {

@@ -58,6 +58,17 @@ idle, as in Node. React Router's CLI relaunches itself with
 - `net` servers and connections are stream pairs, also between a thread or
   child and its parent. Nuxt proxies requests to Nitro's server in a worker
   thread. That server loads modules from Vite over a vite-node socket.
+- HTTP servers bind as on a platform without `SO_REUSEPORT`. Port 0 gives
+  a free port from 40000–60000, as `net` servers already did; it used to be
+  3000 and up. A port another server of the runtime holds fails with
+  `EADDRINUSE`, and `reusePort` fails with `ENOTSUP`. The page takes a
+  server on a port 0 bind for the app only if nothing else listens within
+  5 s. `@nuxt/cli` 4 (Nuxt 4.6) probes port sharing on port 0 servers
+  before it starts, and the page took the probe for the app.
+- App pages define esbuild's `__async`. A dev server that sends one of its
+  functions to the page as source text sends the compiled form, which
+  calls it (`@nuxt/cli` 4's loading screen). `BroadcastChannel` has
+  `ref()` and `unref()`.
 
 **Installs.** Each napi-rs package whose linux-x64 build is published gets its
 `wasm32-wasi` build too, found by napi-rs naming. The WebAssembly build's own

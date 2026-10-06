@@ -125,7 +125,11 @@ async function forward(request, url) {
   const headers = [];
   request.headers.forEach((value, name) => headers.push([name, value]));
   // Forbidden headers are not in request.headers; servers read Referer (SolidStart's single-flight actions).
-  if (request.referrer && request.referrer !== 'about:client' && !headers.some(([n]) => n === 'referer')) headers.push(['referer', request.referrer]);
+  // On a static deployment, the app's own path (without the site's prefix), as the app sees itself.
+  if (request.referrer && request.referrer !== 'about:client' && !headers.some(([n]) => n === 'referer')) {
+    const referrer = new URL(request.referrer);
+    headers.push(['referer', hooks.appPath && referrer.origin === self.location.origin ? referrer.origin + hooks.appPath(referrer) : request.referrer]);
+  }
   p.postMessage({ type: 'request', method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [port2, body] : [port2]);
   return new Promise((resolve) => {
     let controller;
@@ -146,6 +150,8 @@ async function forward(request, url) {
         // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
         if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', hooks.coep ?? 'credentialless');
         if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
+        // A redirect to one of the app's own paths (/login) stays where the deployment serves the app.
+        if (hooks.sitePath && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
         // App pages get the WebSocket shim (the host page relays their WebSockets to the runtime).
         if (body && request.mode === 'navigate' && /text\/html/i.test(h.get('content-type') ?? '')) {

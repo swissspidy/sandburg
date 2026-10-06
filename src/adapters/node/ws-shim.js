@@ -6,6 +6,33 @@
  * the virtual server in the Node.js runtime. Anything else uses the browser's
  * WebSocket (and the egress rules).
  */
+
+/*
+ * The page also gets esbuild's __async helper. The runtime compiles async functions into generators
+ * driven by it (compile.ts: AsyncLocalStorage context survives await), and a dev server that sends
+ * one of its own functions to the page as source text (Function.prototype.toString: @nuxt/cli's
+ * loading screen) sends the compiled form, which calls __async.
+ */
+globalThis.__async ??= (__this, __arguments, generator) =>
+  new Promise((resolve, reject) => {
+    const fulfilled = (value) => {
+      try {
+        step(generator.next(value));
+      } catch (e) {
+        reject(e);
+      }
+    };
+    const rejected = (value) => {
+      try {
+        step(generator.throw(value));
+      } catch (e) {
+        reject(e);
+      }
+    };
+    const step = (x) => (x.done ? resolve(x.value) : Promise.resolve(x.value).then(fulfilled, rejected));
+    step((generator = generator.apply(__this, __arguments)).next());
+  });
+
 (() => {
   const Native = window.WebSocket;
   let connect;
