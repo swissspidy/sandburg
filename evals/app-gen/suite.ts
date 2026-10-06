@@ -43,7 +43,7 @@ export const SUITE: Task[] = [
         await expect(items.first()).toContainText('Buy milk');
       },
       'marks a task done and deletes one': async ({ app, expect }) => {
-        await app.getByRole('checkbox', { name: 'Buy milk' }).check();
+        await app.getByRole('checkbox', { name: 'Buy milk' }).setChecked(true, { force: true });
         await app.getByRole('button', { name: 'Delete Walk the dog' }).click();
         await expect(app.getByRole('list', { name: 'Tasks' }).getByRole('listitem')).toHaveCount(1);
       },
@@ -103,7 +103,8 @@ export const SUITE: Task[] = [
           await app.getByLabel('Bill amount', { exact: true }).fill('81');
           await app.getByLabel('Tip percent', { exact: true }).fill('15');
           await expect(app.locator('body')).toContainText(/Total:\s*\$93\.15/);
-          await app.getByLabel('Round up', { exact: true }).check();
+          // A styled checkbox often draws a box over the input: a person clicks the box, which toggles it.
+          await app.getByLabel('Round up', { exact: true }).setChecked(true, { force: true });
           await expect(app.locator('body')).toContainText(/Total:\s*\$94\.00/);
           await expect(app.locator('body')).toContainText(/Tip:\s*\$13\.00/);
         },
