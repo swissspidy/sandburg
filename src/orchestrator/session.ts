@@ -720,7 +720,7 @@ const BENIGN_CONSOLE = /favicon\.ico|Download the React DevTools|chrome-error:/i
  */
 async function failFastOnAppError(render: Promise<void>, run: RunState, loadingPage?: () => Promise<boolean>): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
-  // Errors from a dev server's loading page are not the app's (Nuxt's loading script may not run here).
+  // What a dev server's loading page logs (Nuxt answers 503 while it builds) is not the app's.
   let seenErrors = 0;
   let seenConsole = 0;
   let done = false;
