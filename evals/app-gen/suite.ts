@@ -153,20 +153,20 @@ export const SUITE: Task[] = [
           const items = app.getByRole('list', { name: 'Entries' }).getByRole('listitem');
           await expect(items).toHaveCount(2);
           await expect(items.first()).toContainText('Grace');
-          await expect(items.filter({ hasText: 'Ada' })).toContainText(/\b0 likes\b/);
+          await expect(items.filter({ hasText: 'Ada' })).toContainText(/(?<!\d)0 likes\b/);
         },
         'likes count up': async ({ app, expect }) => {
           const ada = app.getByRole('list', { name: 'Entries' }).getByRole('listitem').filter({ hasText: 'Ada' });
           await app.getByRole('button', { name: "Like Ada's message" }).click();
-          await expect(ada).toContainText(/\b1 like\b(?!s)/);
+          await expect(ada).toContainText(/(?<!\d)1 like\b(?!s)/);
           await app.getByRole('button', { name: "Like Ada's message" }).click();
-          await expect(ada).toContainText(/\b2 likes\b/);
+          await expect(ada).toContainText(/(?<!\d)2 likes\b/);
         },
         'likes come from the database': async (ctx) => {
           await reloadFresh(ctx);
           const items = ctx.app.getByRole('list', { name: 'Entries' }).getByRole('listitem');
-          await ctx.expect(items.filter({ hasText: 'Ada' })).toContainText(/\b2 likes\b/);
-          await ctx.expect(items.filter({ hasText: 'Grace' })).toContainText(/\b0 likes\b/);
+          await ctx.expect(items.filter({ hasText: 'Ada' })).toContainText(/(?<!\d)2 likes\b/);
+          await ctx.expect(items.filter({ hasText: 'Grace' })).toContainText(/(?<!\d)0 likes\b/);
         },
       },
     },
