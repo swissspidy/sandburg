@@ -188,6 +188,20 @@ async function runCell(session: Session, model: string, stack: string, task: Tas
   return cell;
 }
 
+/** The model's answer. A dropped connection, a rate limit or a server error gets one more try; a second failure is the provider's. */
+async function ask(options: Parameters<typeof call>[0]): Promise<Awaited<ReturnType<typeof call>>> {
+  const retryable = (err: unknown) => (err instanceof ProviderError ? err.status === 429 || err.status >= 500 : err instanceof TypeError);
+  try {
+    return await call(options);
+  } catch (err) {
+    if (!retryable(err)) throw err instanceof ProviderError ? err : new ProviderError((err as Error).message, 0);
+    await new Promise((r) => setTimeout(r, 10_000));
+    return await call(options).catch((e: unknown) => {
+      throw e instanceof ProviderError ? e : new ProviderError((e as Error).message, 0);
+    });
+  }
+}
+
 function newStage(checks: Checks): Stage {
   return { attempts: [], final: zero(checks), firstTry: null, excluded: null };
 }
@@ -208,7 +222,7 @@ async function runStage(
     for (let i = 0; i <= maxFixes; i++) {
       const started = Date.now();
       const provider = providerOf(conv.model);
-      const answer = await call({ provider, model: conv.model, apiKey: keyFor(provider), system: SYSTEM, turns: conv.turns, onText: () => {} });
+      const answer = await ask({ provider, model: conv.model, apiKey: keyFor(provider), system: SYSTEM, turns: conv.turns, onText: () => {} });
       conv.turns.push(answer.turn);
       const title = i > 0 ? `Fix ${i}` : o.kind === 'edit' ? 'Follow-up request' : 'Request';
       conv.transcript.push(`## ${title}\n\n${conv.turns.at(-2)!.text.slice(0, o.kind === 'generate' && i === 0 ? 2000 : 6000)}\n\n## Answer (${answer.model})\n\n${answer.turn.text}`);
