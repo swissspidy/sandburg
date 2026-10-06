@@ -325,7 +325,7 @@ async function rescore(session: Session, dir: string): Promise<void> {
     const data = await rescoreStage(session, cell, files, {}, task.checks, name, join(dir, name));
     const edited = await readFile(join(dir, name, 'files-edit.json'), 'utf8').then((t) => JSON.parse(t) as FileTree, () => null);
     if (task.followUp && cell.edit && edited) {
-      if (!cell.final.passed || cell.excluded) cell.edit.skipped = 'the first request did not pass';
+      if (!cell.final.passed || cell.excluded) [cell.edit.skipped, cell.edit.excluded] = ['the first request did not pass', null];
       else {
         cell.edit.skipped = null;
         cell.edit.dataFiles = Object.keys(data ?? {});
@@ -386,7 +386,8 @@ function editRan(c: Cell): c is Cell & { edit: Edit } {
 function line(c: Cell): string {
   const stages: Stage[] = c.edit ? [c, c.edit] : [c];
   const tokens = stages.reduce((n, st) => n + st.attempts.reduce((m, a) => m + a.tokens.output, 0), 0);
-  const verdict = c.excluded ? 'EXCL' : c.final.passed && (!c.edit || (editRan(c) && c.edit.final.passed)) ? 'PASS' : 'FAIL';
+  // A follow-up the runtime could not run (or the provider failed) is excluded, not failed; a skipped one is the first request's failure.
+  const verdict = c.excluded || (c.edit?.excluded && !c.edit.skipped) ? 'EXCL' : c.final.passed && (!c.edit || (editRan(c) && c.edit.final.passed)) ? 'PASS' : 'FAIL';
   const fixes = stages.reduce((n, st) => n + Math.max(st.attempts.length - 1, 0), 0);
   return `${verdict} ${c.model} ${c.stack} ${c.task}: ${c.final.checksPassed}/${c.final.checksTotal} checks, edit ${editCell(c)}, ${fixes} fixes, ${tokens} output tokens${c.excluded ? ` [${c.excluded}]` : c.final.failureClass ? ` [${c.final.failureClass}]` : ''}`;
 }
