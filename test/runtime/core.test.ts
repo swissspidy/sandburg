@@ -68,6 +68,37 @@ test('http server with AsyncLocalStorage across awaits, concurrent requests', as
   assert.ok(out.responses.every((r) => r.chunks === 2), 'responses stream chunk by chunk');
 });
 
+test('http listen: port 0, a taken port and reusePort as in Node; BroadcastChannel ref/unref', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const http = require('http');
+        const listen = (options) => new Promise((resolve) => {
+          const s = http.createServer();
+          s.once('error', (e) => resolve({ error: e.code }));
+          s.listen(options, () => resolve({ port: s.address().port, server: s }));
+        });
+        (async () => {
+          const app = await listen({ port: 3000 });
+          const any = await listen({ port: 0 });
+          const taken = await listen({ port: 3000 });
+          const reuse = await listen({ port: 0, reusePort: true });
+          const channel = new BroadcastChannel('x');
+          console.log(JSON.stringify({
+            app: app.port, any: any.port !== 3000 && any.port >= 1024, taken: taken.error, reuse: reuse.error,
+            unref: channel.unref() === channel && channel.ref() === channel,
+          }));
+          channel.close();
+          app.server.close();
+          any.server.close();
+        })();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.deepEqual(JSON.parse(out.stdout.split('\n')[0]), { app: 3000, any: true, taken: 'EADDRINUSE', reuse: 'ENOTSUP', unref: true });
+});
+
 test('ESM and TypeScript files load like in Node 24', async () => {
   const out = await h.run(
     {

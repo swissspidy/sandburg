@@ -39,6 +39,9 @@ export function hostBase(): string {
   return (globalThis as { __sandburgBase?: string }).__sandburgBase ?? '/__sandburg';
 }
 
+/** How long a server on a port the system picked waits before it may be taken for the app (see 'listening'). */
+const EPHEMERAL_PATIENCE_MS = 5_000;
+
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
   readonly ports: number[] = [];
@@ -246,7 +249,19 @@ export class NodeProcess {
         break;
       case 'listening':
         // TCP ports only (the runtime keeps servers on local sockets to itself).
-        if (typeof m.port === 'number' && !this.ports.includes(m.port)) this.ports.push(m.port);
+        if (typeof m.port !== 'number') break;
+        // A port the system picked (port 0) is a tool's probe or internal server, gone by the time the
+        // page asks it for anything (@nuxt/cli 4 probes before it starts): the app's only if nothing
+        // else listens a while later.
+        if (m.ephemeral) {
+          const port = m.port;
+          setTimeout(() => {
+            if (!this.ports.length) {
+              this.ports.push(port);
+              for (const w of this.waiters) w();
+            }
+          }, EPHEMERAL_PATIENCE_MS);
+        } else if (!this.ports.includes(m.port)) this.ports.push(m.port);
         break;
       case 'tree':
         this.trees.get(m.id)?.(m.files);

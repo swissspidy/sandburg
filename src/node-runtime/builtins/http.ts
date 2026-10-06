@@ -268,6 +268,8 @@ export class ServerResponse extends Writable {
 export class Server extends EventEmitter {
   listening = false;
   private port: number | string = 0;
+  /** Listening on a port the system picked (port 0): a tool's probe or internal server, not the app's. */
+  private ephemeral = false;
   timeout = 0;
   keepAliveTimeout = 5000;
   headersTimeout = 60000;
@@ -285,16 +287,27 @@ export class Server extends EventEmitter {
     const path = typeof first === 'string' && !/^\d+$/.test(first) ? first : typeof first === 'object' && first && typeof (first as { path?: unknown }).path === 'string' ? (first as { path: string }).path : null;
     if (path !== null) this.port = path;
     else {
-      const port = typeof first === 'object' && first ? Number((first as { port?: number }).port ?? 0) : Number(first ?? 0);
-      let p = port || 3000;
-      while (servers.has(p) && servers.get(p) !== this) p++;
+      const options = typeof first === 'object' && first ? (first as { port?: number; reusePort?: boolean }) : null;
+      const port = options ? Number(options.port ?? 0) : Number(first ?? 0);
+      // As where the platform has no SO_REUSEPORT, and as for any port another server holds: tools
+      // probe for both (@nuxt/cli 4 hands a port from one process to the next only with reusePort).
+      const refuse = (code: string, message: string) => {
+        queueMicrotask(() => this.emit('error', Object.assign(new Error(`listen ${code}: ${message}`), { code, errno: code, syscall: 'listen', port })));
+        return this;
+      };
+      if (options?.reusePort) return refuse('ENOTSUP', 'reusePort is not supported');
+      if (port && servers.has(port) && servers.get(port) !== this) return refuse('EADDRINUSE', `address already in use :::${port}`);
+      // Port 0: a free port the system picks (net.ts picks from the same range).
+      let p = port;
+      if (!p) do p = 40000 + Math.floor(Math.random() * 20000); while (servers.has(p));
       this.port = p;
+      this.ephemeral = !port;
     }
     servers.set(this.port, this);
     this.listening = true;
     queueMicrotask(() => {
       // The runtime learns of the server first, so it is reachable when the program is told.
-      serverEvents.emit('listening', this.port);
+      serverEvents.emit('listening', this.port, this.ephemeral);
       this.emit('listening');
       cb?.();
     });
