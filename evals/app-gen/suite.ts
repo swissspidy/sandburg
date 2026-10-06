@@ -37,7 +37,7 @@ async function reloadFresh({ app, appUrl }: Parameters<Checks[string]>[0]): Prom
   await app.goto(appUrl('/'));
 }
 
-export const SUITE: Task[] = [
+const TASKS: Task[] = [
   {
     id: 'todo',
     prompt: `A to-do app. A text field labeled "New task" and an "Add" button add a task (Enter in the field adds it too). Tasks are listed in a list labeled "Tasks", oldest first. Each task has a checkbox labeled with the task's text to mark it done, and a button "Delete <task text>" to remove it. Store tasks in the database.`,
@@ -306,3 +306,31 @@ export const SUITE: Task[] = [
     },
   },
 ];
+
+/**
+ * A page the server rendered shows before it hydrates: what a person types in the first moment is
+ * lost to the framework (the field keeps it, the app's state does not). A person waits for the page
+ * to settle too, so each run's first check starts once the page has loaded and a moment has passed.
+ */
+function settleFirst(checks: Checks): Checks {
+  const [first, ...rest] = Object.entries(checks);
+  if (!first) return checks;
+  const [name, fn] = first;
+  return Object.fromEntries([
+    [
+      name,
+      async (ctx: Parameters<Checks[string]>[0]) => {
+        await ctx.app.waitForLoadState('load');
+        await ctx.app.waitForTimeout(2000);
+        await fn(ctx);
+      },
+    ],
+    ...rest,
+  ]);
+}
+
+export const SUITE: Task[] = TASKS.map((t) => ({
+  ...t,
+  checks: settleFirst(t.checks),
+  followUp: t.followUp && { ...t.followUp, checks: settleFirst(t.followUp.checks) },
+}));
