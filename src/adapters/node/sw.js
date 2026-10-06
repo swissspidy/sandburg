@@ -125,7 +125,11 @@ async function forward(request, url) {
   const headers = [];
   request.headers.forEach((value, name) => headers.push([name, value]));
   // Forbidden headers are not in request.headers; servers read Referer (SolidStart's single-flight actions).
-  if (request.referrer && request.referrer !== 'about:client' && !headers.some(([n]) => n === 'referer')) headers.push(['referer', request.referrer]);
+  // On a static deployment, the app's own path (without the site's prefix), as the app sees itself.
+  if (request.referrer && request.referrer !== 'about:client' && !headers.some(([n]) => n === 'referer')) {
+    const referrer = new URL(request.referrer);
+    headers.push(['referer', hooks.appPath && referrer.origin === self.location.origin ? referrer.origin + hooks.appPath(referrer) : request.referrer]);
+  }
   p.postMessage({ type: 'request', method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [port2, body] : [port2]);
   return new Promise((resolve) => {
     let controller;

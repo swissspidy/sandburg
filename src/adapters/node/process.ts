@@ -131,6 +131,29 @@ export class NodeProcess {
     return found ?? this.ports[0];
   }
 
+  /** The port of the app's page (its dev server), once known: the origin its requests come from (localOrigin). */
+  appPort: number | null = null;
+
+  /**
+   * The page's origin as a browser on the developer's machine would send it. Dev servers check Host
+   * and Origin against localhost (Vite's allowedHosts, Next.js' allowedDevOrigins, Angular's
+   * allowedHosts); the page's real origin (a sandbox, or a site such as GitHub Pages) is not one.
+   */
+  private localOrigin(port: number): string {
+    return `http://localhost:${this.appPort ?? port}`;
+  }
+
+  /** An absolute URL of one of the program's servers (http://localhost:<port>/…) as a path on the page's origin. */
+  private unlocalize(url: string): string {
+    const m = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::(\d+))?(?=[/?#]|$)/.exec(url);
+    return m && this.ports.includes(Number(m[1] ?? 80)) ? url.slice(m[0].length) || '/' : url;
+  }
+
+  /** Origin or Referer from the page, rewritten to localOrigin. */
+  private localize(value: string, port: number): string {
+    return value === location.origin || value.startsWith(location.origin + '/') ? this.localOrigin(port) + value.slice(location.origin.length) : value;
+  }
+
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
   request(port: number, request: BridgedRequest, reply: MessagePort): void {
     if (this.failure && this.exitCode === null) {
@@ -141,10 +164,12 @@ export class NodeProcess {
     this.pending.set(id, reply);
     this.lastActivity = performance.now();
     // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
-    const headers: [string, string][] = request.headers.filter(([k]) => !/^(cookie|accept-encoding)$/i.test(k));
+    const headers: [string, string][] = request.headers
+      .filter(([k]) => !/^(cookie|accept-encoding|host)$/i.test(k))
+      .map(([k, v]) => (/^(origin|referer)$/i.test(k) ? [k, this.localize(v, port)] : [k, v]));
     if (document.cookie) headers.push(['cookie', document.cookie]);
-    // The browser sends Host; a service worker's request does not carry it (dev servers check it: Vite's allowedHosts).
-    if (!headers.some(([k]) => k.toLowerCase() === 'host')) headers.push(['host', location.host]);
+    // The server is at localhost:<port>, as on the developer's machine (a service worker's request carries no Host).
+    headers.push(['host', `localhost:${port}`]);
     this.worker.postMessage({ type: 'request', id, port, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
   }
 
@@ -157,8 +182,8 @@ export class NodeProcess {
     this.sockets.set(id, channel);
     const target = new URL(url);
     const headers: [string, string][] = [
-      ['host', target.host],
-      ['origin', location.origin],
+      ['host', `localhost:${port}`],
+      ['origin', this.localOrigin(port)],
       ['user-agent', navigator.userAgent],
     ];
     if (document.cookie) headers.push(['cookie', document.cookie]);
@@ -242,7 +267,9 @@ export class NodeProcess {
         break;
       case 'response-start': {
         for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
-        this.pending.get(m.id)?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers: m.headers });
+        // A redirect to the server's own address (built from Host, now localhost) stays on the page's origin.
+        const headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v) : v]);
+        this.pending.get(m.id)?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
         break;
       }
       case 'ws-accept':

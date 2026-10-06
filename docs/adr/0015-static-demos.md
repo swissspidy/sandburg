@@ -46,9 +46,19 @@ The runtime also stops asking the host for its transform of a file under `node_m
 not in the install (Vite writes its bundled config to `node_modules/.vite-temp/`): the answer was
 always a 404.
 
+**The dev servers see localhost.** The page hands each app request to the server on its port with
+`Host: localhost:<port>`, and with the page's own origin in `Origin` and `Referer` replaced by
+`http://localhost:<app port>`, as a browser on the developer's machine sends them. Dev servers refuse
+other hosts: Vite's `allowedHosts`, Angular's `allowedHosts` and Next.js' `allowedDevOrigins`. Next.js
+also blocks its own dev scripts, so its page loaded without hydrating, and without its CSS, which
+`next dev` injects from JavaScript. Sandburg's runs passed only because their origins end in
+`.localhost`. A redirect to `http://localhost:<port>/…` comes back as a path on the page's origin.
+
 **The build verifies itself.** `--verify` serves the site under `/sandburg/`, as GitHub Pages does,
-loads every demo in Chromium behind the dead proxy that Sandburg runs use, and fails if an app does
-not render or a request was not recorded. `.github/workflows/pages.yml` runs the build and the
+from a host that is not localhost (`pages.sandburg.test`, over HTTPS with a throwaway certificate:
+service workers need a secure origin). It loads every demo in Chromium behind the dead proxy that
+Sandburg runs use, and runs the demo fixture's own checks against the app. It fails if a check
+fails, an app does not render, or a request was not recorded. `.github/workflows/pages.yml` runs the build and the
 verification on every push to `main`, then deploys.
 
 ## Consequences

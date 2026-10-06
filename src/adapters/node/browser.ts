@@ -248,6 +248,7 @@ export function createAdapter(): RuntimeAdapter {
       p.run(main, argv);
       // A dev script may start several servers (an API and the page's dev server): the page's is the app.
       port = shell ? await p.pagePort() : await p.listening();
+      p.appPort = port;
       // One of the dev script's servers crashed while the others came up (concurrently keeps going): the app is broken.
       const crashed = p.failedCommands[0];
       if (crashed) throw new AdapterError('APP', `"${crashed.command}" exited with code ${crashed.code}${crashed.stderr ? `:\n${crashed.stderr.trim().split('\n').slice(-15).join('\n')}` : ''}`);

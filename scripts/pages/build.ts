@@ -17,8 +17,10 @@
  * --only generate builds the generator alone.
  */
 import { createHash } from 'node:crypto';
-import { createServer } from 'node:http';
-import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:https';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +35,8 @@ import { Session } from '../../src/index.ts';
 import { node } from '../../src/adapters/node/index.ts';
 import { bundleHost } from '../../src/orchestrator/host-server.ts';
 import { launchOptions } from '../../src/orchestrator/session.ts';
+import { loadChecks } from '../../src/orchestrator/checks.ts';
+import { expect } from '@playwright/test';
 import type { HostInstall } from '../../src/adapters/node/browser.ts';
 import type { Project } from '../../src/types.ts';
 
@@ -168,10 +172,41 @@ function escapeHtml(s: string): string {
 
 const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.gz': 'application/gzip', '.wasm': 'application/wasm' };
 
+/**
+ * The verify server's host name. Not localhost: the dev servers accept localhost (Vite's
+ * allowedHosts, Next.js' allowedDevOrigins), and GitHub Pages serves the demos from another host.
+ */
+const VERIFY_HOST = 'pages.sandburg.test';
+
+/**
+ * A throwaway certificate for VERIFY_HOST: service workers need a secure origin, and only localhost
+ * is one over plain HTTP (Chromium ignores --unsafely-treat-insecure-origin-as-secure headless).
+ */
+async function verifyCertificate(): Promise<{ key: Buffer; cert: Buffer }> {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-pages-'));
+  try {
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', `/CN=${VERIFY_HOST}`, '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem')], { stdio: 'ignore' });
+    return { key: await readFile(join(dir, 'key.pem')), cert: await readFile(join(dir, 'cert.pem')) };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** A browser that reaches VERIFY_HOST on this machine and accepts its certificate. */
+function verifyBrowser(extra: Parameters<typeof chromium.launch>[0] = {}) {
+  const options = { ...launchOptions({}), ...extra };
+  const proxy = options.proxy && { ...options.proxy, bypass: `${options.proxy.bypass},${VERIFY_HOST}` };
+  return chromium.launch({
+    ...options,
+    proxy,
+    args: [...(options.args ?? []), `--host-resolver-rules=MAP ${VERIFY_HOST} 127.0.0.1`, '--ignore-certificate-errors'],
+  });
+}
+
 /** Loads every demo from a static server under /sandburg/ (as on GitHub Pages); fails on unrecorded requests. */
 async function verify(): Promise<void> {
   const prefix = '/sandburg/';
-  const server = createServer(async (req, res) => {
+  const server = createServer(await verifyCertificate(), async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     let file = path.startsWith(prefix) ? join(out, decodeURIComponent(path.slice(prefix.length))) : null;
     if (file && (file.endsWith('/') || !extname(file))) file = join(file, 'index.html');
@@ -182,7 +217,7 @@ async function verify(): Promise<void> {
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as { port: number }).port;
-  const browser = await chromium.launch(launchOptions({}));
+  const browser = await verifyBrowser();
   let failed = false;
   try {
     for (const demo of demos) {
@@ -196,14 +231,17 @@ async function verify(): Promise<void> {
         if (m.text().includes('[sandburg demo] not recorded')) missing.push(m.text());
       });
       const t = Date.now();
-      await page.goto(`http://pages.sandburg.localhost:${port}${prefix}demos/${demo.name}/`);
+      await page.goto(`https://${VERIFY_HOST}:${port}${prefix}demos/${demo.name}/`);
       const status = await page
         .waitForFunction(() => ['done', 'failed'].includes(document.getElementById('status')?.dataset.state ?? ''), null, { timeout: 240_000 })
         .then(() => page.evaluate(() => document.getElementById('status')!.dataset.state))
         .catch(() => 'timeout');
       const text = await page.frameLocator('#app').locator('body').innerText({ timeout: 5000 }).catch(() => '');
-      const ok = status === 'done' && text.trim().length > 0 && !missing.length;
+      // The fixture's own checks, on the demo's app: it renders, hydrates and talks to its servers.
+      const failedChecks = status === 'done' ? await demoChecks(page, demo.fixture) : [];
+      const ok = status === 'done' && text.trim().length > 0 && !missing.length && !failedChecks.length;
       console.log(`verify ${demo.name}: ${status} in ${((Date.now() - t) / 1000).toFixed(1)} s, app text ${JSON.stringify(text.slice(0, 80))}${missing.length ? `, ${missing.length} unrecorded: ${missing.slice(0, 5).join(' | ')}` : ''}`);
+      for (const f of failedChecks) console.log(`  check failed: ${f}`);
       if (!ok) {
         failed = true;
         console.log((await page.locator('#terminal').innerText().catch(() => '')).split('\n').slice(-25).join('\n'));
@@ -213,12 +251,29 @@ async function verify(): Promise<void> {
       if (ok) await page.locator('#app').screenshot({ path: join(out, 'demos', demo.name, 'preview.png') });
       await context.close();
     }
-    if (!args.only || args.only.split(',').includes('generate')) failed = (await verifyGenerator(`http://pages.sandburg.localhost:${port}${prefix}generate/`)) || failed;
+    if (!args.only || args.only.split(',').includes('generate')) failed = (await verifyGenerator(`https://${VERIFY_HOST}:${port}${prefix}generate/`)) || failed;
   } finally {
     await browser.close();
     server.close();
   }
   if (failed) process.exitCode = 1;
+}
+
+/** Runs a demo fixture's checks against the demo page's app frame; returns the failures. */
+async function demoChecks(page: import('playwright-core').Page, fixture: string): Promise<string[]> {
+  const app = await (await page.$('#app'))?.contentFrame();
+  if (!app) return ['the app frame is missing'];
+  const base = new URL('.', app.url()).href;
+  const appUrl = (path: string) => new URL(path.replace(/^\/+/, ''), base).href;
+  const failures: string[] = [];
+  for (const [name, fn] of Object.entries(await loadChecks(join(ROOT, fixture, 'checks.spec.ts')))) {
+    try {
+      await fn({ app, page, expect: expect.configure({ timeout: 30_000 }), appUrl });
+    } catch (e) {
+      failures.push(`${name}: ${String((e as Error).message ?? e).split('\n')[0]}`);
+    }
+  }
+  return failures;
 }
 
 /**
@@ -228,7 +283,7 @@ async function verify(): Promise<void> {
 async function verifyGenerator(url: string): Promise<boolean> {
   // The page reaches the npm registry itself: no dead proxy (only the environment's own proxy, if any).
   const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy;
-  const browser = await chromium.launch({ ...launchOptions({}), proxy: proxy ? { server: proxy, bypass: '<-loopback>,*.localhost' } : undefined });
+  const browser = await verifyBrowser({ proxy: proxy ? { server: proxy, bypass: '<-loopback>,*.localhost' } : undefined });
   let failed = false;
   try {
     for (const tpl of TEMPLATES) {
