@@ -668,9 +668,9 @@ async function appFrame(page: Page): Promise<Frame> {
 /**
  * Adapter-agnostic readiness: the app rendered something visible. Two pages are not the app yet:
  * the browser's own error page ("refused to connect"), when a dev server takes its port before it
- * can answer (Nuxt 4.6 does), and a dev server's loading page (Nuxt's, marked __NUXT_LOADING__,
- * which reloads itself once the app is built, or a 503 answer: `loading`). The app is loaded again until it renders or the
- * phase's deadline passes.
+ * can answer (Nuxt 4.6 does), and a dev server's loading page: Nuxt's, marked __NUXT_LOADING__,
+ * which reloads itself once the app is built, or any 503 answer (`loading`). The app is loaded
+ * again until it renders or the phase's deadline passes.
  */
 async function waitForRender(frame: Frame, selector?: string, reload?: () => Promise<unknown>, loading?: () => boolean): Promise<void> {
   for (let tries = 1; ; tries++) {
@@ -723,11 +723,13 @@ async function failFastOnAppError(render: Promise<void>, run: RunState, loadingP
   // Errors from a dev server's loading page are not the app's (Nuxt's loading script may not run here).
   let seenErrors = 0;
   let seenConsole = 0;
+  let done = false;
   const watch = new Promise<never>((_, reject) => {
     let deadline = 0;
     let reason = '';
     const poll = async () => {
       if (!deadline && loadingPage && (await loadingPage())) [seenErrors, seenConsole] = [run.pageErrors.length, run.console.length];
+      if (done) return;
       if (!deadline) {
         const err = run.pageErrors.slice(seenErrors).find((e) => e.source === 'app');
         // The page's own 503 is a dev server still loading (see waitForRender), not the app failing.
@@ -746,6 +748,7 @@ async function failFastOnAppError(render: Promise<void>, run: RunState, loadingP
   try {
     await Promise.race([render, watch]);
   } finally {
+    done = true;
     clearTimeout(timer);
     // What a loading page logged belongs to the dev server, not to the app the checks look at.
     for (const e of run.pageErrors.slice(0, seenErrors)) e.source = 'host';
