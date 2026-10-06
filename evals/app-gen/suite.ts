@@ -17,6 +17,15 @@ export interface Task {
   followUp?: { prompt: string; checks: Checks };
 }
 
+/**
+ * Waits as a person would before the next action. Server-rendered pages hydrate after they show, and
+ * frameworks update in steps after a form post (SvelteKit's use:enhance reloads the data, then resets
+ * the form): an action in between is lost, though no person acts that fast.
+ */
+async function atPace(app: Parameters<Checks[string]>[0]['app']): Promise<void> {
+  await app.waitForTimeout(800);
+}
+
 /** Load the app again with its browser storage cleared: what is still there came from the backend. */
 async function reloadFresh({ app, appUrl }: Parameters<Checks[string]>[0]): Promise<void> {
   // A person does not reload the instant the page has changed: a save still on its way would be cut off.
@@ -34,10 +43,12 @@ export const SUITE: Task[] = [
     prompt: `A to-do app. A text field labeled "New task" and an "Add" button add a task (Enter in the field adds it too). Tasks are listed in a list labeled "Tasks", oldest first. Each task has a checkbox labeled with the task's text to mark it done, and a button "Delete <task text>" to remove it. Store tasks in the database.`,
     checks: {
       'adds tasks': async ({ app, expect }) => {
+        await atPace(app);
         await app.getByLabel('New task', { exact: true }).fill('Buy milk');
         await app.getByRole('button', { name: 'Add', exact: true }).click();
         // Wait as a person would: the app may clear the field when the task is saved.
         await expect(app.getByRole('list', { name: 'Tasks' })).toContainText('Buy milk');
+        await atPace(app);
         await app.getByLabel('New task', { exact: true }).fill('Walk the dog');
         await app.getByLabel('New task', { exact: true }).press('Enter');
         const items = app.getByRole('list', { name: 'Tasks' }).getByRole('listitem');
@@ -45,9 +56,9 @@ export const SUITE: Task[] = [
         await expect(items.first()).toContainText('Buy milk');
       },
       'marks a task done and deletes one': async ({ app, expect }) => {
+        await atPace(app);
         await app.getByRole('checkbox', { name: 'Buy milk' }).setChecked(true, { force: true });
-        // At a person's pace: the toggle may still be saving (a SvelteKit form post) when the next action starts.
-        await app.waitForTimeout(1000);
+        await atPace(app);
         await app.getByRole('button', { name: 'Delete Walk the dog' }).click();
         await expect(app.getByRole('list', { name: 'Tasks' }).getByRole('listitem')).toHaveCount(1);
       },
@@ -67,7 +78,9 @@ export const SUITE: Task[] = [
           await expect(items.first()).toContainText('Normal');
         },
         'a high-priority task comes first': async ({ app, expect }) => {
+          await atPace(app);
           await app.getByLabel('Priority', { exact: true }).selectOption('High');
+          await atPace(app);
           await app.getByLabel('New task', { exact: true }).fill('Pay rent');
           await app.getByRole('button', { name: 'Add', exact: true }).click();
           const items = app.getByRole('list', { name: 'Tasks' }).getByRole('listitem');
@@ -90,6 +103,7 @@ export const SUITE: Task[] = [
     prompt: `A tip calculator. Number fields labeled "Bill amount" and "Tip percent", and "People" (default 1). As the visitor types, it shows "Tip: $X.XX", "Total: $X.XX" and "Per person: $X.XX", with two decimals. No backend needed for this one.`,
     checks: {
       'computes tip and total': async ({ app, expect }) => {
+        await atPace(app);
         await app.getByLabel('Bill amount', { exact: true }).fill('80');
         await app.getByLabel('Tip percent', { exact: true }).fill('15');
         await expect(app.locator('body')).toContainText(/Tip:\s*\$12\.00/);
@@ -104,6 +118,7 @@ export const SUITE: Task[] = [
       prompt: `Add a checkbox labeled "Round up". When it is checked, the total is rounded up to the next whole dollar and the tip grows to match. "Per person" divides the rounded total.`,
       checks: {
         'rounds the total up': async ({ app, expect }) => {
+          await atPace(app);
           await app.getByLabel('Bill amount', { exact: true }).fill('81');
           await app.getByLabel('Tip percent', { exact: true }).fill('15');
           await expect(app.locator('body')).toContainText(/Total:\s*\$93\.15/);
@@ -129,6 +144,7 @@ export const SUITE: Task[] = [
           ['Ada', 'Lovely site'],
           ['Grace', 'Hello from the Navy'],
         ]) {
+          await atPace(app);
           await app.getByLabel('Name', { exact: true }).fill(name);
           await app.getByLabel('Message', { exact: true }).fill(message);
           await app.getByRole('button', { name: 'Sign' }).click();
@@ -140,6 +156,7 @@ export const SUITE: Task[] = [
         await expect(items.first()).toContainText('Hello from the Navy');
       },
       'an empty message is refused': async ({ app, expect }) => {
+        await atPace(app);
         await app.getByLabel('Name', { exact: true }).fill('Nobody');
         await app.getByLabel('Message', { exact: true }).fill('');
         await app.getByRole('button', { name: 'Sign' }).click();
@@ -162,8 +179,10 @@ export const SUITE: Task[] = [
         },
         'likes count up': async ({ app, expect }) => {
           const ada = app.getByRole('list', { name: 'Entries' }).getByRole('listitem').filter({ hasText: 'Ada' });
+          await atPace(app);
           await app.getByRole('button', { name: "Like Ada's message" }).click();
           await expect(ada).toContainText(/(?<!\d)1 like\b(?!s)/);
+          await atPace(app);
           await app.getByRole('button', { name: "Like Ada's message" }).click();
           await expect(ada).toContainText(/(?<!\d)2 likes\b/);
         },
@@ -186,6 +205,7 @@ export const SUITE: Task[] = [
           ['Trip', 'Book the train to Zurich'],
           ['Recipe', 'Pancakes need eggs'],
         ]) {
+          await atPace(app);
           await app.getByLabel('Title', { exact: true }).fill(title);
           await app.getByLabel('Body', { exact: true }).fill(body);
           await app.getByRole('button', { name: 'Save note' }).click();
@@ -195,6 +215,7 @@ export const SUITE: Task[] = [
       },
       'search matches title or body, ignoring case': async ({ app, expect }) => {
         const items = app.getByRole('list', { name: 'Notes' }).getByRole('listitem');
+        await atPace(app);
         await app.getByLabel('Search', { exact: true }).fill('EGGS');
         await expect(items).toHaveCount(2);
         await app.getByLabel('Search', { exact: true }).fill('trip');
@@ -216,6 +237,7 @@ export const SUITE: Task[] = [
         },
         'pinning moves a note to the top': async ({ app, expect }) => {
           // Trip was saved second: it is in the middle whether the list is oldest or newest first.
+          await atPace(app);
           await app.getByRole('button', { name: 'Pin Trip', exact: true }).click();
           await expect(app.getByRole('button', { name: 'Unpin Trip', exact: true })).toBeVisible();
           await expect(app.getByRole('list', { name: 'Notes' }).getByRole('listitem').first()).toContainText('Trip');
@@ -238,6 +260,7 @@ export const SUITE: Task[] = [
           ['Lunch', '12.25'],
           ['Book', '20'],
         ]) {
+          await atPace(app);
           await app.getByLabel('Description', { exact: true }).fill(d);
           await app.getByLabel('Amount', { exact: true }).fill(a);
           await app.getByRole('button', { name: 'Add expense' }).click();
@@ -246,6 +269,7 @@ export const SUITE: Task[] = [
         await expect(app.locator('body')).toContainText(/Total:\s*\$35\.75/);
       },
       'removing an expense updates the total': async ({ app, expect }) => {
+        await atPace(app);
         await app.getByRole('button', { name: 'Remove Lunch' }).click();
         await expect(app.locator('body')).toContainText(/Total:\s*\$23\.50/);
       },
@@ -262,7 +286,9 @@ export const SUITE: Task[] = [
           await expect(app.locator('body')).toContainText(/Other:\s*\$23\.50/);
         },
         'a new expense counts in its category': async ({ app, expect }) => {
+          await atPace(app);
           await app.getByLabel('Category', { exact: true }).selectOption('Transport');
+          await atPace(app);
           await app.getByLabel('Description', { exact: true }).fill('Bus');
           await app.getByLabel('Amount', { exact: true }).fill('2.75');
           await app.getByRole('button', { name: 'Add expense' }).click();
