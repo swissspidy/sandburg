@@ -93,9 +93,11 @@ export class NodeProcess {
   /**
    * The port whose server serves the app's page: of the ports the program listens on, the first to
    * answer GET / with HTML (a dev script may start an API server before or beside the page's). If
-   * none has after `patience` ms without a new port, the first port.
+   * none has after `patience` ms without a new port, the first port. The wait is long because some
+   * dev servers listen only once they have compiled the app (ng serve, 20-40 s here), and an API
+   * server that started first must not be taken for the app.
    */
-  async pagePort(patience = 20_000): Promise<number> {
+  async pagePort(patience = 60_000): Promise<number> {
     await this.listening();
     const probed = new Set<number>();
     let found: number | null = null;
