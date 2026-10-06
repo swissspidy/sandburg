@@ -306,6 +306,9 @@ async function verifyGenerator(spki: string, url: string): Promise<boolean> {
         .waitForFunction(() => ['done', 'failed'].includes(document.getElementById('status')?.dataset.state ?? ''), null, { timeout: 300_000 })
         .then(() => page.evaluate(() => document.getElementById('status')!.dataset.state))
         .catch(() => 'timeout');
+      // The app renders once its first request to the backend answers; a dev server may show a
+      // loading screen first (Nuxt's), which reloads into the app when the build is done.
+      if (status === 'done') await expect(page.frameLocator('#app').locator('body')).toContainText(/SQLite \d/, { timeout: 120_000 }).catch(() => {});
       const text = await page.frameLocator('#app').locator('body').innerText({ timeout: 5000 }).catch(() => '');
       // Each scaffold reads the SQLite version through its backend.
       const ok = status === 'done' && /Hello/.test(text) && /SQLite \d/.test(text);
