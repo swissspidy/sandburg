@@ -19,6 +19,8 @@ export interface Task {
 
 /** Load the app again with its browser storage cleared: what is still there came from the backend. */
 async function reloadFresh({ app, appUrl }: Parameters<Checks[string]>[0]): Promise<void> {
+  // A person does not reload the instant the page has changed: a save still on its way would be cut off.
+  await app.waitForTimeout(1000);
   await app.evaluate(() => {
     localStorage.clear();
     sessionStorage.clear();
@@ -44,6 +46,8 @@ export const SUITE: Task[] = [
       },
       'marks a task done and deletes one': async ({ app, expect }) => {
         await app.getByRole('checkbox', { name: 'Buy milk' }).setChecked(true, { force: true });
+        // At a person's pace: the toggle may still be saving (a SvelteKit form post) when the next action starts.
+        await app.waitForTimeout(1000);
         await app.getByRole('button', { name: 'Delete Walk the dog' }).click();
         await expect(app.getByRole('list', { name: 'Tasks' }).getByRole('listitem')).toHaveCount(1);
       },
