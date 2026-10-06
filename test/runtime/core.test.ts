@@ -25,6 +25,7 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
           u8: [Buffer.from('abcabc').indexOf(new Uint8Array([99, 97])), Buffer.from('ab').equals(new Uint8Array([97, 98]))],
           slices: (() => { const b = Buffer.from([0x63, 0x61, 0x66, 0xe9]); const w = Buffer.alloc(4); w.latin1Write('caf\u00e9', 0, 4);
             return [b.latin1Slice(0, 4), b.asciiSlice(0, 3), b.hexSlice(1, 3), b.base64Slice(0, 4), w.equals(b)]; })(),
+          channel: (() => { const c = new BroadcastChannel('t'); const same = c.unref() === c && c.ref() === c; c.close(); return same; })(),
           ts: process.features.typescript,
         }));
         const e = new EventEmitter(); once(e, 'x').then(([v]) => console.log('event', v)); e.emit('x', 7);`,
@@ -37,7 +38,7 @@ test('a Node program: fs, path, crypto, zlib, events, process', async () => {
     greet: 'hello node', n: 42, read: 'content', list: ['b', 'b/f.txt'], exists: false, rel: '../../d',
     sha: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', gz: 'zip me', node: 'v24.15.0', platform: 'linux',
     dirname: '/app', main: true, resolved: '/app/lib/greet.js', u8: [2, true], ts: 'strip',
-    slices: ['caf\u00e9', 'caf', '6166', 'Y2Fm6Q==', true],
+    slices: ['caf\u00e9', 'caf', '6166', 'Y2Fm6Q==', true], channel: true,
   });
   assert.match(out.stdout, /event 7/);
 });
