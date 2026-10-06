@@ -100,6 +100,9 @@ export function needsRestart(changed: string[], deleted: string[], framework = '
   return changed.some((p) => /(^|\/)package(-lock)?\.json$/.test(p) || /(^|\/)[\w-]+\.config\.[cm]?[jt]s$/.test(p) || /^angular\.json$|(^|\/)proxy\.conf\.json$/.test(p) || serverCode.test(p) || /^\.env/.test(p));
 }
 
+/** SQLite databases (and their journals), wherever the app keeps them: kept across a new run. */
+export const DATA_FILES = String.raw`(^|/)[^/]+\.(db|sqlite3?)(-wal|-shm|-journal)?$`;
+
 /** The project as the model sees it: every text file in the answer format. */
 export function formatFiles(files: FileTree): string {
   return Object.keys(files)

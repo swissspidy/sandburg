@@ -223,6 +223,17 @@ function patchUtf8(): void {
     const o = typeof offset === 'number' ? offset : 0;
     return encodeInto(this, String(str), o, typeof length === 'number' ? length : this.length - o);
   };
+  // Node's other undocumented per-encoding methods, which packages call directly (busboy, under Next.js'
+  // server actions, decodes form fields with buf.latin1Slice): the same as toString() and write().
+  for (const enc of ['latin1', 'ascii', 'hex', 'base64', 'ucs2']) {
+    B.prototype[`${enc}Slice`] ??= function (this: Uint8Array, start?: unknown, end?: unknown) {
+      return Reflect.apply(toString, this, [enc, typeof start === 'number' ? start : 0, typeof end === 'number' ? end : this.length]);
+    };
+    B.prototype[`${enc}Write`] ??= function (this: Uint8Array, str: unknown, offset?: unknown, length?: unknown) {
+      const o = typeof offset === 'number' ? offset : 0;
+      return Reflect.apply(write, this, [String(str), o, typeof length === 'number' ? length : this.length - o, enc]);
+    };
+  }
 }
 patchUtf8();
 
