@@ -108,7 +108,8 @@ export const SUITE: Task[] = [
           await app.getByLabel('Tip percent', { exact: true }).fill('15');
           await expect(app.locator('body')).toContainText(/Total:\s*\$93\.15/);
           // A styled checkbox often draws a box over the input: a person clicks the box, which toggles it.
-          await app.getByLabel('Round up', { exact: true }).setChecked(true, { force: true });
+          // By role, so a description inside the label ("Round up: to the next dollar") still matches.
+          await app.getByRole('checkbox', { name: /^Round up\b/ }).setChecked(true, { force: true });
           await expect(app.locator('body')).toContainText(/Total:\s*\$94\.00/);
           await expect(app.locator('body')).toContainText(/Tip:\s*\$13\.00/);
         },
