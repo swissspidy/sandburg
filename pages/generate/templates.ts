@@ -222,7 +222,7 @@ export const TEMPLATES: Template[] = [
     stack:
       'Next.js 16 with the App Router (JavaScript, no TypeScript), React 19. Server components by default; add "use client" to components with state or event handlers. Route handlers in app/api/**/route.js, server actions with "use server". Data in SQLite through node:sqlite (lib/db.js), used only in server code.',
     files: {
-      'package.json': json({ name: 'app', version: '0.1.0', private: true, scripts: { dev: 'next dev', build: 'next build', start: 'next start' }, dependencies: { next: '16.3.8', react: '19.3.0', 'react-dom': '19.3.0' } }),
+      'package.json': json({ name: 'app', version: '0.1.0', private: true, scripts: { dev: 'next dev', build: 'next build', start: 'next start' }, dependencies: { next: '16.4.0', react: '19.3.0', 'react-dom': '19.3.0' } }),
       'next.config.mjs': `/** @type {import('next').NextConfig} */\nconst nextConfig = {};\n\nexport default nextConfig;\n`,
       'lib/db.js': db(),
       'app/layout.js': `import './globals.css';\n\nexport const metadata = { title: 'App' };\n\nexport default function RootLayout({ children }) {\n  return (\n    <html lang="en">\n      <body>{children}</body>\n    </html>\n  );\n}\n`,
