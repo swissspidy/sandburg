@@ -170,10 +170,10 @@ the runtime tests in Chromium, the packed package, and each e2e file as its own 
 too. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
 after a week's cooldown. Every action is pinned to a commit.
 
-Releases go to npm from the Release workflow, with npm's trusted publishing (no npm token in the
-repository) and provenance: bump `version` in `package.json` on `main`, then push the tag `v<version>`.
-The workflow checks the tag against `package.json`, runs the typecheck, unit tests and the packed-package
-test, and publishes.
+A pull request that changes what the package does adds a changeset (`npx changeset`): the bump and a line
+for the changelog ([`.changeset/`](.changeset)). The Release workflow gathers them on `main` into a
+"Version packages" pull request; merging it tests and publishes that version to npm with npm's trusted
+publishing (no npm token in the repository) and provenance, tags it and creates its GitHub release.
 
 On networks that re-terminate TLS, Sandburg trusts the CAs in `$SANDBURG_EXTRA_CA_CERTS` (or
 `$NODE_EXTRA_CA_CERTS`) in the browser too, by pinning their public keys. Certificate verification
