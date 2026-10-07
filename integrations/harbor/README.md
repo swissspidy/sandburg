@@ -71,6 +71,10 @@ ran: `passed` is 1 if both steps passed, 0.5 if only the request did, 0 if not e
 of a trial that stopped after step 1 is that step's alone. Each step's reward is in
 `steps/<name>/verifier/`.
 
+`tasks/` holds all of them (5 tasks × 6 stacks), with solutions from an eval run.
+`python integrations/harbor/summarize.py <job dir>` prints a job's trials: each step's reward,
+time and cost, and the agent's turns, `sandburg` runs and refused tool calls.
+
 ## How the environment works
 
 [`sandburg_harbor/environment.py`](sandburg_harbor/environment.py) implements Harbor's

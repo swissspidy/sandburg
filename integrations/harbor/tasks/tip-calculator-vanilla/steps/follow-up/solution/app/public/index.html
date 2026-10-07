@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tip Calculator</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="card">
+      <header class="card-header">
+        <span class="logo" aria-hidden="true">💸</span>
+        <div>
+          <h1>Tip Calculator</h1>
+          <p class="subtitle">Split the bill without the mental math.</p>
+        </div>
+      </header>
+
+      <form id="calc" class="fields" novalidate>
+        <div class="field">
+          <label for="bill">Bill amount</label>
+          <div class="input-wrap has-prefix">
+            <span class="affix" aria-hidden="true">$</span>
+            <input id="bill" name="bill" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="tip">Tip percent</label>
+          <div class="input-wrap has-suffix">
+            <input id="tip" name="tip" type="number" inputmode="decimal" min="0" step="0.5" value="15" autocomplete="off" />
+            <span class="affix" aria-hidden="true">%</span>
+          </div>
+          <div class="presets" role="group" aria-label="Tip presets">
+            <button type="button" data-tip="10">10%</button>
+            <button type="button" data-tip="15">15%</button>
+            <button type="button" data-tip="18">18%</button>
+            <button type="button" data-tip="20">20%</button>
+            <button type="button" data-tip="25">25%</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="people">People</label>
+          <div class="input-wrap">
+            <input id="people" name="people" type="number" inputmode="numeric" min="1" step="1" value="1" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="check-field">
+          <input id="roundUp" name="roundUp" type="checkbox" aria-describedby="roundUpHint" />
+          <label for="roundUp">Round up</label>
+          <span id="roundUpHint" class="hint">Rounds the total up to the next whole dollar.</span>
+        </div>
+
+        <p id="error" class="error" role="alert" hidden></p>
+      </form>
+
+      <section class="results" aria-label="Results" aria-live="polite">
+        <div class="row">
+          <span>Tip:</span>
+          <output id="tipOut" for="bill tip roundUp">$0.00</output>
+        </div>
+        <div class="row">
+          <span>Total:</span>
+          <output id="totalOut" for="bill tip roundUp">$0.00</output>
+        </div>
+        <div class="row highlight">
+          <span>Per person:</span>
+          <output id="perOut" for="bill tip people roundUp">$0.00</output>
+        </div>
+        <p class="sr-only" id="summary"></p>
+      </section>
+
+      <button type="button" id="reset" class="reset">Reset</button>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

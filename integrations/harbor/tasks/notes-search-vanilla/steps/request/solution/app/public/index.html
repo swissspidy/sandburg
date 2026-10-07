@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Notes</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <h1><span aria-hidden="true">📝</span> Notes</h1>
+        <p class="tagline">Jot it down, find it later.</p>
+      </div>
+    </header>
+
+    <main class="wrap layout">
+      <section class="card compose" aria-labelledby="compose-heading">
+        <h2 id="compose-heading">New note</h2>
+        <form id="note-form" novalidate>
+          <div class="field">
+            <label for="title">Title</label>
+            <input id="title" name="title" type="text" maxlength="200" autocomplete="off" placeholder="What's it about?" />
+          </div>
+          <div class="field">
+            <label for="body">Body</label>
+            <textarea id="body" name="body" rows="6" maxlength="10000" placeholder="Write your note…"></textarea>
+          </div>
+          <p id="form-error" class="error" role="alert" hidden></p>
+          <button type="submit" class="btn-primary" id="save-btn">Save note</button>
+        </form>
+      </section>
+
+      <section class="notes-section" aria-labelledby="notes-heading">
+        <div class="notes-head">
+          <h2 id="notes-heading">Notes</h2>
+          <span id="count" class="count" aria-live="polite"></span>
+        </div>
+        <div class="field search">
+          <label for="search">Search</label>
+          <input id="search" type="search" autocomplete="off" placeholder="Filter by title or body" />
+        </div>
+        <ul id="notes" class="notes" aria-labelledby="notes-heading"></ul>
+        <p id="empty" class="empty" hidden></p>
+      </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

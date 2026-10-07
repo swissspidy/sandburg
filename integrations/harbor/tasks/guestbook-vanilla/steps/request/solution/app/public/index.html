@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Guestbook</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <span class="badge" aria-hidden="true">✍️</span>
+        <div>
+          <h1>Guestbook</h1>
+          <p class="subtitle">Leave a note for everyone who stops by.</p>
+        </div>
+      </header>
+
+      <section class="card" aria-labelledby="sign-heading">
+        <h2 id="sign-heading">Sign the guestbook</h2>
+        <form id="sign-form" novalidate>
+          <div class="field">
+            <label for="name">Name</label>
+            <input id="name" name="name" type="text" maxlength="80" autocomplete="name" placeholder="Your name (optional)" />
+          </div>
+          <div class="field">
+            <label for="message">Message</label>
+            <textarea id="message" name="message" rows="4" maxlength="1000" placeholder="Say something nice…" aria-describedby="error"></textarea>
+          </div>
+          <p id="error" class="error" role="alert" hidden></p>
+          <div class="actions">
+            <button type="submit" id="sign-button">Sign</button>
+          </div>
+        </form>
+      </section>
+
+      <section aria-labelledby="entries-heading">
+        <div class="list-head">
+          <h2 id="entries-heading">Entries</h2>
+          <span id="count" class="count"></span>
+        </div>
+        <p id="empty" class="empty" hidden>No entries yet. Be the first to sign!</p>
+        <ul id="entries" class="entries" aria-label="Entries"></ul>
+      </section>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

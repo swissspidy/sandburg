@@ -1,0 +1,243 @@
+:root {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light dark;
+  --bg: light-dark(#f4f6fb, #0f1218);
+  --card: light-dark(#ffffff, #181c25);
+  --text: light-dark(#1b2030, #e6e9f2);
+  --muted: light-dark(#667085, #98a2b3);
+  --border: light-dark(#e3e7ef, #2a3040);
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --danger: light-dark(#c2410c, #fb923c);
+  --danger-bg: light-dark(#fff1ea, #2c1a10);
+  --focus: light-dark(rgba(79, 70, 229, 0.35), rgba(129, 140, 248, 0.5));
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 0.25rem 0 1.5rem;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.section-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+}
+
+.form {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field.grow {
+  flex: 1 1 220px;
+}
+
+.field.amount {
+  flex: 0 1 150px;
+}
+
+label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+input {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0.55rem 0.75rem;
+  width: 100%;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+.amount-wrap {
+  position: relative;
+}
+
+.currency {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.amount-wrap input {
+  padding-left: 1.6rem;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  padding: 0.6rem 1.1rem;
+  font-weight: 600;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-primary:focus-visible,
+.btn-remove:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+.error {
+  margin: 0.75rem 0 0;
+  color: var(--danger);
+  background: var(--danger-bg);
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+
+.total {
+  margin: 0;
+  font-weight: 700;
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.item:first-child {
+  border-top: none;
+}
+
+.item-desc {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.item-amount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.btn-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.85rem;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.btn-remove:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+.empty {
+  margin: 0.5rem 0 0;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+@media (max-width: 480px) {
+  .page {
+    padding: 1.25rem 0.9rem 2rem;
+  }
+  .field.amount,
+  .btn-primary {
+    flex: 1 1 100%;
+  }
+  .btn-remove-text {
+    display: none;
+  }
+}

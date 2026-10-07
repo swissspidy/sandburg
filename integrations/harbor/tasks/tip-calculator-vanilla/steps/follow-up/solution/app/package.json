@@ -1,0 +1,12 @@
+{
+  "name": "app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.js"
+  },
+  "dependencies": {
+    "express": "^5.2.0"
+  }
+}
