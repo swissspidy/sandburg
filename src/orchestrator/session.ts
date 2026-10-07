@@ -4,6 +4,7 @@
  */
 import { X509Certificate, createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
@@ -23,7 +24,7 @@ import type {
   RunResult,
   SerializedError,
 } from '../types.ts';
-import type { HostApi, RpcResult } from '../host/host.ts';
+import type { HostApi, RpcResult } from '../host/types.ts';
 import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.ts';
 import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
@@ -160,7 +161,12 @@ export class Session {
 
   async open(): Promise<void> {
     await this.host.listen();
-    this.browser = await chromium.launch(launchOptions(this.options));
+    try {
+      this.browser = await chromium.launch(launchOptions(this.options));
+    } catch (err) {
+      await this.host.close();
+      throw missingBrowser(err) ?? err;
+    }
   }
 
   async close(): Promise<void> {
@@ -413,6 +419,16 @@ export const PAGE_QUIET_SCRIPT = `(() => {
 const APP_IDLE_MS = 1_500;
 
 /** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
+/**
+ * Playwright's own advice for a missing browser (`npx playwright install`) runs the latest
+ * Playwright, whose Chromium build may not be the one the Playwright installed with Sandburg drives.
+ */
+function missingBrowser(err: unknown): Error | null {
+  if (!(err instanceof Error) || !err.message.includes("Executable doesn't exist")) return null;
+  const { version } = createRequire(import.meta.url)('playwright-core/package.json') as { version: string };
+  return new Error(`Chromium for Playwright ${version} is not installed. Run: npx playwright@${version} install chromium (on Linux, add --with-deps for its system libraries), or set SANDBURG_CHROMIUM to a Chromium binary.`);
+}
+
 export function launchOptions(options: SessionOptions): LaunchOptions {
   const ca = options.extraCaCerts === undefined ? (process.env.SANDBURG_EXTRA_CA_CERTS ?? process.env.NODE_EXTRA_CA_CERTS) : options.extraCaCerts;
   const spki = ca ? spkiHashes(ca) : [];

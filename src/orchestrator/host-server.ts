@@ -5,12 +5,12 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import * as esbuild from 'esbuild';
 import type { AdapterDescriptor } from '../types.ts';
+import { source } from '../sources.ts';
 
-const HOST_ENTRY = fileURLToPath(new URL('../host/host.ts', import.meta.url));
+const HOST_ENTRY = source('host/host.ts');
 export const SANDBOX_DOMAIN = 'sandburg.localhost';
 
 const HOST_HTML = `<!doctype html>

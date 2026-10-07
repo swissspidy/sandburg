@@ -11,7 +11,7 @@
  * can read, the app can too. The key lives in a vault (vault.ts): a sandboxed frame with an opaque
  * origin, created before any generated code runs. The vault calls the model and sends the answers here.
  */
-import type { HostApi } from '../../src/host/host.ts';
+import type { HostApi } from '../../src/host/types.ts';
 import type { FileTree, PackageJson, Project } from '../../src/types.ts';
 import { detectFramework } from '../../src/framework.ts';
 import { pageInstall } from '../../src/adapters/node/plan.ts';

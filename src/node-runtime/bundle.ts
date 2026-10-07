@@ -1,28 +1,31 @@
 /** Builds the runtime worker bundle (served by the host at /__sandburg/node-worker.js). */
 import * as esbuild from 'esbuild';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { source } from '../sources.ts';
 
-const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
+const here = (p: string) => source(`node-runtime/${p}`);
+const require = createRequire(import.meta.url);
 
 let cached: Promise<string> | null = null;
 
 export function bundleNodeRuntime(): Promise<string> {
   cached ??= esbuild
     .build({
-      entryPoints: [here('./worker.ts')],
+      entryPoints: [here('worker.ts')],
       bundle: true,
       write: false,
       format: 'iife',
       platform: 'browser',
       target: 'es2022',
       logLevel: 'silent',
-      inject: [here('./globals-shim.ts')],
+      inject: [here('globals-shim.ts')],
       define: { global: 'globalThis' },
       plugins: [
         {
           name: 'process-alias',
           setup(build) {
-            build.onResolve({ filter: /^process\/?$/ }, () => ({ path: here('./process-alias.cjs') }));
+            build.onResolve({ filter: /^process\/?$/ }, () => ({ path: here('process-alias.cjs') }));
             // Polyfills require Node built-ins among themselves; map them to their polyfills.
             const map: Record<string, string> = { stream: 'readable-stream', path: 'path-browserify', crypto: 'crypto-browserify', zlib: 'browserify-zlib', querystring: 'querystring-es3' };
             build.onResolve({ filter: /^(stream|path|crypto|zlib|querystring|buffer|events|util|assert|string_decoder|url)\/?$/ }, (args) => {
@@ -41,14 +44,14 @@ export function bundleNodeRuntime(): Promise<string> {
 }
 
 /** The official SQLite WebAssembly build (Apache-2.0), loaded by the runtime with importScripts when an app uses SQLite. */
-export const SQLITE_WASM = fileURLToPath(new URL('../../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm', import.meta.url));
+export const SQLITE_WASM = require.resolve('@sqlite.org/sqlite-wasm/sqlite3.wasm');
 
 let sqliteBundle: Promise<string> | null = null;
 
 export function bundleSqlite(): Promise<string> {
   sqliteBundle ??= esbuild
     .build({
-      entryPoints: [fileURLToPath(new URL('../../node_modules/@sqlite.org/sqlite-wasm/dist/index.mjs', import.meta.url))],
+      entryPoints: [join(dirname(require.resolve('@sqlite.org/sqlite-wasm/package.json')), 'dist/index.mjs')],
       bundle: true,
       write: false,
       format: 'iife',

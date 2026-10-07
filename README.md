@@ -45,11 +45,22 @@ Next.js runs a third faster, 11.9 s to 8.0 s ([ADR 0017](docs/adr/0017-runtime-p
 
 ## Quick start
 
-Requires Node.js 22.18 or later and a Chromium that Playwright 1.56 can launch.
+Requires Node.js 22.18 or later.
+
+```sh
+npm install --save-dev sandburg
+npx sandburg run ./my-app --checks checks.spec.ts
+```
+
+Sandburg drives Chromium with the Playwright it installs. If that Playwright's Chromium is missing,
+the run stops and prints the command that installs it (`npx playwright@<version> install chromium`).
+`SANDBURG_CHROMIUM=/path/to/chrome` uses another Chromium instead.
+
+From a checkout, Sandburg runs its TypeScript sources directly:
 
 ```sh
 npm install
-npx playwright install chromium        # or set SANDBURG_CHROMIUM=/path/to/chrome
+npx playwright install chromium
 node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts
 ```
 
@@ -141,6 +152,8 @@ npm test               # unit tests
 npm run test:runtime   # the runtime's loader and built-ins, in Chromium
 npm run test:e2e       # fixtures end to end (the first run needs network access; Docker tests skip without Docker)
 npm run typecheck
+npm run build          # dist/: the CLI and library as JavaScript, with types (npm pack runs it)
+npm run test:pack      # pack the package, install it into an empty project, run a project with it
 node scripts/pages/build.ts --verify   # the demo site, into dist-pages/
 node scripts/profile.ts <project>      # where a run's time goes: V8 CPU profile of every thread, by package
 node scripts/edit-loop.ts               # edit-to-render latency of the fixtures
@@ -153,7 +166,7 @@ only needs the runtime's own files ([ADR 0021](docs/adr/0021-generate-in-the-bro
 workflow builds and deploys the site on every push to `main`.
 
 CI runs on every pull request and push to `main`. It runs typecheck and unit tests on Node 24 (LTS),
-the runtime tests in Chromium, and each e2e file as its own job; the Docker reference tests run there
+the runtime tests in Chromium, the packed package, and each e2e file as its own job; the Docker reference tests run there
 too. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
 after a week's cooldown. Every action is pinned to a commit.
 

@@ -8,20 +8,32 @@
     "sandburg": "./bin/sandburg.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
+  "files": [
+    "bin",
+    "dist",
+    "src"
+  ],
   "engines": {
     "node": ">=22.18.0"
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --test-reporter=spec test/unit/*.test.ts",
     "test:e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.test.ts",
     "spike": "node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts",
-    "test:runtime": "node --test --test-reporter=spec test/runtime/*.test.ts"
+    "test:runtime": "node --test --test-reporter=spec test/runtime/*.test.ts",
+    "test:pack": "node --test --test-reporter=spec test/pack/*.test.ts"
   },
   "dependencies": {
     "@napi-rs/wasm-runtime": "^1.2.4",
+    "@pkgjs/parseargs": "^0.11.0",
     "@playwright/test": "1.63.0",
     "@sqlite.org/sqlite-wasm": "3.53.4-build1",
     "acorn": "^8.18.0",
@@ -43,9 +55,16 @@
     "util": "^0.12.5"
   },
   "devDependencies": {
-    "@pkgjs/parseargs": "^0.11.0",
     "@types/node": "^26.6.3",
     "@types/semver": "7.8.0",
     "typescript": "^7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/swissspidy/sandburg.git"
+  },
+  "homepage": "https://github.com/swissspidy/sandburg#readme",
+  "bugs": {
+    "url": "https://github.com/swissspidy/sandburg/issues"
   }
 }
