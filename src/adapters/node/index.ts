@@ -4,7 +4,7 @@
  * (--ignore-scripts: no package code runs outside the browser) and served
  * lazily; the app itself, Next.js included, runs in a Web Worker.
  */
-import { fileURLToPath } from 'node:url';
+import { source } from '../../sources.ts';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-wasm-bundle.ts';
 import { createHash } from 'node:crypto';
@@ -23,7 +23,7 @@ import { warmups } from './warmup.ts';
 import { extraDependencies } from './install-rules.ts';
 
 const installer = sharedInstaller();
-const WS_SHIM = fileURLToPath(new URL('./ws-shim.js', import.meta.url));
+const WS_SHIM = source('adapters/node/ws-shim.js');
 
 /**
  * Dev servers' dependency caches, kept between runs: Vite's pre-bundled dependencies
@@ -462,8 +462,8 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
 export const node: AdapterDescriptor = {
   name: 'node',
   version: NODE_VERSION,
-  browserEntry: fileURLToPath(new URL('./browser.ts', import.meta.url)),
-  assets: { '/__sw__.js': fileURLToPath(new URL('./sw.js', import.meta.url)) },
+  browserEntry: source('adapters/node/browser.ts'),
+  assets: { '/__sw__.js': source('adapters/node/sw.js') },
   // The app's own server-side fetches (e.g. next/font/google) go through the gateway.
   // The npm registry: dev servers check it for newer versions of themselves (next dev does, on every start).
   egress: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com', 'https://registry.npmjs.org'],
