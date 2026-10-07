@@ -16,7 +16,7 @@ directory, and the environment maps those paths into it:
 (the mounts Harbor passes in), so Harbor reads them without copying.
 
 Commands run with `bash -c` on this machine, as the current user, with a `sandburg` command on
-`PATH`, and only a few of this machine's environment variables (PASS_ENV). Nothing here isolates the agent: limit what it may run with its own permissions (for
+`PATH` (browser installs and a shared HTTP cache by default), and only a few of this machine's environment variables (PASS_ENV). Nothing here isolates the agent: limit what it may run with its own permissions (for
 Claude Code, `permission_mode=dontAsk` and an `allowed_tools` list). What isolation there is
 belongs to the app: its packages are installed, and its code runs, in Sandburg's browser tab.
 """
@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
@@ -84,7 +85,9 @@ class SandburgEnvironment(BaseEnvironment):
         for mount in self._mounts:
             if mount.get("type") == "bind" and mount.get("source"):
                 self.mapping.append((mount["target"].rstrip("/"), Path(mount["source"])))
-        for path in (self.workdir, "/tests", "/solution", "/logs", "/installed-agent", "/tmp/harbor"):
+        # Fixed paths Harbor and its agents use besides the mounts (Claude Code's settings go to
+        # /tmp/claude-code-settings): each trial gets its own.
+        for path in (self.workdir, "/tests", "/solution", "/logs", "/installed-agent", "/tmp/harbor", "/tmp/claude-code-settings"):
             if not any(target == path for target, _ in self.mapping):
                 self.mapping.append((path.rstrip("/"), self.root / path.strip("/")))
         # Longest first, so /logs/agent wins over /logs.
@@ -97,11 +100,17 @@ class SandburgEnvironment(BaseEnvironment):
         bin_dir = self.root / ".bin"
         bin_dir.mkdir(exist_ok=True)
         sandburg = bin_dir / "sandburg"
-        # Runs install the app's packages in the browser (not with npm on this machine) unless told otherwise.
+        # Runs install the app's packages in the browser (not with npm on this machine) unless told
+        # otherwise, and share one HTTP cache across trials (keyed by URL; package documents are
+        # fetched again when stale), so that each trial does not download everything again.
+        cache = Path(os.environ.get("SANDBURG_HARBOR_CACHE", Path.home() / ".cache" / "sandburg-harbor"))
         sandburg.write_text(
             "#!/bin/sh\n"
-            'case "$1" in run|open|batch) case " $* " in *" --install-in"*) ;; *) set -- "$@" --install-in browser ;; esac ;; esac\n'
-            f'exec node {SANDBURG_HOME / "bin" / "sandburg.js"} "$@"\n'
+            'case "$1" in run|open|batch)\n'
+            '  case " $* " in *" --install-in"*) ;; *) set -- "$@" --install-in browser ;; esac\n'
+            f'  case " $* " in *" --cache"*) ;; *) set -- "$@" --cache {shlex.quote(str(cache))} ;; esac ;;\n'
+            "esac\n"
+            f'exec node {shlex.quote(str(SANDBURG_HOME / "bin" / "sandburg.js"))} "$@"\n'
         )
         sandburg.chmod(0o755)
         self._bin_dir = bin_dir

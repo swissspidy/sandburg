@@ -23,16 +23,25 @@ node integrations/harbor/build-tasks.ts --tasks todo --stacks vanilla,react \
 PYTHONPATH=integrations/harbor .venv/bin/harbor run -p integrations/harbor/tasks/todo-vanilla \
   -a oracle -e sandburg_harbor:SandburgEnvironment
 
-# Claude Code, allowed to read and edit files and to run `sandburg`, nothing else.
+# Claude Code: it may edit the project's files and run `sandburg`, and read nothing outside it.
 ANTHROPIC_API_KEY=… PYTHONPATH=integrations/harbor .venv/bin/harbor run \
   -p integrations/harbor/tasks/todo-react -a claude-code -m anthropic/claude-opus-5-5 \
   --ak permission_mode=dontAsk --ak "allowed_tools=Read,Edit,Write,Glob,Grep,Bash(sandburg:*)" \
+  --ak config=integrations/harbor/claude-settings.json \
   -e sandburg_harbor:SandburgEnvironment
 ```
 
-`claude` must be on `PATH` (Harbor then skips installing it). With `permission_mode=dontAsk`,
-Claude Code refuses every tool call that `allowed_tools` does not allow, so it cannot run `npm`,
-`node` or the app's code on this machine.
+`claude` must be on `PATH` (Harbor then skips installing it). What the agent may do:
+
+- `permission_mode=dontAsk` refuses every tool call that `allowed_tools` does not allow: it
+  cannot run `npm`, `node` or the app's code on this machine, only `sandburg`.
+- Claude Code still runs its built-in read-only commands (`ls`, `cat`, `find`, `grep`, …)
+  without asking, in every mode. [`claude-settings.json`](claude-settings.json) sets
+  `permissions.blockReadsOutsideWorkingDirectories`, which fences those and the file tools to the
+  trial's directory.
+- For an OS-level fence on its shell commands as well, add Claude Code's sandbox to the settings
+  (`"sandbox": {"enabled": true, "excludedCommands": ["sandburg *"]}`; Seatbelt on macOS,
+  bubblewrap on Linux). `sandburg` has to run outside it: it starts Chromium. Not tried here.
 
 ## Tasks
 
@@ -63,14 +72,18 @@ downloads. Only whole paths are mapped (`/app` and `/app/…`, not `/application
 `/logs/verifier` and `/logs/artifacts` are the trial's own log folders, so Harbor reads them in
 place.
 
-Commands run with `bash -c`, as the current user, with a `sandburg` command on `PATH`. That
-command installs an app's packages in the browser unless `--install-in` says otherwise.
+Commands run with `bash -c`, as the current user, with a `sandburg` command on `PATH`, and with
+only a few of this machine's environment variables (`PATH`, `HOME`, locale, proxy and CA settings,
+`SANDBURG_*`; `SANDBURG_HARBOR_PASS_ENV` adds names), as a container starts clean. Harbor adds the
+trial's own variables, such as the agent's API key. The `sandburg` command installs an app's
+packages in the browser unless `--install-in` says otherwise, and all trials share one HTTP cache
+(`SANDBURG_HARBOR_CACHE`, default `~/.cache/sandburg-harbor`).
 
 Known gaps:
 
-- Harbor looks for Claude Code's session under `projects/-app`, a name Claude Code derives from
-  its working directory. Here that is the trial's directory, so Harbor's trajectory view of the
-  run is missing; the run itself and its log (`agent/claude-code.txt`) are not affected.
+- Claude Code names its session folder after its working directory: here `projects/-tmp-…-app`,
+  not `projects/-app`. Harbor's trajectory (`agent/trajectory.json`) is complete; resuming a
+  session (the agent's `load` option) and `memory_dir`, which use `projects/-app`, do not work.
 - A path the agent's own tools use inside its process (not in a command Harbor runs) is not
   mapped. The instructions talk about the current directory, not `/app`.
 - Network policies and resource limits are not enforced.
