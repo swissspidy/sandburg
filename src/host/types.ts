@@ -2,7 +2,7 @@
  * Browser-side adapter contract. Bundled into the host page; must not import
  * Node modules.
  */
-import type { AdapterErrorCode, FileTree, Framework, InstallReport, PackageJson } from '../types.ts';
+import type { AdapterErrorCode, FileTree, Framework, InstallReport, PackageJson, SerializedError } from '../types.ts';
 
 export interface AdapterContext {
   signal: AbortSignal;
@@ -42,3 +42,22 @@ export class AdapterError extends Error {
 }
 
 export type CreateAdapter = () => RuntimeAdapter;
+
+export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: SerializedError };
+
+/** What the host page (host.ts) exposes as `window.__sandburg`. */
+export interface HostApi {
+  mount(files: FileTree, pkg: PackageJson | null, fw: Framework): Promise<RpcResult<void>>;
+  install(hostData?: unknown): Promise<RpcResult<InstallReport>>;
+  start(): Promise<RpcResult<StartResult>>;
+  /** Runtime readiness, then load the app URL into the frame and wait for its load event. */
+  ready(url: string, navigate?: boolean): Promise<RpcResult<void>>;
+  activity(): Promise<RpcResult<{ inflight: number; idleMs: number } | null>>;
+  dispose(): Promise<RpcResult<void>>;
+}
+
+declare global {
+  interface Window {
+    __sandburg: HostApi;
+  }
+}

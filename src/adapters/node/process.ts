@@ -5,7 +5,7 @@
  */
 import { AdapterError } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
-import type { FromWorker } from '../../node-runtime/worker.ts';
+import type { FromWorker } from '../../node-runtime/messages.ts';
 import type { BridgedRequest } from '../sw-bridge.ts';
 
 export interface NodeProcessOptions {

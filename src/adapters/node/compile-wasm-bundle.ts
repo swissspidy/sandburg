@@ -4,8 +4,8 @@
  * worker (pages/compile.ts). esbuild's WebAssembly binary goes next to it.
  */
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
+import { source } from '../../sources.ts';
 
 export const ESBUILD_WASM = createRequire(import.meta.url).resolve('esbuild-wasm/esbuild.wasm');
 
@@ -46,4 +46,4 @@ export function bundleBrowserCompiler(entry: string): Promise<string> {
   return bundled;
 }
 
-export const COMPILE_WORKER = fileURLToPath(new URL('./compile-worker.ts', import.meta.url));
+export const COMPILE_WORKER = source('adapters/node/compile-worker.ts');

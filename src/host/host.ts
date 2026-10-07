@@ -5,10 +5,8 @@
  * so errors keep their code across the page.evaluate boundary.
  */
 import { createAdapter } from 'sandburg:adapter';
-import type { AdapterContext, RuntimeAdapter } from './types.ts';
+import type { AdapterContext, HostApi, RpcResult, RuntimeAdapter } from './types.ts';
 import type { FileTree, Framework, PackageJson, SerializedError } from '../types.ts';
-
-export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: SerializedError };
 
 let adapter: RuntimeAdapter | null = null;
 let packageJson: PackageJson | null = null;
@@ -52,7 +50,7 @@ function appFrame(): HTMLIFrameElement {
   return document.getElementById('app') as HTMLIFrameElement;
 }
 
-const api = {
+const api: HostApi = {
   mount: (files: FileTree, pkg: PackageJson | null, fw: Framework) =>
     call(async () => {
       packageJson = pkg;
@@ -63,7 +61,6 @@ const api = {
     }),
   install: (hostData?: unknown) => call(() => current().install(ctx(), hostData)),
   start: () => call(() => current().start(ctx())),
-  /** Runtime readiness, then load the app URL into the frame and wait for its load event. */
   ready: (url: string, navigate = true) =>
     call(async () => {
       // A runtime that fails while the app loads (its dev server crashed) ends the wait.
@@ -87,14 +84,6 @@ const api = {
       adapter = null;
     }),
 };
-
-export type HostApi = typeof api;
-
-declare global {
-  interface Window {
-    __sandburg: HostApi;
-  }
-}
 
 window.__sandburg = api;
 document.documentElement.dataset.sandburg = 'ready';
