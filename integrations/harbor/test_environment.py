@@ -4,10 +4,23 @@ import asyncio
 import logging
 from pathlib import Path
 
+import pytest
+
 from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 
 from sandburg_harbor import SandburgEnvironment
+
+
+@pytest.fixture(autouse=True)
+def _stop_environments():
+    yield
+    for env in _started:
+        asyncio.run(env.stop(delete=True))
+    _started.clear()
+
+
+_started: list[SandburgEnvironment] = []
 
 
 def environment(tmp_path: Path) -> SandburgEnvironment:
@@ -23,6 +36,7 @@ def environment(tmp_path: Path) -> SandburgEnvironment:
         mounts=[{"type": "bind", "source": str(trial.agent_dir), "target": "/logs/agent"}],
     )
     asyncio.run(env.start(force_build=False))
+    _started.append(env)
     return env
 
 
