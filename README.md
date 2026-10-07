@@ -38,8 +38,9 @@ runs it on its own dev server. Later requests change the running app, and errors
 
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
 from empty Sandburg caches. A Next.js app that has never run, with a new install, runs in
-15.7 s, down from about 45 s. Its first compile takes 2.2 s, where native `next dev` on the same
-machine takes 3.9 s ([ADR 0014](docs/adr/0014-node-runtime-only.md)). Since study v6, a profile of the runtime made warm
+15.7 s, down from about 45 s. Its first compile takes 2.2 s, down from 18.3 s, because it starts
+from a webpack cache that Sandburg seeds with the framework's modules
+([ADR 0014](docs/adr/0014-node-runtime-only.md)). Since study v6, a profile of the runtime made warm
 Next.js runs a third faster, 11.9 s to 8.0 s ([ADR 0017](docs/adr/0017-runtime-profile.md)).
 
 ## Quick start
