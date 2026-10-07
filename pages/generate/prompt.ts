@@ -3,7 +3,8 @@ import type { FileTree } from '../../src/types.ts';
 import { formatFiles } from './files.ts';
 import type { Template } from './templates.ts';
 
-export const SYSTEM = `You write web apps that run in Sandburg: a Node.js 24 runtime inside a browser tab. The project's own dev server runs there (\`npm run dev\`), its packages are installed from the npm registry by the page, and the app is shown in a frame next to this conversation, about 600-1000 px wide.
+/** Where the app runs and how to write it (also the instructions of the Harbor tasks, integrations/harbor). */
+export const RUNTIME = `You write web apps that run in Sandburg: a Node.js 24 runtime inside a browser tab. The project's own dev server runs there (\`npm run dev\`), its packages are installed from the npm registry by the page, and the app is shown in a frame next to this conversation, about 600-1000 px wide.
 
 What works there:
 - npm packages written in JavaScript, and tools that ship a WebAssembly build (Vite, esbuild, rolldown, Tailwind CSS v4, Sass). No native addons, no install scripts, no programs other than Node.js.
@@ -15,7 +16,9 @@ How to write the app:
 - Prefer the packages the scaffold already has. Add one only when it clearly helps, with a caret range of a version you are sure exists.
 - Write text files only: no binary images. Use inline SVG, CSS, or emoji for graphics.
 - Keep data that should outlive a page reload, or that several views share, in the database through the scaffold's backend. Use localStorage only for per-browser preferences such as a theme.
-- Make it work well and look finished: a clear layout, good spacing and typography, a consistent color palette, hover and focus states, an empty state, and a layout that holds at narrow widths. Use semantic HTML and give every control an accessible name.
+- Make it work well and look finished: a clear layout, good spacing and typography, a consistent color palette, hover and focus states, an empty state, and a layout that holds at narrow widths. Use semantic HTML and give every control an accessible name.`;
+
+export const SYSTEM = `${RUNTIME}
 
 Answer in exactly this format:
 1. One or two sentences on what you are building or changing.

@@ -43,6 +43,11 @@ const HEADER = 16;
 const READ_OPS = new Set<VfsOp>(['exists', 'stat', 'read', 'readdir']);
 /** How long a thread waits for its parent before reading from its snapshot instead. */
 const PARENT_PATIENCE_MS = 200;
+/**
+ * How long a thread waits for its parent on a path its snapshot does not cover (a cache) before it
+ * takes the parent to be blocked rather than slow, and reads its snapshot after all.
+ */
+const PARENT_BLOCKED_MS = 5000;
 
 /** A thread's VFS: every operation runs on the parent's VFS. */
 export class RemoteVfs extends Vfs {
@@ -57,18 +62,20 @@ export class RemoteVfs extends Vfs {
 
   /**
    * Answers a read when the parent does not: it may be blocked (a WebAssembly atomic wait) until
-   * this thread's work is done. `undefined` means no answer; the call keeps waiting.
+   * this thread's work is done. `blocked`: the parent has not answered for PARENT_BLOCKED_MS, so it
+   * is not merely slow. `undefined` means no answer; the call keeps waiting.
    */
-  protected fallback(_op: VfsOp, _args: unknown[]): { value: unknown } | undefined {
+  protected fallback(_op: VfsOp, _args: unknown[], _blocked: boolean): { value: unknown } | undefined {
     return undefined;
   }
 
   /** A request the parent has not answered in time: until it does, the parent is taken to be blocked. */
   private stalled: Int32Array | null = null;
+  private stalledSince = 0;
 
   protected call(op: VfsOp, args: unknown[]): unknown {
     if (this.stalled && Atomics.load(this.stalled, 0) === 0 && READ_OPS.has(op)) {
-      const answer = this.fallback(op, args);
+      const answer = this.fallback(op, args, performance.now() - this.stalledSince >= PARENT_BLOCKED_MS);
       if (answer) {
         if (answer.value instanceof Error) throw answer.value;
         return answer.value;
@@ -80,8 +87,13 @@ export class RemoteVfs extends Vfs {
       const header = new Int32Array(sab, 0, 4);
       this.post({ type: 'vfs-rpc', sab, op, args });
       if (Atomics.wait(header, 0, 0, PARENT_PATIENCE_MS) === 'timed-out') {
+        if (!this.stalled || Atomics.load(this.stalled, 0) !== 0) this.stalledSince = performance.now() - PARENT_PATIENCE_MS;
         this.stalled = header;
-        const answer = READ_OPS.has(op) ? this.fallback(op, args) : undefined;
+        let answer = READ_OPS.has(op) ? this.fallback(op, args, false) : undefined;
+        if (!answer && READ_OPS.has(op)) {
+          const left = PARENT_BLOCKED_MS - (performance.now() - this.stalledSince);
+          if (left <= 0 || Atomics.wait(header, 0, 0, left) === 'timed-out') answer = this.fallback(op, args, true);
+        }
         if (answer) {
           if (answer.value instanceof Error) throw answer.value;
           return answer.value;
@@ -176,11 +188,18 @@ export class ThreadVfs extends RemoteVfs {
     }
   }
 
-  /** The parent's files as of this thread's start: while the parent is blocked, they are the whole file system. */
-  protected override fallback(op: VfsOp, args: unknown[]): { value: unknown } | undefined {
+  /**
+   * The parent's files as of this thread's start: while the parent is blocked, they answer for the
+   * paths they cover. Not for the rest (installed packages aside, which local() reads from the host):
+   * the snapshot leaves out caches and build output, and a parent that is only slow (a loaded
+   * machine) may have just written there. Vite's dependency optimizer writes its bundle into
+   * node_modules/.cache/vite from rolldown's threads; "no such directory" from the snapshot failed
+   * the build.
+   */
+  protected override fallback(op: VfsOp, args: unknown[], blocked: boolean): { value: unknown } | undefined {
     const snap = this.snapshot;
     const path = String(args[0]);
-    if (!snap) return undefined;
+    if (!snap || (!blocked && !this.covers(path))) return undefined;
     try {
       if (op === 'exists') return { value: snap.exists(path) };
       if (op === 'stat') return { value: snap.stat(path, String(args[1] ?? 'stat')) };
@@ -191,6 +210,20 @@ export class ThreadVfs extends RemoteVfs {
     } catch (e) {
       return { value: e };
     }
+  }
+
+  /**
+   * Whether the snapshot can answer for `path` (see projectSnapshot): project files, and the
+   * node_modules directories module resolution looks for (a thread starting up while its parent is
+   * blocked must not wait for those), but not caches and build output, which the parent writes.
+   */
+  private covers(path: string): boolean {
+    if (path === this.root || path.startsWith(`${this.root}/`)) return path.endsWith('/node_modules') || !WRITTEN_DIRS.test(path);
+    // Above the project, module resolution looks for node_modules and package.json up to /; the
+    // app does not write there.
+    const dir = path.slice(0, path.lastIndexOf('/')) || '/';
+    const above = (d: string) => d === '/' || this.root.startsWith(`${d}/`);
+    return above(path) || above(dir);
   }
 
   private local(path: string): boolean {
@@ -225,6 +258,8 @@ export class ThreadVfs extends RemoteVfs {
 
 /** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output, big files. */
 const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
+/** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
+const WRITTEN_DIRS = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)(?:\/|$)|\/(?:\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
 const SNAPSHOT_MAX_FILE = 4 << 20;
 const snapshots = new WeakMap<Vfs, { value: Record<string, Uint8Array> | null; off: () => void }>();
 

@@ -1,10 +1,11 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { join, relative, resolve } from 'node:path';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { Session, type RunOptions, type SessionOptions } from './orchestrator/session.ts';
 import { discoverProjects, runBatch } from './orchestrator/batch.ts';
 import { loadProject } from './project.ts';
 import { SnapshotStore } from './store.ts';
-import type { RunResult } from './types.ts';
+import type { FileTree, RunResult } from './types.ts';
 
 const USAGE = `Usage: sandburg <command> [options]
 
@@ -31,6 +32,8 @@ Options:
   --store <dir>        Snapshot store directory (default: .sandburg/store)
   --offline            Serve only from the cache; never fetch upstream
   --ready <selector>   Wait for this selector before running checks
+  --save-files <regex> run: after the checks, write the app's files whose path matches <regex>
+                       (its SQLite database, say) back into the project directory
   --headed             Show the browser window
   --json               Print full JSON instead of a summary
   -h, --help           Show this help
@@ -48,6 +51,7 @@ const OPTIONS = {
   store: { type: 'string' },
   offline: { type: 'boolean', default: false },
   ready: { type: 'string' },
+  'save-files': { type: 'string' },
   headed: { type: 'boolean', default: false },
   json: { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
@@ -107,9 +111,28 @@ export async function main(argv: string[]): Promise<number> {
     }
     case 'run':
     case 'open': {
+      const save = values['save-files'];
+      if (save !== undefined) {
+        if (command !== 'run' || !(await stat(target).then((s) => s.isDirectory(), () => false))) {
+          console.error('--save-files: only for run, with a project directory');
+          return 64;
+        }
+        try {
+          new RegExp(save);
+        } catch (err) {
+          console.error(`--save-files: ${(err as Error).message}`);
+          return 64;
+        }
+      }
+      let saved: FileTree | null = null;
       const result = await withSession(sessionOptions, (s) =>
-        s.run(target, { ...runOptions, hold: command === 'open' }),
+        s.run(target, {
+          ...runOptions,
+          hold: command === 'open',
+          ...(save !== undefined && { collectFiles: save, onAppFiles: (files: FileTree) => (saved = files) }),
+        }),
       );
+      if (saved) await writeFiles(resolve(target), saved);
       const dir = relative(process.cwd(), join(values.out ?? '.sandburg/runs', result.runId));
       console.log(values.json ? JSON.stringify(result, null, 2) : summarize(result, dir));
       return exitCode(result.status);
@@ -159,6 +182,15 @@ async function withSession<T>(options: SessionOptions, fn: (s: Session) => Promi
     return await fn(session);
   } finally {
     await session.close();
+  }
+}
+
+async function writeFiles(root: string, files: FileTree): Promise<void> {
+  for (const [path, content] of Object.entries(files)) {
+    const file = resolve(root, path);
+    if (relative(root, file).startsWith('..')) continue;
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, typeof content === 'string' ? content : Buffer.from(content.base64, 'base64'));
   }
 }
 

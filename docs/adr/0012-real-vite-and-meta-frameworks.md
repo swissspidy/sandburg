@@ -30,6 +30,13 @@ the Node APIs they need.
   Installed packages are read from the host directly, so a thread can start
   while its parent is blocked, as WebAssembly threads require. Messages are
   structured clones (shared memory, `WebAssembly.Module`, ports).
+- A parent that does not answer within 200 ms is taken to be blocked, and the
+  thread reads its snapshot of the project files instead. That snapshot
+  answers only for the paths it covers: not for caches and build output
+  (`node_modules/.vite`, `.cache`, `.nuxt`, …), which a parent that is only
+  slow may have just written. There the thread waits. Under load, rolldown's
+  threads were told that Vite's new `node_modules/.cache/vite/deps_temp_*`
+  did not exist, the dependency build failed, and Nuxt closed the dev server.
 - A WebAssembly trap in a thread (memory access out of bounds, a Rust panic)
   ends its process, as a segfault or an abort in a native build would. The
   module's shared memory and the threads waiting on it cannot recover: a

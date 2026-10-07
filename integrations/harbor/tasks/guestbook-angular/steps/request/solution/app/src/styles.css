@@ -1,0 +1,21 @@
+:root {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light dark;
+  --bg: light-dark(#f6f5fb, #14131a);
+  --surface: light-dark(#ffffff, #1d1c25);
+  --text: light-dark(#1d1b26, #ecebf3);
+  --muted: light-dark(#6b6880, #a19eb4);
+  --border: light-dark(#e4e2ee, #2e2c3a);
+  --border-strong: light-dark(#c9c5db, #46435a);
+  --accent: light-dark(#6d4ae0, #a48bff);
+  --accent-strong: light-dark(#5a37cc, #8f72ff);
+  --accent-soft: light-dark(#ece6ff, #2c2547);
+  --danger: light-dark(#b42318, #ff8a80);
+  --danger-soft: light-dark(#fdecea, #3a1c1c);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.04);
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
