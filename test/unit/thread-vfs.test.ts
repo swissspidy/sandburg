@@ -20,3 +20,44 @@ test('a thread whose parent is blocked still sees node_modules', () => {
   assert.equal(thread.exists('/app/node_modules/tslib/package.json'), true);
   assert.equal(thread.exists('/app/src/node_modules'), false);
 });
+
+// A parent that is slow, not blocked (a loaded machine): it answers after the thread's patience ran
+// out. The snapshot does not cover caches, so for them the thread must wait for the parent's answer:
+// Vite's optimizer had just created node_modules/.cache/vite/deps_temp_*, and rolldown's thread,
+// told by its snapshot that the directory did not exist, failed the build.
+test('a thread whose parent is slow waits for it on paths its snapshot does not cover', async () => {
+  const parentCode = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    import(workerData.vfs).then(async ({ Vfs }) => {
+      const { serveVfsCall } = await import(workerData.threads);
+      const vfs = new Vfs(() => new Uint8Array());
+      vfs.mkdir('/app/node_modules/.cache/vite/deps_temp_1', true);
+      vfs.write('/app/node_modules/.cache/vite/deps_temp_1/package.json', new TextEncoder().encode('{}'));
+      vfs.mkdir('/app/src', true);
+      parentPort.on('message', (msg) => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400); // busy for longer than the thread waits
+        serveVfsCall(vfs, msg);
+      });
+      parentPort.postMessage('ready');
+    });`;
+  const { Worker } = await import('node:worker_threads');
+  const parent = new Worker(parentCode, {
+    eval: true,
+    workerData: {
+      vfs: new URL('../../src/node-runtime/vfs.ts', import.meta.url).href,
+      threads: new URL('../../src/node-runtime/threads.ts', import.meta.url).href,
+    },
+  });
+  try {
+    await new Promise((resolve) => parent.once('message', resolve));
+    const thread = new ThreadVfs((m) => parent.postMessage(m), new Vfs(() => new Uint8Array()), '/app', {
+      '/app/src/main.ts': new TextEncoder().encode('export {};'),
+    });
+    assert.equal(thread.exists('/app/node_modules/.cache/vite/deps_temp_1'), true);
+    assert.equal(thread.kind('/app/node_modules/.cache/vite/deps_temp_1/package.json'), 'file');
+    // A path the snapshot covers is still answered from it while the parent is slow.
+    assert.equal(thread.exists('/app/src/main.ts'), true);
+  } finally {
+    await parent.terminate();
+  }
+});

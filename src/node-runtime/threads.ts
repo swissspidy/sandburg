@@ -176,11 +176,18 @@ export class ThreadVfs extends RemoteVfs {
     }
   }
 
-  /** The parent's files as of this thread's start: while the parent is blocked, they are the whole file system. */
+  /**
+   * The parent's files as of this thread's start: while the parent is blocked, they answer for the
+   * paths they cover. Not for the rest (installed packages aside, which local() reads from the host):
+   * the snapshot leaves out caches and build output, and a parent that is only slow (a loaded
+   * machine) may have just written there. Vite's dependency optimizer writes its bundle into
+   * node_modules/.cache/vite from rolldown's threads; "no such directory" from the snapshot failed
+   * the build.
+   */
   protected override fallback(op: VfsOp, args: unknown[]): { value: unknown } | undefined {
     const snap = this.snapshot;
     const path = String(args[0]);
-    if (!snap) return undefined;
+    if (!snap || !this.covers(path)) return undefined;
     try {
       if (op === 'exists') return { value: snap.exists(path) };
       if (op === 'stat') return { value: snap.stat(path, String(args[1] ?? 'stat')) };
@@ -191,6 +198,16 @@ export class ThreadVfs extends RemoteVfs {
     } catch (e) {
       return { value: e };
     }
+  }
+
+  /**
+   * Whether the snapshot can answer for `path` (see projectSnapshot): project files, and the
+   * node_modules directories module resolution looks for (a thread starting up while its parent is
+   * blocked must not wait for those), but not caches and build output, which the parent writes.
+   */
+  private covers(path: string): boolean {
+    if (path !== this.root && !path.startsWith(`${this.root}/`)) return false;
+    return path.endsWith('/node_modules') || !WRITTEN_DIRS.test(path);
   }
 
   private local(path: string): boolean {
@@ -225,6 +242,8 @@ export class ThreadVfs extends RemoteVfs {
 
 /** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output, big files. */
 const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
+/** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
+const WRITTEN_DIRS = /\/node_modules\/\.|\/(?:\.git|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
 const SNAPSHOT_MAX_FILE = 4 << 20;
 const snapshots = new WeakMap<Vfs, { value: Record<string, Uint8Array> | null; off: () => void }>();
 
