@@ -218,8 +218,12 @@ export class ThreadVfs extends RemoteVfs {
    * blocked must not wait for those), but not caches and build output, which the parent writes.
    */
   private covers(path: string): boolean {
-    if (path !== this.root && !path.startsWith(`${this.root}/`)) return false;
-    return path.endsWith('/node_modules') || !WRITTEN_DIRS.test(path);
+    if (path === this.root || path.startsWith(`${this.root}/`)) return path.endsWith('/node_modules') || !WRITTEN_DIRS.test(path);
+    // Above the project, module resolution looks for node_modules and package.json up to /; the
+    // app does not write there.
+    const dir = path.slice(0, path.lastIndexOf('/')) || '/';
+    const above = (d: string) => d === '/' || this.root.startsWith(`${d}/`);
+    return above(path) || above(dir);
   }
 
   private local(path: string): boolean {
