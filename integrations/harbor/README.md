@@ -55,8 +55,21 @@ ANTHROPIC_API_KEY=… PYTHONPATH=integrations/harbor .venv/bin/harbor run \
   `reward.json`: `score` (the share of checks that passed) and `passed` (1 if all did).
 - `solution/` (with `--solutions`): a passing app from an eval run, for `-a oracle`.
 
-The eval's follow-up requests are not tasks yet. They would be a second step of a multi-step task
-that keeps `/app`, and its SQLite file, from the first.
+Every eval task also has a follow-up request ("add a priority to tasks"), so the tasks have
+[two steps](https://harborframework.com/docs/tasks/multi-step), under `steps/`:
+
+1. `request`: the request above, from the scaffold.
+2. `follow-up`: the follow-up request, on the app from step 1. It runs only if every check of step
+   1 passed (`min_reward = { passed = 1.0 }`). Its instruction quotes the first request. It is a
+   new conversation unless Harbor runs with `--resume-trajectory`.
+
+The follow-up's checks expect the data that step 1's checks entered (the to-do "Buy milk", done),
+as in the eval. A Sandburg run keeps the app's files in the browser; `test.sh` passes
+`--save-files` with the pattern of SQLite files, so the verifier writes the database back into
+`/app`, and the agent in step 2 finds it there. The trial's reward is the mean over the steps that
+ran: `passed` is 1 if both steps passed, 0.5 if only the request did, 0 if not even that; `score`
+of a trial that stopped after step 1 is that step's alone. Each step's reward is in
+`steps/<name>/verifier/`.
 
 ## How the environment works
 

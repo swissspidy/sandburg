@@ -11,6 +11,10 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { main } from '../../src/cli.ts';
 import { Session } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
 
@@ -32,6 +36,19 @@ test('Vue + Vite + Express + better-sqlite3 (concurrently, /api proxy) runs and 
   assert.equal(result.status, 'passed', failures(result));
   assert.equal(result.checks.filter((c) => c.kind === 'functional' && c.status === 'passed').length, 4);
   assert.ok(result.console.some((c) => c.text.includes('[server] API listening on http://localhost:3001')));
+});
+
+test('sandburg run --save-files writes the database the checks left behind into the project', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-save-'));
+  try {
+    await cp(fixture('vue-express-sqlite'), dir, { recursive: true, filter: (src) => !src.includes('node_modules') });
+    const code = await main(['run', dir, '--checks', `${dir}/checks.spec.ts`, '--out', outDir, '--save-files', String.raw`\.db$`]);
+    assert.equal(code, 0);
+    const db = await readFile(join(dir, 'notes.db'));
+    assert.equal(db.subarray(0, 15).toString(), 'SQLite format 3');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('client/ + server/ packages: React calls http://localhost:4000 directly; tsx server with node:sqlite', async () => {

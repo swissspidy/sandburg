@@ -1,0 +1,298 @@
+:root {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light dark;
+  --bg: light-dark(#f3f4f8, #14151a);
+  --card: light-dark(#ffffff, #1e2028);
+  --text: light-dark(#1d1f27, #e8e9ee);
+  --muted: light-dark(#6b6f80, #9a9eb0);
+  --border: light-dark(#e2e4ec, #2f323d);
+  --accent: light-dark(#4f46e5, #818cf8);
+  --accent-hover: light-dark(#4338ca, #a5b4fc);
+  --accent-text: light-dark(#ffffff, #14151a);
+  --danger: light-dark(#dc2626, #f87171);
+  --danger-bg: light-dark(#fef2f2, #3a1d1f);
+  --hover: light-dark(#f6f7fb, #262934);
+  --high: light-dark(#b91c1c, #fca5a5);
+  --high-bg: light-dark(#fee2e2, #3f1d20);
+  --normal: light-dark(#3730a3, #c7d2fe);
+  --normal-bg: light-dark(#e0e7ff, #262a4a);
+  --low: light-dark(#4b5563, #cbd5e1);
+  --low-bg: light-dark(#f1f2f5, #2a2d37);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.page {
+  min-height: 100vh;
+  padding: 48px 16px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.card {
+  width: 100%;
+  max-width: 600px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.06);
+}
+
+.card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
+}
+
+.count {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.add-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+  font: inherit;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.add-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.priority-select {
+  font: inherit;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.priority-select:hover {
+  border-color: var(--muted);
+}
+
+.add-form input:focus,
+.priority-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.add-btn {
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.add-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.add-btn:focus-visible,
+.delete-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.tasks {
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+}
+
+.tasks:empty {
+  display: none;
+}
+
+.task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 8px;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+
+.task + .task {
+  margin-top: 2px;
+}
+
+.task:hover {
+  background: var(--hover);
+}
+
+.task-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.task-label input {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.task-text {
+  overflow-wrap: anywhere;
+}
+
+.task.done .task-text {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.priority {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+}
+
+.priority-high {
+  color: var(--high);
+  background: var(--high-bg);
+}
+
+.priority-normal {
+  color: var(--normal);
+  background: var(--normal-bg);
+}
+
+.priority-low {
+  color: var(--low);
+  background: var(--low-bg);
+}
+
+.task.done .priority {
+  opacity: 0.6;
+}
+
+.delete-btn {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.task:hover .delete-btn,
+.delete-btn:focus-visible {
+  opacity: 1;
+}
+
+.delete-btn:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.empty {
+  margin: 24px 0 4px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.empty p {
+  margin: 4px 0 0;
+}
+
+.empty-icon {
+  font-size: 2rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 480px) {
+  .page {
+    padding: 16px 8px;
+  }
+  .card {
+    padding: 20px 16px;
+  }
+  .add-controls {
+    flex: 1 1 100%;
+  }
+  .priority-select {
+    flex: 1;
+  }
+}

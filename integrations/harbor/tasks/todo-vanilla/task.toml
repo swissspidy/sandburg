@@ -1,8 +1,9 @@
 schema_version = "1.4"
+multi_step_reward_strategy = "mean"
 
 [task]
 name = "sandburg/todo-vanilla"
-description = "App-gen eval task todo on HTML, CSS & JavaScript, run in Sandburg."
+description = "App-gen eval task todo on HTML, CSS & JavaScript, and its follow-up request, run in Sandburg."
 keywords = ["sandburg", "web-app", "vanilla"]
 
 [agent]
@@ -11,8 +12,18 @@ timeout_sec = 1200.0
 [verifier]
 timeout_sec = 900.0
 
-[verifier.env]
-CHECKS_TOTAL = "3"
-
 [environment]
 workdir = "/app"
+
+[[steps]]
+name = "request"
+min_reward = { passed = 1.0 }
+
+[steps.verifier.env]
+CHECKS_TOTAL = "3"
+
+[[steps]]
+name = "follow-up"
+
+[steps.verifier.env]
+CHECKS_TOTAL = "3"
