@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>To-do</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="card">
+      <header class="head">
+        <h1>To-do</h1>
+        <p id="summary" class="summary" aria-live="polite"></p>
+      </header>
+
+      <form id="new-task-form" class="new-task" autocomplete="off">
+        <label for="new-task" class="visually-hidden">New task</label>
+        <input id="new-task" name="text" type="text" placeholder="What needs doing?" maxlength="500" required />
+        <button type="submit">Add</button>
+      </form>
+
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <ul id="tasks" class="tasks" aria-label="Tasks"></ul>
+      <div id="empty" class="empty" hidden>
+        <div class="empty-icon" aria-hidden="true">📝</div>
+        <p>No tasks yet. Add your first one above.</p>
+      </div>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

@@ -28,6 +28,7 @@
     "pages/compile.ts",
     "pages/generate",
     "evals",
+    "integrations/harbor/build-tasks.ts",
     "fixtures/vite-react-counter/checks.spec.ts"
   ]
 }
