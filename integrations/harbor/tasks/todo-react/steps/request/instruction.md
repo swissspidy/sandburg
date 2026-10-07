@@ -23,6 +23,28 @@ console errors. Add `--json` for the whole result, including the run's log. It a
 screenshot and the page's accessibility tree; their paths are in the summary. Run it again after
 a change. Your work is checked the same way, in a fresh browser.
 
+A run without checks only loads the page. To try out what the task asks for, as a person would,
+write checks in `checks.spec.ts` and run `sandburg run . --install-in browser --checks checks.spec.ts`.
+The file default-exports named checks. They run in order against one app, in Playwright, with the
+app's frame (`app`), Playwright's `expect` and `appUrl(path)`:
+
+```ts
+export default {
+  'adds an item': async ({ app, expect }) => {
+    await app.getByLabel('Name', { exact: true }).fill('Milk');
+    await app.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(app.getByRole('list', { name: 'Items' })).toContainText('Milk');
+  },
+  'items come from the database': async ({ app, expect, appUrl }) => {
+    await app.goto(appUrl('/'));
+    await expect(app.getByRole('list', { name: 'Items' })).toContainText('Milk');
+  },
+};
+```
+
+Use the names and labels the task gives. With `--json`, a failing check's `message` says what it
+expected and what the page had. Files named `*.spec.ts` are not part of the app.
+
 ## Task
 
 A to-do app. A text field labeled "New task" and an "Add" button add a task (Enter in the field adds it too). Tasks are listed in a list labeled "Tasks", oldest first. Each task has a checkbox labeled with the task's text to mark it done, and a button "Delete <task text>" to remove it. Store tasks in the database.

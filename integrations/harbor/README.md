@@ -35,6 +35,9 @@ ANTHROPIC_API_KEY=… PYTHONPATH=integrations/harbor .venv/bin/harbor run \
 
 - `permission_mode=dontAsk` refuses every tool call that `allowed_tools` does not allow: it
   cannot run `npm`, `node` or the app's code on this machine, only `sandburg`.
+- Except through a checks file: `sandburg run --checks` imports it in Sandburg's own Node process
+  on this machine, where Playwright runs, not in the browser. A checks file the agent writes (as
+  the instructions ask it to) is code it runs here.
 - Claude Code still runs its built-in read-only commands (`ls`, `cat`, `find`, `grep`, …)
   without asking, in every mode. [`claude-settings.json`](claude-settings.json) sets
   `permissions.blockReadsOutsideWorkingDirectories`, which fences those and the file tools to the
@@ -48,7 +51,8 @@ ANTHROPIC_API_KEY=… PYTHONPATH=integrations/harbor .venv/bin/harbor run \
 `build-tasks.ts` writes one task per app-gen eval task × stack ([`evals/app-gen`](../../evals/app-gen)):
 
 - `instruction.md`: what the generator page tells its model about the runtime, how to run the
-  app with `sandburg run`, and the eval's request.
+  app with `sandburg run`, how to try it out with checks of its own (`checks.spec.ts`, run with
+  `--checks`; a run without checks only loads the page), and the eval's request.
 - `environment/`: the stack's scaffold, copied into `/app` when the trial starts.
 - `tests/`: `test.sh` runs `sandburg run . --install-in browser` with the eval's checks
   (`checks.ts` loads them from `evals/app-gen/suite.ts`), and `reward.mjs` writes
