@@ -61,3 +61,14 @@ test('a thread whose parent is slow waits for it on paths its snapshot does not 
     await parent.terminate();
   }
 });
+
+// A parent that never answers is blocked, not slow: after a few seconds even a cache path is answered
+// from the snapshot (Tailwind v4's scanner, a WebAssembly thread, runs while its parent waits on it).
+test('a thread whose parent is blocked answers from its snapshot after all', () => {
+  const thread = new ThreadVfs(() => {}, new Vfs(() => new Uint8Array()), '/app', { '/app/src/main.ts': new TextEncoder().encode('') });
+  const started = performance.now();
+  assert.equal(thread.exists('/app/node_modules/.cache/vite'), false);
+  assert.ok(performance.now() - started >= 4500);
+  assert.equal(thread.exists('/app/.nuxt/nuxt.d.ts'), false); // at once now: the parent is known to be blocked
+  assert.ok(performance.now() - started < 6000);
+});

@@ -310,7 +310,9 @@ const TASKS: Task[] = [
 /**
  * A page the server rendered shows before it hydrates: what a person types in the first moment is
  * lost to the framework (the field keeps it, the app's state does not). A person waits for the page
- * to settle too, so each run's first check starts once the page has loaded and a moment has passed.
+ * to settle too, so each run's first check starts once the page has loaded, its scripts have
+ * arrived (a dev server on a loaded machine sends them for seconds after the load event) and a
+ * moment has passed.
  */
 function settleFirst(checks: Checks): Checks {
   const [first, ...rest] = Object.entries(checks);
@@ -321,6 +323,7 @@ function settleFirst(checks: Checks): Checks {
       name,
       async (ctx: Parameters<Checks[string]>[0]) => {
         await ctx.app.waitForLoadState('load');
+        await ctx.app.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
         await ctx.app.waitForTimeout(2000);
         await fn(ctx);
       },
