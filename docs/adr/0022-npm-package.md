@@ -46,5 +46,9 @@ anywhere.
 ## Consequences
 
 - The package is 166 files, 1.1 MB unpacked (0.3 MB packed).
-- Publishing is not set up: it needs an npm account and a token or trusted publishing.
+- **Releases use npm's trusted publishing** ([`release.yml`](../../.github/workflows/release.yml)). Pushing
+  a tag `v<version>` that matches `package.json` runs the typecheck, unit tests and packed-package test,
+  then `npm publish`. npm accepts the workflow's OIDC token, so the repository stores no npm token, and
+  publishes provenance. The job runs in the `npm` environment, which the package's trusted publisher
+  names, and installs without a dependency cache.
 - The version stays 0.x: the library's API still changes with most changes to the runner.
