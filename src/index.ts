@@ -1,6 +1,8 @@
 export { Session, runProject, DEFAULT_TIMEOUTS } from './orchestrator/session.ts';
 export type { RunOptions, SessionOptions } from './orchestrator/session.ts';
 export type { Checks, CheckContext, CheckFn } from './orchestrator/checks.ts';
+export { loadPageChecks } from './page-checks/index.ts';
+export type { PageChecks } from './page-checks/index.ts';
 export { loadProject, projectFromFiles } from './project.ts';
 export { classify } from './classify.ts';
 export { adapterNames, getAdapter } from './adapters.ts';

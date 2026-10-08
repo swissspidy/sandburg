@@ -101,6 +101,13 @@ export default {
 } satisfies Checks;
 ```
 
+A checks file is imported by Sandburg's Node process: it can do anything a program on this machine
+can. For checks someone else wrote (a coding agent), `--checks-in page` runs the file's code in the
+sandbox tab instead, with the same `app`, `expect` and `appUrl`: Playwright's locators (resolved
+by [ivya](https://github.com/vitest-dev/ivya)), actions and assertions, waiting as Playwright's do.
+The file cannot import anything, and input comes from scripted events, so CSS `:hover` does not
+apply and a native `<select>`'s list does not open ([ADR 0023](docs/adr/0023-checks-in-the-page.md)).
+
 ## Library
 
 ```ts

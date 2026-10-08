@@ -35,9 +35,11 @@ ANTHROPIC_API_KEY=… PYTHONPATH=integrations/harbor .venv/bin/harbor run \
 
 - `permission_mode=dontAsk` refuses every tool call that `allowed_tools` does not allow: it
   cannot run `npm`, `node` or the app's code on this machine, only `sandburg`.
-- Except through a checks file: `sandburg run --checks` imports it in Sandburg's own Node process
-  on this machine, where Playwright runs, not in the browser. A checks file the agent writes (as
-  the instructions ask it to) is code it runs here.
+- The trial's `sandburg` is fenced ([`fence.mjs`](fence.mjs)). It runs `sandburg run` on the
+  project and nothing else. Every path it takes (the project, `--checks`, `--out`) must be inside
+  the project. Packages are installed in the browser, and checks run in the page
+  (`--checks-in page`): a checks file the agent writes runs in Sandburg's browser tab, not here.
+  The verifier runs Sandburg itself (`bin/sandburg.js`), with the task's checks on this machine.
 - Claude Code still runs its built-in read-only commands (`ls`, `cat`, `find`, `grep`, …)
   without asking, in every mode. [`claude-settings.json`](claude-settings.json) sets
   `permissions.blockReadsOutsideWorkingDirectories`, which fences those and the file tools to the
@@ -52,7 +54,7 @@ ANTHROPIC_API_KEY=… PYTHONPATH=integrations/harbor .venv/bin/harbor run \
 
 - `instruction.md`: what the generator page tells its model about the runtime, how to run the
   app with `sandburg run`, how to try it out with checks of its own (`checks.spec.ts`, run with
-  `--checks`; a run without checks only loads the page), and the eval's request.
+  `--checks` in the page; a run without checks only loads the page), and the eval's request.
 - `environment/`: the stack's scaffold, copied into `/app` when the trial starts.
 - `tests/`: `test.sh` runs `sandburg run . --install-in browser` with the eval's checks
   (`checks.ts` loads them from `evals/app-gen/suite.ts`), and `reward.mjs` writes
@@ -93,11 +95,11 @@ downloads. Only whole paths are mapped (`/app` and `/app/…`, not `/application
 `/logs/verifier` and `/logs/artifacts` are the trial's own log folders, so Harbor reads them in
 place.
 
-Commands run with `bash -c`, as the current user, with a `sandburg` command on `PATH`, and with
+Commands run with `bash -c`, as the current user, with the fenced `sandburg` command on `PATH`, and with
 only a few of this machine's environment variables (`PATH`, `HOME`, locale, proxy and CA settings,
 `SANDBURG_*`; `SANDBURG_HARBOR_PASS_ENV` adds names), as a container starts clean. Harbor adds the
 trial's own variables, such as the agent's API key. The `sandburg` command installs an app's
-packages in the browser unless `--install-in` says otherwise, and all trials share one HTTP cache
+packages in the browser, and all trials and their verifiers share one HTTP cache
 (`SANDBURG_HARBOR_CACHE`, default `~/.cache/sandburg-harbor`).
 
 Known gaps:

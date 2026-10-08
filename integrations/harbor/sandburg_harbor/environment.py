@@ -15,10 +15,13 @@ directory, and the environment maps those paths into it:
 `/logs/agent`, `/logs/verifier` and `/logs/artifacts` map straight to the trial's own log folders
 (the mounts Harbor passes in), so Harbor reads them without copying.
 
-Commands run with `bash -c` on this machine, as the current user, with a `sandburg` command on
-`PATH` (browser installs and a shared HTTP cache by default), and only a few of this machine's environment variables (PASS_ENV). Nothing here isolates the agent: limit what it may run with its own permissions (for
-Claude Code, `permission_mode=dontAsk` and an `allowed_tools` list). What isolation there is
-belongs to the app: its packages are installed, and its code runs, in Sandburg's browser tab.
+Commands run with `bash -c` on this machine, as the current user, and only a few of this
+machine's environment variables (PASS_ENV). Nothing here isolates the agent: limit what it may run
+with its own permissions (for Claude Code, `permission_mode=dontAsk` and an `allowed_tools` list
+with only `sandburg`). The `sandburg` on `PATH` is fenced (fence.mjs): it runs the agent's project
+and nothing else, installs its packages and runs its checks in Sandburg's browser tab, and reads
+and writes only inside the project. What isolation there is belongs to the app and to the agent's
+checks: they run in the browser.
 """
 
 from __future__ import annotations
@@ -34,8 +37,10 @@ from pathlib import Path
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.environments.capabilities import EnvironmentCapabilities
 
-# The repository this file is in: its `bin/sandburg.js` is the `sandburg` command.
+# The repository this file is in: its `bin/sandburg.js` is Sandburg's command line.
 SANDBURG_HOME = Path(os.environ.get("SANDBURG_HOME", Path(__file__).resolve().parents[3]))
+# The agent's `sandburg` command: Sandburg's, fenced to the trial's project (see fence.mjs).
+FENCE = Path(__file__).resolve().parents[1] / "fence.mjs"
 
 # What a command gets from this machine's environment, as a container would start clean: the rest
 # (an outer agent's own variables, API endpoints) would leak into the agent. Harbor adds the
@@ -99,19 +104,12 @@ class SandburgEnvironment(BaseEnvironment):
         )
         bin_dir = self.root / ".bin"
         bin_dir.mkdir(exist_ok=True)
+        # The agent's `sandburg` (fence.mjs): `sandburg run` on its project, packages installed and
+        # checks run in the browser, the trials' shared HTTP cache (keyed by URL; package documents
+        # are fetched again when stale), so that each trial does not download everything again.
+        self._cache = Path(os.environ.get("SANDBURG_HARBOR_CACHE", Path.home() / ".cache" / "sandburg-harbor"))
         sandburg = bin_dir / "sandburg"
-        # Runs install the app's packages in the browser (not with npm on this machine) unless told
-        # otherwise, and share one HTTP cache across trials (keyed by URL; package documents are
-        # fetched again when stale), so that each trial does not download everything again.
-        cache = Path(os.environ.get("SANDBURG_HARBOR_CACHE", Path.home() / ".cache" / "sandburg-harbor"))
-        sandburg.write_text(
-            "#!/bin/sh\n"
-            'case "$1" in run|open|batch)\n'
-            '  case " $* " in *" --install-in"*) ;; *) set -- "$@" --install-in browser ;; esac\n'
-            f'  case " $* " in *" --cache"*) ;; *) set -- "$@" --cache {shlex.quote(str(cache))} ;; esac ;;\n'
-            "esac\n"
-            f'exec node {shlex.quote(str(SANDBURG_HOME / "bin" / "sandburg.js"))} "$@"\n'
-        )
+        sandburg.write_text(f'#!/bin/sh\nexec node {shlex.quote(str(FENCE))} "$@"\n')
         sandburg.chmod(0o755)
         self._bin_dir = bin_dir
         # The task's starting files (a stack's scaffold) go into the workdir.
@@ -148,6 +146,10 @@ class SandburgEnvironment(BaseEnvironment):
         environ["PATH"] = f"{self._bin_dir}{os.pathsep}{environ.get('PATH', '')}"
         # The task's checks load the eval's suite from Sandburg's repository.
         environ.setdefault("SANDBURG_HOME", str(SANDBURG_HOME))
+        # What fence.mjs confines `sandburg` to, and the cache the verifier shares too: set here, not
+        # taken from this machine's environment.
+        environ["SANDBURG_FENCE_ROOT"] = str(self._host(self.workdir))
+        environ["SANDBURG_HARBOR_CACHE"] = str(self._cache)
         process = await asyncio.create_subprocess_exec(
             "bash",
             "-c",

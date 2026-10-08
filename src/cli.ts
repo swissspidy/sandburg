@@ -24,6 +24,8 @@ Options:
                        from the npm registry itself)
   --checks <file>      Checks file; default export maps check names to functions
                        (batch: a project's own checks.spec.ts takes precedence)
+  --checks-in <where>  host (default: the checks file is imported here) or page (its code runs in
+                       the sandbox tab, with Playwright-shaped locators and expect)
   --parallel <n>       batch/compare: tabs at a time (default: 4)
   --no-prewarm         batch/compare: do not warm up common stacks first (only runs when their
                        installs are missing)
@@ -44,6 +46,7 @@ const OPTIONS = {
   runtime: { type: 'string', default: 'node' },
   'install-in': { type: 'string', default: 'host' },
   checks: { type: 'string' },
+  'checks-in': { type: 'string', default: 'host' },
   parallel: { type: 'string', default: '4' },
   prewarm: { type: 'boolean', default: true },
   out: { type: 'string' },
@@ -89,10 +92,15 @@ export async function main(argv: string[]): Promise<number> {
     console.error('--install-in must be host or browser');
     return 64;
   }
+  if (values['checks-in'] !== 'host' && values['checks-in'] !== 'page') {
+    console.error('--checks-in must be host or page');
+    return 64;
+  }
   const runOptions: RunOptions = {
     runtime: values.runtime,
     installIn: values['install-in'],
     checks: values.checks,
+    checksIn: values['checks-in'],
     outDir: values.out,
     readySelector: values.ready,
   };

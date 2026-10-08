@@ -76,3 +76,49 @@ def test_commands_do_not_inherit_an_outer_agents_variables(tmp_path: Path, monke
     out = asyncio.run(env.exec('echo "${CLAUDECODE:-unset} ${ANTHROPIC_BASE_URL:-unset} $SANDBURG_CHROMIUM"', env={"A": "/app/x"}))
     assert out.stdout.strip() == "unset unset /x/chromium"
     assert asyncio.run(env.exec("echo $A", env={"A": "/app/x"})).stdout.strip() == f"{env.root / 'app'}/x"
+
+
+def fake_sandburg(tmp_path: Path, monkeypatch) -> None:
+    """A Sandburg whose command line prints its arguments, one per line."""
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "sandburg.js").write_text("for (const a of process.argv.slice(2)) console.log(a);\n")
+    monkeypatch.setenv("SANDBURG_HOME", str(home))
+
+
+def test_sandburg_runs_the_project_with_checks_in_the_page(tmp_path: Path, monkeypatch) -> None:
+    fake_sandburg(tmp_path, monkeypatch)
+    env = environment(tmp_path)
+    app = env.root / "app"
+    out = asyncio.run(env.exec("sandburg run . --checks checks.spec.ts --json"))
+    assert out.return_code == 0, out.stderr
+    args = out.stdout.splitlines()
+    assert args[:2] == ["run", str(app)]
+    assert args[args.index("--install-in") + 1] == "browser"
+    assert args[args.index("--checks-in") + 1] == "page"
+    assert args[args.index("--checks") + 1] == str(app / "checks.spec.ts")
+    assert args[args.index("--out") + 1] == str(app / ".sandburg" / "runs")
+    assert "--cache" in args and "--json" in args
+
+
+def test_sandburg_refuses_what_reaches_beyond_the_project(tmp_path: Path, monkeypatch) -> None:
+    fake_sandburg(tmp_path, monkeypatch)
+    env = environment(tmp_path)
+    (env.root / "elsewhere").mkdir()
+    (env.root / "app" / "link").symlink_to(env.root / "elsewhere")
+    for command, why in [
+        ("sandburg run /etc", "not inside the project"),
+        ("sandburg run ..", "not inside the project"),
+        ("sandburg run link", "not inside the project"),
+        ("sandburg run . --checks ../checks.ts", "not inside the project"),
+        ("sandburg run . --out /tmp/x", "not inside the project"),
+        ("sandburg run . --checks-in host --checks a.spec.ts", "checks run in the page"),
+        ("sandburg run . --install-in host", "installed in the browser"),
+        ("sandburg run . --cache /tmp/c", "Unknown option"),
+        ("sandburg compare .", 'only "sandburg run"'),
+        ("sandburg run . -- --checks-in host", "unexpected arguments"),
+    ]:
+        out = asyncio.run(env.exec(command))
+        assert out.return_code == 64, (command, out.stdout)
+        assert why in out.stderr, (command, out.stderr)
+        assert out.stdout == "", command
