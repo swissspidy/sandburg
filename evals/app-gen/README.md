@@ -80,3 +80,13 @@ checks left. Checks are Sandburg
 checks (`{ app, expect, appUrl }`) and run in order against one app. Before trusting a new check,
 make sure a correct app passes it. A check that acts faster than a person would is a common cause
 of false failures: wait for the result of one action before starting the next.
+
+## Checks in the page
+
+`compare-checks-in.ts` runs the suite's checks on an eval run's apps twice: on the host, with
+Playwright, and in the page (`--checks-in page`, [ADR 0023](../../docs/adr/0023-checks-in-the-page.md)).
+It then lists every check whose status differs between the two:
+
+```sh
+node evals/app-gen/compare-checks-in.ts .sandburg/evals/<run> [--model claude-opus-5-5] [--parallel 3]
+```

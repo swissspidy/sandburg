@@ -56,8 +56,15 @@ dispatches pointer, keyboard and focus events in the order a browser would.
 
 ## Consequences
 
-- The eval's own checks, run in the page on the eval's passing apps, agree with Playwright's: see
-  the numbers below.
+- The app-gen suite's checks agree with Playwright's on every check of the eval run of
+  2026-10-06 ([`evals/app-gen/compare-checks-in.ts`](../../evals/app-gen/compare-checks-in.ts)).
+  Each app and step ran on the host and in the page:
+  - **Claude Opus 5.5's apps, all passing:** 60 steps, 168 checks, all passed in both modes.
+  - **Gemini 3.1 Pro's apps:** 39 steps, 21 of them failing. Of their 110 checks, 58 passed,
+    51 failed and 1 was broken (`error`), each the same in both modes.
+
+  These are forms, buttons, lists and reloads; hover menus, drag and drop and custom selects are
+  not in the suite.
 - The page's runtime is about 300 KB (mostly ivya), bundled on first use.
 - ivya follows Playwright's injected script; Sandburg's Playwright and ivya can drift apart in
   edge cases of matching.
