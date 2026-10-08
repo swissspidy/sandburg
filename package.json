@@ -29,7 +29,9 @@
     "test:e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.test.ts",
     "spike": "node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts",
     "test:runtime": "node --test --test-reporter=spec test/runtime/*.test.ts",
-    "test:pack": "node --test --test-reporter=spec test/pack/*.test.ts"
+    "test:pack": "node --test --test-reporter=spec test/pack/*.test.ts",
+    "changeset": "changeset",
+    "version-packages": "changeset version && npm install --package-lock-only --ignore-scripts"
   },
   "dependencies": {
     "@napi-rs/wasm-runtime": "^1.2.4",
@@ -55,6 +57,8 @@
     "util": "^0.12.5"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
     "@types/node": "^26.6.3",
     "@types/semver": "7.8.0",
     "typescript": "^7.0.2"
