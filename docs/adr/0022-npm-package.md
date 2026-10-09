@@ -46,5 +46,16 @@ anywhere.
 ## Consequences
 
 - The package is 166 files, 1.1 MB unpacked (0.3 MB packed).
-- Publishing is not set up: it needs an npm account and a token or trusted publishing.
+- **Releases use Changesets and npm's trusted publishing** ([`release.yml`](../../.github/workflows/release.yml)),
+  as `swissspidy/playwright-webmcp` does. Pull requests add changesets; on `main`, Changesets keeps a
+  "Version packages" pull request that bumps `package.json` and writes `CHANGELOG.md`. When `main`'s
+  version has no tag yet (that pull request was merged), the workflow tests, packs and publishes it, then
+  tags it and creates its GitHub release from its changelog section. npm accepts the workflow's OIDC
+  token, so the repository stores no npm token, and publishes provenance.
+- **Only the publishing job can request that token, and it installs nothing.** It publishes the tarball
+  that an earlier job built, tested and packed, so no dependency's install script or test code runs where
+  it could publish. The Changesets job, which can push and open pull requests, installs with
+  `--ignore-scripts`. No job uses a dependency cache. The publishing job runs in the `npm` environment,
+  which the package's trusted publisher names, and skips `npm publish` when the version is already on
+  npm, so a run that failed after publishing can be re-run for its tag and release.
 - The version stays 0.x: the library's API still changes with most changes to the runner.
