@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { expect } from '@playwright/test';
 import type { Frame, Page } from 'playwright-core';
 import type { CheckKind, CheckResult, CheckStatus, ConsoleEntry, NetworkEntry, PageError } from '../types.ts';
+import { isPageChecks, runPageChecks, type PageChecks } from '../page-checks/index.ts';
 
 export interface CheckContext {
   /** The app frame. Locators, getByRole etc. work as on a page. */
@@ -40,7 +41,8 @@ export async function loadChecks(file: string): Promise<Checks> {
 export interface ChecksInput {
   page: Page;
   app: Frame;
-  checks: Checks | null;
+  /** Checks to run here, or a checks file to run in the page (--checks-in page). */
+  checks: Checks | PageChecks | null;
   checkTimeoutMs: number;
   /** Default timeout of expect() assertions. */
   expectTimeoutMs?: number;
@@ -88,7 +90,23 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   );
   results.push(await timed('axe', 'axe', 'axe-core accessibility scan', false, () => runAxe(app)));
 
-  for (const [name, fn] of Object.entries(input.checks ?? {})) {
+  if (isPageChecks(input.checks)) {
+    const started = performance.now();
+    try {
+      results.push(...(await runPageChecks(page, input.checks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 })));
+    } catch (err) {
+      results.push({
+        id: 'functional:checks-file',
+        kind: 'functional',
+        name: 'checks file',
+        blocking: true,
+        durationMs: ms(started),
+        status: 'error',
+        message: stripAnsi(err instanceof Error ? err.message : String(err)),
+      });
+    }
+  }
+  for (const [name, fn] of Object.entries(isPageChecks(input.checks) ? {} : (input.checks ?? {}))) {
     results.push(
       await timed(`functional:${slug(name)}`, 'functional', name, true, async () => {
         const configured = input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect;

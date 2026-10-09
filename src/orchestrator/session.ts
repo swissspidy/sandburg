@@ -26,6 +26,7 @@ import type {
 } from '../types.ts';
 import type { HostApi, RpcResult } from '../host/types.ts';
 import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.ts';
+import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
 import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
 import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
@@ -77,8 +78,17 @@ export interface RunOptions {
   runtime?: string;
   /** Run in an out-of-browser runtime instead (e.g. the Docker reference); called once per run. */
   nodeRuntime?: () => NodeRuntime;
-  /** Checks, or the path of a checks file whose default export maps names to check functions. */
-  checks?: string | Checks;
+  /**
+   * Checks, or the path of a checks file whose default export maps names to check functions, or a
+   * checks file loaded to run in the page (loadPageChecks).
+   */
+  checks?: string | Checks | PageChecks;
+  /**
+   * Where a checks file (a path in `checks`) runs: 'host' (imported here, the default) or 'page'
+   * (its code runs in the sandbox tab, with Playwright-shaped locators and expect: for checks
+   * written by someone who may not run code on this machine; ADR 0023).
+   */
+  checksIn?: 'host' | 'page';
   /** Results go to <outDir>/<runId>/. Default: .sandburg/runs */
   outDir?: string;
   /** CSS selector that must match a rendered element before checks start. */
@@ -223,7 +233,10 @@ export class Session {
     const adapter = node ? null : getAdapter(options.runtime ?? DEFAULT_RUNTIME);
     const runtimeInfo = node ?? adapter!;
     await this.store.put(project.files, project.name);
-    const checks = typeof options.checks === 'string' ? await loadChecks(options.checks) : (options.checks ?? null);
+    const checks =
+      typeof options.checks === 'string'
+        ? await (options.checksIn === 'page' ? loadPageChecks(options.checks) : loadChecks(options.checks))
+        : (options.checks ?? null);
     const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
@@ -333,7 +346,7 @@ export class Session {
     runId: string,
     outDir: string,
     timeouts: Record<PhaseName | 'check' | 'expect', number>,
-    checks: Checks | null,
+    checks: Checks | PageChecks | null,
     options: RunOptions,
   ): Promise<void> {
     const logs: string[] = [];
@@ -365,7 +378,7 @@ async function runChecksPhase(
   run: RunState,
   page: Page,
   app: Frame,
-  checks: Checks | null,
+  checks: Checks | PageChecks | null,
   timeouts: Record<PhaseName | 'check' | 'expect', number>,
   outDir: string,
   options: RunOptions,

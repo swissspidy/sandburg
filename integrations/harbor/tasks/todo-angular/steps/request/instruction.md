@@ -17,11 +17,34 @@ How to write the app:
 The project in the current directory is the scaffold to start from: Angular 22 (standalone components, signals, TypeScript) on the Angular CLI's dev server (ng serve). The backend is an Express 5 API in server/index.js on port 3001, behind ng serve's proxy for /api (proxy.conf.json); `npm run dev` starts both with concurrently. Data in SQLite through node:sqlite (server/db.js). Keep the proxy and the ports.
 
 You edit its files here; you cannot run `npm`, `node` or the app on this machine. To run it, use
-`sandburg run . --install-in browser`: it installs the packages and starts the dev server in a
-browser tab, and reports whether the app rendered, the dev server's errors and the page's
-console errors. Add `--json` for the whole result, including the run's log. It also writes a
-screenshot and the page's accessibility tree; their paths are in the summary. Run it again after
-a change. Your work is checked the same way, in a fresh browser.
+`sandburg run .`: it installs the packages and starts the dev server in a browser tab, and reports
+whether the app rendered, the dev server's errors and the page's console errors. Add `--json` for
+the whole result, including the run's log. It also writes a screenshot and the page's
+accessibility tree; their paths are in the summary. Run it again after a change. Your work is
+checked the same way, in a fresh browser.
+
+A run without checks only loads the page. To try out what the task asks for, as a person would,
+write checks in `checks.spec.ts` and run `sandburg run . --checks checks.spec.ts`. The file
+default-exports named checks. They run in order against one app, in the browser tab, with the
+app's frame (`app`), `expect` and `appUrl(path)`, as in Playwright:
+
+```ts
+export default {
+  'adds an item': async ({ app, expect }) => {
+    await app.getByLabel('Name', { exact: true }).fill('Milk');
+    await app.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(app.getByRole('list', { name: 'Items' })).toContainText('Milk');
+  },
+  'items come from the database': async ({ app, expect, appUrl }) => {
+    await app.goto(appUrl('/'));
+    await expect(app.getByRole('list', { name: 'Items' })).toContainText('Milk');
+  },
+};
+```
+
+Locators, actions and `expect` work as in Playwright; the file cannot import anything. Use the
+names and labels the task gives. With `--json`, a failing check's `message` says what it expected
+and what the page had. Files named `*.spec.ts` are not part of the app.
 
 ## Task
 

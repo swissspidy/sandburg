@@ -31,7 +31,7 @@ after(() => rm(dir, { recursive: true, force: true }));
 test('the package holds the CLI, its build and the sources the page is bundled from, and nothing else', () => {
   const outside = files.filter((f) => !/^(bin|dist|src)\//.test(f) && !['package.json', 'README.md', 'LICENSE'].includes(f));
   assert.deepEqual(outside, []);
-  for (const f of ['bin/sandburg.js', 'dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'src/host/host.ts', 'src/node-runtime/worker.ts', 'src/adapters/node/sw.js']) {
+  for (const f of ['bin/sandburg.js', 'dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'src/host/host.ts', 'src/node-runtime/worker.ts', 'src/adapters/node/sw.js', 'src/page-checks/runtime.ts']) {
     assert.ok(files.includes(f), f);
   }
 });
@@ -52,6 +52,28 @@ export default {
 `,
   );
   const { stdout } = await run(join(dir, 'node_modules/.bin/sandburg'), ['run', fixtureDir, '--checks', checks, '--json'], {
+    cwd: dir,
+    maxBuffer: 64 << 20,
+    timeout: 300_000,
+  });
+  const result = JSON.parse(stdout) as { status: string; checks: { name: string; status: string }[] };
+  assert.equal(result.status, 'passed', stdout);
+  assert.ok(result.checks.some((c) => c.name === 'counter increments on click' && c.status === 'passed'));
+});
+
+test('the installed CLI runs a checks file in the page (its runtime bundled from the installed packages)', async () => {
+  const checks = join(dir, 'page.spec.ts');
+  await writeFile(
+    checks,
+    `export default {
+  'counter increments on click': async ({ app, expect }) => {
+    await app.getByRole('button', { name: /count is/ }).click();
+    await expect(app.getByRole('button', { name: /count is/ })).toHaveText('count is 1');
+  },
+};
+`,
+  );
+  const { stdout } = await run(join(dir, 'node_modules/.bin/sandburg'), ['run', fixtureDir, '--checks', checks, '--checks-in', 'page', '--json'], {
     cwd: dir,
     maxBuffer: 64 << 20,
     timeout: 300_000,

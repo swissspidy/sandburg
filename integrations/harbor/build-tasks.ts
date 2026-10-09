@@ -51,9 +51,11 @@ const out = resolve(values.out);
 
 const TEST_SH = `#!/bin/bash
 # Runs the app in Sandburg (packages installed in the browser) with the task's checks, and keeps the
-# database they leave behind in the project for the next step.
+# database they leave behind in the project for the next step. Sandburg itself, not the agent's
+# fenced \`sandburg\`: the task's checks run on this machine, as in the eval.
 mkdir -p /logs/verifier
-sandburg run . --install-in browser --checks /tests/checks.ts --out /logs/verifier/sandburg --json \\
+node "$SANDBURG_HOME/bin/sandburg.js" run . --install-in browser --cache "$SANDBURG_HARBOR_CACHE" \\
+  --checks /tests/checks.ts --out /logs/verifier/sandburg --json \\
   --save-files '${DATA_FILES}' \\
   > /logs/verifier/sandburg-result.json 2> /logs/verifier/sandburg.log
 node /tests/reward.mjs /logs/verifier/sandburg-result.json /logs/verifier/reward.json
@@ -91,11 +93,34 @@ const instruction = (prompt: string, project: string) => `${RUNTIME}
 ${project}
 
 You edit its files here; you cannot run \`npm\`, \`node\` or the app on this machine. To run it, use
-\`sandburg run . --install-in browser\`: it installs the packages and starts the dev server in a
-browser tab, and reports whether the app rendered, the dev server's errors and the page's
-console errors. Add \`--json\` for the whole result, including the run's log. It also writes a
-screenshot and the page's accessibility tree; their paths are in the summary. Run it again after
-a change. Your work is checked the same way, in a fresh browser.
+\`sandburg run .\`: it installs the packages and starts the dev server in a browser tab, and reports
+whether the app rendered, the dev server's errors and the page's console errors. Add \`--json\` for
+the whole result, including the run's log. It also writes a screenshot and the page's
+accessibility tree; their paths are in the summary. Run it again after a change. Your work is
+checked the same way, in a fresh browser.
+
+A run without checks only loads the page. To try out what the task asks for, as a person would,
+write checks in \`checks.spec.ts\` and run \`sandburg run . --checks checks.spec.ts\`. The file
+default-exports named checks. They run in order against one app, in the browser tab, with the
+app's frame (\`app\`), \`expect\` and \`appUrl(path)\`, as in Playwright:
+
+\`\`\`ts
+export default {
+  'adds an item': async ({ app, expect }) => {
+    await app.getByLabel('Name', { exact: true }).fill('Milk');
+    await app.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(app.getByRole('list', { name: 'Items' })).toContainText('Milk');
+  },
+  'items come from the database': async ({ app, expect, appUrl }) => {
+    await app.goto(appUrl('/'));
+    await expect(app.getByRole('list', { name: 'Items' })).toContainText('Milk');
+  },
+};
+\`\`\`
+
+Locators, actions and \`expect\` work as in Playwright; the file cannot import anything. Use the
+names and labels the task gives. With \`--json\`, a failing check's \`message\` says what it expected
+and what the page had. Files named \`*.spec.ts\` are not part of the app.
 
 ## Task
 
