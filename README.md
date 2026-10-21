@@ -179,8 +179,9 @@ after a week's cooldown. Every action is pinned to a commit.
 
 A pull request that changes what the package does adds a changeset (`npx changeset`): the bump and a line
 for the changelog ([`.changeset/`](.changeset)). The Release workflow gathers them on `main` into a
-"Version packages" pull request; merging it tests and publishes that version to npm with npm's trusted
-publishing (no npm token in the repository) and provenance, tags it and creates its GitHub release.
+"Version packages" pull request; merging it tests and stages that version on npm with npm's trusted
+publishing (no npm token in the repository) and provenance, tags it and creates its GitHub release. The
+version goes public once a maintainer approves the staged publish on npmjs.com.
 
 On networks that re-terminate TLS, Sandburg trusts the CAs in `$SANDBURG_EXTRA_CA_CERTS` (or
 `$NODE_EXTRA_CA_CERTS`) in the browser too, by pinning their public keys. Certificate verification
