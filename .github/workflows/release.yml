@@ -5,9 +5,11 @@
 #    changesets. Merging it bumps package.json and CHANGELOG.md, and package.json then names a
 #    version with no tag yet: that is a release.
 # 2. pack (a release only): installs, tests and packs the package. It cannot request an OIDC token.
-# 3. publish (a release only): publishes that tarball with the job's OIDC token (npm adds
+# 3. publish (a release only): stages that tarball on npm with the job's OIDC token (npm adds
 #    provenance), then tags the version and creates its GitHub release. It installs nothing, so no
-#    dependency's install script or test code runs where it could publish.
+#    dependency's install script or test code runs where it could publish. A staged version goes
+#    public only once a maintainer approves it with 2FA, on npmjs.com (Staged Packages) or with
+#    `npm stage approve <stage-id>`.
 name: Release
 
 on:
@@ -95,11 +97,12 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish to npm
+    name: Stage on npm
     needs: [version, pack]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The npm package's trusted publisher names this workflow and environment.
+    # The npm package's trusted publisher names this workflow and environment, and only allows
+    # staged publishes.
     environment: npm
     permissions:
       contents: write # the version's tag and GitHub release
@@ -122,21 +125,25 @@ jobs:
           package-manager-cache: false
       - name: Check npm's version
         run: |
-          # Trusted publishing needs npm 11.5.1 or later.
+          # Staged publishing needs npm 11.15.0 or later.
           npm_version="$(npm --version)"
           node -e '
-            const [a, b, c] = process.argv[1].split(".").map(Number);
-            if (a < 11 || (a === 11 && (b < 5 || (b === 5 && c < 1)))) throw new Error(`npm ${process.argv[1]} cannot use trusted publishing (11.5.1 or later)`);
+            const [a, b] = process.argv[1].split(".").map(Number);
+            if (a < 11 || (a === 11 && b < 15)) throw new Error(`npm ${process.argv[1]} cannot stage publishes (11.15.0 or later)`);
           ' "$npm_version"
       # A tarball (./: npm would read release/x as a GitHub repository): no install, no lifecycle
-      # scripts. Skipped when the version is already on npm, so a run that failed after publishing
-      # can be re-run for its tag and release.
-      - name: Publish
+      # scripts. Skipped when the version is already on npm. A staged version is not on npm yet,
+      # and this job cannot list stages (that needs a maintainer's login), so approve or reject what
+      # a failed run staged before re-running it. The stage ID goes in the job summary, for approving.
+      - name: Stage
         run: |
           if npm view "sandburg@$VERSION" version >/dev/null 2>&1; then
             echo "sandburg@$VERSION is already on npm"
           else
-            npm publish ./release/*.tgz
+            npm stage publish ./release/*.tgz > stage.log
+            cat stage.log
+            stage_id="$(sed -n 's/.*(staged with id \(.*\))$/\1/p' stage.log)"
+            echo "Staged sandburg@$VERSION: approve it under Staged Packages on npmjs.com, or with \`npm stage approve ${stage_id:-<stage-id>}\`." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Tag and create the GitHub release
         env:
