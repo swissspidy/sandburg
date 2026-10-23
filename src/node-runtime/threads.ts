@@ -416,9 +416,10 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
     onError(e.message);
   };
   const message = host.childInit({ ...init, snapshot: projectSnapshot(host.vfs(), host.root()) });
-  // The child's own port to the page's compiler, if there is one (worker.ts); last, after the
-  // ports of `transfer` (their mailboxes go by position).
-  worker.postMessage(message, message.compilePort ? [...transfer, message.compilePort as MessagePort] : transfer);
+  // The child's own ports to the page's compiler and to the file channel, if there are (worker.ts);
+  // last, after the ports of `transfer` (their mailboxes go by position).
+  const ports = [message.compilePort, (message.filesChannel as { port: MessagePort } | null | undefined)?.port].filter((p): p is MessagePort => !!p);
+  worker.postMessage(message, [...transfer, ...ports]);
   liveRuntimes.add(worker);
   const terminate = worker.terminate.bind(worker);
   worker.terminate = () => {

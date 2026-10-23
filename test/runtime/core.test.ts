@@ -727,6 +727,61 @@ test('fs: streamed and positional writes grow a file in place, as in Node', asyn
   assert.deepEqual(JSON.parse(out.stdout), ['aXYdefgh', 640 * 64 * 1024, true, 640 * 64 * 1024 + 3, true]);
 });
 
+test('Buffer: UTF-8 lengths and UTF-16 writes of long strings, as in Node', async () => {
+  const strings = ['a'.repeat(100), 'é'.repeat(70) + 'x', '€'.repeat(80), '😀'.repeat(40), 'x'.repeat(70) + '\ud800' + 'y', 'z'.repeat(70) + '\udc00\ud83d'];
+  const program = `
+    const strings = ${JSON.stringify(strings)};
+    const out = strings.map((s) => {
+      const b = Buffer.alloc(s.length * 2 + 3);
+      return [Buffer.byteLength(s), Buffer.byteLength(s, 'utf8'), Buffer.from(s, 'utf16le').toString('hex'), b.write(s, 1, 'ucs2'), b.toString('hex'), Buffer.alloc(41).write(s, 'utf16le'), Buffer.alloc(200).write(s, 0, 33, 'utf-16le')];
+    });
+    console.log(JSON.stringify(out));`;
+  const r = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(r.fatal, null);
+  const expected = strings.map((s) => {
+    const b = Buffer.alloc(s.length * 2 + 3);
+    return [Buffer.byteLength(s), Buffer.byteLength(s, 'utf8'), Buffer.from(s, 'utf16le').toString('hex'), b.write(s, 1, 'ucs2'), b.toString('hex'), Buffer.alloc(41).write(s, 'utf16le'), Buffer.alloc(200).write(s, 0, 33, 'utf-16le')];
+  });
+  assert.deepEqual(JSON.parse(r.stdout), expected);
+});
+
+test('crypto: SHA hashes of chunked input, as in Node', async () => {
+  const program = `
+    const crypto = require('crypto');
+    const data = Buffer.from(Array.from({ length: 1000 }, (_, i) => (i * 7) % 256));
+    const out = [];
+    for (const alg of ['sha1', 'sha256', 'sha512', 'md5']) {
+      for (const sizes of [[0], [1], [63], [64], [65], [1000], [3, 61, 64, 1, 200, 671], [500, 500]]) {
+        const h = crypto.createHash(alg);
+        let at = 0;
+        for (const n of sizes) { h.update(data.subarray(at, at + n)); at += n; }
+        out.push(h.digest('hex'));
+      }
+      out.push(crypto.createHash(alg).update('é'.repeat(100)).update('x', 'utf8').update('ff00', 'hex').digest('base64'));
+      out.push(crypto.createHash(alg).update(new Uint16Array([1, 2, 3])).digest('hex'));
+    }
+    console.log(JSON.stringify(out));`;
+  const r = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(r.fatal, null);
+  const { createHash } = await import('node:crypto');
+  const data = Buffer.from(Array.from({ length: 1000 }, (_, i) => (i * 7) % 256));
+  const expected: string[] = [];
+  for (const alg of ['sha1', 'sha256', 'sha512', 'md5']) {
+    for (const sizes of [[0], [1], [63], [64], [65], [1000], [3, 61, 64, 1, 200, 671], [500, 500]]) {
+      const hash = createHash(alg);
+      let at = 0;
+      for (const n of sizes) {
+        hash.update(data.subarray(at, at + n));
+        at += n;
+      }
+      expected.push(hash.digest('hex'));
+    }
+    expected.push(createHash(alg).update('é'.repeat(100)).update('x', 'utf8').update('ff00', 'hex').digest('base64'));
+    expected.push(createHash(alg).update(new Uint16Array([1, 2, 3])).digest('hex'));
+  }
+  assert.deepEqual(JSON.parse(r.stdout), expected);
+});
+
 test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buffer and streams', async () => {
   const runtime = await bundleNodeRuntime();
   assert.ok(!/node_modules\/(crypto-browserify|browserify-zlib|@napi-rs\/wasm-runtime)\//.test(runtime), 'the runtime script leaves them out');

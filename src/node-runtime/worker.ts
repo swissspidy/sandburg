@@ -34,6 +34,7 @@ import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActi
 import * as misc from './builtins/misc.ts';
 import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
+import ShaHash from 'sha.js/hash.js';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
@@ -51,9 +52,15 @@ export type ToWorker =
       filesBundle?: string | null;
       /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
       compileCache?: { key: string; bundle: string | null } | null;
+      /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
+      prefetched?: Record<string, SharedArrayBuffer>;
       nodeModules: Record<string, number> | null;
       /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
       pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
+      /** The preload bundle's files, as the parent runtime read them: shared memory and its index (see sharedPreload). */
+      shared?: SharedPreload | null;
+      /** A port to the parent's file channel (see openChannel) and its ready flag. */
+      filesChannel?: { port: MessagePort; ready: SharedArrayBuffer } | null;
       /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
       compilePort?: MessagePort | null;
       base: string;
@@ -152,6 +159,7 @@ function patchUtf8(): void {
   const B = Buffer as unknown as {
     prototype: Record<string, (...a: unknown[]) => unknown> & { length: number; subarray(s: number, e: number): Uint8Array };
     from(v: unknown, enc?: unknown, len?: unknown): Buffer;
+    byteLength(v: unknown, enc?: unknown): number;
   };
   const encoder = new TextEncoder();
   const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
@@ -196,9 +204,25 @@ function patchUtf8(): void {
         enc = c;
       }
     }
+    if (typeof str === 'string' && str.length > SHORT && offset >= 0 && offset <= this.length && isUtf16(enc)) return utf16Into(this, str, offset, Math.min(length, this.length - offset));
     if (typeof str !== 'string' || str.length <= SHORT || !isUtf8(enc)) return write.call(this, str, a, b, c);
     return encodeInto(this, str, offset, Math.min(length, this.length - offset));
   };
+  // UTF-16: the polyfill builds an array of the string's bytes first. es-module-lexer (Vite) writes
+  // each module's source this way (55 ms of a warm Vite run). Whole code units only, as Node writes them.
+  const isUtf16 = (enc: unknown) => typeof enc === 'string' && /^(ucs-?2|utf-?16le)$/i.test(enc);
+  const utf16Into = (buf: Uint8Array, str: string, offset: number, length: number) => {
+    const units = Math.min(str.length, Math.floor(length / 2));
+    for (let i = 0, at = offset; i < units; i++, at += 2) {
+      const c = str.charCodeAt(i);
+      buf[at] = c & 0xff;
+      buf[at + 1] = c >>> 8;
+    }
+    return units * 2;
+  };
+  // The polyfill counts a string's UTF-8 bytes by encoding it into an array (vite's etag: 33 ms of a warm run).
+  const { byteLength } = B;
+  B.byteLength = (v: unknown, enc?: unknown) => (typeof v === 'string' && v.length > SHORT && isUtf8(enc) ? utf8Length(v) : byteLength(v, enc));
   B.prototype.utf8Write = function (this: Uint8Array, str: unknown, offset?: unknown, length?: unknown) {
     const o = typeof offset === 'number' ? offset : 0;
     return encodeInto(this, String(str), o, typeof length === 'number' ? length : this.length - o);
@@ -216,6 +240,49 @@ function patchUtf8(): void {
   }
 }
 patchUtf8();
+
+/**
+ * crypto's SHA hashes (sha.js, under crypto-browserify) copy the input into each 64-byte block one
+ * byte at a time: 38 ms of a warm Vite run, which hashes the lockfile (sha256) and every response
+ * (an etag, sha1). The same copy with Uint8Array.prototype.set.
+ */
+function patchHashCopy(): void {
+  const { update } = ShaHash.prototype;
+  type Self = { _block: Uint8Array; _blockSize: number; _len: number; _update(block: Uint8Array): void };
+  ShaHash.prototype.update = function (this: Self, data: unknown, enc?: string) {
+    const bytes = typeof data === 'string' ? Buffer.from(data, (enc || 'utf8') as BufferEncoding) : data;
+    if (!(bytes instanceof Uint8Array)) return update.call(this, data, enc);
+    const block = this._block;
+    const size = this._blockSize;
+    let accum = this._len;
+    for (let offset = 0; offset < bytes.length; ) {
+      const assigned = accum % size;
+      const take = Math.min(bytes.length - offset, size - assigned);
+      block.set(bytes.subarray(offset, offset + take), assigned);
+      accum += take;
+      offset += take;
+      if (accum % size === 0) this._update(block);
+    }
+    this._len += bytes.length;
+    return this;
+  };
+}
+patchHashCopy();
+
+/** The length of a string's UTF-8 (a lone surrogate is U+FFFD, three bytes, as Node encodes it). */
+export function utf8Length(s: string): number {
+  let n = s.length;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) continue;
+    if (c < 0x800) n += 1;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 2;
+      i++;
+    } else n += 2;
+  }
+  return n;
+}
 
 /**
  * Base64 through the browser's Uint8Array.prototype.toBase64 where there is one: the buffer
@@ -282,14 +349,78 @@ let installedRequests = 0;
 const PRELOAD_AFTER = 0;
 const PRELOAD_AFTER_THREAD = 40;
 
+/**
+ * The preload bundle as its runtime read it, in shared memory for the runtime's threads and child
+ * processes: they read its files there instead of asking the host for each (each of rolldown's
+ * WebAssembly threads asked for the same ~30 files, ~250 ms per thread). Copied from the bundle when
+ * the first one starts, once per runtime; a runtime passes on what it was given.
+ */
+type SharedPreload = { sab: SharedArrayBuffer; index: Record<string, [number, number]> };
+let preloadBytes: { bytes: Uint8Array; index: Record<string, [number, number]> } | null = null;
+let shared: SharedPreload | null = null;
+let sharedBytes: Uint8Array | null = null;
+
+function sharedPreload(): SharedPreload | null {
+  if (shared || !preloadBytes) return shared;
+  try {
+    const whole = new Uint8Array(preloadBytes.bytes.buffer as ArrayBuffer);
+    const sab = new SharedArrayBuffer(whole.length);
+    new Uint8Array(sab).set(whole);
+    shared = { sab, index: preloadBytes.index };
+    sharedBytes = new Uint8Array(sab);
+    // This runtime reads them there too (sharedFile is asked first), and lets go of its own copy.
+    preloaded?.clear();
+  } catch {
+    // no shared memory: threads ask the host
+  }
+  preloadBytes = null;
+  return shared;
+}
+
 /** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
 function readBundle(url: string): [string, Uint8Array, string][] {
+  const ahead = prefetchedBody(url);
+  if (ahead) return bundleFiles(ahead);
   const res = requestSync(url, true);
   if (res.status !== 200) return [];
-  const bytes = res.body as Uint8Array;
+  return bundleFiles(res.body as Uint8Array);
+}
+
+/** Bundles the page is downloading for this runtime (see init.prefetched), by URL. */
+let prefetched: Record<string, SharedArrayBuffer> = {};
+
+/**
+ * Whether the page is still downloading a bundle and files can be asked for over the file channel
+ * meanwhile: the host predicts a never-run install's first bundle, which can take seconds (ADR
+ * 0026), and the runtime would wait for all of it; it loads what it needs one file at a time
+ * instead (the host's prediction transforms those first), and reads the bundle once it is there.
+ */
+let waitedForChannel = false;
+
+function stillDownloading(url: string): boolean {
+  const sab = prefetched[url];
+  if (!sab || Atomics.load(new Int32Array(sab, 0, 1), 0) !== 0 || !channel) return false;
+  // The channel opens as the runtime starts: worth one short wait (a host without one may not answer).
+  const ready = new Int32Array(channel.ready);
+  if (!waitedForChannel) Atomics.wait(ready, 0, 0, 100);
+  waitedForChannel = true;
+  return Atomics.load(ready, 0) === 1;
+}
+
+/** A bundle the page downloaded, in its shared memory (not copied), once it has; null if it failed or was not asked for. */
+function prefetchedBody(url: string): Uint8Array | null {
+  const sab = prefetched[url];
+  if (!sab) return null;
+  delete prefetched[url];
+  const state = new Int32Array(sab, 0, 2);
+  if (Atomics.wait(state, 0, 0, 60_000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
+  return new Uint8Array(sab, 8, Atomics.load(state, 1));
+}
+
+function bundleFiles(bytes: Uint8Array): [string, Uint8Array, string][] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const length = view.getUint32(0, true);
-  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as [string, string, number][];
+  const header = JSON.parse(new TextDecoder().decode(bytes.slice(4, 4 + length))) as [string, string, number][];
   const files: [string, Uint8Array, string][] = [];
   let at = 4 + length;
   for (const [mode, rel, size] of header) {
@@ -337,16 +468,46 @@ function downloadedOnSide(key: string): Uint8Array | null {
 function loadPreload(): void {
   preloaded = new Map();
   try {
-    for (const [rel, bytes, mode] of readBundle(preloadUrl!)) preloaded.set(`${mode}/${rel}`, bytes);
+    let bytes = prefetchedBody(preloadUrl!);
+    if (!bytes) {
+      const res = requestSync(preloadUrl!, true);
+      if (res.status !== 200) return;
+      bytes = res.body as Uint8Array;
+    }
+    const index: Record<string, [number, number]> = {};
+    for (const [rel, file, mode] of bundleFiles(bytes)) {
+      preloaded.set(`${mode}/${rel}`, file);
+      index[`${mode}/${rel}`] = [file.byteOffset, file.length];
+    }
+    // Kept for threads and child processes only if this runtime has none to pass on; already in
+    // shared memory if the page downloaded it.
+    if (!shared && bytes.buffer instanceof SharedArrayBuffer) {
+      shared = { sab: bytes.buffer, index };
+      sharedBytes = new Uint8Array(bytes.buffer);
+      preloaded.clear();
+    } else if (!shared) preloadBytes = { bytes, index };
   } catch {
     // no bundle: files come one by one
   }
 }
 
+/** A file of the shared preload bundle (a copy: decoders do not read shared memory), or null. */
+function sharedFile(key: string): Uint8Array | null {
+  const at = shared?.index[key];
+  return at ? sharedBytes!.slice(at[0], at[0] + at[1]) : null;
+}
+
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
-    if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
     const key = url.slice(base.length + installKey.length + 5);
+    let own = sharedFile(key);
+    // A miss in the shared bundle is a miss in the bundle: it is this install's, as loadPreload's would be.
+    if (!own && !preloaded && !shared && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER) && !stillDownloading(preloadUrl)) {
+      loadPreload();
+      // A bundle in shared memory (the page downloaded it) is read there.
+      own = sharedFile(key);
+    }
+    if (own) return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
     const hit = preloaded?.get(key);
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
     const side = downloadedOnSide(key);
@@ -384,6 +545,8 @@ function loadCompiles(into: Map<string, string>, asyncModules: boolean): void {
 }
 
 function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
+  const fast = url.startsWith(`${base}/nm/`) ? viaChannel(url) : null;
+  if (fast) return { status: fast.status, body: binary ? fast.body : new TextDecoder().decode(fast.body) };
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
@@ -400,7 +563,43 @@ function requestSync(url: string, binary: boolean): { status: number; body: Uint
 const NativeWorker = globalThis.Worker;
 const workerHref = globalThis.location?.href;
 const nativeWorkerPost = NativeWorker?.prototype.postMessage;
-const DIGEST_HELPER = `onmessage = async ({ data }) => {
+const DIGEST_HELPER = `let socket = null, ids = 0;
+const asked = new Map();
+const settle = (shared, status, body) => {
+  const state = new Int32Array(shared, 0, 3);
+  if (body) new Uint8Array(shared, 12).set(body);
+  Atomics.store(state, 1, body ? body.length : 0);
+  Atomics.store(state, 2, status);
+  Atomics.store(state, 0, 1);
+  Atomics.notify(state, 0);
+};
+function open(url, ready) {
+  socket = new WebSocket(url);
+  socket.binaryType = 'arraybuffer';
+  socket.onopen = () => (Atomics.store(ready, 0, 1), Atomics.notify(ready, 0));
+  socket.onmessage = ({ data }) => {
+    const head = new DataView(data, 0, 8);
+    const shared = asked.get(head.getUint32(0, true));
+    if (!shared) return;
+    asked.delete(head.getUint32(0, true));
+    settle(shared, head.getUint32(4, true), new Uint8Array(data, 8));
+  };
+  socket.onclose = () => {
+    Atomics.store(ready, 0, 2);
+    Atomics.notify(ready, 0);
+    for (const shared of asked.values()) settle(shared, 0, null);
+    asked.clear();
+  };
+}
+const handle = async ({ data }) => {
+  if (data.channel) return open(data.channel, new Int32Array(data.ready));
+  if (data.port) return void (data.port.onmessage = handle);
+  if (data.get) {
+    if (!socket || socket.readyState !== 1) return settle(data.shared, 0, null);
+    const id = ++ids;
+    asked.set(id, data.shared);
+    return socket.send(id + ' ' + data.get);
+  }
   const state = new Int32Array(data.shared, 0, 2);
   if (data.hello) return Atomics.store(state, 1, 1);
   if (data.fetch) {
@@ -423,7 +622,8 @@ const DIGEST_HELPER = `onmessage = async ({ data }) => {
     Atomics.store(state, 0, 2);
   }
   Atomics.notify(state, 0);
-};`;
+};
+onmessage = handle;`;
 /** The helper and its shared memory: the answer's state (0 waiting, 1 written, 2 failed), 1 once it runs, the digest. */
 let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } | null = null;
 
@@ -433,9 +633,60 @@ function startDigester(): void {
     const shared = new SharedArrayBuffer(40);
     digester = { worker, shared, state: new Int32Array(shared, 0, 2) };
     nativeWorkerPost.call(worker, { hello: true, shared });
+    openChannel(worker);
   } catch {
     digester = null;
   }
+}
+
+/**
+ * Installed files over a WebSocket to the host (src/orchestrator/host-socket.ts), which the helper
+ * holds: a synchronous XMLHttpRequest costs ~5-7 ms, mostly Playwright's interception of every
+ * request (a round trip to Playwright each); a WebSocket message is not intercepted, ~0.5 ms. The
+ * runtime waits on its mailbox (state, body length, status, then the body) while the helper asks.
+ * Until the socket is open, or if it closes, or for a body over 1 MB (status 0), requests are HTTP.
+ * Threads and child processes ask their parent's helper, through a port of their own (shareChannel).
+ */
+let channel: { post(message: unknown, transfer?: Transferable[]): void; ready: SharedArrayBuffer; mailbox: SharedArrayBuffer | null } | null = null;
+const CHANNEL_MAILBOX = 12 + (1 << 20);
+
+function openChannel(worker: Worker): void {
+  if (channel || !globalThis.location || typeof WebSocket === 'undefined') return;
+  const ready = new SharedArrayBuffer(4);
+  channel = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), ready, mailbox: null };
+  const url = new URL(`${base}/files`, workerHref);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  nativeWorkerPost.call(worker, { channel: url.href, ready });
+}
+
+/** A port to this runtime's file channel for a thread or child process it starts (the helper answers it directly). */
+function shareChannel(): { port: MessagePort; ready: SharedArrayBuffer } | null {
+  const c = channel;
+  if (!c) return null;
+  const pair = new NativeMessageChannel();
+  c.post({ port: pair.port2 }, [pair.port2]);
+  return { port: pair.port1, ready: c.ready };
+}
+
+function useChannel(given: { port: MessagePort; ready: SharedArrayBuffer }): void {
+  channel = { post: (m, t = []) => nativePostMessage.call(given.port, m, t), ready: given.ready, mailbox: null };
+}
+
+/** A GET over the channel: the status and a copy of the body (decoders do not read shared memory), or null to use HTTP. */
+function viaChannel(url: string): { status: number; body: Uint8Array } | null {
+  const c = channel;
+  if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
+  c.mailbox ??= new SharedArrayBuffer(CHANNEL_MAILBOX);
+  const state = new Int32Array(c.mailbox, 0, 3);
+  Atomics.store(state, 0, 0);
+  c.post({ get: url, shared: c.mailbox });
+  // A helper that does not answer is not asked again (its late answer would land in the mailbox).
+  if (Atomics.wait(state, 0, 0, 120_000) === 'timed-out') {
+    channel = null;
+    return null;
+  }
+  const status = Atomics.load(state, 2);
+  return status ? { status, body: new Uint8Array(c.mailbox, 12, Atomics.load(state, 1)).slice() } : null;
 }
 
 /** The hex SHA-256 of text's UTF-8, or null when the helper is not there to compute it. */
@@ -881,7 +1132,11 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // SANDBURG_TS_RUNNER: started by the shell for tsx, ts-node … (see shell.ts).
   tsRunner = !!msg.tsRunner || msg.env?.SANDBURG_TS_RUNNER === '1';
   // A worker thread shares its parent's file system (installed packages it reads itself).
+  prefetched = msg.prefetched ?? {};
   pack = msg.pack ? { bytes: new Uint8Array(msg.pack.sab), index: msg.pack.index, message: msg.pack } : null;
+  shared = msg.shared ?? null;
+  if (msg.filesChannel) useChannel(msg.filesChannel);
+  sharedBytes = shared ? new Uint8Array(shared.sab) : null;
   if (thread) {
     const installed = new Vfs((path) => {
       const data = installedFile(path.slice(projectRoot.length + 1));
@@ -901,7 +1156,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     for (const [rel, bytes] of readBundle(msg.filesBundle)) {
       const abs = `${msg.cwd}/${rel}`;
       vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
-      vfs.write(abs, bytes);
+      // Files are not kept in shared memory (decoders do not read it).
+      vfs.write(abs, bytes.buffer instanceof SharedArrayBuffer ? bytes.slice() : bytes);
     }
   }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
@@ -940,7 +1196,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
