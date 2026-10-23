@@ -133,9 +133,9 @@ export class Installer {
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
       // npm creates no node_modules for a project without dependencies; the steps below read it.
       await mkdir(join(tmp, 'node_modules'), { recursive: true });
-      await placeNextSwcWasm(tmp);
-      await placeWasiBindings(tmp, log);
-      await placeWasmBuilds(tmp, log);
+      // Side by side (each waits on npm and the registry): they change different directories. The
+      // bindings are new top-level packages, the builds go inside the packages they replace.
+      await Promise.all([placeNextSwcWasm(tmp), placeWasiBindings(tmp, log), placeWasmBuilds(tmp, log)]);
       await writeBinIndex(tmp);
       await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
       await rm(dir, { recursive: true, force: true });
@@ -402,8 +402,21 @@ async function placeWasiBindings(dir: string, log: (line: string) => void): Prom
   log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
 }
 
-/** Whether a package version exists on the registry (npm view). */
+/**
+ * Whether a package version exists on the registry (npm view). Asked once per process: a Next.js app
+ * and its seed both ask for @next/swc-wasm32-wasi (which does not exist), ~0.5 s each.
+ */
 function npmViewVersion(spec: string): Promise<string | null> {
+  let version = viewed.get(spec);
+  if (!version) {
+    version = npmView(spec);
+    viewed.set(spec, version);
+  }
+  return version;
+}
+const viewed = new Map<string, Promise<string | null>>();
+
+function npmView(spec: string): Promise<string | null> {
   return new Promise((resolve) => {
     const child = spawn('npm', ['view', spec, 'version', '--json'], { stdio: ['ignore', 'pipe', 'ignore'] });
     let out = '';
