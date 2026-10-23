@@ -331,9 +331,11 @@ export function createAdapter(): RuntimeAdapter {
         const digests = devCache.digests;
         const changed =
           complete &&
+          // A file the run deleted counts as a change too.
           (digests
-            ? (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
-            : Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
+            ? Object.keys(digests).length !== Object.keys(tree!).length ||
+              (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
+            : Object.keys(devCache.files).length !== Object.keys(tree!).length || Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
         if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
       }
       proc?.terminate();
