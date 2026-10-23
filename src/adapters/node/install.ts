@@ -23,7 +23,7 @@ import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './inst
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 13;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 14;
+const LAYOUT_VERSION = 15;
 
 export interface InstallInfo {
   key: string;
@@ -253,7 +253,9 @@ export class Installer {
     const index = await this.index(key);
     if (!(rel in index)) return null;
     const abs = join(this.root, key, rel);
-    if (!/\.(c|m)?js$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
+    // A module without an extension (a bin script such as TypeScript 7's bin/tsc) is JavaScript, as
+    // Node loads it: ESM in a "type": "module" package.
+    if (!/\.(c|m)?js$/.test(rel) && /\.[^/.]+$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
     // Transforms are kept by content, not by install: every install with the same package version
     // shares them (a new app with next@16 does not transform Next.js again).
     const source = await readFile(abs, 'utf8');
@@ -448,7 +450,7 @@ async function placeWasmBuilds(dir: string, log: (line: string) => void): Promis
       const side = join(dir, '.sandburg-wasm-build');
       await rm(side, { recursive: true, force: true });
       await mkdir(side, { recursive: true });
-      await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasm-build', private: true, dependencies: { [build.wasm]: version } }));
+      await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasm-build', private: true, dependencies: { [build.wasm]: build.wasmVersion ?? version } }));
       await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
       await cp(join(side, 'node_modules', build.wasm), target, { recursive: true });
       // Its own dependencies (lightningcss-wasm's napi-wasm) go inside it.

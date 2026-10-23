@@ -66,6 +66,44 @@ test('a project without dependencies runs (npm creates no node_modules for it)',
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+// TypeScript 7's tsc is native code: in the runtime it runs tsrs (@tsrs/wasm) instead (install-rules.ts).
+const typescript7 = (name: string, source: string) =>
+  projectFromFiles(
+    {
+      'package.json': JSON.stringify({
+        name,
+        private: true,
+        type: 'module',
+        scripts: { dev: 'tsc --noEmit -p . && node server.js' },
+        devDependencies: { typescript: '^7' },
+      }),
+      'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'nodenext', strict: true, noEmit: true }, include: ['*.ts'] }),
+      'greeting.ts': source,
+      'server.js': "import { createServer } from 'node:http';\ncreateServer((q, s) => s.end('<h1>type-checked</h1>')).listen(3000);\n",
+    },
+    { name, path: name },
+  );
+
+test('TypeScript 7 type-checks a project in the runtime (tsrs)', async () => {
+  const result = await session.run(typescript7('typescript-7', 'export const greeting: string = "hello";\n'), {
+    outDir,
+    checks: { renders: async ({ app, expect }) => expect(app.getByRole('heading', { level: 1 })).toHaveText('type-checked') },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
+test('a TypeScript 7 type error stops the dev script (tsrs reports it)', async () => {
+  const result = await session.run(typescript7('typescript-7-error', 'export const greeting: number = "hello";\n'), { outDir });
+  // tsc exits 2, before the server starts: the app's error, as any dev script that stops early.
+  assert.equal(result.status, 'error', JSON.stringify(result.failure, null, 2));
+  assert.equal(result.failure?.class, 'app-bug', JSON.stringify(result.failure, null, 2));
+  assert.match(result.failure?.message ?? '', /exited with code 2 before it started listening/);
+  assert.ok(
+    result.console.some((m) => m.text.includes("error TS2322: Type 'string' is not assignable to type 'number'.")),
+    JSON.stringify(result.console.map((m) => m.text).slice(-20), null, 2),
+  );
+});
+
 // A module whose f() traps (unreachable).
 const TRAP = `new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([${[0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 5, 1, 1, 102, 0, 0, 10, 5, 1, 3, 0, 0, 11]}]))).exports.f()`;
 

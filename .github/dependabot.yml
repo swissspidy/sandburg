@@ -35,10 +35,9 @@ updates:
       fixtures:
         patterns: ["*"]
     ignore:
-      # TypeScript 7 is native code only, and Angular's compiler and svelte-check require 6 (ADR 0019).
-      # Under 7, `next dev` resolves the native compiler (@typescript/typescript-linux-x64), which the
-      # in-browser runtime cannot run. A version range, not an update type: the semver-major rule
-      # alone let 7 through in a grouped update (#34).
+      # Angular's compiler and svelte-check require TypeScript 6 (ADR 0019). The Next.js fixture is on
+      # ^7 (ADR 0024), which installs the latest 7.x without an update. A version range, not an update
+      # type: the semver-major rule alone let 7 through in a grouped update (#34).
       - dependency-name: typescript
         versions: [">= 7"]
 
