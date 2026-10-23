@@ -6,9 +6,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
+import type { Duplex } from 'node:stream';
 import * as esbuild from 'esbuild';
 import type { AdapterDescriptor } from '../types.ts';
 import { source } from '../sources.ts';
+import { acceptFileChannel, FILE_CHANNEL_PATH } from './host-socket.ts';
 
 const HOST_ENTRY = source('host/host.ts');
 export const SANDBOX_DOMAIN = 'sandburg.localhost';
@@ -73,6 +75,22 @@ export class HostServer {
         res.end(String(err?.stack ?? err));
       });
     });
+    // The runtime's file requests over a WebSocket (host-socket.ts).
+    this.server.on('upgrade', (req: IncomingMessage, socket: Duplex) => {
+      const id = this.sandboxOf(req);
+      const adapter = id ? this.sandboxes.get(id) : undefined;
+      if (!id || !adapter?.serve || new URL(req.url ?? '/', 'http://x').pathname !== FILE_CHANNEL_PATH) {
+        socket.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!(r));
+    });
+  }
+
+  /** The sandbox a request is for, by its Host. */
+  private sandboxOf(req: IncomingMessage): string | null {
+    const host = (req.headers.host ?? '').toLowerCase();
+    return host.endsWith(`.${SANDBOX_DOMAIN}:${this.port}`) ? host.split('.')[0] : null;
   }
 
   async listen(): Promise<void> {
@@ -101,8 +119,7 @@ export class HostServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const host = (req.headers.host ?? '').toLowerCase();
-    const id = host.endsWith(`.${SANDBOX_DOMAIN}:${this.port}`) ? host.split('.')[0] : null;
+    const id = this.sandboxOf(req);
     const adapter = id ? this.sandboxes.get(id) : undefined;
     if (!adapter) {
       res.writeHead(403, { 'content-type': 'text/plain' });

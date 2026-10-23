@@ -55,6 +55,8 @@ export type ToWorker =
       pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
       /** The preload bundle's files, as the parent runtime read them: shared memory and its index (see sharedPreload). */
       shared?: SharedPreload | null;
+      /** A port to the parent's file channel (see openChannel) and its ready flag. */
+      filesChannel?: { port: MessagePort; ready: SharedArrayBuffer } | null;
       /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
       compilePort?: MessagePort | null;
       base: string;
@@ -395,6 +397,8 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
 }
 
 function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
+  const fast = url.startsWith(`${base}/nm/`) ? viaChannel(url) : null;
+  if (fast) return { status: fast.status, body: binary ? fast.body : new TextDecoder().decode(fast.body) };
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
@@ -411,7 +415,42 @@ function requestSync(url: string, binary: boolean): { status: number; body: Uint
 const NativeWorker = globalThis.Worker;
 const workerHref = globalThis.location?.href;
 const nativeWorkerPost = NativeWorker?.prototype.postMessage;
-const DIGEST_HELPER = `onmessage = async ({ data }) => {
+const DIGEST_HELPER = `let socket = null, ids = 0;
+const asked = new Map();
+const settle = (shared, status, body) => {
+  const state = new Int32Array(shared, 0, 3);
+  if (body) new Uint8Array(shared, 12).set(body);
+  Atomics.store(state, 1, body ? body.length : 0);
+  Atomics.store(state, 2, status);
+  Atomics.store(state, 0, 1);
+  Atomics.notify(state, 0);
+};
+function open(url, ready) {
+  socket = new WebSocket(url);
+  socket.binaryType = 'arraybuffer';
+  socket.onopen = () => Atomics.store(ready, 0, 1);
+  socket.onmessage = ({ data }) => {
+    const head = new DataView(data, 0, 8);
+    const shared = asked.get(head.getUint32(0, true));
+    if (!shared) return;
+    asked.delete(head.getUint32(0, true));
+    settle(shared, head.getUint32(4, true), new Uint8Array(data, 8));
+  };
+  socket.onclose = () => {
+    Atomics.store(ready, 0, 2);
+    for (const shared of asked.values()) settle(shared, 0, null);
+    asked.clear();
+  };
+}
+const handle = async ({ data }) => {
+  if (data.channel) return open(data.channel, new Int32Array(data.ready));
+  if (data.port) return void (data.port.onmessage = handle);
+  if (data.get) {
+    if (!socket || socket.readyState !== 1) return settle(data.shared, 0, null);
+    const id = ++ids;
+    asked.set(id, data.shared);
+    return socket.send(id + ' ' + data.get);
+  }
   const state = new Int32Array(data.shared, 0, 2);
   if (data.hello) return Atomics.store(state, 1, 1);
   if (data.fetch) {
@@ -434,7 +473,8 @@ const DIGEST_HELPER = `onmessage = async ({ data }) => {
     Atomics.store(state, 0, 2);
   }
   Atomics.notify(state, 0);
-};`;
+};
+onmessage = handle;`;
 /** The helper and its shared memory: the answer's state (0 waiting, 1 written, 2 failed), 1 once it runs, the digest. */
 let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } | null = null;
 
@@ -444,9 +484,60 @@ function startDigester(): void {
     const shared = new SharedArrayBuffer(40);
     digester = { worker, shared, state: new Int32Array(shared, 0, 2) };
     nativeWorkerPost.call(worker, { hello: true, shared });
+    openChannel(worker);
   } catch {
     digester = null;
   }
+}
+
+/**
+ * Installed files over a WebSocket to the host (src/orchestrator/host-socket.ts), which the helper
+ * holds: a synchronous XMLHttpRequest costs ~5-7 ms, mostly Playwright's interception of every
+ * request (a round trip to Playwright each); a WebSocket message is not intercepted, ~0.5 ms. The
+ * runtime waits on its mailbox (state, body length, status, then the body) while the helper asks.
+ * Until the socket is open, or if it closes, or for a body over 1 MB (status 0), requests are HTTP.
+ * Threads and child processes ask their parent's helper, through a port of their own (shareChannel).
+ */
+let channel: { post(message: unknown, transfer?: Transferable[]): void; ready: SharedArrayBuffer; mailbox: SharedArrayBuffer | null } | null = null;
+const CHANNEL_MAILBOX = 12 + (1 << 20);
+
+function openChannel(worker: Worker): void {
+  if (channel || !globalThis.location || typeof WebSocket === 'undefined') return;
+  const ready = new SharedArrayBuffer(4);
+  channel = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), ready, mailbox: null };
+  const url = new URL(`${base}/files`, workerHref);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  nativeWorkerPost.call(worker, { channel: url.href, ready });
+}
+
+/** A port to this runtime's file channel for a thread or child process it starts (the helper answers it directly). */
+function shareChannel(): { port: MessagePort; ready: SharedArrayBuffer } | null {
+  const c = channel;
+  if (!c) return null;
+  const pair = new NativeMessageChannel();
+  c.post({ port: pair.port2 }, [pair.port2]);
+  return { port: pair.port1, ready: c.ready };
+}
+
+function useChannel(given: { port: MessagePort; ready: SharedArrayBuffer }): void {
+  channel = { post: (m, t = []) => nativePostMessage.call(given.port, m, t), ready: given.ready, mailbox: null };
+}
+
+/** A GET over the channel: the status and a copy of the body (decoders do not read shared memory), or null to use HTTP. */
+function viaChannel(url: string): { status: number; body: Uint8Array } | null {
+  const c = channel;
+  if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
+  c.mailbox ??= new SharedArrayBuffer(CHANNEL_MAILBOX);
+  const state = new Int32Array(c.mailbox, 0, 3);
+  Atomics.store(state, 0, 0);
+  c.post({ get: url, shared: c.mailbox });
+  // A helper that does not answer is not asked again (its late answer would land in the mailbox).
+  if (Atomics.wait(state, 0, 0, 120_000) === 'timed-out') {
+    channel = null;
+    return null;
+  }
+  const status = Atomics.load(state, 2);
+  return status ? { status, body: new Uint8Array(c.mailbox, 12, Atomics.load(state, 1)).slice() } : null;
 }
 
 /** The hex SHA-256 of text's UTF-8, or null when the helper is not there to compute it. */
@@ -882,6 +973,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // A worker thread shares its parent's file system (installed packages it reads itself).
   pack = msg.pack ? { bytes: new Uint8Array(msg.pack.sab), index: msg.pack.index, message: msg.pack } : null;
   shared = msg.shared ?? null;
+  if (msg.filesChannel) useChannel(msg.filesChannel);
   sharedBytes = shared ? new Uint8Array(shared.sab) : null;
   if (thread) {
     const installed = new Vfs((path) => {
@@ -940,7 +1032,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
