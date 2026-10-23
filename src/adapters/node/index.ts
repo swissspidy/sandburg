@@ -141,9 +141,10 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
  * one synchronous request each, which dominates start-up (next dev loads ~1,700 files). They are
  * recorded per install and per package version, so an install that was never run still gets a
  * bundle for the packages other installs loaded (a new app with next@16 preloads Next.js).
- * Files over PRELOAD_FILE_MAX are left out (a few large ones, WebAssembly binaries).
+ * Files over PRELOAD_FILE_MAX are left out: WebAssembly binaries (swc's is 30 MB). Large JavaScript
+ * is in (webpack's 2.6 MB bundle5.js, Next.js' app-page runtime): each was a request of its own.
  */
-const PRELOAD_FILE_MAX = 2 << 20;
+const PRELOAD_FILE_MAX = 10 << 20;
 const preloadLists = new Map<string, Map<string, true>>();
 const preloadDirty = new Set<string>();
 let preloadFlush: ReturnType<typeof setTimeout> | null = null;
@@ -257,7 +258,7 @@ const issuedBundles = new Map<string, string[]>();
 async function preloadUrl(key: string): Promise<string | null> {
   const entries = await preloadEntries(key);
   if (!entries.length) return null;
-  const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0`).update(entries.join('\n')).digest('hex').slice(0, 16);
+  const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0${PRELOAD_FILE_MAX}\0`).update(entries.join('\n')).digest('hex').slice(0, 16);
   issuedBundles.set(`${key}/${hash}`, entries);
   return `/__sandburg/preload/${key}/${hash}`;
 }
