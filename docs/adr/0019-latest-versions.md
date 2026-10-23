@@ -15,7 +15,8 @@ this year's apps.
 - **Every fixture uses the latest release of its framework** and of its tools, as far as the
   framework's own peer ranges allow. TypeScript stays on 6.0: Angular 22's compiler and
   svelte-check require it, and TypeScript 7 (the native port) has no JavaScript compiler to run in
-  the browser.
+  the browser. (Since ADR 0024, TypeScript 7's tsc runs in the browser, and the Next.js fixture uses
+  it.)
 - `angular-19-zone` became `angular-zone`, an Angular 22 app that keeps what made it worth having:
   zone.js, SCSS and the `@angular-devkit/build-angular` builders, next to the zoneless
   `@angular/build` app.

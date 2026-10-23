@@ -94,7 +94,7 @@ export async function installInBrowser(parts: BrowserInstallPart[], registry: Re
       const build = WASM_BUILDS.find((b) => b.name === p.name && b.applies(p.version));
       if (!build) continue;
       swaps.push({ p, build });
-      placed.push(...(await isolated(registry, build.wasm, p.version, `${p.path}/node_modules/${build.wasm}`)));
+      placed.push(...(await isolated(registry, build.wasm, build.wasmVersion ?? p.version, `${p.path}/node_modules/${build.wasm}`)));
     }
 
     await mapLimit(placed, CONCURRENCY, async (p) => {
