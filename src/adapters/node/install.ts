@@ -57,6 +57,8 @@ export class Installer {
   private pending = new Map<string, Promise<InstallInfo>>();
   private indexes = new Map<string, Promise<FileIndex>>();
   private combined = new Map<string, { dir: string; key: string }[]>();
+  /** Transforms in progress, by content hash. */
+  private transforming = new Map<string, Promise<Buffer>>();
 
   constructor(root: string) {
     this.root = root;
@@ -269,12 +271,21 @@ export class Installer {
     } catch {
       // not transformed yet
     }
-    const body = Buffer.from(await transformForRuntime(source, rel, esm));
-    await mkdir(join(cached, '..'), { recursive: true });
-    const tmp = `${cached}.${tmpSuffix()}.tmp`;
-    await writeFile(tmp, body);
-    await rename(tmp, cached);
-    return { body: this.remember(`${key}\0${rel}`, body)!, type: 'text/javascript' };
+    // A transform in progress (the prefetcher's, see prefetch.ts, or another runtime's) is waited for.
+    let pending = this.transforming.get(hash);
+    if (!pending) {
+      pending = (async () => {
+        const body = Buffer.from(await transformForRuntime(source, rel, esm));
+        await mkdir(join(cached, '..'), { recursive: true });
+        const tmp = `${cached}.${tmpSuffix()}.tmp`;
+        await writeFile(tmp, body);
+        await rename(tmp, cached);
+        return body;
+      })();
+      this.transforming.set(hash, pending);
+      void pending.catch(() => {}).finally(() => this.transforming.delete(hash));
+    }
+    return { body: this.remember(`${key}\0${rel}`, await pending)!, type: 'text/javascript' };
   }
 
   /**
