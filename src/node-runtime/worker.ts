@@ -341,9 +341,63 @@ function digestOf(text: string): string | null {
     digester = null;
     return null;
   }
+  return hexOf(d.shared);
+}
+
+function hexOf(shared: SharedArrayBuffer): string {
   let hex = '';
-  for (const b of new Uint8Array(d.shared, 8, 32)) hex += b.toString(16).padStart(2, '0');
+  for (const b of new Uint8Array(shared, 8, 32)) hex += b.toString(16).padStart(2, '0');
   return hex;
+}
+
+/**
+ * Digests of large files the program writes (next dev's chunks, required soon after), computed by
+ * the helper as they are written, for when the file is compiled as CommonJS: the runtime does not
+ * wait for them then. A digest is of the file's bytes, which are the code's UTF-8 unless they are
+ * not valid UTF-8 (no compile has that digest then) or start with a byte order mark (skipped).
+ */
+const written = new Map<string, { data: Uint8Array; shared: SharedArrayBuffer }>();
+const toDigest = new Set<string>();
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
+
+function digestWhenWritten(path: string): void {
+  if (!digester || path.includes('/node_modules/') || !/\.c?js$/.test(path)) return;
+  if (!toDigest.size) nativeSetTimeout(digestWritten);
+  toDigest.add(path);
+}
+
+function digestWritten(): void {
+  const d = digester;
+  for (const path of toDigest) {
+    let data: Uint8Array;
+    try {
+      data = vfs.read(path);
+    } catch {
+      continue;
+    }
+    if (!d || data.length < ASK_FIRST || (data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf)) continue;
+    const prefix = new TextEncoder().encode(`cjs\0${path}\0`);
+    const bytes = new Uint8Array(prefix.length + data.length);
+    bytes.set(prefix);
+    bytes.set(data, prefix.length);
+    const shared = new SharedArrayBuffer(40);
+    written.set(path, { data, shared });
+    nativeWorkerPost.call(d.worker, { shared, bytes: bytes.buffer }, { transfer: [bytes.buffer] });
+  }
+  toDigest.clear();
+}
+
+/** The digest of a CommonJS file as written, if it has been computed and the file is unchanged. */
+function writtenDigest(path: string): string | null {
+  const known = written.get(path);
+  if (!known || Atomics.load(new Int32Array(known.shared, 0, 1), 0) !== 1) return null;
+  try {
+    if (vfs.read(path) !== known.data) return null;
+  } catch {
+    return null;
+  }
+  written.delete(path);
+  return hexOf(known.shared);
 }
 
 /** node_modules installed in the browser (see npm/install.ts): read from shared memory, not the host. */
@@ -727,7 +781,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   const sources = msg.inherit ? {} : Object.fromEntries(Object.entries(msg.files).filter(([p, c]) => typeof c === 'string' && !p.includes('node_modules/') && /\.[cm]?[jt]sx?$/.test(p) && /\bawait\b/.test(c)));
   pageCompiler = msg.compilePort ? { port: msg.compilePort, mailbox: new SharedArrayBuffer(1 << 20) } : null;
   // Programs (not their small helper threads) compile large generated code: next dev's chunks.
-  if (installKey && !pageCompiler && (!thread || thread.process)) startDigester();
+  if (installKey && !pageCompiler && (!thread || thread.process)) {
+    startDigester();
+    vfs.watch((_event, path) => digestWhenWritten(path));
+  }
   if (Object.keys(sources).length && pageCompiler) {
     asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
   } else if (Object.keys(sources).length) {
@@ -793,7 +850,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       // Large code is asked for by the digest the host keys its compiles with (compileForRuntime):
       // what the host compiled before, next dev's chunks in every later run of an app, comes back
       // without being sent. Sending 8 MB costs ~0.35 s before the host sees the request; asking, ~10 ms.
-      const digest = code.length >= ASK_FIRST ? digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`) : null;
+      const digest = code.length < ASK_FIRST ? null : ((kind === 'cjs' && writtenDigest(path)) || digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`));
       const known = digest ? requestSync(`${base}/compiled/${digest}`, false) : null;
       if (known?.status === 200) {
         out = known.body as string;
