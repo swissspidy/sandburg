@@ -719,9 +719,11 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
     return cache.get(name);
   };
+  // Keyed by the code itself: a Map compares long strings natively, and hashing them in JavaScript
+  // first was ~0.1 s of next dev's start (its 8 MB vendor chunk, twice).
   const compiledCache = new Map<string, string>();
   const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts'): string => {
-    const key = `${kind}:${path}:${code.length}:${hash(code)}`;
+    const key = `${kind}:${path}\0${code}`;
     const hit = compiledCache.get(key);
     if (hit !== undefined) return hit;
     let out: string;
@@ -1333,12 +1335,6 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   sockets.set(id, { socket, codec });
   for (const bytes of early) socket.receive(bytes);
   early = null;
-}
-
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
 }
 
 export const RUNTIME_NODE_VERSION = NODE_VERSION;
