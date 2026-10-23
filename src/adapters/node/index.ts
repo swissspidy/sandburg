@@ -262,6 +262,7 @@ const issuedBundles = new Map<string, string[]>();
  * is what that found (predictedBundle).
  */
 const prefetchers = new Map<string, Promise<Prefetcher>>();
+/** Builds a predicted bundle, by install and hash, until it is first asked for (then it is kept as the others are, in `bundles`). */
 const predicted = new Map<string, () => Promise<Buffer>>();
 
 /** The preload bundle's URL for an install, or null when there is nothing to preload. */
@@ -278,8 +279,7 @@ async function preloadUrl(key: string, start: { main?: string; require?: string 
     if (start.main) prefetcher.add(start.main);
     if (start.require) await prefetcher.require(start.require);
     const hash = randomBytes(8).toString('hex');
-    let bundle: Promise<Buffer> | undefined;
-    predicted.set(`${key}/${hash}`, () => (bundle ??= predictedBundle(key, entries, prefetcher)));
+    predicted.set(`${key}/${hash}`, () => predictedBundle(key, entries, prefetcher));
     return `/__sandburg/preload/${key}/${hash}`;
   }
   // Run before: it preloads what its runs loaded.
@@ -301,12 +301,15 @@ const bundles = new Map<string, { hash: string; bundle: Promise<Buffer | null> }
 const BUNDLES_KEPT = 4;
 
 function preloadBundle(key: string, hash: string): Promise<Buffer | null> {
-  // A never-run install's predicted bundle is built when it is first asked for (predictedBundle).
-  const guessed = predicted.get(`${key}/${hash}`);
-  if (guessed) return guessed();
   const known = bundles.get(key);
   if (known?.hash === hash) return known.bundle;
-  const bundle = buildPreloadBundle(key, hash).catch(() => null);
+  // A never-run install's predicted bundle is built when it is first asked for (predictedBundle).
+  const id = `${key}/${hash}`;
+  const guessed = predicted.get(id);
+  predicted.delete(id);
+  const bundle = guessed
+    ? guessed().catch(() => (predicted.set(id, guessed), null))
+    : buildPreloadBundle(key, hash).catch(() => null);
   bundles.delete(key);
   bundles.set(key, { hash, bundle });
   for (const old of bundles.keys()) if (bundles.size > BUNDLES_KEPT) bundles.delete(old);

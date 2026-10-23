@@ -181,6 +181,9 @@ export class Session {
 
   async close(): Promise<void> {
     // A seed run started beside an app (adapters/node/index.ts) finishes first: later runs start from it.
+    // So does a host install still running (started before the browser context, so a run that
+    // failed before its install phase may not have waited for it).
+    while (this.installs.size) await Promise.allSettled([...this.installs]);
     await this.seeded();
     await this.browser?.close();
     await this.host.close();
@@ -220,6 +223,9 @@ export class Session {
     await this.seeded();
     return cold.map((p) => p.name);
   }
+
+  /** Host installs in progress (see runOnce). */
+  private installs = new Set<Promise<unknown>>();
 
   /** Seed runs in progress. */
   private seeds = new Set<Promise<void>>();
@@ -273,7 +279,10 @@ export class Session {
         installIn: options.installIn,
         runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
       });
-      void hostInstall?.catch(() => {}); // reported by the install phase
+      if (hostInstall) {
+        this.installs.add(hostInstall);
+        void hostInstall.catch(() => {}).finally(() => this.installs.delete(hostInstall)); // reported by the install phase
+      }
 
       // Requests routing cannot see (service worker scripts, for one) use the context's own
       // proxy credentials, which select this sandbox's allowlist in the egress proxy.
