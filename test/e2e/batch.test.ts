@@ -214,6 +214,8 @@ test('the gateway sees HTTPS from pages and workers; another sandbox refuses req
     const loads = await page.evaluate(async (two) => {
       const nested = `fetch('https://allowed.sandburg.test/nested').catch(() => {}).finally(() => postMessage('done'));`;
       const outer = `fetch('https://allowed.sandburg.test/worker').catch(() => {});
+        fetch('https://allowed.sandburg.test/worker-post', { method: 'POST', body: 'x' }).catch(() => {});
+        fetch('https://blocked.sandburg.test/worker').catch(() => {});
         const w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(nested)}], { type: 'text/javascript' })));
         w.onmessage = () => postMessage('done');`;
       await fetch('https://allowed.sandburg.test/page').catch(() => {});
@@ -236,6 +238,9 @@ test('the gateway sees HTTPS from pages and workers; another sandbox refuses req
     assert.deepEqual(missed, ['/nested', '/page', '/worker'], JSON.stringify(stats));
     assert.ok(stats.failed.every((f) => f.reason.startsWith('offline mode')), JSON.stringify(stats.failed));
     assert.ok(stats.blocked.some((b) => b.url === 'https://blocked.sandburg.test/page' && b.reason === 'origin not allowlisted'), JSON.stringify(stats.blocked));
+    // A worker's requests meet the same rules as the page's: origin allowlist, and only GET/HEAD upstream.
+    assert.ok(stats.blocked.some((b) => b.url === 'https://blocked.sandburg.test/worker' && b.reason === 'origin not allowlisted'), JSON.stringify(stats.blocked));
+    assert.ok(stats.blocked.some((b) => b.url === 'https://allowed.sandburg.test/worker-post' && b.method === 'POST'), JSON.stringify(stats.blocked));
     assert.deepEqual(loads, { own: 'loaded', other: 'refused' });
     await context.close();
   } finally {
