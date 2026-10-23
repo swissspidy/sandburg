@@ -88,16 +88,37 @@ function runSync(steps: Generator<TransformStep, string, string>): string {
 
 /** A compile's output by its key (see compileForRuntime), if it is cached. */
 export function compiled(key: string): string | undefined {
-  return cache.get(key);
+  return cache.get(key) ?? stored(key);
+}
+
+/** Compiles kept across processes, by key: set by the node adapter (index.ts), which keeps them under .sandburg/. */
+export interface CompileStore {
+  read(key: string): string | undefined;
+  write(key: string, out: string): void;
+}
+let store: CompileStore | null = null;
+export function storeCompiles(s: CompileStore): void {
+  store = s;
+}
+
+function stored(key: string): string | undefined {
+  const out = store?.read(key);
+  if (out !== undefined) remember(key, out);
+  return out;
+}
+
+function remember(key: string, out: string): void {
+  if (cache.size > 5000) cache.clear();
+  cache.set(key, out);
 }
 
 export function compileForRuntime(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean } = {}): string {
   const key = createHash('sha256').update(kind).update(opts.asyncModules ? '\0async' : '').update('\0').update(path).update('\0').update(code).digest('hex');
-  const hit = cache.get(key);
+  const hit = compiled(key);
   if (hit !== undefined) return hit;
   const out = runSync(compileSteps(code, path, kind, opts));
-  if (cache.size > 5000) cache.clear();
-  cache.set(key, out);
+  remember(key, out);
+  store?.write(key, out);
   return out;
 }
 
