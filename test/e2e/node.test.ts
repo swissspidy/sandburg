@@ -37,6 +37,37 @@ test('an Express server runs on the node runtime', async () => {
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+test('each run has its own tab, opened ahead of it: a new origin and empty storage', async () => {
+  const dir = fixture('node-express');
+  const seen: { origin: string; stored: string | null }[] = [];
+  const checks = {
+    'storage is the run\'s own': async ({ app }: { app: import('playwright-core').Frame }) => {
+      const stored = await app.evaluate(() => {
+        const before = localStorage.getItem('sandburg-test');
+        localStorage.setItem('sandburg-test', 'set by an earlier run');
+        return before;
+      });
+      seen.push({ origin: new URL(app.url()).origin, stored });
+    },
+  };
+  for (let i = 0; i < 2; i++) {
+    const result = await session.run(dir, { checks, outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  }
+  // Without a spare, a run opens its own tab when it starts.
+  const own = new Session({ spareTab: false });
+  await own.open();
+  try {
+    const result = await own.run(dir, { checks, outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  } finally {
+    await own.close();
+  }
+  assert.equal(seen.length, 3);
+  assert.equal(new Set(seen.map((s) => s.origin)).size, 3);
+  assert.deepEqual(seen.map((s) => s.stored), [null, null, null]);
+});
+
 test('a Next.js page that throws on the server is an app bug', async () => {
   const project = await loadProject(fixture('next-app-router'));
   const broken = projectFromFiles(
@@ -49,6 +80,29 @@ test('a Next.js page that throws on the server is an app bug', async () => {
   const result = await session.run(broken, { outDir });
   assert.equal(result.status, 'failed');
   assert.equal(result.failure?.class, 'app-bug', JSON.stringify(result.failure, null, 2));
+});
+
+test('the accessibility scan runs whether or not the page lets it load from its origin', async () => {
+  // An image without alt text, served with no policy, and with a policy that blocks every script, in
+  // a header or a <meta> element. The scan does not try what the policy refuses (the app's console
+  // would show it).
+  for (const csp of [null, 'header', 'meta']) {
+    const headers = JSON.stringify({ 'content-type': 'text/html', ...(csp === 'header' && { 'content-security-policy': "script-src 'none'" }) });
+    const meta = csp === 'meta' ? `<meta http-equiv="Content-Security-Policy" content="script-src &#39;none&#39;">` : '';
+    const project = projectFromFiles(
+      {
+        'package.json': JSON.stringify({ name: 'axe-scan', private: true, scripts: { dev: 'node server.js' } }),
+        'server.js': `require('node:http').createServer((q, s) => { s.writeHead(200, ${headers}); s.end('<!doctype html><html lang="en"><title>scan</title>${meta}<main><h1>scan</h1><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></main>'); }).listen(3000);`,
+      },
+      { name: 'axe-scan', path: 'axe-scan' },
+    );
+    const result = await session.run(project, { outDir });
+    const axe = result.checks.find((c) => c.id === 'axe');
+    assert.equal(axe?.status, 'failed', `${csp}: ${JSON.stringify(axe)}`);
+    assert.match(axe?.message ?? '', /image-alt/, String(csp));
+    assert.ok(!result.console.some((c) => c.text.includes('axe')), JSON.stringify(result.console));
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  }
 });
 
 test('a project without dependencies runs (npm creates no node_modules for it)', async () => {

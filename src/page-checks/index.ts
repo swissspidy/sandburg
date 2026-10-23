@@ -36,8 +36,10 @@ export async function loadPageChecks(file: string): Promise<PageChecks> {
 }
 
 let bundle: Promise<string> | null = null;
+/** Where the host server serves runtimeBundle() on a sandbox origin. */
+export const PAGE_CHECKS_PATH = '/__sandburg/page-checks.js';
 /** The page's runtime: page-checks/runtime.ts with ivya and user-event, as one script. */
-function runtimeBundle(): Promise<string> {
+export function runtimeBundle(): Promise<string> {
   bundle ??= esbuild
     .build({
       entryPoints: [source('page-checks/runtime.ts')],
@@ -55,10 +57,24 @@ function runtimeBundle(): Promise<string> {
 
 const MAX_MESSAGE = 8_000;
 
-/** Runs the checks in the sandbox tab, against its app frame (#app). */
-export async function runPageChecks(page: Page, checks: PageChecks, options: PageChecksOptions): Promise<CheckResult[]> {
+/**
+ * Loads the page's runtime into the sandbox tab: imported from `url` on the tab's origin, where the
+ * host serves it (the browser compiles it off the main thread; the checks start this while the
+ * artifacts are taken), else, or if that fails, added as an inline script.
+ */
+export async function loadPageChecksRuntime(page: Page, url?: string): Promise<void> {
   const main = page.mainFrame();
-  if (!(await main.evaluate(() => !!window.__sandburgPageChecks))) await main.addScriptTag({ content: await runtimeBundle() });
+  if (await main.evaluate(() => !!window.__sandburgPageChecks)) return;
+  if (url && URL.canParse(main.url()) && new URL(main.url()).origin === new URL(url).origin) {
+    if (await main.evaluate((u) => import(u).then(() => !!window.__sandburgPageChecks), url).catch(() => false)) return;
+  }
+  await main.addScriptTag({ content: await runtimeBundle() });
+}
+
+/** Runs the checks in the sandbox tab, against its app frame (#app). `loaded`: the runtime, loading (loadPageChecksRuntime). */
+export async function runPageChecks(page: Page, checks: PageChecks, options: PageChecksOptions, loaded?: Promise<void>): Promise<CheckResult[]> {
+  const main = page.mainFrame();
+  await (loaded ?? loadPageChecksRuntime(page));
   const out = (await main.evaluate(([code, opts]) => window.__sandburgPageChecks!.run(code, opts), [checks.code, options] as const)) as unknown;
   if (!out || typeof out !== 'object') throw new Error('page checks: no result from the page');
   if ('error' in out) {

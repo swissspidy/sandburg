@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url';
 import { expect } from '@playwright/test';
 import type { Frame, Page } from 'playwright-core';
 import type { CheckKind, CheckResult, CheckStatus, ConsoleEntry, NetworkEntry, PageError } from '../types.ts';
-import { isPageChecks, runPageChecks, type PageChecks } from '../page-checks/index.ts';
+import { AXE_PATH } from './host-server.ts';
+import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, type PageChecks } from '../page-checks/index.ts';
 
 export interface CheckContext {
   /** The app frame. Locators, getByRole etc. work as on a page. */
@@ -57,7 +58,9 @@ export interface ChecksInput {
   appConsole: () => ConsoleEntry[];
   network: () => { failed: NetworkEntry[]; blocked: NetworkEntry[] };
   /** The document the app frame shows (its last navigation), if it was seen. */
-  appDocument?: () => { url: string; status: number } | null;
+  appDocument?: () => { url: string; status: number; csp?: boolean } | null;
+  /** The sandbox's origin, if the host server serves it: axe-core (AXE_PATH) and the page checks' runtime come from there. */
+  hostOrigin?: string;
 }
 
 export interface ChecksOutput {
@@ -72,28 +75,34 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   const base = new URL('.', app.url()).href;
   const appUrl = (path: string) => new URL(path.replace(/^\/+/, ''), base).href;
 
-  // Artifacts first, so they show the app as it first rendered.
+  // Artifacts first, so they show the app as it first rendered. They only read the page, and so does
+  // loading axe-core, which goes on meanwhile (its scan runs after them).
+  const axeLoaded = loadAxe(app, input.hostOrigin && !input.appDocument?.()?.csp ? input.hostOrigin + AXE_PATH : undefined);
+  axeLoaded.catch(() => {}); // the axe check reports it
+  // Checks that run in the page: their runtime loads meanwhile too.
+  const pageChecksLoaded = isPageChecks(input.checks) ? loadPageChecksRuntime(page, input.hostOrigin && input.hostOrigin + PAGE_CHECKS_PATH) : undefined;
+  pageChecksLoaded?.catch(() => {}); // the checks report it
   results.push(
-    await timed('screenshot', 'screenshot', 'Screenshot', false, async () => {
-      artifacts.screenshot = join(input.artifactsDir, 'screenshot.png');
-      await page.screenshot({ path: artifacts.screenshot });
-      return { status: 'passed' };
-    }),
+    ...(await Promise.all([
+      timed('screenshot', 'screenshot', 'Screenshot', false, async () => {
+        artifacts.screenshot = join(input.artifactsDir, 'screenshot.png');
+        await page.screenshot({ path: artifacts.screenshot });
+        return { status: 'passed' };
+      }),
+      timed('a11y-snapshot', 'a11y-snapshot', 'Accessibility tree snapshot', false, async () => {
+        const snapshot = await app.locator('body').ariaSnapshot();
+        artifacts.a11ySnapshot = join(input.artifactsDir, 'a11y.yaml');
+        await writeFile(artifacts.a11ySnapshot, snapshot + '\n');
+        return { status: 'passed', details: { lines: snapshot.split('\n').length } };
+      }),
+    ])),
   );
-  results.push(
-    await timed('a11y-snapshot', 'a11y-snapshot', 'Accessibility tree snapshot', false, async () => {
-      const snapshot = await app.locator('body').ariaSnapshot();
-      artifacts.a11ySnapshot = join(input.artifactsDir, 'a11y.yaml');
-      await writeFile(artifacts.a11ySnapshot, snapshot + '\n');
-      return { status: 'passed', details: { lines: snapshot.split('\n').length } };
-    }),
-  );
-  results.push(await timed('axe', 'axe', 'axe-core accessibility scan', false, () => runAxe(app)));
+  results.push(await timed('axe', 'axe', 'axe-core accessibility scan', false, () => runAxe(app, axeLoaded)));
 
   if (isPageChecks(input.checks)) {
     const started = performance.now();
     try {
-      results.push(...(await runPageChecks(page, input.checks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 })));
+      results.push(...(await runPageChecks(page, input.checks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 }, pageChecksLoaded)));
     } catch (err) {
       results.push({
         id: 'functional:checks-file',
@@ -221,9 +230,32 @@ export function settlingExpect(
 const require = createRequire(import.meta.url);
 let axeSource: Promise<string> | null = null;
 
-async function runAxe(app: Frame): Promise<{ status: CheckStatus; message?: string; details?: unknown }> {
+/**
+ * Loads axe-core into the app's frame: imported from the app's origin where it serves it (the
+ * browser streams and compiles the 650 KB script off the main thread, while the artifacts are
+ * taken), else evaluated in the frame: when the app's document has a Content-Security-Policy (which
+ * may refuse the import, and log that in the app's console), or the import fails.
+ */
+async function loadAxe(app: Frame, url?: string): Promise<void> {
+  const imported =
+    !!url &&
+    URL.canParse(app.url()) &&
+    new URL(app.url()).origin === new URL(url).origin &&
+    (await app
+      .evaluate(
+        (u) =>
+          !document.querySelector('meta[http-equiv="content-security-policy" i]') &&
+          import(u).then(() => typeof (window as unknown as { axe?: unknown }).axe === 'object'),
+        url,
+      )
+      .catch(() => false));
+  if (imported) return;
   axeSource ??= readFile(require.resolve('axe-core/axe.min.js'), 'utf8');
   await app.evaluate(await axeSource);
+}
+
+async function runAxe(app: Frame, loaded: Promise<void>): Promise<{ status: CheckStatus; message?: string; details?: unknown }> {
+  await loaded;
   const summary = await app.evaluate(async () => {
     const axe = (window as unknown as { axe: { run(ctx: Document, opts: object): Promise<{ violations: { id: string; impact: string | null; nodes: unknown[] }[] }> } }).axe;
     const { violations } = await axe.run(document, { resultTypes: ['violations'] });
