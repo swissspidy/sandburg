@@ -15,7 +15,7 @@ import { projectFromFiles } from '../../project.ts';
 import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticInstall, subProject } from './plan.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
-import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
+import { compiled, compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import type { HostInstall } from './browser.ts';
 import { VITE_SEED_DIRS, VITE_SEED_WAIT, viteSeed } from './vite-seed.ts';
@@ -428,6 +428,12 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/tla-scan' && req.method === 'POST') {
     const files = JSON.parse((await req.body()).toString('utf8')) as Record<string, string>;
     return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topLevelAwait: projectHasTopLevelAwait(files) }) };
+  }
+  // Code the runtime asks for by digest before it sends it (worker.ts): what was compiled before.
+  const known = /^\/__sandburg\/compiled\/([0-9a-f]{64})$/.exec(req.path);
+  if (known) {
+    const out = compiled(known[1]);
+    return out === undefined ? null : { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: out };
   }
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;
