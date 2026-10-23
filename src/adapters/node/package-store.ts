@@ -91,6 +91,8 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
   if (!omitOptional && Object.values(lock.packages).some((e) => e.optional)) return false;
   if (Object.entries(lock.packages).some(([location, e]) => location !== '' && (!location.startsWith('node_modules/') || e.link || e.hasShrinkwrap))) return false;
   const { installed, omitted } = partition(lock.packages);
+  // npm writes no node_modules (nor its hidden lockfile) for an empty tree.
+  if (!installed.length && !omitted.length) return true;
   // Bundled packages come inside their parent's tarball.
   const fetched = installed.filter(([, e]) => !e.inBundle);
   if (fetched.some(([, e]) => !e.resolved || !e.integrity || !contentHash(e.integrity))) return false;
@@ -121,13 +123,17 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
     // Packages being unpacked ahead (unpackAhead) are linked once they are in the store.
     const ahead = jobs.filter((j) => unpacking.has(j.job.store));
     const now = jobs.filter((j) => !unpacking.has(j.job.store));
-    await Promise.all([
+    // All settled before a failure is handled: npm then installs into node_modules, and a job still
+    // linking there would race it.
+    const results = await Promise.allSettled([
       runJobs(now.map((j) => j.job), (i, p) => placed.set(now[i].location, p)),
       ...ahead.map(async (j) => {
         await unpacking.get(j.job.store);
         await runJobs([j.job], (_, p) => placed.set(j.location, p));
       }),
     ]);
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) throw failed.reason;
     // Bundled packages: their package.json, as their parent's tarball had it.
     for (const [location] of installed.filter(([, e]) => e.inBundle)) {
       try {

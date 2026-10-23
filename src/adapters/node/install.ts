@@ -92,6 +92,7 @@ export class Installer {
       const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
       if (layout && Number(layout) !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
     }
+    await sweepSideInstalls(join(this.root, '..', 'side-installs'));
     await sweepStore(this.store);
   }
 
@@ -468,6 +469,22 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
 }
 
 /**
+ * Side installs of another layout, and ones a process left unfinished (*.tmp-*), once a day old (as
+ * installs are swept): their packages' store entries are freed with them (sweepStore).
+ */
+async function sweepSideInstalls(root: string): Promise<void> {
+  const day = Date.now() - 24 * 3600_000;
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    const dir = join(root, name);
+    const done = await readFile(join(dir, '.sandburg-complete'), 'utf8').catch(() => null);
+    // Side installs from before the layout was recorded are of an older layout too.
+    const stale = name.includes('.tmp-') || (done !== null && /layout (\d+)/.exec(done)?.[1] !== String(LAYOUT_VERSION));
+    const st = await lstat(dir).catch(() => null);
+    if (st && stale && st.mtimeMs < day) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
  * A side install (a WebAssembly build or binding with its dependencies, which installs copy into
  * place): npm installs each package.json once, as with installs themselves (the versions npm picks
  * first stay), so every Vite app does not pay ~1 s of npm for the same lightningcss-wasm.
@@ -495,7 +512,7 @@ function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line
           await run('npm', ['install', ...flags], tmp, log);
         }
         await mkdir(join(tmp, 'node_modules'), { recursive: true });
-        await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()}\n`);
+        await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
         // Another process may have finished the same side install first.
         await rename(tmp, dir).catch(async (e) => {
           if (!(await access(join(dir, '.sandburg-complete')).then(() => true, () => false))) throw e;

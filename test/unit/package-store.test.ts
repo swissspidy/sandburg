@@ -10,6 +10,8 @@ import { join } from 'node:path';
 // The store reads tarballs from npm's cache: this test's own (`npm config get cache` follows it).
 const cache = await mkdtemp(join(tmpdir(), 'sandburg-npm-cache-'));
 process.env.npm_config_cache = cache;
+// unpackAhead's cache index keys name the configured registry; the tests write npmjs.org's.
+process.env.npm_config_registry = 'https://registry.npmjs.org/';
 const { installFromLockfile, installedPackages, normalizeBin, sweepStore, unpackAhead } = await import('../../src/adapters/node/package-store.ts');
 
 /** A ustar archive with npm pack's top directory. */

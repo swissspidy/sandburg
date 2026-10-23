@@ -121,6 +121,8 @@ export class Resolver {
   private inflight = 0;
   private next = 0;
   private waiting = new Map<number, (error: string | undefined) => void>();
+  /** The requests each worker has: one that ends fails only its own (a stopped one exits after its successor starts). */
+  private owned = new WeakMap<Worker, Set<number>>();
   private idle: ReturnType<typeof setTimeout> | null = null;
 
   private readonly dir: string;
@@ -150,6 +152,7 @@ export class Resolver {
         const id = this.next++;
         this.waiting.set(id, done);
         const worker = this.start();
+        this.owned.get(worker)!.add(id);
         // Held while it resolves; otherwise it does not keep the process alive.
         worker.ref();
         worker.postMessage({ id, dir, force: !!options.force });
@@ -176,13 +179,19 @@ export class Resolver {
       workerData: { tag: WORKER_TAG, npmRoot: this.root!, configDir, flags: this.flags } satisfies Init,
     });
     worker.unref();
+    const mine = new Set<number>();
+    this.owned.set(worker, mine);
     worker.on('message', ({ id, error }: { id: number; error?: string }) => {
       this.waiting.get(id)?.(error);
       this.waiting.delete(id);
+      mine.delete(id);
     });
     const fail = (e: unknown) => {
-      for (const done of this.waiting.values()) done(e instanceof Error ? e.message : String(e));
-      this.waiting.clear();
+      for (const id of mine) {
+        this.waiting.get(id)?.(e instanceof Error ? e.message : String(e));
+        this.waiting.delete(id);
+      }
+      mine.clear();
       if (this.worker === worker) this.worker = null;
     };
     worker.on('error', fail);
