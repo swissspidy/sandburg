@@ -92,20 +92,47 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   // The speed-up compares the runs with the time they took, not with the one-time warm-up before them.
   const runsStarted = performance.now();
 
-  async function worker(): Promise<void> {
-    while (next < items.length) {
-      const index = next++;
-      const item = items[index];
-      const result = await session.run(item.project, {
-        ...options,
-        runtime: item.runtime ?? options.runtime,
-        checks: item.checks ?? options.checks,
-      });
-      results[index] = result;
-      options.onResult?.(result, item, index);
-    }
+  // `parallel` apps start and run at a time; an app in its checks (light work, often waiting on a
+  // failing assertion) no longer counts, and the next app starts. At most twice `parallel` are open.
+  let starting = 0;
+  let open = 0;
+  const wake: (() => void)[] = [];
+  const free = () => wake.splice(0).forEach((w) => w());
+  const runs: Promise<void>[] = [];
+  while (next < items.length) {
+    while (starting >= parallel || open >= 2 * parallel) await new Promise<void>((r) => wake.push(r));
+    const index = next++;
+    const item = items[index];
+    starting++;
+    open++;
+    let counted = true;
+    const done = () => {
+      if (counted) starting--;
+      counted = false;
+      free();
+    };
+    runs.push(
+      session
+        .run(item.project, {
+          ...options,
+          runtime: item.runtime ?? options.runtime,
+          checks: item.checks ?? options.checks,
+          onPhase: (phase) => {
+            options.onPhase?.(phase);
+            if (phase === 'checks') done();
+          },
+        })
+        .then((result) => {
+          results[index] = result;
+          options.onResult?.(result, item, index);
+        })
+        .finally(() => {
+          open--;
+          done();
+        }),
+    );
   }
-  await Promise.all(Array.from({ length: Math.min(parallel, items.length) }, worker));
+  await Promise.all(runs);
 
   const wallMs = Math.round(performance.now() - t0);
   const runsMs = Math.round(performance.now() - runsStarted);

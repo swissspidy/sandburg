@@ -143,6 +143,8 @@ export interface RunOptions {
    */
   collectFiles?: string;
   onAppFiles?: (files: FileTree) => void;
+  /** Called as each lifecycle phase of the run starts (a batch starts its next app when one reaches its checks). */
+  onPhase?: (phase: PhaseName) => void;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -361,6 +363,7 @@ export class Session {
     const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
+    run.onPhase = options.onPhase;
     let context: BrowserContext | null = null;
     let proxy: EgressProxy | null = null;
     let tab: Tab | null = null;
@@ -707,7 +710,10 @@ class RunState {
   }
 
   /** Runs one lifecycle phase under a deadline and records its outcome. Rethrows on failure. */
+  onPhase?: (phase: PhaseName) => void;
+
   async phase<T>(name: PhaseName, timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+    this.onPhase?.(name);
     const start = performance.now();
     let timer: NodeJS.Timeout | undefined;
     try {
