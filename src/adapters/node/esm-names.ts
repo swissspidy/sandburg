@@ -70,10 +70,17 @@ export function renameCommonJsNames(code: string): string {
     }
     edits.push({ start: node.start, end: node.end, text: rename(node.name as string) });
   });
-  edits.sort((a, b) => b.start - a.start);
-  let out = code;
-  for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
-  return out;
+  // In one pass: splicing each edit into the whole string copied it once per edit (480 edits in
+  // Vite's 1.4 MB node chunk, 1.2 s of the host's start-up).
+  edits.sort((a, b) => a.start - b.start);
+  const parts: string[] = [];
+  let at = 0;
+  for (const e of edits) {
+    parts.push(code.slice(at, e.start), e.text);
+    at = e.end;
+  }
+  parts.push(code.slice(at));
+  return parts.join('');
 }
 
 function walk(node: Node, visit: (node: Node, parent: Node | null, key: string | null) => void, parent: Node | null = null, key: string | null = null): void {
