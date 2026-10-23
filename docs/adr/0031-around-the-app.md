@@ -1,4 +1,4 @@
-# ADR NNNN: The fixed costs around the app
+# ADR 0031: The fixed costs around the app
 
 - Status: Accepted
 - Date: 2026-10-23
