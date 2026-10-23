@@ -235,8 +235,13 @@ export class Vfs {
   }
 }
 
+/** An empty, "." or ".." segment, or a trailing slash: what makes a path not normal. */
+const NOT_NORMAL = /\/\/|\/\.\.?(\/|$)|.\/$/;
+
 export function norm(path: string): string {
   if (!path.startsWith('/')) throw new FsError('EINVAL', 'resolve', path);
+  // Most paths are normal already (every fs call and module resolution step normalizes one).
+  if (!NOT_NORMAL.test(path)) return path;
   const out: string[] = [];
   for (const part of path.split('/')) {
     if (!part || part === '.') continue;
