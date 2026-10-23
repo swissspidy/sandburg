@@ -283,10 +283,45 @@ function readBundle(url: string): [string, Uint8Array, string][] {
   const files: [string, Uint8Array, string][] = [];
   let at = 4 + length;
   for (const [mode, rel, size] of header) {
+    // A negative size names a file that is not in the bundle (see downloadOnSide).
+    if (size < 0) {
+      downloadOnSide(mode, rel, -size);
+      continue;
+    }
     files.push([rel, bytes.subarray(at, at + size), mode]);
     at += size;
   }
   return files;
+}
+
+/**
+ * Large installed files the preload bundle only names (WebAssembly binaries: swc's is 30 MB), which
+ * the program reads later with a synchronous request each (~0.3 s for swc's). The digest helper
+ * downloads them into shared memory as soon as the bundle is read, and a read waits for what is left
+ * of the download instead of making it. Only a program's runtime does (not its threads).
+ */
+const onSide = new Map<string, { state: Int32Array; shared: SharedArrayBuffer }>();
+
+function downloadOnSide(mode: string, rel: string, size: number): void {
+  if (thread || !digester || !installKey) return;
+  try {
+    const shared = new SharedArrayBuffer(8 + size);
+    onSide.set(`${mode}/${rel}`, { state: new Int32Array(shared, 0, 2), shared });
+    nativeWorkerPost.call(digester.worker, { fetch: new URL(`${base}/nm/${installKey}/${mode}/${rel}`, workerHref).href, shared });
+  } catch {
+    onSide.delete(`${mode}/${rel}`);
+  }
+}
+
+/** A file downloaded on the side (a copy: decoders do not read shared memory), or null to request it. */
+function downloadedOnSide(key: string): Uint8Array | null {
+  const side = onSide.get(key);
+  if (!side) return null;
+  onSide.delete(key);
+  // Waited for only if the helper runs (it may not have started yet).
+  if (!digester || Atomics.load(digester.state, 1) !== 1) return null;
+  if (Atomics.wait(side.state, 0, 0, 60_000) === 'timed-out' || Atomics.load(side.state, 0) !== 1) return null;
+  return new Uint8Array(side.shared, 8, Atomics.load(side.state, 1)).slice();
 }
 
 function loadPreload(): void {
@@ -301,8 +336,11 @@ function loadPreload(): void {
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
     if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
-    const hit = preloaded?.get(url.slice(base.length + installKey.length + 5));
+    const key = url.slice(base.length + installKey.length + 5);
+    const hit = preloaded?.get(key);
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+    const side = downloadedOnSide(key);
+    if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
   }
   return requestSync(url, binary);
 }
@@ -322,10 +360,24 @@ function requestSync(url: string, binary: boolean): { status: number; body: Uint
  * fails to answer), there is no digest.
  */
 const NativeWorker = globalThis.Worker;
+const workerHref = globalThis.location?.href;
 const nativeWorkerPost = NativeWorker?.prototype.postMessage;
 const DIGEST_HELPER = `onmessage = async ({ data }) => {
   const state = new Int32Array(data.shared, 0, 2);
   if (data.hello) return Atomics.store(state, 1, 1);
+  if (data.fetch) {
+    try {
+      const res = await fetch(data.fetch);
+      const body = new Uint8Array(await res.arrayBuffer());
+      if (!res.ok || body.length + 8 > data.shared.byteLength) throw new Error(String(res.status));
+      new Uint8Array(data.shared, 8).set(body);
+      Atomics.store(state, 1, body.length);
+      Atomics.store(state, 0, 1);
+    } catch {
+      Atomics.store(state, 0, 2);
+    }
+    return Atomics.notify(state, 0);
+  }
   try {
     new Uint8Array(data.shared, 8, 32).set(new Uint8Array(await crypto.subtle.digest('SHA-256', data.bytes)));
     Atomics.store(state, 0, 1);
