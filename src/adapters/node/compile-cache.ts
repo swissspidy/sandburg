@@ -25,6 +25,12 @@ const COMPILER = createHash('sha256')
   .digest('hex')
   .slice(0, 12);
 
+/**
+ * Code this large is not kept: the runtime asks for it by digest first (ASK_FIRST in worker.ts), and
+ * next dev's chunks made a Next.js app's bundle 27 MB, which the runtime decoded at its first compile.
+ */
+export const MAX_CODE = 1 << 18;
+
 /** A project's stored compiles are at most this large (code and output); older runs' go first. */
 const MAX_BYTES = 48 << 20;
 /** Projects whose compiles are kept in memory (a batch runs many; each is loaded again from its file). */
@@ -108,6 +114,7 @@ export class CompileCache {
   }
 
   async record(key: string, kind: CompileKind, async: boolean, path: string, code: string, out: string): Promise<void> {
+    if (code.length >= MAX_CODE) return;
     const entries = await this.load(key);
     const k = id(kind, async, path, Buffer.from(code));
     if (entries.has(k)) return;

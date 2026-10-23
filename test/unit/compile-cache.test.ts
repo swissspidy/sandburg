@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CompileCache } from '../../src/adapters/node/compile-cache.ts';
+import { CompileCache, MAX_CODE } from '../../src/adapters/node/compile-cache.ts';
 
 /** The bundle's entries, as the runtime reads them (worker.ts loadCompiles). */
 function entries(bundle: Buffer): [string, boolean, string, string, string][] {
@@ -26,7 +26,8 @@ test("a project's compiles are kept for its next run, in another process", async
   assert.equal(await cache.bundle(key), null);
   await cache.record(key, 'cjs', false, '/[eval]', 'module.exports = async function () { await 1; };', 'lowered 1');
   await cache.record(key, 'esm', true, '/app/src/a.mjs', 'export const ü = "é";', 'lowered 2');
-  // The same code again adds nothing.
+  // Large code (asked for by digest) is not kept, and the same code again adds nothing.
+  await cache.record(key, 'cjs', false, '/app/.next/chunk.js', 'x'.repeat(MAX_CODE), 'large');
   await cache.record(key, 'cjs', false, '/[eval]', 'module.exports = async function () { await 1; };', 'lowered 1');
   await cache.flush();
 
