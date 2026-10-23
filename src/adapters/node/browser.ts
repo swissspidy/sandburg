@@ -57,6 +57,13 @@ const BACKEND_PREFIX = /^\/__sandburg_backend\/(\d+)(\/[^?]*)?(\?.*)?$/;
 const NEXT_ENV = { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 'true' };
 
 /**
+ * napi-rs WebAssembly packages (rolldown, oxc, Astro's compiler, satteri) start a pool of 4 async
+ * workers (emnapi's asyncWorkPoolSize) on their first async call, each a runtime here that boots and
+ * instantiates the package's WebAssembly while the program waits: one each.
+ */
+const RUNTIME_ENV = { NAPI_RS_ASYNC_WORK_POOL_SIZE: '1' };
+
+/**
  * The Angular CLI compiles TypeScript on its own thread, not in a worker thread (NG_BUILD_PARALLEL_TS=0;
  * the same compilation and diagnostics). A worker thread here is another runtime that loads
  * TypeScript and the Angular compiler again (~1 s of a warm ng serve), for little parallelism.
@@ -235,7 +242,7 @@ export function createAdapter(): RuntimeAdapter {
         // PORT only for a single server: the servers of a dev script listen where it says.
         // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
         // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
-        env: { ...DEV_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? NEXT_ENV : {}), ...(ctx.framework === 'angular' ? ANGULAR_ENV : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
+        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? NEXT_ENV : {}), ...(ctx.framework === 'angular' ? ANGULAR_ENV : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
