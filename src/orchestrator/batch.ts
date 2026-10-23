@@ -111,26 +111,27 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
       counted = false;
       free();
     };
-    runs.push(
-      session
-        .run(item.project, {
-          ...options,
-          runtime: item.runtime ?? options.runtime,
-          checks: item.checks ?? options.checks,
-          onPhase: (phase) => {
-            options.onPhase?.(phase);
-            if (phase === 'checks') done();
-          },
-        })
-        .then((result) => {
-          results[index] = result;
-          options.onResult?.(result, item, index);
-        })
-        .finally(() => {
-          open--;
-          done();
-        }),
-    );
+    const run = session
+      .run(item.project, {
+        ...options,
+        runtime: item.runtime ?? options.runtime,
+        checks: item.checks ?? options.checks,
+        onPhase: (phase) => {
+          options.onPhase?.(phase);
+          if (phase === 'checks') done();
+        },
+      })
+      .then((result) => {
+        results[index] = result;
+        options.onResult?.(result, item, index);
+      })
+      .finally(() => {
+        open--;
+        done();
+      });
+    // Handled now, while the loop may wait for a slot: Promise.all(runs) below rejects with it.
+    run.catch(() => {});
+    runs.push(run);
   }
   await Promise.all(runs);
 

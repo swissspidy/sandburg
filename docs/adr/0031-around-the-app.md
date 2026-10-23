@@ -25,7 +25,7 @@ short run went to work around the app rather than to the app's dev server:
   routes, init script, host page loaded, runtime worker evaluated. The first opens as the browser
   launches; each run that takes it opens the next beside it. A run's tab is still its own (a fresh
   context and origin, never reused); only when it was opened changes. `SessionOptions.spareTab:
-  false` turns this off; seed runs and a visible browser do not open spares.
+  false` turns this off; seed runs, held runs and a visible browser do not open spares.
 - **The host page starts the runtime worker as it loads** (`prepare()` in the adapter's browser
   module); the process takes it with its init message.
 - **Checks**: the host server serves axe-core (`/__sandburg/axe.js`) and the page checks' runtime

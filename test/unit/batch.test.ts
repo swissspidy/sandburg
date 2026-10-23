@@ -55,3 +55,27 @@ test('a batch starts its next app when one reaches its checks, with at most twic
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('a run that rejects while the batch waits for a slot rejects the batch (no unhandled rejection)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  const unhandled: unknown[] = [];
+  const onUnhandled = (err: unknown) => unhandled.push(err);
+  process.on('unhandledRejection', onUnhandled);
+  const session = {
+    async run(project: string) {
+      // "fails" fails at once; "long" holds the only slot meanwhile.
+      if (project === 'fails') throw new Error('run failed');
+      await sleep(100);
+      return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: project, snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 1 } } as unknown as RunResult;
+    },
+  } as unknown as Session;
+  try {
+    const items: BatchItem[] = ['fails', 'long', 'after'].map((p) => ({ project: p }));
+    await assert.rejects(runBatch(session, items, { parallel: 1, prewarm: false, batchDir: dir }), /run failed/);
+    await sleep(10);
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    await rm(dir, { recursive: true, force: true });
+  }
+});

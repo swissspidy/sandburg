@@ -214,8 +214,10 @@ export class Session {
 
   /** Opens a spare tab for the next run on `adapter`, unless there is one. */
   private prepareTab(adapter: AdapterDescriptor): void {
-    if (this.spare || this.options.spareTab === false || !this.browser) return;
-    const spare = this.openTab(adapter, DEFAULT_TIMEOUTS.load);
+    // Not with a visible browser: a spare is a window.
+    if (this.spare || this.options.spareTab === false || this.options.headless === false || !this.browser) return;
+    // No deadline of its own: the run that takes it waits for it within its own load timeout.
+    const spare = this.openTab(adapter, 0);
     spare.then(
       (tab) => tab.loaded.catch(() => (tab.broken = true)),
       () => {},
@@ -410,8 +412,8 @@ export class Session {
       const runtimeAllow = originMatcher(adapter!.egress);
       // The spare tab, with its host page loaded or loading; the next run's opens meanwhile.
       tab = await this.takeTab(adapter!, timeouts.load);
-      // Not for a seed run (it runs beside an app), nor with a visible browser (a spare is a window).
-      if (!options.seed && !options.hold && this.options.headless !== false) this.prepareTab(adapter!);
+      // Not for a seed run (it runs beside an app), nor a held one.
+      if (!options.seed && !options.hold) this.prepareTab(adapter!);
       ({ context, proxy } = tab);
       const { page, origin } = tab;
       run.network = tab.network;
