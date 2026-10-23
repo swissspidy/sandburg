@@ -30,6 +30,8 @@ export interface HostInstall {
     key: string;
     dirs: string[];
     files: Record<string, string | { base64: string }>;
+    /** The SHA-256 (hex) of each file of the cache the run starts from, when it comes as a bundle (filesBundle) instead of `files`. */
+    digests?: Record<string, string>;
     /** Files to wait for before the cache is saved (a seed run: webpack stores its cache when idle). */
     waitFor?: string[];
   };
@@ -100,6 +102,12 @@ const { spawn } = require('node:child_process');
 const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit' });
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
+
+/** The SHA-256 (hex) of a file read from the runtime (text, or binary as base64). */
+async function sha256(file: string | { base64: string }): Promise<string> {
+  const bytes = typeof file === 'string' ? new TextEncoder().encode(file) : Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** A port to the page's compiler for a runtime (each runtime blocks on its own; see compile-worker.ts). */
 function connectCompiler(compiler: Worker): MessagePort {
@@ -285,7 +293,12 @@ export function createAdapter(): RuntimeAdapter {
         // Vite writes an optimized environment's _metadata.json last.
         const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
         const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
-        const changed = complete && Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p]));
+        const digests = devCache.digests;
+        const changed =
+          complete &&
+          (digests
+            ? (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
+            : Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
         if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
       }
       proc?.terminate();

@@ -77,6 +77,15 @@ async function readDevCache(key: string, dirs: string[]): Promise<Record<string,
   }
 }
 
+/** The SHA-256 (hex) of each file of a cache, as the page computes it over what a run leaves (browser.ts). */
+function cacheDigests(files: Record<string, string | { base64: string }>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [path, content] of Object.entries(files)) {
+    out[path] = createHash('sha256').update(typeof content === 'string' ? Buffer.from(content) : Buffer.from(content.base64, 'base64')).digest('hex');
+  }
+  return out;
+}
+
 /** Caches handed to runs to start from, and the directories they may hold (see cacheBundle). */
 const readableCaches = new Map<string, string[]>();
 
@@ -638,6 +647,14 @@ export const node: AdapterDescriptor = {
         readableCaches.set(seed.key, VITE_SEED_DIRS);
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
       }
+    }
+    // The app's own cache from an earlier run, as a bundle the runtime fetches: megabytes of base64 in
+    // the install data took ~0.6 s to reach the runtime (SvelteKit's is 8 MB, the Angular CLI's 5 MB).
+    // The page compares what the run leaves with the digests to tell whether to store it again.
+    if (!filesBundle && devCache.key === cacheKey && Object.keys(devCache.files).length) {
+      readableCaches.set(cacheKey, cacheDirs);
+      filesBundle = `/__sandburg/dev-cache/${cacheKey}/bundle`;
+      devCache = { ...devCache, files: {}, digests: cacheDigests(devCache.files) };
     }
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
