@@ -75,8 +75,11 @@ browser waited for was:
   "origin not allowlisted"). HTTPS is recorded as before.
 - **Requests from another site to a sandbox's origin get a 403**, such as an allowlisted origin's
   iframe loading from the sandbox.
-- **A popup or out-of-process frame's first requests may reach HTTPS before its interception is
-  set**: those go through the proxy's tunnel to allowlisted origins (policed, not cached).
+- **A popup's first request, and an out-of-process frame's before its interception is set, fail**:
+  the gateway's Fetch interception on a new target starts after its first request (every popup's
+  first navigation reached the proxy, 5 of 5), and the proxy of a run's context opens no tunnels, so
+  it refuses and records them ("HTTPS the gateway did not intercept"). With Playwright's routing,
+  which holds a new target until its routes are set, they were answered by the gateway.
 - **A second run of an app in a new process** (a second CLI run) does not compile again:
   next-app-router 6.5-7.4 s → 5.9-6.6 s, as warm as one process (5.4-5.6 s). `.sandburg/compiled`
   holds up to 1 GB.

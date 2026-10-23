@@ -188,12 +188,12 @@ test('the gateway sees HTTPS from pages and workers; another sandbox refuses req
   const cacheDir = await mkdtemp(join(tmpdir(), 'sandburg-egress-'));
   const stats = newEgressStats();
   const allow = ['https://allowed.sandburg.test'];
-  const proxy = new EgressProxy(originMatcher(allow), stats);
+  const proxy = new EgressProxy(originMatcher(allow), stats, { noTunnels: true });
   await proxy.listen();
   try {
     const one = host.register('one', getAdapter('node'));
     const two = host.register('two', getAdapter('node'));
-    // As a run's context (session.ts): only the host server's port bypasses the proxy.
+    // As a run's context (session.ts): only the host server's port bypasses the proxy, which opens no tunnels.
     const context = await browser.newContext({ proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}:${host.port}` } });
     // Offline: every request the gateway sees and has no answer for is recorded as a miss. One
     // answer is cached: the registry's kind, a 404 without CORS headers.
@@ -234,6 +234,13 @@ test('the gateway sees HTTPS from pages and workers; another sandbox refuses req
         });
       return { own: await load('/__sandburg/ws-shim.js'), other: await load(`${two}/__sandburg/ws-shim.js`) };
     }, two);
+    // A popup's first request comes before its interception is set: the proxy refuses it (no tunnel)
+    // instead of passing it to the allowlisted origin.
+    const [popup] = await Promise.all([context.waitForEvent('page'), page.evaluate(() => void window.open('https://allowed.sandburg.test/popup'))]);
+    await popup.waitForLoadState().catch(() => {});
+    await popup.close();
+    assert.equal(stats.tunneled, 0, JSON.stringify(stats));
+    assert.ok(stats.blocked.some((b) => b.method === 'CONNECT' && b.url === 'https://allowed.sandburg.test' && /did not intercept/.test(b.reason)), JSON.stringify(stats.blocked));
     const missed = stats.failed.map((f) => new URL(f.url).pathname).sort();
     assert.deepEqual(missed, ['/nested', '/page', '/worker'], JSON.stringify(stats));
     assert.ok(stats.failed.every((f) => f.reason.startsWith('offline mode')), JSON.stringify(stats.failed));

@@ -126,8 +126,9 @@ export class EgressGateway {
    * page): Playwright's routing pauses every request, the sandbox's own included, for a round trip
    * through this process, and turns off the browser's HTTP cache while any route is set. A run's
    * runtime makes hundreds of requests to its origin (one synchronous request per installed file
-   * without a preload bundle). Plain HTTP that is not the sandbox's never gets out either: the
-   * context's proxy refuses it and records it (egress-proxy.ts), and only the host server's own port
+   * without a preload bundle). What the interception does not see never gets out either: the context's
+   * proxy refuses plain HTTP and, for these contexts, opens no tunnels (a popup's first request comes
+   * before its interception is set), and records them (egress-proxy.ts); only the host server's own port
    * on *.sandburg.localhost bypasses the proxy, where the host server refuses requests from another
    * site (host-server.ts). `routeAll` routes every request through Playwright instead: for a
    * context whose proxy is bypassed for every port on *.sandburg.localhost (the reference runtime).
