@@ -411,9 +411,13 @@ function sharedFile(key: string): Uint8Array | null {
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
     const key = url.slice(base.length + installKey.length + 5);
-    const own = sharedFile(key);
+    let own = sharedFile(key);
+    if (!own && !preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) {
+      loadPreload();
+      // A bundle in shared memory (the page downloaded it) is read there.
+      own = sharedFile(key);
+    }
     if (own) return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
-    if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
     const hit = preloaded?.get(key);
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
     const side = downloadedOnSide(key);

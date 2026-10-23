@@ -8,10 +8,25 @@ import type { AddressInfo } from 'node:net';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { readFile } from 'node:fs/promises';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
+import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
+import type { HostRequest } from '../../src/types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from '../../src/adapters/node/compile.ts';
 
 const PAGE = `<!doctype html><script>
-window.runNode = (files, main, requests) => new Promise((resolve) => {
+// A bundle downloaded by the page into shared memory, as adapters/node/process.ts (prefetchBundle) does.
+window.prefetch = (url) => {
+  const sab = new SharedArrayBuffer(8, { maxByteLength: 1 << 24 });
+  const state = new Int32Array(sab, 0, 2);
+  fetch(url + '?by=page').then((r) => r.arrayBuffer()).then((b) => {
+    sab.grow(8 + b.byteLength);
+    new Uint8Array(sab, 8).set(new Uint8Array(b));
+    Atomics.store(state, 1, b.byteLength);
+    Atomics.store(state, 0, 1);
+    Atomics.notify(state, 0);
+  });
+  return sab;
+};
+window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
   const out = { stdout: '', stderr: '', responses: [], fatal: null, exit: null };
   const bodies = new Map();
@@ -33,7 +48,9 @@ window.runNode = (files, main, requests) => new Promise((resolve) => {
     }
   };
   w.onerror = (e) => { out.fatal = 'worker error: ' + e.message; finish(); };
-  w.postMessage({ type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg' });
+  const init = { type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg', ...extra };
+  if (extra.prefetch) init.prefetched = { [extra.preload]: window.prefetch(extra.preload) };
+  w.postMessage(init);
   if (!requests.length) setTimeout(finish, 3000);
 });
 window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => {
@@ -58,15 +75,46 @@ window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => 
 });
 </script>`;
 
+/** An install the harness serves (see runInstalled): node_modules files by path, and which of them its preload bundle has. */
+interface Install {
+  files: Record<string, string>;
+  bundled: string[];
+}
+export const INSTALL_KEY = 'a'.repeat(24);
+
 export class RuntimeHarness {
   private server!: Server;
   private browser!: Browser;
   page!: Page;
+  private install: Install = { files: {}, bundled: [] };
+  /** What the host was asked for: `http <path>` or `ws <path>`. */
+  asked: string[] = [];
+
+  /** The host's answer for an install's file or its preload bundle, as the node adapter serves them. */
+  private installed(path: string): Buffer | null {
+    const m = /^\/__sandburg\/nm\/[0-9a-f]{24}\/(f|t)\/(.+)$/.exec(path);
+    if (m) {
+      const text = this.install.files[decodeURIComponent(m[2])];
+      return text === undefined ? null : Buffer.from(text);
+    }
+    if (!path.startsWith('/__sandburg/preload/')) return null;
+    const files = this.install.bundled.flatMap((rel) => ['f', 't'].map((mode) => [mode, rel, Buffer.from(this.install.files[rel])] as const));
+    const header = Buffer.from(JSON.stringify(files.map(([mode, rel, bytes]) => [mode, rel, bytes.length])));
+    const length = Buffer.alloc(4);
+    length.writeUInt32LE(header.length);
+    return Buffer.concat([length, header, ...files.map((f) => f[2])]);
+  }
 
   async open(): Promise<void> {
     const js = await bundleNodeRuntime();
     this.server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://x');
+      const body = this.installed(url.pathname);
+      if (body || url.pathname.startsWith('/__sandburg/nm/')) {
+        this.asked.push(`http ${url.pathname}${url.search}`);
+        res.writeHead(body ? 200 : 404, { 'content-type': 'application/octet-stream' });
+        return res.end(body ?? 'not found');
+      }
       if (url.pathname === '/__sandburg/node-worker.js') {
         res.writeHead(200, { 'content-type': 'text/javascript', 'cross-origin-embedder-policy': 'require-corp' });
         return res.end(js);
@@ -100,6 +148,14 @@ export class RuntimeHarness {
       res.writeHead(200, { 'content-type': 'text/html', 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp' });
       res.end(PAGE);
     });
+    this.server.on('upgrade', (req, socket) => {
+      const origin = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+      acceptFileChannel(req, socket, origin, async (r: HostRequest) => {
+        this.asked.push(`ws ${r.path}`);
+        const body = this.installed(r.path);
+        return body ? { status: 200, body } : null;
+      });
+    });
     await new Promise<void>((r) => this.server.listen(0, '127.0.0.1', r));
     this.browser = await chromium.launch({ executablePath: process.env.SANDBURG_CHROMIUM });
     this.page = await this.browser.newPage();
@@ -122,6 +178,24 @@ export class RuntimeHarness {
       fatal: string | null;
       exit: number | null;
       responses: { status: number; body: string; chunks: number }[];
+    }>;
+  }
+
+  /**
+   * Runs a program with an install: node_modules files the runtime reads from the host, a preload
+   * bundle of `bundled` (downloaded by the page as it starts the runtime if `prefetch`), and the
+   * file channel. `asked` records what the host was asked for.
+   */
+  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean } = {}) {
+    this.install = install;
+    this.asked = [];
+    const nodeModules = Object.fromEntries(Object.entries(install.files).map(([rel, text]) => [rel, Buffer.byteLength(text)]));
+    const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch };
+    return this.page.evaluate(([f, m, e]) => (window as unknown as { runNode: Function }).runNode(f, m, [], e), [files, main, extra] as const) as Promise<{
+      stdout: string;
+      stderr: string;
+      fatal: string | null;
+      exit: number | null;
     }>;
   }
 
