@@ -43,7 +43,8 @@ others waiting.
   data; the page stores the cache again only when a file differs.
 - **Compile cache** (`src/adapters/node/compile-cache.ts`): the host records what it compiles for a
   run (POST `/__sandburg/compile`) under the run's dev-cache key (the project's files and its
-  install), in `.sandburg/dev-cache/compiled-<compiler hash>-<key>.bin`, up to 48 MB a project (older
+  install), in `.sandburg/dev-cache/compiled-<compiler hash>-<key>.bin`, code under 256 KB (larger
+  code is asked for by digest), up to 48 MB a project (older
   runs' entries out first; 8 projects in memory). The next run of the project fetches them as one
   bundle at its first compile and looks a compile up there by the whole code before asking the host.
   An entry is the host's own output for the code it was sent, so a run can add entries but not change
@@ -61,20 +62,21 @@ others waiting.
 
   | Fixture | Warm | Cold |
   |---|---|---|
-  | react-router-app | 8.26 s → 4.57 s (−45%) | 21.66 s → 19.45 s (−10%) |
-  | sveltekit-app | 11.13 s → 6.83 s (−39%) | 30.16 s → 28.77 s (−5%) |
-  | angular-tasks | 10.74 s → 6.78 s (−37%) | 34.58 s → 34.82 s (+1%) |
-  | astro-app | 12.51 s → 8.33 s (−33%) | 38.22 s → 37.41 s (−2%) |
-  | solid-start-app | 12.70 s → 9.01 s (−29%) | 29.72 s → 30.59 s (+3%) |
-  | nuxt-app | 13.80 s → 10.53 s (−24%) | 50.66 s → 51.93 s (+3%) |
-  | next-app-router | 10.47 s → 10.75 s (+3%) | 34.95 s → 36.58 s (+5%) |
+  | react-router-app | 8.56 s → 5.26 s (−38%) | 21.79 s → 20.24 s (−7%) |
+  | astro-app | 13.07 s → 8.40 s (−36%) | 38.56 s → 40.43 s (+5%) |
+  | angular-tasks | 11.78 s → 7.85 s (−33%) | 35.93 s → 34.96 s (−3%) |
+  | sveltekit-app | 11.70 s → 8.17 s (−30%) | 30.69 s → 30.52 s (−1%) |
+  | nuxt-app | 14.24 s → 11.95 s (−16%) | 52.70 s → 52.84 s (+0%) |
+  | solid-start-app | 12.91 s → 11.13 s (−14%) | 32.45 s → 29.23 s (−10%) |
+  | next-app-router | 11.13 s → 11.75 s (+6%) | 35.51 s → 36.04 s (+1%) |
 
-  Cold totals move with npm's install (±3 s here); their start and ready phases were unchanged or
-  faster (React Router's start 8.50 → 6.83 s, SvelteKit's ready 4.88 → 3.80 s). Next.js is
-  unchanged: its warm samples here run beside its seed run (each cold sample removes the seed); one
-  head sample started in 4.1 s, the others as base. Each change's own A/B is in its commit message;
-  the largest: Astro's compile cache 12.5 → 8.5 s, SvelteKit's cache directory 12.1 → 9.5 s, React
-  Router's conditions 6.8 → 5.3 s, Angular's TypeScript on its own thread 8.4 → 7.2 s.
+  Cold totals move with npm's install; their start and ready phases were unchanged or faster (React
+  Router's start 8.62 → 6.71 s, SvelteKit's ready 4.91 → 4.25 s). Next.js' warm start was 0.7 s
+  slower in that run (the compile cache then kept next dev's multi-MB chunks: a 27 MB bundle); code
+  of 256 KB or more is no longer kept, and Next.js' warm start went 2.12 → 1.88 s against the
+  version measured here. Each change's own A/B is in its commit message; the largest: Astro's
+  compile cache 12.5 → 8.5 s, SvelteKit's cache directory 12.1 → 9.5 s, React Router's conditions
+  6.8 → 5.3 s, Angular's TypeScript on its own thread 8.4 → 7.2 s.
 - Cold runs gain little: the caches and compiles are a project's own, kept for its next run; a never
   run app still pre-bundles and compiles everything. Cold start and ready phases were unchanged or
   slightly faster in each change's A/B (cold totals vary by ±10 s with npm's install).
