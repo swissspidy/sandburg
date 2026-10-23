@@ -39,6 +39,53 @@ export function hostBase(): string {
   return (globalThis as { __sandburgBase?: string }).__sandburgBase ?? '/__sandburg';
 }
 
+/** The largest bundle downloaded ahead (prefetchBundle); a larger one fails there and the runtime asks for it. */
+const PREFETCH_MAX = 1 << 30;
+/** A growable SharedArrayBuffer (ES2024; this project's lib is older). */
+type Growable = SharedArrayBuffer & { grow(length: number): void };
+const GrowableSharedArrayBuffer = SharedArrayBuffer as unknown as new (length: number, options: { maxByteLength: number }) => Growable;
+
+/**
+ * Starts downloading a bundle the runtime reads as it starts (the install's preload bundle, a dev
+ * server's cache), while the worker loads: into shared memory, which the runtime waits on instead of
+ * requesting the bundle itself (worker.ts, prefetchedBody). Its state (0 downloading, 1 done, 2
+ * failed) and length, then the bytes; the memory grows to the bundle's size (its maximum reserves
+ * address space only). Null where there is no shared memory.
+ */
+export function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | null {
+  if (!url || !globalThis.crossOriginIsolated) return null;
+  let sab: Growable;
+  try {
+    sab = new GrowableSharedArrayBuffer(8, { maxByteLength: 8 + PREFETCH_MAX });
+  } catch {
+    return null;
+  }
+  const state = new Int32Array(sab, 0, 2);
+  const settle = (status: number, length = 0) => {
+    Atomics.store(state, 1, length);
+    Atomics.store(state, 0, status);
+    Atomics.notify(state, 0);
+  };
+  void (async () => {
+    const res = await fetch(url);
+    if (!res.ok || !res.body) return settle(2);
+    const declared = Number(res.headers.get('content-length'));
+    let length = 0;
+    if (declared > 0) sab.grow(8 + declared);
+    // Written as it arrives: no copy of the whole body first.
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (8 + length + value.length > sab.byteLength) sab.grow(Math.min(8 + PREFETCH_MAX, Math.max(8 + length + value.length, sab.byteLength * 2)));
+      new Uint8Array(sab, 8 + length, value.length).set(value);
+      length += value.length;
+    }
+    settle(1, length);
+  })().catch(() => settle(2));
+  return sab;
+}
+
 /** How long a server on a port the system picked waits before it may be taken for the app (see 'listening'). */
 const EPHEMERAL_PATIENCE_MS = 5_000;
 
@@ -66,6 +113,11 @@ export class NodeProcess {
     this.label = opts.label ?? 'the app';
     const base = hostBase();
     this.worker = new Worker(`${base}/node-worker.js`);
+    const prefetched: Record<string, SharedArrayBuffer> = {};
+    for (const url of [opts.preload, opts.filesBundle]) {
+      const sab = prefetchBundle(url);
+      if (url && sab) prefetched[url] = sab;
+    }
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
     // A WebAssembly thread of the app's process that crashed while its parent was blocked (it
@@ -73,7 +125,7 @@ export class NodeProcess {
     this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
       this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
     this.worker.postMessage(
-      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner },
+      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner },
       opts.compilePort ? [opts.compilePort] : [],
     );
   }
