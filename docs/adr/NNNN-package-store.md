@@ -73,10 +73,13 @@ Astro apps, the same answers each time.
 
 ## Consequences
 
-- Cold runs (`scripts/bench.ts --modes cold`, 3 interleaved rounds, medians; the store and the
-  unpacking ahead, before the resolver, which a single run does not use): `next-app-router`
-  45.7 s → 39.3 s (install phase 14.3 s → 5.9 s), `vite-react-counter` 13.3 s → 12.1 s
-  (5.6 → 5.2 s), `lit-vite` 11.6 s → 11.2 s (5.5 → 4.6 s).
+- Cold runs, this ADR against origin/main (`scripts/bench.ts --modes cold,warm`, 3 interleaved
+  rounds, medians, all passed): `next-app-router` 41.0 s → 32.9 s to the result (install phase
+  13.0 s → 4.9 s; `Session.close`, which waits for the Next.js seed run, 5.7 s → 6.9 s),
+  `vite-react-counter` 12.2 s → 11.1 s (install 5.7 → 4.5 s), `lit-vite` 10.8 s → 9.9 s (install
+  5.2 → 4.1 s). Warm runs' install phases are unchanged (0.3–0.6 s); their totals moved by −12%,
+  −1% and +8% (`next-app-router` 6.95–8.16 s against 7.42–7.67 s, in start and ready, not in the
+  install).
 - Host installs in sequence in one process (corpus 000, 001, 002, 003, 004, 007, 009, then lit-vite
   and next-app-router; empty `.sandburg/`, warm `~/.npm`, 3 rounds), store only: 55.6 s → 30.5 s,
   Next.js apps 14.6 s → 5.7 s each. The resolver then took the same sequence from 30.8 s to 28.3 s
