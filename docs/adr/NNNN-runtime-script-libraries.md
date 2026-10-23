@@ -32,8 +32,7 @@ Chromium offers (Chromium 141, Playwright 1.64):
 - **What a worker compiles is the script it is given.** The runtime script compiled in 17 ms in an
   idle worker without crypto-browserify (1.2 MB) and napi-rs' WebAssembly runtime with emnapi
   (0.7 MB, ES modules compiled eagerly at the script's top level), against 42 ms with them.
-  Minifying it changed nothing (43 → 45–48 ms): V8's cost is per function, not per byte of
-  whitespace. Most runtimes never load node:crypto or node:wasi.
+  Most runtimes never load node:crypto or node:wasi.
 
 ## Decision
 
@@ -83,3 +82,15 @@ Measured with interleaved warm runs (`scripts/bench.ts`, 4–6 rounds) unless no
   (vite-react-counter +19%, next-app-router +1%), `--no-lazy-eval` (+10%, +4%),
   `--no-flush-bytecode` (+7%, −1%). `--wasm-lazy-validation` (experimental) was within noise
   (−0%, −2%).
+- **Fewer optimizing compiles of JavaScript.** As with WebAssembly (ADR 0027), V8's optimizing
+  tiers are busy in the background: in a warm `next-app-router` trace, TurboFan 1.9 s and Maglev
+  1.6 s of a pool thread's time. `--no-turbofan` cut the pool threads' CPU in a warm run by ~13%
+  (2.04 → 1.77 s) but no time: `next-app-router` +0%, `vite-react-counter` −1%, and the 12-app
+  batch in 3 tabs 30.3 s → 30.5 s. `--invocation-count-for-turbofan=12000` (4× the default):
+  `next-app-router` −8% in one series, `vite-react-counter` +14% then +2%, `lit-vite` −1%.
+- **assert, url (legacy API) and `util.parseArgs` as libraries too** (the runtime script 0.86 →
+  0.65 MB; a woken spare 195 → 154 ms in an idle tab): a program's runtime requires assert and url
+  as it starts, and its start got slower (`lit-vite` +6%, `vite-react-counter` start +6%).
+- **The service worker fetching the libraries ahead**, with the runtime script: within noise
+  (`lit-vite` +2%, 6 rounds; `vite-react-counter` −4%, `next-app-router` −4%, 4 rounds).
+- **Minifying the runtime script** (whitespace, syntax, or all): compile 43 ms → 45–48 ms.
