@@ -19,6 +19,7 @@ import { renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
+import { installFromLockfile } from './package-store.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 13;
@@ -60,8 +61,12 @@ export class Installer {
   /** Transforms in progress, by content hash. */
   private transforming = new Map<string, Promise<Buffer>>();
 
+  /** Unpacked packages, by integrity, that installs hard-link (package-store.ts). */
+  private readonly store: string;
+
   constructor(root: string) {
     this.root = root;
+    this.store = join(root, '..', 'store');
     void this.sweep();
   }
 
@@ -130,9 +135,13 @@ export class Installer {
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
       const base = await this.startFromClosest(manifest as Manifest, tmp, lock !== null);
-      if (base) log(`starting from install ${base.key}, which has ${base.shared} of the same dependencies (npm installs the difference)`);
+      if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
+      // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
+      // when the lockfile has what the store does not handle.
       // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
-      await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
+      const flags = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
+      await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+      if (!(await installFromLockfile(tmp, this.store, log))) await run('npm', ['install', ...flags], tmp, log);
       // npm creates no node_modules for a project without dependencies; the steps below read it.
       await mkdir(join(tmp, 'node_modules'), { recursive: true });
       // Side by side (each waits on npm and the registry): they change different directories. The
@@ -155,14 +164,13 @@ export class Installer {
   }
 
   /**
-   * Starts a new install from the finished install that shares most of its dependencies: its
-   * node_modules, hard-linked (instant), and its lockfile, so npm only installs the difference
-   * (~0.5 s instead of ~7 s for a Next.js app). As with the install cache itself, versions that
-   * installs share stay the ones npm picked for the first. Linux only (cp -al); elsewhere npm installs
-   * everything. Files that installs change later are replaced, never written through the links.
+   * Starts a new install's resolution from the lockfile of the finished install that shares most of
+   * its dependencies, so that npm only resolves the difference and, as with the install cache
+   * itself, versions that installs share stay the ones npm picked for the first. The packages
+   * themselves come from the package store.
    */
   private async startFromClosest(manifest: Manifest, tmp: string, hasLock: boolean): Promise<{ key: string; shared: number } | null> {
-    if (process.platform !== 'linux') return null;
+    if (hasLock) return null;
     const wanted = { ...manifest.dependencies, ...manifest.devDependencies };
     const names = Object.keys(wanted);
     if (!names.length) return null;
@@ -184,14 +192,9 @@ export class Installer {
       if (shared * 2 >= names.length && (!best || shared > best.shared || (shared === best.shared && time > best.time))) best = { key, shared, time };
     }
     if (!best) return null;
-    const from = join(this.root, best.key);
     try {
-      await run('cp', ['-al', join(from, 'node_modules'), join(tmp, 'node_modules')], tmp, () => {});
-      // npm's record of the tree it installed describes the other install: it reads the tree instead.
-      await rm(join(tmp, 'node_modules', '.package-lock.json'), { force: true });
-      if (!hasLock) await cp(join(from, 'package-lock.json'), join(tmp, 'package-lock.json')).catch(() => {});
+      await cp(join(this.root, best.key, 'package-lock.json'), join(tmp, 'package-lock.json'));
     } catch {
-      await rm(join(tmp, 'node_modules'), { recursive: true, force: true });
       return null;
     }
     return { key: best.key, shared: best.shared };
