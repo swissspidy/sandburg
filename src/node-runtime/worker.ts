@@ -385,12 +385,15 @@ let prefetched: Record<string, SharedArrayBuffer> = {};
  * 0026), and the runtime would wait for all of it; it loads what it needs one file at a time
  * instead (the host's prediction transforms those first), and reads the bundle once it is there.
  */
+let waitedForChannel = false;
+
 function stillDownloading(url: string): boolean {
   const sab = prefetched[url];
   if (!sab || Atomics.load(new Int32Array(sab, 0, 1), 0) !== 0 || !channel) return false;
-  // The channel opens as the runtime starts: worth a short wait.
+  // The channel opens as the runtime starts: worth one short wait (a host without one may not answer).
   const ready = new Int32Array(channel.ready);
-  Atomics.wait(ready, 0, 0, 100);
+  if (!waitedForChannel) Atomics.wait(ready, 0, 0, 100);
+  waitedForChannel = true;
   return Atomics.load(ready, 0) === 1;
 }
 
