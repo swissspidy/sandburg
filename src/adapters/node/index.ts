@@ -7,7 +7,7 @@
 import { source } from '../../sources.ts';
 import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-wasm-bundle.ts';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findFullStack } from './scripts.ts';
@@ -17,6 +17,7 @@ import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compiled, compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
+import { Prefetcher } from './prefetch.ts';
 import type { HostInstall } from './browser.ts';
 import { VITE_SEED_DIRS, VITE_SEED_WAIT, viteSeed } from './vite-seed.ts';
 import { warmups } from './warmup.ts';
@@ -255,9 +256,34 @@ async function preloadEntries(key: string): Promise<string[]> {
 /** The file lists of the bundles handed out, by hash: fixed when the URL is (the lists grow as the run loads files). */
 const issuedBundles = new Map<string, string[]>();
 
-/** The preload bundle's URL for an install, or null when there is nothing to preload yet. */
-async function preloadUrl(key: string): Promise<string | null> {
+/**
+ * Installs never run: what their programs require is found and transformed ahead, from the
+ * program's entry and from the files its runtimes ask for (see prefetch.ts), and their first bundle
+ * is what that found (predictedBundle).
+ */
+const prefetchers = new Map<string, Promise<Prefetcher>>();
+const predicted = new Map<string, () => Promise<Buffer>>();
+
+/** The preload bundle's URL for an install, or null when there is nothing to preload. */
+async function preloadUrl(key: string, start: { main?: string; require?: string }): Promise<string | null> {
   const entries = await preloadEntries(key);
+  if (!(await preloadList(key)).size) {
+    let p = prefetchers.get(key);
+    if (!p) {
+      p = installer.index(key).then((index) => new Prefetcher(installer, key, index));
+      prefetchers.set(key, p);
+    }
+    const prefetcher = await p;
+    // The program's first modules are transformed while the page starts it.
+    if (start.main) prefetcher.add(start.main);
+    if (start.require) await prefetcher.require(start.require);
+    const hash = randomBytes(8).toString('hex');
+    let bundle: Promise<Buffer> | undefined;
+    predicted.set(`${key}/${hash}`, () => (bundle ??= predictedBundle(key, entries, prefetcher)));
+    return `/__sandburg/preload/${key}/${hash}`;
+  }
+  // Run before: it preloads what its runs loaded.
+  prefetchers.delete(key);
   if (!entries.length) return null;
   const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0${PRELOAD_FILE_MAX}\0side\0`).update(entries.join('\n')).digest('hex').slice(0, 16);
   issuedBundles.set(`${key}/${hash}`, entries);
@@ -275,6 +301,9 @@ const bundles = new Map<string, { hash: string; bundle: Promise<Buffer | null> }
 const BUNDLES_KEPT = 4;
 
 function preloadBundle(key: string, hash: string): Promise<Buffer | null> {
+  // A never-run install's predicted bundle is built when it is first asked for (predictedBundle).
+  const guessed = predicted.get(`${key}/${hash}`);
+  if (guessed) return guessed();
   const known = bundles.get(key);
   if (known?.hash === hash) return known.bundle;
   const bundle = buildPreloadBundle(key, hash).catch(() => null);
@@ -289,15 +318,24 @@ function preloadBundle(key: string, hash: string): Promise<Buffer | null> {
 }
 
 /**
- * The bundle: a little-endian u32 header length, a JSON header [[mode, path, length], …], then the
- * files' bytes in that order (mode "t": compiled for the runtime, "f": raw).
+ * A never-run install's bundle: the files other installs' runs loaded from its package versions
+ * (`known`), and what its prefetcher found by the time the bundle is asked for and PREDICT_WAIT
+ * after (or when it has found everything). The runtime waits for its bundle; what the bundle misses
+ * it asks for one by one, and the prefetcher keeps transforming ahead. The files are recorded as
+ * loaded, as if each had been asked for: later runs preload them from the install's list and the
+ * package lists, as they do the files runs asked for, from a bundle that is kept.
  */
-async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | null> {
-  const file = join(devCacheRoot(), `preload-${key}-${hash}.bin`);
-  const cached = await readFile(file).catch(() => null);
-  if (cached) return cached;
-  const entries = issuedBundles.get(`${key}/${hash}`);
-  if (!entries) return null;
+async function predictedBundle(key: string, known: string[], prefetcher: Prefetcher): Promise<Buffer> {
+  await prefetcher.untilIdle(PREDICT_WAIT);
+  const entries = [...new Set([...known, ...prefetcher.transformed.map((rel) => `t:${rel}`), ...[...prefetcher.raw].map((rel) => `f:${rel}`)])];
+  const bundle = await buildBundle(key, entries);
+  for (const [mode, rel] of bundle.files) await recordLoad(key, mode, rel);
+  return bundle.body;
+}
+const PREDICT_WAIT = 8000;
+
+/** A bundle of `entries` ("mode:path"), and the files in it (raw files over PRELOAD_FILE_MAX are only named, for the runtime to download on the side). */
+async function buildBundle(key: string, entries: string[]): Promise<{ body: Buffer; files: [string, string][] }> {
   const header: [string, string, number][] = [];
   const bodies: Buffer[] = [];
   const index = await installer.index(key);
@@ -318,7 +356,20 @@ async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | n
   const json = Buffer.from(JSON.stringify(header));
   const length = Buffer.alloc(4);
   length.writeUInt32LE(json.length);
-  const bundle = Buffer.concat([length, json, ...bodies]);
+  return { body: Buffer.concat([length, json, ...bodies]), files: header.map(([mode, rel]) => [mode, rel]) };
+}
+
+/**
+ * The bundle: a little-endian u32 header length, a JSON header [[mode, path, length], …], then the
+ * files' bytes in that order (mode "t": compiled for the runtime, "f": raw).
+ */
+async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | null> {
+  const file = join(devCacheRoot(), `preload-${key}-${hash}.bin`);
+  const cached = await readFile(file).catch(() => null);
+  if (cached) return cached;
+  const entries = issuedBundles.get(`${key}/${hash}`);
+  if (!entries) return null;
+  const bundle = (await buildBundle(key, entries)).body;
   await mkdir(devCacheRoot(), { recursive: true });
   // Earlier bundles of the install (the lists grew since) are not asked for again.
   for (const old of await readdir(devCacheRoot()).catch(() => [] as string[])) {
@@ -497,6 +548,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     const [, key, mode, rel] = m;
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
     if (file) void recordLoad(key, mode, decodeURIComponent(rel));
+    if (file && mode === 't') void prefetchers.get(key)?.then((p) => p.loaded(decodeURIComponent(rel), file.body.toString('utf8')));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
   return null;
@@ -578,7 +630,9 @@ export const node: AdapterDescriptor = {
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
       }
     }
-    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, preload: await preloadUrl(key) };
+    // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
+    const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
+    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, preload: await preloadUrl(key, entry) };
   },
   serve,
   warmups,
