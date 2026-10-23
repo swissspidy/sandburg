@@ -443,7 +443,13 @@ export function createModuleSystem(host: LoaderHost) {
     } else {
       // Project files, and files written at run time (e.g. Vite's bundled config under node_modules/.vite-temp).
       code = readText(filename);
-      const esm = filename.endsWith('.mjs') || (!filename.endsWith('.cjs') && (packageScope(filename)?.[1].type === 'module' || looksEsm(code)));
+      // Node detects the syntax only where package.json has no "type": a "commonjs" scope (next dev's
+      // .next/dev, with its 8 MB chunks) is CommonJS without parsing the file to find out.
+      let esm = filename.endsWith('.mjs');
+      if (!esm && !filename.endsWith('.cjs')) {
+        const type = packageScope(filename)?.[1].type;
+        esm = type === 'module' || (type !== 'commonjs' && looksEsm(code));
+      }
       if (esm || needsLowering(code)) code = host.compile(code, filename, esm ? 'esm' : 'cjs');
     }
     if (code.startsWith(ESM_MARKER)) m.esm = true;
