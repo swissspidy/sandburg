@@ -1,0 +1,39 @@
+name: Performance
+
+# Benchmarks the PR against its base branch (scripts/bench.ts) and fails only on a large regression:
+# hosted runners are noisy, so the table in the job summary is the signal, and the threshold a guard.
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'pages/**'
+      - 'scripts/bench.ts'
+      - 'package-lock.json'
+      - '.github/workflows/perf.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: Benchmark against the base branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: git fetch --no-tags --depth=1 origin "${BASE_REF}"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+      - run: node scripts/bench.ts --base FETCH_HEAD --head . --fixtures vite-react-counter,next-app-router --modes warm,cold --rounds 3 --summary "$GITHUB_STEP_SUMMARY" --fail-above 0.3

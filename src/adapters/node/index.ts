@@ -5,7 +5,8 @@
  * lazily; the app itself, Next.js included, runs in a Web Worker.
  */
 import { source } from '../../sources.ts';
-import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
+import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
+import { RUNTIME_LIBS, type RuntimeLib } from '../../node-runtime/libs.ts';
 import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-wasm-bundle.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -15,16 +16,22 @@ import { projectFromFiles } from '../../project.ts';
 import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticInstall, subProject } from './plan.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
-import { compiled, compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
+import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, type CompileKind } from './compile.ts';
 import { CompileCache } from './compile-cache.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
+import { diskCompileStore, sweepCompiles } from './compile-store.ts';
 import type { HostInstall } from './browser.ts';
 import { VITE_SEED_DIRS, VITE_SEED_WAIT, viteSeed } from './vite-seed.ts';
 import { warmups } from './warmup.ts';
 import { extraDependencies } from './install-rules.ts';
 
 const installer = sharedInstaller();
+
+// Compiles of code the runtime sends, kept on disk as transforms are (compile-store.ts).
+const compiledDir = join(installer.root, '..', 'compiled', `v${TRANSFORM_VERSION}`);
+storeCompiles(diskCompileStore(compiledDir));
+void sweepCompiles(compiledDir);
 const WS_SHIM = source('adapters/node/ws-shim.js');
 
 /**
@@ -514,6 +521,11 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/node-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleNodeRuntime() };
   }
+  // The polyfills a runtime loads when a program first needs them (RUNTIME_LIBS).
+  const lib = /^\/__sandburg\/node-([a-z]+)\.js$/.exec(req.path);
+  if (lib && Object.hasOwn(RUNTIME_LIBS, lib[1])) {
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleRuntimeLib(lib[1] as RuntimeLib) };
+  }
   // The page's compiler, when the page installs the packages (compile-worker.ts).
   if (req.path === '/__sandburg/compile-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleBrowserCompiler(COMPILE_WORKER) };
@@ -610,6 +622,7 @@ export const node: AdapterDescriptor = {
     if (options?.installIn === 'browser') return browserInstall(project);
     // The runtime's bundle, which the page asks for as soon as the install is done, is built while npm runs.
     void bundleNodeRuntime().catch(() => {});
+    for (const name of Object.keys(RUNTIME_LIBS) as RuntimeLib[]) void bundleRuntimeLib(name).catch(() => {});
     const info = await installer.install(project, extraDependencies(project), log);
     // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
     const parts = [{ dir: '', key: info.key }];

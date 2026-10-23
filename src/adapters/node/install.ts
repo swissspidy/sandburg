@@ -15,13 +15,18 @@ import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writ
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
-import { renameCommonJsNames } from './esm-names.ts';
+import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
+import { Resolver } from './resolver.ts';
+import { installFromLockfile, installedPackages, sweepStore, unpackAhead, type InstalledPackage } from './package-store.ts';
+
+/** --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds. */
+const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 13;
+export const TRANSFORM_VERSION = 14;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 15;
 
@@ -60,8 +65,15 @@ export class Installer {
   /** Transforms in progress, by content hash. */
   private transforming = new Map<string, Promise<Buffer>>();
 
+  /** Unpacked packages, by integrity, that installs hard-link (package-store.ts). */
+  private readonly store: string;
+  /** npm's resolution, in a worker that keeps packuments between installs (resolver.ts). */
+  private readonly resolver: Resolver;
+
   constructor(root: string) {
     this.root = root;
+    this.store = join(root, '..', 'store');
+    this.resolver = new Resolver(root, ['--package-lock-only', ...INSTALL_FLAGS]);
     void this.sweep();
   }
 
@@ -80,6 +92,8 @@ export class Installer {
       const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
       if (layout && Number(layout) !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
     }
+    await sweepSideInstalls(join(this.root, '..', 'side-installs'));
+    await sweepStore(this.store);
   }
 
   /** The install of `project`'s dependencies plus `extra`: its key, npm's manifest and the lockfile. */
@@ -130,14 +144,27 @@ export class Installer {
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
       const base = await this.startFromClosest(manifest as Manifest, tmp, lock !== null);
-      if (base) log(`starting from install ${base.key}, which has ${base.shared} of the same dependencies (npm installs the difference)`);
-      // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
-      await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'], tmp, log);
+      if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
+      // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
+      // when the lockfile has what the store does not handle.
+      const flags = INSTALL_FLAGS;
+      const m = manifest as Manifest;
+      const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
+      if (!(await this.resolver.resolve(tmp, log))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+      // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
+      // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
+      const packages = installedPackages(JSON.parse(await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => '{}')));
+      const sides = { root: join(this.root, '..', 'side-installs'), store: this.store, resolver: this.resolver };
+      const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
+      additions.catch(() => {});
+      if (!(await installFromLockfile(tmp, this.store, log))) await run('npm', ['install', ...flags], tmp, log);
+      await ahead;
       // npm creates no node_modules for a project without dependencies; the steps below read it.
       await mkdir(join(tmp, 'node_modules'), { recursive: true });
-      // Side by side (each waits on npm and the registry): they change different directories. The
-      // bindings are new top-level packages, the builds go inside the packages they replace.
-      await Promise.all([placeNextSwcWasm(tmp), placeWasiBindings(tmp, log), placeWasmBuilds(tmp, log)]);
+      // They change different directories: the bindings are new top-level packages, the builds go
+      // inside the packages they replace.
+      const [placeBindings, placeBuilds] = await additions;
+      await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
       await writeBinIndex(tmp);
       await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
       await rm(dir, { recursive: true, force: true });
@@ -155,14 +182,13 @@ export class Installer {
   }
 
   /**
-   * Starts a new install from the finished install that shares most of its dependencies: its
-   * node_modules, hard-linked (instant), and its lockfile, so npm only installs the difference
-   * (~0.5 s instead of ~7 s for a Next.js app). As with the install cache itself, versions that
-   * installs share stay the ones npm picked for the first. Linux only (cp -al); elsewhere npm installs
-   * everything. Files that installs change later are replaced, never written through the links.
+   * Starts a new install's resolution from the lockfile of the finished install that shares most of
+   * its dependencies, so that npm only resolves the difference and, as with the install cache
+   * itself, versions that installs share stay the ones npm picked for the first. The packages
+   * themselves come from the package store.
    */
   private async startFromClosest(manifest: Manifest, tmp: string, hasLock: boolean): Promise<{ key: string; shared: number } | null> {
-    if (process.platform !== 'linux') return null;
+    if (hasLock) return null;
     const wanted = { ...manifest.dependencies, ...manifest.devDependencies };
     const names = Object.keys(wanted);
     if (!names.length) return null;
@@ -184,14 +210,9 @@ export class Installer {
       if (shared * 2 >= names.length && (!best || shared > best.shared || (shared === best.shared && time > best.time))) best = { key, shared, time };
     }
     if (!best) return null;
-    const from = join(this.root, best.key);
     try {
-      await run('cp', ['-al', join(from, 'node_modules'), join(tmp, 'node_modules')], tmp, () => {});
-      // npm's record of the tree it installed describes the other install: it reads the tree instead.
-      await rm(join(tmp, 'node_modules', '.package-lock.json'), { force: true });
-      if (!hasLock) await cp(join(from, 'package-lock.json'), join(tmp, 'package-lock.json')).catch(() => {});
+      await cp(join(this.root, best.key, 'package-lock.json'), join(tmp, 'package-lock.json'));
     } catch {
-      await rm(join(tmp, 'node_modules'), { recursive: true, force: true });
       return null;
     }
     return { key: best.key, shared: best.shared };
@@ -328,18 +349,22 @@ const MEMORY_MAX = 256 << 20;
  */
 export async function transformForRuntime(source: string, path: string, esm: boolean): Promise<string> {
   for (const patch of SOURCE_PATCHES) if (patch.file.test(path)) source = source.replace(patch.from, patch.to);
-  if (esm) source = renameCommonJsNames(source.replace(/^#!.*/, ''));
+  if (esm) source = source.replace(/^#!.*/, '');
   source = patchFunctionImport(patchAsyncFunction(source));
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
   const mark = (code: string) => patchInterop(esm ? `/*sandburg:esm*/\n${code}` : code);
+  // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
+  const convert = async (code: string) => {
+    const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
+    return esm && collidesWithWrapper(code, out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+  };
   try {
-    const out = await esbuild.transform(source, TRANSFORM_OPTIONS(path, esm));
-    return mark(out.code);
+    return mark(await convert(source));
   } catch {
     // Top-level await (e.g. vite/bin/vite.js): an async module (see tla.ts).
-    if (esm && hasTopLevelAwait(source.replace(/^#!.*/, ''))) {
+    if (esm && hasTopLevelAwait(source)) {
       try {
-        return mark((await esbuild.transform(toAsyncModule(source.replace(/^#!.*/, '')), TRANSFORM_OPTIONS(path, true))).code);
+        return mark(await convert(toAsyncModule(source)));
       } catch {
         // fall through
       }
@@ -356,7 +381,7 @@ export const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.Transform
   target: 'es2022',
   // import() goes through the runtime's loader (require), like everything else.
   supported: { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false },
-  define: esm ? { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' } : undefined,
+  define: esm ? ESM_DEFINE : undefined,
   logLevel: 'silent',
 });
 
@@ -390,60 +415,129 @@ async function packageType(installDir: string, rel: string): Promise<'module' | 
  * through node:wasi, so they are installed here, with their own dependencies (@napi-rs/wasm-runtime,
  * @emnapi/*), next to the native-only packages npm chose.
  */
-async function placeWasiBindings(dir: string, log: (line: string) => void): Promise<void> {
+async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
   const nm = join(dir, 'node_modules');
   const wanted: Record<string, string> = {};
   const candidates: Record<string, string> = {};
-  const visit = async (pkgDir: string) => {
-    try {
-      const pkg = JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8')) as { optionalDependencies?: Record<string, string> };
-      const found = wasiBindings(pkg.optionalDependencies);
-      Object.assign(wanted, found.listed);
-      Object.assign(candidates, found.candidates);
-    } catch {
-      // not a package
-    }
-  };
-  for (const entry of await readdir(nm, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-    if (entry.name.startsWith('@')) {
-      for (const sub of await readdir(join(nm, entry.name), { withFileTypes: true })) if (sub.isDirectory()) await visit(join(nm, entry.name, sub.name));
-    } else await visit(join(nm, entry.name));
+  const top = new Set<string>();
+  for (const p of packages) {
+    const name = p.location.slice('node_modules/'.length);
+    if (!/^(@[^/]+\/)?[^/]+$/.test(name)) continue;
+    top.add(name);
+    const found = wasiBindings(p.optionalDependencies);
+    Object.assign(wanted, found.listed);
+    Object.assign(candidates, found.candidates);
   }
+  // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
+  const install = (bindings: [string, string][]) =>
+    sideInstall(sides, { name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings) }, ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+  // The listed bindings are installed while npm view looks for the others. Most of those do not
+  // exist; when one does, all are installed together, as one tree.
+  const listed = Object.entries(wanted).filter(([name]) => !top.has(name));
+  const early = listed.length ? install(listed) : null;
+  early?.catch(() => {});
   const checks = await Promise.all(
     Object.entries(candidates)
       .filter(([name]) => !(name in wanted))
       .map(async ([name, range]) => ((await npmViewVersion(`${name}@${range}`)) ? ([name, range] as const) : null)),
   );
-  for (const hit of checks) if (hit) wanted[hit[0]] = hit[1];
-  const missing = Object.entries(wanted).filter(([name]) => !existsSyncSafe(join(nm, name, 'package.json')));
-  if (!missing.length) return;
-  const side = join(dir, '.sandburg-wasi');
-  await mkdir(side, { recursive: true });
-  await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(missing) }));
-  // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
-  await run('npm', ['install', '--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
-  // Each binding goes to the top level with its dependencies (napi-rs's wasm runtime, emnapi) nested
-  // inside it, so versions the project already has elsewhere cannot shadow the ones it was built with.
-  const sideNm = join(side, 'node_modules');
-  const sidePackages: string[] = [];
-  for (const entry of await readdir(sideNm, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-    if (entry.name.startsWith('@')) for (const sub of await readdir(join(sideNm, entry.name))) sidePackages.push(`${entry.name}/${sub}`);
-    else sidePackages.push(entry.name);
-  }
-  for (const [binding] of missing) {
-    if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
-    await rm(join(nm, binding), { recursive: true, force: true });
-    await cp(join(sideNm, binding), join(nm, binding), { recursive: true });
-    for (const dep of sidePackages) {
-      if (dep in wanted) continue;
-      const to = join(nm, binding, 'node_modules', dep);
-      if (!existsSyncSafe(join(to, 'package.json'))) await cp(join(sideNm, dep), to, { recursive: true });
+  const hits = checks.filter((hit) => hit !== null);
+  for (const hit of hits) wanted[hit[0]] = hit[1];
+  const missing = Object.entries(wanted).filter(([name]) => !top.has(name));
+  if (!missing.length) return async () => {};
+  let side: string;
+  if (early && !hits.length) side = await early;
+  else side = await install(missing);
+  return async () => {
+    // Each binding goes to the top level with its dependencies (napi-rs's wasm runtime, emnapi) nested
+    // inside it, so versions the project already has elsewhere cannot shadow the ones it was built with.
+    const sideNm = join(side, 'node_modules');
+    const sidePackages: string[] = [];
+    for (const entry of await readdir(sideNm, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      if (entry.name.startsWith('@')) for (const sub of await readdir(join(sideNm, entry.name))) sidePackages.push(`${entry.name}/${sub}`);
+      else sidePackages.push(entry.name);
     }
+    for (const [binding] of missing) {
+      if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
+      await rm(join(nm, binding), { recursive: true, force: true });
+      await cp(join(sideNm, binding), join(nm, binding), { recursive: true });
+      for (const dep of sidePackages) {
+        if (dep in wanted) continue;
+        const to = join(nm, binding, 'node_modules', dep);
+        if (!existsSyncSafe(join(to, 'package.json'))) await cp(join(sideNm, dep), to, { recursive: true });
+      }
+    }
+    log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
+  };
+}
+
+/**
+ * Side installs of another layout, and ones a process left unfinished (*.tmp-*), once a day old (as
+ * installs are swept): their packages' store entries are freed with them (sweepStore).
+ */
+async function sweepSideInstalls(root: string): Promise<void> {
+  const day = Date.now() - 24 * 3600_000;
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    const dir = join(root, name);
+    const done = await readFile(join(dir, '.sandburg-complete'), 'utf8').catch(() => null);
+    // Side installs from before the layout was recorded are of an older layout too.
+    const stale = name.includes('.tmp-') || (done !== null && /layout (\d+)/.exec(done)?.[1] !== String(LAYOUT_VERSION));
+    const st = await lstat(dir).catch(() => null);
+    if (st && stale && st.mtimeMs < day) await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
-  await rm(side, { recursive: true, force: true });
-  log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
+}
+
+/**
+ * A side install (a WebAssembly build or binding with its dependencies, which installs copy into
+ * place): npm installs each package.json once, as with installs themselves (the versions npm picks
+ * first stay), so every Vite app does not pay ~1 s of npm for the same lightningcss-wasm.
+ */
+function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line: string) => void): Promise<string> {
+  const root = sides.root;
+  const key = createHash('sha256').update(`layout:${LAYOUT_VERSION}\0`).update(JSON.stringify([manifest, flags])).digest('hex').slice(0, 24);
+  let pending = sideInstalls.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const dir = join(root, key);
+      if (await access(join(dir, '.sandburg-complete')).then(() => true, () => false)) return dir;
+      const tmp = `${dir}.tmp-${tmpSuffix()}`;
+      await mkdir(tmp, { recursive: true });
+      try {
+        await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest));
+        // As an install: npm resolves (in the resolver's worker, beside others: these are small), the
+        // store unpacks; npm installs what the store does not handle.
+        const force = flags.includes('--force');
+        if (!(await sides.resolver.resolve(tmp, log, { force, small: true }))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+        if (!(await installFromLockfile(tmp, sides.store, log, false))) {
+          // From its package.json alone, as before: npm installing from a lockfile skips its libc
+          // check for optional packages (sass's @parcel/watcher-linux-x64-musl would come along).
+          await rm(join(tmp, 'package-lock.json'), { force: true });
+          await run('npm', ['install', ...flags], tmp, log);
+        }
+        await mkdir(join(tmp, 'node_modules'), { recursive: true });
+        await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
+        // Another process may have finished the same side install first.
+        await rename(tmp, dir).catch(async (e) => {
+          if (!(await access(join(dir, '.sandburg-complete')).then(() => true, () => false))) throw e;
+        });
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+      return dir;
+    })();
+    sideInstalls.set(key, pending);
+    pending.catch(() => sideInstalls.delete(key));
+  }
+  return pending;
+}
+const sideInstalls = new Map<string, Promise<string>>();
+
+/** Where side installs are kept, and how they are made. */
+interface Sides {
+  root: string;
+  store: string;
+  resolver: Resolver;
 }
 
 /**
@@ -478,51 +572,47 @@ function existsSyncSafe(path: string): boolean {
   }
 }
 
-async function placeWasmBuilds(dir: string, log: (line: string) => void): Promise<void> {
-  const found: { dir: string; version: string; build: (typeof WASM_BUILDS)[number] }[] = [];
-  const walk = async (nm: string, depth: number) => {
-    let entries;
-    try {
-      entries = await readdir(nm, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (!e.isDirectory() || e.name.startsWith('.')) continue;
-      const pkgDirs = e.name.startsWith('@') ? (await readdir(join(nm, e.name))).map((sub) => join(nm, e.name, sub)) : [join(nm, e.name)];
-      for (const pkgDir of pkgDirs) {
-        const build = WASM_BUILDS.find((b) => pkgDir.endsWith(`${sep}${b.name.split('/').join(sep)}`) && existsSyncSafe(join(pkgDir, b.file)));
-        if (build) {
-          const version = (JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8')) as { version: string }).version;
-          if (build.applies(version)) found.push({ dir: pkgDir, version, build });
-        }
-        if (depth < 4) await walk(join(pkgDir, 'node_modules'), depth + 1);
+async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
+  const at = new Set(packages.map((p) => p.location));
+  const found: { dir: string; version: string; build: (typeof WASM_BUILDS)[number]; side: Promise<string> | null }[] = [];
+  const sides = new Map<string, Promise<string>>();
+  for (const { location, version } of packages) {
+    // Packages up to four node_modules deep.
+    if (location.split('node_modules/').length > 6) continue;
+    const build = WASM_BUILDS.find((b) => location === `node_modules/${b.name}` || location.endsWith(`/node_modules/${b.name}`));
+    if (!build || !build.applies(version)) continue;
+    let side: Promise<string> | null = null;
+    if (!at.has(`${location}/node_modules/${build.wasm}`)) {
+      const spec = `${build.wasm}@${build.wasmVersion ?? version}`;
+      side = sides.get(spec) ?? null;
+      if (!side) {
+        const dependencies = { [build.wasm]: build.wasmVersion ?? version };
+        side = sideInstall(sideRoot, { name: 'sandburg-wasm-build', private: true, dependencies }, ['--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+        sides.set(spec, side);
       }
+    }
+    found.push({ dir: join(dir, location), version, build, side });
+  }
+  await Promise.all(sides.values());
+  return async () => {
+    for (const { dir: pkgDir, version, build, side } of found) {
+      if (!existsSyncSafe(join(pkgDir, build.file))) continue;
+      const target = join(pkgDir, 'node_modules', build.wasm);
+      if (side && !existsSyncSafe(join(target, 'package.json'))) {
+        const sideNm = join(await side, 'node_modules');
+        await cp(join(sideNm, build.wasm), target, { recursive: true });
+        // Its own dependencies (lightningcss-wasm's napi-wasm) go inside it.
+        for (const entry of await readdir(sideNm, { withFileTypes: true })) {
+          if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+          const names = entry.name.startsWith('@') ? (await readdir(join(sideNm, entry.name))).map((n) => `${entry.name}/${n}`) : [entry.name];
+          for (const dep of names) if (dep !== build.wasm) await cp(join(sideNm, dep), join(target, 'node_modules', dep), { recursive: true });
+        }
+      }
+      await replaceFile(join(pkgDir, build.file), build.shim);
+      for (const [file, shim] of Object.entries(build.also ?? {})) await replaceFile(join(pkgDir, file), shim);
+      log(`${build.name} ${version}: using ${build.wasm}`);
     }
   };
-  await walk(join(dir, 'node_modules'), 0);
-  for (const { dir: pkgDir, version, build } of found) {
-    const target = join(pkgDir, 'node_modules', build.wasm);
-    if (!existsSyncSafe(join(target, 'package.json'))) {
-      const side = join(dir, '.sandburg-wasm-build');
-      await rm(side, { recursive: true, force: true });
-      await mkdir(side, { recursive: true });
-      await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasm-build', private: true, dependencies: { [build.wasm]: build.wasmVersion ?? version } }));
-      await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
-      await cp(join(side, 'node_modules', build.wasm), target, { recursive: true });
-      // Its own dependencies (lightningcss-wasm's napi-wasm) go inside it.
-      const sideNm = join(side, 'node_modules');
-      for (const entry of await readdir(sideNm, { withFileTypes: true })) {
-        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-        const names = entry.name.startsWith('@') ? (await readdir(join(sideNm, entry.name))).map((n) => `${entry.name}/${n}`) : [entry.name];
-        for (const dep of names) if (dep !== build.wasm) await cp(join(sideNm, dep), join(target, 'node_modules', dep), { recursive: true });
-      }
-      await rm(side, { recursive: true, force: true });
-    }
-    await replaceFile(join(pkgDir, build.file), build.shim);
-    for (const [file, shim] of Object.entries(build.also ?? {})) await replaceFile(join(pkgDir, file), shim);
-    log(`${build.name} ${version}: using ${build.wasm}`);
-  }
 }
 
 /**

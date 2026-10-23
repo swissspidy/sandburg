@@ -28,7 +28,8 @@ import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
 import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from '../../src/adapters/node/compile-wasm-bundle.ts';
-import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
+import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
+import { RUNTIME_LIBS, type RuntimeLib } from '../../src/node-runtime/libs.ts';
 import { TEMPLATES } from '../../pages/generate/templates.ts';
 import { chromium } from 'playwright-core';
 import { Session } from '../../src/index.ts';
@@ -153,6 +154,7 @@ async function buildGenerator(): Promise<void> {
   const runtime = join(out, 'runtime');
   await mkdir(runtime, { recursive: true });
   await writeFile(join(runtime, 'node-worker.js'), await bundleNodeRuntime());
+  for (const name of Object.keys(RUNTIME_LIBS) as RuntimeLib[]) await writeFile(join(runtime, `node-${name}.js`), await bundleRuntimeLib(name));
   await writeFile(join(runtime, 'compile-worker.js'), await bundleBrowserCompiler(COMPILE_WORKER));
   await writeFile(join(runtime, 'sqlite3.js'), await bundleSqlite());
   await cp(ESBUILD_WASM, join(runtime, 'esbuild.wasm'));

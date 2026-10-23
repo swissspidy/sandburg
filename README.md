@@ -163,6 +163,7 @@ npm run build          # dist/: the CLI and library as JavaScript, with types (n
 npm run test:pack      # pack the package, install it into an empty project, run a project with it
 node scripts/pages/build.ts --verify   # the demo site, into dist-pages/
 node scripts/profile.ts <project>      # where a run's time goes: V8 CPU profile of every thread, by package
+node scripts/bench.ts                   # A/B benchmark of two revisions (default origin/main vs this checkout), cold and warm
 node scripts/edit-loop.ts               # edit-to-render latency of the fixtures
 ```
 

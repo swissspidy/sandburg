@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { compileForRuntime, compileForRuntimeAsync, projectHasTopLevelAwait, projectHasTopLevelAwaitAsync } from '../../src/adapters/node/compile.ts';
+import { transformForRuntime } from '../../src/adapters/node/install.ts';
+import { ESM_WRAPPER_PARAMS } from '../../src/adapters/node/esm-names.ts';
 
 // A webpack dev chunk: modules as eval("<source>") literals, and code of its own around them.
 const chunk = (body: string) => `"use strict";
@@ -69,5 +71,59 @@ test('compiled in a browser (esbuild-wasm): the same output as on the host, and 
     assert.equal(await projectHasTopLevelAwaitAsync({ 'b.js': files['b.js'] }, transform), false);
   } finally {
     await wasm.stop();
+  }
+});
+
+/** Runs converted ES module code in its wrapper (as the runtime's loader does) and returns its exports. */
+function runEsm(code: string, modules: Record<string, unknown> = {}): Record<string, unknown> {
+  assert.ok(code.startsWith('/*sandburg:esm*/'), code.slice(0, 80));
+  const module = { exports: {} as Record<string, unknown> };
+  const require = (id: string) => {
+    if (!(id in modules)) throw new Error(`no module ${id}`);
+    return modules[id];
+  };
+  new Function(...ESM_WRAPPER_PARAMS, code)(module.exports, require, module, '/app/node_modules/p/lib/x.mjs', '/app/node_modules/p/lib', 'file:///app/node_modules/p/lib/x.mjs');
+  return module.exports;
+}
+
+const createRequire = () => (id: string) => `required ${id}`;
+
+test("an ES module's own require, __dirname and __filename: renamed by esbuild or kept apart from the wrapper's", async () => {
+  const src = `import { createRequire } from 'node:module';
+import dep from 'dep';
+const require = createRequire(import.meta.url);
+const __dirname = import.meta.dirname + '/own';
+export const fromRequire = require('x');
+export const dirs = [__dirname, import.meta.filename, dep];
+export function inner(module) { return module + 1; }
+`;
+  for (const out of [compileForRuntime(src, '/app/node_modules/p/lib/x.mjs', 'esm'), await transformForRuntime(src, 'node_modules/p/lib/x.mjs', true)]) {
+    assert.doesNotMatch(out, /__sandburg_esm_/, 'no acorn renaming was needed');
+    const exports = runEsm(out, { 'node:module': { createRequire }, dep: 'dep' });
+    assert.equal(exports.fromRequire, 'required x');
+    assert.deepEqual(exports.dirs, ['/app/node_modules/p/lib/own', '/app/node_modules/p/lib/x.mjs', 'dep']);
+    assert.equal((exports.inner as (n: number) => number)(1), 2);
+  }
+});
+
+test('an ES module using __dirname without declaring it gets the wrapper’s, as before', async () => {
+  const out = await transformForRuntime(`export const d = __dirname; export const f = __filename;`, 'node_modules/p/lib/x.mjs', true);
+  assert.deepEqual({ ...runEsm(out) }, { d: '/app/node_modules/p/lib', f: '/app/node_modules/p/lib/x.mjs' });
+});
+
+test('a declaration esbuild leaves alone is renamed first', async () => {
+  // esbuild's CommonJS output does not use `exports`, so it keeps a module's own top-level `exports`,
+  // which would clash with the wrapper's parameter.
+  const src = `let [exports] = [3];\nexport const value = exports + 1;\n`;
+  for (const out of [compileForRuntime(src, '/app/src/x.mjs', 'esm'), await transformForRuntime(src, 'node_modules/p/x.mjs', true), compileForRuntime(src.replace('[exports]', '[exports]: number[]'), '/app/src/x.ts', 'ts')]) {
+    assert.match(out, /__sandburg_esm_exports/);
+    assert.equal(runEsm(out).value, 4);
+  }
+});
+
+test("a module declaring one of the wrapper's own names is renamed first too", async () => {
+  const src = `let __sandburg_dirname = 'mine';\nexport const d = [__sandburg_dirname, __dirname, import.meta.dirname];\n`;
+  for (const out of [compileForRuntime(src, '/app/src/w.mjs', 'esm'), await transformForRuntime(src, 'node_modules/p/w.mjs', true)]) {
+    assert.deepEqual(runEsm(out).d, ['mine', '/app/node_modules/p/lib', '/app/node_modules/p/lib']);
   }
 });
