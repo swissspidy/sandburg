@@ -578,6 +578,8 @@ export const node: AdapterDescriptor = {
     // A static site: no packages, a file server (see browser.ts).
     if (project.framework === 'static') return staticInstall();
     if (options?.installIn === 'browser') return browserInstall(project);
+    // The runtime's bundle, which the page asks for as soon as the install is done, is built while npm runs.
+    void bundleNodeRuntime().catch(() => {});
     const info = await installer.install(project, extraDependencies(project), log);
     // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
     const parts = [{ dir: '', key: info.key }];
