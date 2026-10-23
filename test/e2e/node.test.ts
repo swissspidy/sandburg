@@ -37,6 +37,37 @@ test('an Express server runs on the node runtime', async () => {
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+test('each run has its own tab, opened ahead of it: a new origin and empty storage', async () => {
+  const dir = fixture('node-express');
+  const seen: { origin: string; stored: string | null }[] = [];
+  const checks = {
+    'storage is the run\'s own': async ({ app }: { app: import('playwright-core').Frame }) => {
+      const stored = await app.evaluate(() => {
+        const before = localStorage.getItem('sandburg-test');
+        localStorage.setItem('sandburg-test', 'set by an earlier run');
+        return before;
+      });
+      seen.push({ origin: new URL(app.url()).origin, stored });
+    },
+  };
+  for (let i = 0; i < 2; i++) {
+    const result = await session.run(dir, { checks, outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  }
+  // Without a spare, a run opens its own tab when it starts.
+  const own = new Session({ spareTab: false });
+  await own.open();
+  try {
+    const result = await own.run(dir, { checks, outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  } finally {
+    await own.close();
+  }
+  assert.equal(seen.length, 3);
+  assert.equal(new Set(seen.map((s) => s.origin)).size, 3);
+  assert.deepEqual(seen.map((s) => s.stored), [null, null, null]);
+});
+
 test('a Next.js page that throws on the server is an app bug', async () => {
   const project = await loadProject(fixture('next-app-router'));
   const broken = projectFromFiles(

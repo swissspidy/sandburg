@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
 import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
+import type { AdapterDescriptor } from '../types.ts';
 import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
 import type {
@@ -51,7 +52,32 @@ export interface SessionOptions {
    * of these keys are accepted in addition to the normal trust store.
    */
   extraCaCerts?: string | null;
+  /**
+   * Keep a tab ready for the next run (default: true): its browser context, egress routes and host
+   * page are set up, and its runtime loaded, ahead of the run (see Tab). False: each run opens its
+   * own when it starts.
+   */
+  spareTab?: boolean;
+}
 
+/**
+ * A run's tab: its own browser context (with the egress proxy and routes that police it), and the
+ * sandbox's host page loading in it. A session opens the next run's tab ahead of time (a spare), so
+ * a run starts with its host page loaded and its runtime evaluated (prepare() in the host page).
+ */
+interface Tab {
+  /** The sandbox's id: the first DNS label of its origin. */
+  id: string;
+  origin: string;
+  adapter: AdapterDescriptor;
+  context: BrowserContext;
+  page: Page;
+  proxy: EgressProxy;
+  network: EgressStats;
+  /** The host page has loaded (the load phase's work). */
+  loaded: Promise<void>;
+  /** The tab crashed or failed to load before a run took it. */
+  broken: boolean;
 }
 
 /**
@@ -177,6 +203,75 @@ export class Session {
       await this.host.close();
       throw missingBrowser(err) ?? err;
     }
+    // The first run's tab opens while the run loads its project and the host installs it.
+    this.prepareTab(getAdapter(DEFAULT_RUNTIME));
+  }
+
+  /** The next run's tab, opening (see Tab). */
+  private spare: Promise<Tab> | null = null;
+
+  /** Opens a spare tab for the next run on `adapter`, unless there is one. */
+  private prepareTab(adapter: AdapterDescriptor): void {
+    if (this.spare || this.options.spareTab === false || !this.browser) return;
+    const spare = this.openTab(adapter, DEFAULT_TIMEOUTS.load);
+    spare.then(
+      (tab) => tab.loaded.catch(() => (tab.broken = true)),
+      () => {},
+    );
+    this.spare = spare;
+  }
+
+  /** The spare tab if it is for `adapter` and still usable, else a new one. */
+  private async takeTab(adapter: AdapterDescriptor, loadTimeoutMs: number): Promise<Tab> {
+    const spare = this.spare;
+    this.spare = null;
+    const tab = await spare?.catch(() => null);
+    if (tab && tab.adapter === adapter && !tab.broken && !tab.page.isClosed()) return tab;
+    if (tab) void this.closeTab(tab);
+    return this.openTab(adapter, loadTimeoutMs);
+  }
+
+  /** A new browser context with its egress proxy and routes, and its host page loading. */
+  private async openTab(adapter: AdapterDescriptor, loadTimeoutMs: number): Promise<Tab> {
+    const browser = this.browser;
+    if (!browser) throw new Error('session is not open');
+    const id = `s-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+    const network = newEgressStats();
+    // Requests routing cannot see (service worker scripts, for one) use the context's own
+    // proxy credentials, which select this sandbox's allowlist in the egress proxy.
+    const proxy = new EgressProxy(originMatcher(adapter.egress), network);
+    await proxy.listen();
+    let context: BrowserContext | null = null;
+    try {
+      context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
+      });
+      await context.addInitScript(PAGE_QUIET_SCRIPT);
+      const page = await context.newPage();
+      const origin = this.host.register(id, adapter);
+      await this.egress.attach(context, origin, adapter.egress, network);
+      // The host page lives under /__sandburg/ so the app can own "/" (ADR 0004).
+      const loaded = (async () => {
+        await page.goto(origin + '/__sandburg/', { timeout: loadTimeoutMs });
+        await page.waitForSelector('html[data-sandburg="ready"]', { state: 'attached', timeout: loadTimeoutMs });
+      })();
+      loaded.catch(() => {}); // the load phase reports it
+      const tab: Tab = { id, origin, adapter, context, page, proxy, network, loaded, broken: false };
+      page.on('crash', () => (tab.broken = true));
+      return tab;
+    } catch (err) {
+      await context?.close().catch(() => {});
+      await proxy.close();
+      this.host.unregister(id);
+      throw err;
+    }
+  }
+
+  private async closeTab(tab: Tab): Promise<void> {
+    await tab.context.close().catch(() => {});
+    await tab.proxy.close();
+    this.host.unregister(tab.id);
   }
 
   async close(): Promise<void> {
@@ -185,6 +280,9 @@ export class Session {
     // failed before its install phase may not have waited for it).
     while (this.installs.size) await Promise.allSettled([...this.installs]);
     await this.seeded();
+    const spare = await this.spare?.catch(() => null);
+    this.spare = null;
+    if (spare) await this.closeTab(spare);
     await this.browser?.close();
     await this.host.close();
     await this.egress.close();
@@ -265,6 +363,7 @@ export class Session {
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
     let context: BrowserContext | null = null;
     let proxy: EgressProxy | null = null;
+    let tab: Tab | null = null;
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -284,35 +383,38 @@ export class Session {
         void hostInstall.catch(() => {}).finally(() => this.installs.delete(hostInstall)); // reported by the install phase
       }
 
-      // Requests routing cannot see (service worker scripts, for one) use the context's own
-      // proxy credentials, which select this sandbox's allowlist in the egress proxy.
-      run.network = newEgressStats();
-      const allow = runtimeInfo.egress;
-      const runtimeAllow = originMatcher(allow);
-      proxy = new EgressProxy(originMatcher(allow), run.network);
-      await proxy.listen();
-      context = await this.browser.newContext({
-        viewport: { width: 1280, height: 800 },
-        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
-      });
-      recordRequestFailures(context, run);
-      recordDocuments(context, run);
-      await context.addInitScript(PAGE_QUIET_SCRIPT);
-      const page = await context.newPage();
       if (node) {
+        // Requests routing cannot see (service worker scripts, for one) use the context's own
+        // proxy credentials, which select this sandbox's allowlist in the egress proxy.
+        run.network = newEgressStats();
+        proxy = new EgressProxy(originMatcher(node.egress), run.network);
+        await proxy.listen();
+        context = await this.browser.newContext({
+          viewport: { width: 1280, height: 800 },
+          proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
+        });
+        recordRequestFailures(context, run);
+        recordDocuments(context, run);
+        await context.addInitScript(PAGE_QUIET_SCRIPT);
+        const page = await context.newPage();
         await this.runNode(node, run, context, page, project, runId, outDir, timeouts, checks, options);
         run.skipRemaining();
         return await run.finish(outDir);
       }
-      const sandboxId = runId.toLowerCase();
-      const origin = this.host.register(sandboxId, adapter!);
-      await this.egress.attach(context, origin, allow, run.network);
+      const runtimeAllow = originMatcher(adapter!.egress);
+      // The spare tab, with its host page loaded or loading; the next run's opens meanwhile.
+      tab = await this.takeTab(adapter!, timeouts.load);
+      // Not for a seed run (it runs beside an app), nor with a visible browser (a spare is a window).
+      if (!options.seed && !options.hold && this.options.headless !== false) this.prepareTab(adapter!);
+      ({ context, proxy } = tab);
+      const { page, origin } = tab;
+      run.network = tab.network;
+      recordRequestFailures(context, run);
+      recordDocuments(context, run);
       run.capture(page, origin);
 
       const ok = await run.phase('load', timeouts.load, async () => {
-        // The host page lives under /__sandburg/ so the app can own "/" (ADR 0004).
-        await page.goto(origin + '/__sandburg/');
-        await page.waitForSelector('html[data-sandburg="ready"]', { state: 'attached' });
+        await tab!.loaded;
         return true;
       }).catch(() => false);
       const host = <K extends keyof HostApi>(name: K, ...args: Parameters<HostApi[K]>) =>
@@ -359,9 +461,11 @@ export class Session {
       run.skipRemaining();
       return await run.finish(outDir);
     } finally {
-      await context?.close().catch(() => {});
-      await proxy?.close();
-      this.host.unregister(runId.toLowerCase());
+      if (tab) await this.closeTab(tab);
+      else {
+        await context?.close().catch(() => {});
+        await proxy?.close();
+      }
     }
   }
 
