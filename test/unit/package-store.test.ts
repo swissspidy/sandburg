@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // The store reads tarballs from npm's cache: this test's own (`npm config get cache` follows it).
 const cache = await mkdtemp(join(tmpdir(), 'sandburg-npm-cache-'));
 process.env.npm_config_cache = cache;
-const { installFromLockfile, installedPackages, normalizeBin, unpackAhead } = await import('../../src/adapters/node/package-store.ts');
+const { installFromLockfile, installedPackages, normalizeBin, sweepStore, unpackAhead } = await import('../../src/adapters/node/package-store.ts');
 
 /** A ustar archive with npm pack's top directory. */
 function tar(entries: Record<string, string>): Buffer {
@@ -127,4 +127,23 @@ test('package binaries are normalized as npm normalizes them', () => {
   assert.deepEqual(normalizeBin({ name: '@scope/tool', bin: './cli.js' }), { tool: 'cli.js' });
   assert.deepEqual(normalizeBin({ name: 'x', bin: { 'a:b': '../../escape.js', '': 'no.js', c: 'bin\\c.js' } }), { b: 'escape.js', c: 'bin/c.js' });
   assert.deepEqual(normalizeBin({ name: 'x' }), {});
+});
+
+test('the store sweep removes old packages no install links, and unfinished unpacks', async () => {
+  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const day = new Date(Date.now() - 2 * 24 * 3600_000);
+  const make = async (name: string) => {
+    await mkdir(join(store, name), { recursive: true });
+    await writeFile(join(store, name, 'package.json'), '{}');
+    await utimes(join(store, name, 'package.json'), day, day);
+    await utimes(join(store, name), day, day);
+  };
+  await make('sha512-unused');
+  await make('sha512-linked');
+  await link(join(store, 'sha512-linked', 'package.json'), join(store, 'install-copy.json'));
+  await make('sha512-x.tmp-1-abc');
+  await mkdir(join(store, 'sha512-new'));
+  await writeFile(join(store, 'sha512-new', 'package.json'), '{}');
+  await sweepStore(store);
+  assert.deepEqual(readdirSync(store).sort(), ['install-copy.json', 'sha512-linked', 'sha512-new']);
 });

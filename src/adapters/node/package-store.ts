@@ -36,7 +36,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, posix, relative, resolve } from 'node:path';
 import { untar } from '../../node-runtime/npm/tar.ts';
 
@@ -176,6 +176,21 @@ export function installedPackages(lock: Lockfile): InstalledPackage[] {
   return partition(lock.packages ?? {})
     .installed.filter(([location, e]) => location.startsWith('node_modules/') && !e.link && e.version)
     .map(([location, e]) => ({ location, version: e.version!, optionalDependencies: e.optionalDependencies }));
+}
+
+/**
+ * Removes packages from the store that no install links any more (their package.json has no other
+ * link) and that were unpacked over a day ago. An install never depends on the store's copy: one
+ * that is linking a package as it goes falls back to npm.
+ */
+export async function sweepStore(storeRoot: string): Promise<void> {
+  for (const name of await readdir(storeRoot).catch(() => [] as string[])) {
+    const dir = join(storeRoot, name);
+    // Unpacking that did not finish (its process ended) is left a day as well.
+    const tmp = name.includes('.tmp-');
+    const st = await lstat(tmp ? dir : join(dir, 'package.json')).catch(() => null);
+    if (st && (tmp || st.nlink === 1) && st.mtimeMs < Date.now() - 24 * 3600_000) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /** sha512-… (or the strongest hash an integrity string has) as a cacache content path's parts. */

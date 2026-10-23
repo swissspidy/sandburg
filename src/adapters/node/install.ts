@@ -19,7 +19,7 @@ import { renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
-import { installFromLockfile, installedPackages, unpackAhead, type InstalledPackage } from './package-store.ts';
+import { installFromLockfile, installedPackages, sweepStore, unpackAhead, type InstalledPackage } from './package-store.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 13;
@@ -85,6 +85,7 @@ export class Installer {
       const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
       if (layout && Number(layout) !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
     }
+    await sweepStore(this.store);
   }
 
   /** The install of `project`'s dependencies plus `extra`: its key, npm's manifest and the lockfile. */
