@@ -214,6 +214,28 @@ function patchUtf8(): void {
 }
 patchUtf8();
 
+/**
+ * Base64 through the browser's Uint8Array.prototype.toBase64 where there is one: the buffer
+ * polyfill encodes in a JavaScript loop, ~19x slower (4 MB: 127 ms instead of 7), and webpack and
+ * Next.js encode source maps and hashes in base64 (~0.2 s of next dev's start). The output is the
+ * same: padded base64, and base64url without padding, as Node writes them.
+ */
+function patchBase64(): void {
+  const native = (Uint8Array.prototype as unknown as { toBase64?: (o?: object) => string }).toBase64;
+  if (typeof native !== 'function') return;
+  const B = Buffer as unknown as { prototype: { toString(this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown): string } };
+  const { toString } = B.prototype;
+  const URL_SAFE = { alphabet: 'base64url', omitPadding: true };
+  B.prototype.toString = function (this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown) {
+    const name = typeof enc === 'string' && this.length > 64 ? enc.toLowerCase() : '';
+    if (name !== 'base64' && name !== 'base64url') return toString.call(this, enc, start, end);
+    const s = typeof start === 'number' && start > 0 ? Math.floor(start) : 0;
+    const e = typeof end === 'number' && end < this.length ? Math.floor(end) : this.length;
+    return e <= s ? '' : native.call(this.subarray(s, e), name === 'base64url' ? URL_SAFE : undefined);
+  };
+}
+patchBase64();
+
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
 const realPostMessage = (self as unknown as Worker).postMessage.bind(self);
 const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
@@ -239,14 +261,15 @@ let projectRoot = '/app';
 /**
  * Installed files come from the host one synchronous request each, or from the install's preload
  * bundle: once a runtime has asked for a few files, it fetches the bundle in one request (the browser
- * caches it for the other runtimes of the run). A program's runtime switches after PRELOAD_AFTER
- * files (each single request costs ~10 ms; next dev's first 40 took 0.4 s); a worker thread after
- * PRELOAD_AFTER_THREAD, so the small WebAssembly helper threads never hold the bundle.
+ * caches it for the other runtimes of the run). A program's runtime fetches it with its first file:
+ * the bundle holds what runs of the install loaded, so a small program has a small one, and each
+ * single request costs ~10-50 ms (next dev's first ten took ~0.2 s). A worker thread switches after
+ * PRELOAD_AFTER_THREAD files, so the small WebAssembly helper threads never hold the bundle.
  */
 let preloadUrl: string | null = null;
 let preloaded: Map<string, Uint8Array> | null = null;
 let installedRequests = 0;
-const PRELOAD_AFTER = 10;
+const PRELOAD_AFTER = 0;
 const PRELOAD_AFTER_THREAD = 40;
 
 /** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
@@ -260,10 +283,45 @@ function readBundle(url: string): [string, Uint8Array, string][] {
   const files: [string, Uint8Array, string][] = [];
   let at = 4 + length;
   for (const [mode, rel, size] of header) {
+    // A negative size names a file that is not in the bundle (see downloadOnSide).
+    if (size < 0) {
+      downloadOnSide(mode, rel, -size);
+      continue;
+    }
     files.push([rel, bytes.subarray(at, at + size), mode]);
     at += size;
   }
   return files;
+}
+
+/**
+ * Large installed files the preload bundle only names (WebAssembly binaries: swc's is 30 MB), which
+ * the program reads later with a synchronous request each (~0.3 s for swc's). The digest helper
+ * downloads them into shared memory as soon as the bundle is read, and a read waits for what is left
+ * of the download instead of making it. Only a program's runtime does (not its threads).
+ */
+const onSide = new Map<string, { state: Int32Array; shared: SharedArrayBuffer }>();
+
+function downloadOnSide(mode: string, rel: string, size: number): void {
+  if (thread || !digester || !installKey) return;
+  try {
+    const shared = new SharedArrayBuffer(8 + size);
+    onSide.set(`${mode}/${rel}`, { state: new Int32Array(shared, 0, 2), shared });
+    nativeWorkerPost.call(digester.worker, { fetch: new URL(`${base}/nm/${installKey}/${mode}/${rel}`, workerHref).href, shared });
+  } catch {
+    onSide.delete(`${mode}/${rel}`);
+  }
+}
+
+/** A file downloaded on the side (a copy: decoders do not read shared memory), or null to request it. */
+function downloadedOnSide(key: string): Uint8Array | null {
+  const side = onSide.get(key);
+  if (!side) return null;
+  onSide.delete(key);
+  // Waited for only if the helper runs (it may not have started yet).
+  if (!digester || Atomics.load(digester.state, 1) !== 1) return null;
+  if (Atomics.wait(side.state, 0, 0, 60_000) === 'timed-out' || Atomics.load(side.state, 0) !== 1) return null;
+  return new Uint8Array(side.shared, 8, Atomics.load(side.state, 1)).slice();
 }
 
 function loadPreload(): void {
@@ -278,8 +336,11 @@ function loadPreload(): void {
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
     if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
-    const hit = preloaded?.get(url.slice(base.length + installKey.length + 5));
+    const key = url.slice(base.length + installKey.length + 5);
+    const hit = preloaded?.get(key);
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+    const side = downloadedOnSide(key);
+    if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
   }
   return requestSync(url, binary);
 }
@@ -292,12 +353,138 @@ function requestSync(url: string, binary: boolean): { status: number; body: Uint
   return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
 }
 
+/**
+ * SHA-256 of code, computed on a helper thread while this one waits: WebCrypto's digest is
+ * asynchronous only, and natively ~5x faster than in JavaScript (next dev's 8 MB vendor chunk: ~50
+ * ms, ~240 ms in a JavaScript loop). The helper starts with the runtime; until it has (or if it ever
+ * fails to answer), there is no digest.
+ */
+const NativeWorker = globalThis.Worker;
+const workerHref = globalThis.location?.href;
+const nativeWorkerPost = NativeWorker?.prototype.postMessage;
+const DIGEST_HELPER = `onmessage = async ({ data }) => {
+  const state = new Int32Array(data.shared, 0, 2);
+  if (data.hello) return Atomics.store(state, 1, 1);
+  if (data.fetch) {
+    try {
+      const res = await fetch(data.fetch);
+      const body = new Uint8Array(await res.arrayBuffer());
+      if (!res.ok || body.length + 8 > data.shared.byteLength) throw new Error(String(res.status));
+      new Uint8Array(data.shared, 8).set(body);
+      Atomics.store(state, 1, body.length);
+      Atomics.store(state, 0, 1);
+    } catch {
+      Atomics.store(state, 0, 2);
+    }
+    return Atomics.notify(state, 0);
+  }
+  try {
+    new Uint8Array(data.shared, 8, 32).set(new Uint8Array(await crypto.subtle.digest('SHA-256', data.bytes)));
+    Atomics.store(state, 0, 1);
+  } catch {
+    Atomics.store(state, 0, 2);
+  }
+  Atomics.notify(state, 0);
+};`;
+/** The helper and its shared memory: the answer's state (0 waiting, 1 written, 2 failed), 1 once it runs, the digest. */
+let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } | null = null;
+
+function startDigester(): void {
+  try {
+    const worker = new NativeWorker(URL.createObjectURL(new Blob([DIGEST_HELPER], { type: 'text/javascript' })));
+    const shared = new SharedArrayBuffer(40);
+    digester = { worker, shared, state: new Int32Array(shared, 0, 2) };
+    nativeWorkerPost.call(worker, { hello: true, shared });
+  } catch {
+    digester = null;
+  }
+}
+
+/** The hex SHA-256 of text's UTF-8, or null when the helper is not there to compute it. */
+function digestOf(text: string): string | null {
+  const d = digester;
+  if (!d || Atomics.load(d.state, 1) !== 1) return null;
+  try {
+    // The bytes move to the helper (WebCrypto does not read shared memory).
+    const bytes = new TextEncoder().encode(text);
+    Atomics.store(d.state, 0, 0);
+    nativeWorkerPost.call(d.worker, { shared: d.shared, bytes: bytes.buffer }, { transfer: [bytes.buffer] });
+    // A helper that does not answer is not asked again (its late answer would land in reused memory).
+    if (Atomics.wait(d.state, 0, 0, 5000) === 'timed-out' || Atomics.load(d.state, 0) !== 1) throw new Error('no digest');
+  } catch {
+    digester = null;
+    return null;
+  }
+  return hexOf(d.shared);
+}
+
+function hexOf(shared: SharedArrayBuffer): string {
+  let hex = '';
+  for (const b of new Uint8Array(shared, 8, 32)) hex += b.toString(16).padStart(2, '0');
+  return hex;
+}
+
+/**
+ * Digests of large files the program writes (next dev's chunks, required soon after), computed by
+ * the helper as they are written, for when the file is compiled as CommonJS: the runtime does not
+ * wait for them then. A digest is of the file's bytes, which are the code's UTF-8 unless they are
+ * not valid UTF-8 (no compile has that digest then) or start with a byte order mark (skipped).
+ */
+const written = new Map<string, { data: Uint8Array; shared: SharedArrayBuffer }>();
+const toDigest = new Set<string>();
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
+
+function digestWhenWritten(path: string): void {
+  if (!digester || path.includes('/node_modules/') || !/\.c?js$/.test(path)) return;
+  if (!toDigest.size) nativeSetTimeout(digestWritten);
+  toDigest.add(path);
+}
+
+function digestWritten(): void {
+  const d = digester;
+  for (const path of toDigest) {
+    let data: Uint8Array;
+    try {
+      data = vfs.read(path);
+    } catch {
+      continue;
+    }
+    if (!d || data.length < ASK_FIRST || (data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf)) continue;
+    const prefix = new TextEncoder().encode(`cjs\0${path}\0`);
+    const bytes = new Uint8Array(prefix.length + data.length);
+    bytes.set(prefix);
+    bytes.set(data, prefix.length);
+    const shared = new SharedArrayBuffer(40);
+    written.set(path, { data, shared });
+    nativeWorkerPost.call(d.worker, { shared, bytes: bytes.buffer }, { transfer: [bytes.buffer] });
+  }
+  toDigest.clear();
+}
+
+/** The digest of a CommonJS file as written, if it has been computed and the file is unchanged. */
+function writtenDigest(path: string): string | null {
+  const known = written.get(path);
+  if (!known || !digester || Atomics.load(digester.state, 1) !== 1) return null;
+  try {
+    if (vfs.read(path) !== known.data) return null;
+  } catch {
+    return null;
+  }
+  // One the helper is still computing is waited for: asking for another would queue behind it.
+  const state = new Int32Array(known.shared, 0, 1);
+  if (Atomics.wait(state, 0, 0, 5000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
+  written.delete(path);
+  return hexOf(known.shared);
+}
+
 /** node_modules installed in the browser (see npm/install.ts): read from shared memory, not the host. */
 /**
  * The page's compiler (adapters/node/compile-worker.ts) when packages were installed in the browser:
  * a port to it, and this runtime's mailbox, where the answer is written while this thread waits.
  */
 let pageCompiler: { port: MessagePort; mailbox: SharedArrayBuffer } | null = null;
+/** Code this long is asked for by digest before it is sent to the host to compile. */
+const ASK_FIRST = 1 << 18;
 const MAILBOX_HEADER = 8;
 
 function compileInPage(request: { op: 'compile'; code: string; path: string; kind: string; asyncModules: boolean } | { op: 'tla'; files: Record<string, string> }): string {
@@ -670,6 +857,11 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     Object.values(msg.files).some((c) => typeof c === 'string' && c.includes('node:sqlite'));
   const sources = msg.inherit ? {} : Object.fromEntries(Object.entries(msg.files).filter(([p, c]) => typeof c === 'string' && !p.includes('node_modules/') && /\.[cm]?[jt]sx?$/.test(p) && /\bawait\b/.test(c)));
   pageCompiler = msg.compilePort ? { port: msg.compilePort, mailbox: new SharedArrayBuffer(1 << 20) } : null;
+  // Programs (not their small helper threads) compile large generated code: next dev's chunks.
+  if (installKey && !pageCompiler && (!thread || thread.process)) {
+    startDigester();
+    vfs.watch((_event, path) => digestWhenWritten(path));
+  }
   if (Object.keys(sources).length && pageCompiler) {
     asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
   } else if (Object.keys(sources).length) {
@@ -719,9 +911,11 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
     return cache.get(name);
   };
+  // Keyed by the code itself: a Map compares long strings natively, and hashing them in JavaScript
+  // first was ~0.1 s of next dev's start (its 8 MB vendor chunk, twice).
   const compiledCache = new Map<string, string>();
   const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts'): string => {
-    const key = `${kind}:${path}:${code.length}:${hash(code)}`;
+    const key = `${kind}:${path}\0${code}`;
     const hit = compiledCache.get(key);
     if (hit !== undefined) return hit;
     let out: string;
@@ -729,11 +923,22 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if (pageCompiler) {
       out = compileInPage({ op: 'compile', code, path, kind, asyncModules: asyncModules && kind !== 'cjs' });
     } else {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
-      xhr.send(code);
-      if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
-      out = xhr.responseText;
+      const async = asyncModules && kind !== 'cjs';
+      // Large code is asked for by the digest the host keys its compiles with (compileForRuntime):
+      // what the host compiled before, next dev's chunks in every later run of an app, comes back
+      // without being sent. Sending 8 MB costs ~0.35 s before the host sees the request; asking, ~10 ms.
+      const digest = code.length < ASK_FIRST ? null : ((kind === 'cjs' && writtenDigest(path)) || digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`));
+      const known = digest ? requestSync(`${base}/compiled/${digest}`, false) : null;
+      if (known?.status === 200) {
+        out = known.body as string;
+      } else {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}`, false);
+        // As a Blob: a string body was slower to reach the host (the 8 MB chunk: ~0.85 s -> ~0.5 s).
+        xhr.send(new Blob([code]));
+        if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
+        out = xhr.responseText;
+      }
     }
     compiledCache.set(key, out);
     return out;
@@ -1330,12 +1535,6 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   sockets.set(id, { socket, codec });
   for (const bytes of early) socket.receive(bytes);
   early = null;
-}
-
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
 }
 
 export const RUNTIME_NODE_VERSION = NODE_VERSION;
