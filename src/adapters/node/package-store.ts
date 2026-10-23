@@ -1,6 +1,6 @@
 /**
  * Installs the packages of an npm lockfile from a content-addressed store of unpacked packages
- * (ADR NNNN), as npm itself would unpack them: npm resolves the tree (`npm install
+ * (ADR 0032), as npm itself would unpack them: npm resolves the tree (`npm install
  * --package-lock-only`), and each package's tarball, read from npm's cache by its integrity, is
  * unpacked once into the store and hard-linked into every install that has it (as pnpm and Bun
  * do). npm unpacks Next.js's 8,700 files in ~9 s; unpacking here takes ~2 s, and linking it into a

@@ -1,6 +1,6 @@
 /**
  * npm's resolution of an install (`npm install --package-lock-only`), run by npm's own code in a
- * worker thread that lives across installs (ADR NNNN). Most of a resolution's time goes to reading
+ * worker thread that lives across installs (ADR 0032). Most of a resolution's time goes to reading
  * and parsing full packuments (Vite's is 39 MB, and every package that peers on Vite fetches it and
  * its optional peers'), which npm keeps in memory only for one run, and only when under 1 MB. Here
  * they stay in memory between installs (up to PACKUMENT_BYTES), so the second Vite app of a batch

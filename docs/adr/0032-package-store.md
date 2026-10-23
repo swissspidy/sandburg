@@ -1,4 +1,4 @@
-# ADR NNNN: A package store and a long-lived resolver for host installs
+# ADR 0032: A package store and a long-lived resolver for host installs
 
 - Status: Accepted
 - Date: 2026-10-23
