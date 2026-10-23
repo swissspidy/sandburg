@@ -9,7 +9,7 @@ import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import type { FromWorker } from './messages.ts';
-import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
@@ -805,7 +805,12 @@ function buildBuiltins() {
     dgram: () => misc.stub('dgram'),
     domain: () => ({ create: () => Object.assign(new EventEmitter(), { run: (fn: () => unknown) => fn(), add() {}, remove() {}, bind: (fn: unknown) => fn, intercept: (fn: unknown) => fn, enter() {}, exit() {}, dispose() {} }) }),
     trace_events: () => ({ createTracing: () => ({ enable() {}, disable() {}, enabled: false }), getEnabledCategories: () => '' }),
-    wasi: () => createWasi(fs, write),
+    wasi: () => {
+      // A WebAssembly build is about to start its threads (see threads.ts). Not in one of its threads:
+      // they load it too, and start none.
+      if (!thread || thread.process) wakeSpares();
+      return createWasi(fs, write);
+    },
     test: () => misc.stub('test'),
     sqlite: () => createNodeSqlite(sqliteFiles()),
     sea: () => ({ isSea: () => false }),

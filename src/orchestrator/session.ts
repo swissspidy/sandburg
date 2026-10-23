@@ -471,12 +471,23 @@ function missingBrowser(err: unknown): Error | null {
   return new Error(`Chromium for Playwright ${version} is not installed. Run: npx playwright@${version} install chromium (on Linux, add --with-deps for its system libraries), or set SANDBURG_CHROMIUM to a Chromium binary.`);
 }
 
+/**
+ * How long a WebAssembly function runs before V8 compiles optimized code for it. Every run compiles
+ * the dev tools' WebAssembly builds (esbuild, SWC, rolldown) anew, in its own browser context. At
+ * V8's default (13M, a rough count of bytes executed), esbuild's Go build had ~35 functions
+ * optimized in a warm Vite run: 2.5 s of CPU on background threads, for a run that took 3.5 s, while
+ * the runtime's thread waited for cores. At 100 times the default, only code that keeps running (a
+ * long build, an edit loop) is optimized. Warm runs took 20-37% less time (Vite, Next.js, SvelteKit,
+ * Angular); turning optimization off altogether (--liftoff-only) helped Vite but not Next.js' SWC.
+ */
+const WASM_TIERING_BUDGET = 1_300_000_000;
+
 export function launchOptions(options: SessionOptions): LaunchOptions {
   const ca = options.extraCaCerts === undefined ? (process.env.SANDBURG_EXTRA_CA_CERTS ?? process.env.NODE_EXTRA_CA_CERTS) : options.extraCaCerts;
   const spki = ca ? spkiHashes(ca) : [];
   return {
     headless: options.headless ?? true,
-    args: spki.length ? [`--ignore-certificate-errors-spki-list=${spki.join(',')}`] : [],
+    args: [`--js-flags=--wasm-tiering-budget=${WASM_TIERING_BUDGET}`, ...(spki.length ? [`--ignore-certificate-errors-spki-list=${spki.join(',')}`] : [])],
     executablePath: options.executablePath ?? process.env.SANDBURG_CHROMIUM,
     // Default for contexts without their own egress-proxy credentials: only sandbox origins
     // bypass the dead proxy. Leading "<-loopback>" is required for

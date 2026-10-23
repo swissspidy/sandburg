@@ -363,12 +363,21 @@ export const liveRuntimes = new Set<globalThis.Worker>();
  * Runtime workers started ahead of time. A browser cannot start a worker while its parent thread is
  * blocked (Atomics.wait, or a WebAssembly atomic wait), yet Rust code in WebAssembly does exactly
  * that: it blocks the calling thread and spawns threads to do the work (Tailwind's oxide scanner).
- * So once a program loads worker_threads, a few runtime workers boot in advance; a new thread takes
+ * So once a program loads worker_threads, a few runtime workers start in advance; a new thread takes
  * one of them, which only needs its init message.
+ *
+ * A spare evaluates the runtime only when a thread takes it, on its own thread (SPARE_BANNER in
+ * bundle.ts), or once it is woken: when a process loads node:wasi, which napi-rs WebAssembly builds
+ * do before they start their threads, so that those find their runtimes ready.
  */
 const warm: globalThis.Worker[] = [];
 let warmTarget = 0;
 let warmBase = '';
+let awake = false;
+
+/** The worker name that makes a runtime a spare, and the message that wakes one (bundle.ts). */
+const SPARE_NAME = 'sandburg-spare';
+const SPARE_WAKE = 'sandburg-spare-wake';
 
 export function warmRuntimes(base: string, count: number): void {
   warmBase = base;
@@ -376,10 +385,21 @@ export function warmRuntimes(base: string, count: number): void {
   refill();
 }
 
+/** Wakes the spares, and those that replace them: they evaluate the runtime now. */
+export function wakeSpares(): void {
+  if (awake) return;
+  awake = true;
+  for (const w of warm) w.postMessage({ type: SPARE_WAKE });
+}
+
 function refill(): void {
   // A worker created earlier starts on its own, even if this thread is busy or blocked by then; it
   // takes its init message whenever it is ready.
-  while (warm.length < warmTarget) warm.push(new globalThis.Worker(`${warmBase}/node-worker.js`));
+  while (warm.length < warmTarget) {
+    const w = new globalThis.Worker(`${warmBase}/node-worker.js`, { name: SPARE_NAME });
+    if (awake) w.postMessage({ type: SPARE_WAKE });
+    warm.push(w);
+  }
 }
 
 export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: { type: string; [k: string]: unknown }) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
