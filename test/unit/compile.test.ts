@@ -120,3 +120,10 @@ test('a declaration esbuild leaves alone is renamed first', async () => {
     assert.equal(runEsm(out).value, 4);
   }
 });
+
+test("a module declaring one of the wrapper's own names is renamed first too", async () => {
+  const src = `let __sandburg_dirname = 'mine';\nexport const d = [__sandburg_dirname, __dirname, import.meta.dirname];\n`;
+  for (const out of [compileForRuntime(src, '/app/src/w.mjs', 'esm'), await transformForRuntime(src, 'node_modules/p/w.mjs', true)]) {
+    assert.deepEqual(runEsm(out).d, ['mine', '/app/node_modules/p/lib', '/app/node_modules/p/lib']);
+  }
+});

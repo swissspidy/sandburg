@@ -15,7 +15,9 @@
  */
 import * as acorn from 'acorn';
 
-const RESERVED = ['require', 'module', 'exports', '__dirname', '__filename'];
+// The CommonJS names, and the names a converted ES module's wrapper gives its file, directory and
+// import.meta.url (ESM_WRAPPER_PARAMS): a module declaring one would clash with the wrapper too.
+const RESERVED = ['require', 'module', 'exports', '__dirname', '__filename', '__sandburg_filename', '__sandburg_dirname', '__sandburg_import_meta_url'];
 
 /** The parameters of a converted ES module's wrapper, as the runtime's loader names them (Module.prototype._compile in loader.ts). */
 export const ESM_WRAPPER_PARAMS = ['exports', 'require', 'module', '__sandburg_filename', '__sandburg_dirname', '__sandburg_import_meta_url'];
@@ -46,7 +48,7 @@ const DECLARES = new RegExp(`\\b(?:const|let|var|function|class|as|import)\\s*\\
 
 type Node = acorn.Node & Record<string, unknown>;
 
-/** Renames module-declared `require`/`module`/`exports`/`__dirname`/`__filename` to `__sandburg_esm_<name>`. */
+/** Renames module-declared `require`/`module`/`exports`/`__dirname`/`__filename` (and the wrapper's own names, RESERVED) to `__sandburg_esm_<name>`. */
 export function renameCommonJsNames(code: string): string {
   if (!DECLARES.test(code)) return code;
   let ast: Node;
