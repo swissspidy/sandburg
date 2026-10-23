@@ -282,7 +282,8 @@ export function createAdapter(): RuntimeAdapter {
             if (stable) break;
           }
         }
-        const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : devCache.dirs.some((d) => `${d}/_metadata.json` in tree!));
+        // Vite writes an optimized environment's _metadata.json last.
+        const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
         const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
         const changed = complete && Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p]));
         if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});

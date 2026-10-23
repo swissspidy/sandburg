@@ -41,6 +41,18 @@ for (const [name, framework, what] of cases) {
   });
 }
 
+test('a second run of a SvelteKit app starts from the dependencies its first run pre-bundled', async () => {
+  const dir = fixture('sveltekit-app');
+  for (let i = 0; i < 2; i++) {
+    const result = await session.run(dir, { outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+    if (i === 0) continue;
+    // Both environments' (client and ssr) and vite-plugin-svelte's metadata were kept.
+    const optimizer = result.console.filter((c) => /re-optimiz|bundling dependencies/.test(c.text)).map((c) => c.text);
+    assert.deepEqual(optimizer, []);
+  }
+});
+
 test('a SvelteKit load() that throws is an app bug', async () => {
   const project = await loadProject(fixture('sveltekit-app'));
   const broken = projectFromFiles(

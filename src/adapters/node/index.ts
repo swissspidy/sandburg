@@ -27,14 +27,16 @@ const installer = sharedInstaller();
 const WS_SHIM = source('adapters/node/ws-shim.js');
 
 /**
- * Dev servers' dependency caches, kept between runs: Vite's pre-bundled dependencies
- * (node_modules/.vite/deps of each package). Vite checks that a cache matches the lockfile and its
- * config before it uses one, so a stale cache costs a re-optimization, not a wrong result. A run
- * writes its cache from the page, which runs the project's code, so a cache is only ever used by
- * runs of the same project (its installed packages and every file): one project cannot plant
- * pre-bundled code in another's run.
+ * Dev servers' dependency caches, kept between runs: Vite's cache directory, with each environment's
+ * pre-bundled dependencies (deps, deps_ssr) and what plugins keep beside them (without
+ * vite-plugin-svelte's _svelte_metadata.json, SvelteKit re-optimized on every start), where Vite
+ * (node_modules/.vite), Nuxt (node_modules/.cache/vite) and the Angular CLI (.angular/cache) put it.
+ * Vite checks that a cache matches the lockfile and its config before it uses one, so a stale cache
+ * costs a re-optimization, not a wrong result. A run writes its cache from the page, which runs the
+ * project's code, so a cache is only ever used by runs of the same project (its installed packages
+ * and every file): one project cannot plant pre-bundled code in another's run.
  */
-const DEV_CACHE_DIRS = ['node_modules/.vite/deps'];
+const DEV_CACHE_DIRS = ['node_modules/.vite', 'node_modules/.cache/vite', '.angular/cache'];
 const devCacheRoot = () => join(installer.root, '..', 'dev-cache');
 
 function devCacheKey(project: Project, installKey: string): string {

@@ -257,9 +257,9 @@ export class ThreadVfs extends RemoteVfs {
 }
 
 /** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output, big files. */
-const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
+const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.angular|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
 /** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
-const WRITTEN_DIRS = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)(?:\/|$)|\/(?:\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
+const WRITTEN_DIRS = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)(?:\/|$)|\/(?:\.angular|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
 const SNAPSHOT_MAX_FILE = 4 << 20;
 const snapshots = new WeakMap<Vfs, { value: Record<string, Uint8Array> | null; off: () => void }>();
 
