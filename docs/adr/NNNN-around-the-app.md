@@ -16,9 +16,6 @@ short run went to work around the app rather than to the app's dev server:
   accessibility snapshot had each run on their own.
 - **Ready**: after the app frame's load event, Playwright's `waitForFunction` first set itself up in
   the new frame (~30-50 ms) before it checked anything.
-- **The install data**: a Vite app's own pre-bundled dependencies went to the page inside the
-  install data (2.9 MB of JSON for `vite-react-counter`) through `page.evaluate`, then into the
-  runtime's init message.
 - **Batches** ran `parallel` apps until each had its result, so a slot sat idle while an app's
   checks waited on a failing assertion (in the corpus, up to the 15 s a check asked for).
 
@@ -38,9 +35,6 @@ short run went to work around the app rather than to the app's dev server:
   back to `evaluate`.
 - **Ready asks the host page first** (`HostApi.rendered`, the same condition read from the frame's
   same-origin document); `waitForFunction` and its reloads only when that says no.
-- **A Vite app's own cache comes as a bundle** the runtime fetches (the route seeds use), and the
-  page tells whether the run changed it by a digest computed the same way on both sides
-  (`cache-digest.ts`).
 - **Batches start the next app when one reaches its checks**: `parallel` apps start and run at a
   time; at most twice `parallel` are open. `RunOptions.onPhase` reports each phase as it starts.
 
@@ -49,16 +43,16 @@ short run went to work around the app rather than to the app's dev server:
 - Warm runs on an idle 4-core machine, against the code before (full Chromium, medians). Each
   change's own interleaved A/B is in its commit message.
 
-  | Fixture | scripts/bench.ts (4 rounds) | 4 rounds x 5 runs, same .sandburg state (n=20) |
+  | Fixture | scripts/bench.ts (3 rounds) | 4 rounds x 5 runs, same .sandburg state (n=20) |
   |---|---|---|
-  | `node-express` | 0.94 s → 0.58 s | 976 → 578 ms (−41%) |
-  | `lit-vite` | 2.73 s → 2.56 s | 2769 → 2315 ms (−16%) |
-  | `vite-react-counter` | 3.63 s → 3.07 s | 3808 → 3359 ms (−12%) |
+  | `node-express` | 0.92 s → 0.58 s | 920 → 562 ms (−39%) |
+  | `lit-vite` | 2.52 s → 2.42 s | 2671 → 2191 ms (−18%) |
+  | `vite-react-counter` | 3.71 s → 3.23 s | 3563 → 3265 ms (−8%) |
 
-  Load goes to 0, install −65 to −75%, checks −16 to −19%; start is 7-50% longer, from the next
+  Load goes to 0, install −38 to −78%, checks −20 to −24%; start is 4-60% longer, from the next
   run's tab opening beside it.
 - A batch of 12 corpus apps (scripts/corpus seed 1: 4 vite-react, 4 Next.js, 4 vite-vanilla; 3
-  tabs, warm, 3 rounds): 34.1 s → 29.9 s (−12%), with the same results; the batch scheduling alone
+  tabs, warm, 3 rounds): 32.5 s → 28.0 s (−14%), with the same results; the batch scheduling alone
   32.8 s → 29.1 s.
 - A one-off CLI run (`sandburg run fixtures/node-express`, browser launch included, n=5): 2.35 s →
   2.18 s.
@@ -86,11 +80,14 @@ short run went to work around the app rather than to the app's dev server:
   the overlapped phase pays the same 30-80 ms; at the checks it doubled the screenshot's time.
 - **Heaviest apps first in a batch** (meta-frameworks, then Vite, then the rest): 12% slower. Three
   Next.js apps at once contend for the cores, and a light app with a long check became the tail.
-- **Skipping the read-back of an untouched dev cache** (the runtime tracking writes since init):
-  dispose 60 → 4 ms for vite-react, but totals did not show it in two rounds (+2%, noise in start and
-  ready); left out.
 
 ## Not done
+
+- **The install data** carries a Vite app's own pre-bundled dependencies (2.9 MB of JSON for
+  `vite-react-counter`) through `page.evaluate` into the runtime's init message, on the critical
+  path once the tab is ready ahead of the run: sending it as a bundle the runtime fetches cut
+  install 259 → 98 ms here. That change belongs to the frameworks work (Vite, Nuxt and Angular
+  caches), which carries it.
 
 - **Request interception**: Playwright enables CDP `Fetch` interception for every URL once a route
   exists (and turns the HTTP cache off), so each of the runtime's synchronous requests to the host
