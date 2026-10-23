@@ -45,7 +45,7 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   const sink = new Writable({ write: (_chunk, _encoding, done) => done() });
   let ready: Promise<{ flat: object; Arborist: new (o: object) => { reify(o: object): Promise<unknown> } }> | null = null;
   const cache = new PackumentCache(PACKUMENT_BYTES);
-  parentPort!.on('message', async ({ id, dir }: { id: number; dir: string }) => {
+  parentPort!.on('message', async ({ id, dir, force }: { id: number; dir: string; force: boolean }) => {
     try {
       ready ??= (async () => {
         const Npm = require('./lib/npm.js') as new (o: object) => { config: { cwd: string }; load(): Promise<unknown>; flatOptions: object };
@@ -56,7 +56,7 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
       })();
       const { flat, Arborist } = await ready;
       // As lib/commands/install.js runs it, with this worker's packuments.
-      const opts = { ...flat, npmCommand: 'install', auditLevel: null, path: dir, add: [], workspaces: undefined, packumentCache: cache };
+      const opts = { ...flat, ...(force ? { force: true } : {}), npmCommand: 'install', auditLevel: null, path: dir, add: [], workspaces: undefined, packumentCache: cache };
       await new Arborist(opts).reify(opts);
       parentPort!.postMessage({ id });
     } catch (e) {
@@ -116,7 +116,9 @@ function npmRoot(): string | null {
 export class Resolver {
   private worker: Worker | null = null;
   private root: string | null | undefined;
-  private busy = false;
+  /** A resolution that is not small is running. */
+  private large = false;
+  private inflight = 0;
   private next = 0;
   private waiting = new Map<number, (error: string | undefined) => void>();
   private idle: ReturnType<typeof setTimeout> | null = null;
@@ -132,13 +134,16 @@ export class Resolver {
 
   /**
    * Writes dir/package-lock.json for dir/package.json (and the lockfile it starts from), as
-   * `npm install --package-lock-only <flags>` would. False: not done; run the CLI.
+   * `npm install --package-lock-only <flags>` would (with --force: `force`). False: not done; run
+   * the CLI. A `small` resolution (a side install of one or two packages) runs beside others; any
+   * other waits for none: while one runs, it is the CLI's.
    */
-  async resolve(dir: string, log: (line: string) => void): Promise<boolean> {
-    if (this.busy) return false;
+  async resolve(dir: string, log: (line: string) => void, options: { force?: boolean; small?: boolean } = {}): Promise<boolean> {
+    if (this.large && !options.small) return false;
     this.root ??= npmRoot();
     if (!this.root) return false;
-    this.busy = true;
+    if (!options.small) this.large = true;
+    this.inflight++;
     if (this.idle) clearTimeout(this.idle);
     try {
       const error = await new Promise<string | undefined>((done) => {
@@ -147,16 +152,18 @@ export class Resolver {
         const worker = this.start();
         // Held while it resolves; otherwise it does not keep the process alive.
         worker.ref();
-        worker.postMessage({ id, dir });
+        worker.postMessage({ id, dir, force: !!options.force });
       });
       if (error === undefined) return true;
       log(`npm (in process): ${error.split('\n')[0]}; npm resolves again`);
       return false;
     } finally {
-      this.worker?.unref();
-      this.busy = false;
-      this.idle = setTimeout(() => this.stop(), IDLE_MS);
-      this.idle.unref();
+      if (!options.small) this.large = false;
+      if (!--this.inflight) {
+        this.worker?.unref();
+        this.idle = setTimeout(() => this.stop(), IDLE_MS);
+        this.idle.unref();
+      }
     }
   }
 
@@ -185,7 +192,7 @@ export class Resolver {
   }
 
   private stop(): void {
-    if (this.busy) return;
+    if (this.inflight) return;
     void this.worker?.terminate();
     this.worker = null;
   }

@@ -153,7 +153,7 @@ export class Installer {
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
       const packages = installedPackages(JSON.parse(await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => '{}')));
-      const sides = join(this.root, '..', 'side-installs');
+      const sides = { root: join(this.root, '..', 'side-installs'), store: this.store, resolver: this.resolver };
       const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
       if (!(await installFromLockfile(tmp, this.store, log))) await run('npm', ['install', ...flags], tmp, log);
@@ -410,7 +410,7 @@ async function packageType(installDir: string, rel: string): Promise<'module' | 
  * through node:wasi, so they are installed here, with their own dependencies (@napi-rs/wasm-runtime,
  * @emnapi/*), next to the native-only packages npm chose.
  */
-async function wasiBindingsFor(dir: string, sides: string, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
+async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
   const nm = join(dir, 'node_modules');
   const wanted: Record<string, string> = {};
   const candidates: Record<string, string> = {};
@@ -472,7 +472,8 @@ async function wasiBindingsFor(dir: string, sides: string, packages: InstalledPa
  * place): npm installs each package.json once, as with installs themselves (the versions npm picks
  * first stay), so every Vite app does not pay ~1 s of npm for the same lightningcss-wasm.
  */
-function sideInstall(root: string, manifest: object, flags: string[], log: (line: string) => void): Promise<string> {
+function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line: string) => void): Promise<string> {
+  const root = sides.root;
   const key = createHash('sha256').update(`layout:${LAYOUT_VERSION}\0`).update(JSON.stringify([manifest, flags])).digest('hex').slice(0, 24);
   let pending = sideInstalls.get(key);
   if (!pending) {
@@ -483,7 +484,16 @@ function sideInstall(root: string, manifest: object, flags: string[], log: (line
       await mkdir(tmp, { recursive: true });
       try {
         await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest));
-        await run('npm', ['install', ...flags], tmp, log);
+        // As an install: npm resolves (in the resolver's worker, beside others: these are small), the
+        // store unpacks; npm installs what the store does not handle.
+        const force = flags.includes('--force');
+        if (!(await sides.resolver.resolve(tmp, log, { force, small: true }))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+        if (!(await installFromLockfile(tmp, sides.store, log, false))) {
+          // From its package.json alone, as before: npm installing from a lockfile skips its libc
+          // check for optional packages (sass's @parcel/watcher-linux-x64-musl would come along).
+          await rm(join(tmp, 'package-lock.json'), { force: true });
+          await run('npm', ['install', ...flags], tmp, log);
+        }
         await mkdir(join(tmp, 'node_modules'), { recursive: true });
         await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()}\n`);
         // Another process may have finished the same side install first.
@@ -501,6 +511,13 @@ function sideInstall(root: string, manifest: object, flags: string[], log: (line
   return pending;
 }
 const sideInstalls = new Map<string, Promise<string>>();
+
+/** Where side installs are kept, and how they are made. */
+interface Sides {
+  root: string;
+  store: string;
+  resolver: Resolver;
+}
 
 /**
  * Whether a package version exists on the registry (npm view). Asked once per process: a Next.js app
@@ -534,7 +551,7 @@ function existsSyncSafe(path: string): boolean {
   }
 }
 
-async function wasmBuildsFor(dir: string, sideRoot: string, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
+async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
   const at = new Set(packages.map((p) => p.location));
   const found: { dir: string; version: string; build: (typeof WASM_BUILDS)[number]; side: Promise<string> | null }[] = [];
   const sides = new Map<string, Promise<string>>();

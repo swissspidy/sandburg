@@ -81,11 +81,14 @@ if (!isMainThread && (workerData as { tag?: string } | null)?.tag === WORKER_TAG
 
 /**
  * Installs `dir`'s package-lock.json into dir/node_modules from the store (unpacking what it does
- * not have yet). Returns false, having changed nothing, for a lockfile it does not handle.
+ * not have yet), as `npm install --omit=optional` (or without omitOptional, `npm install`) would.
+ * Returns false, having changed nothing, for a lockfile it does not handle.
  */
-export async function installFromLockfile(dir: string, storeRoot: string, log: (line: string) => void): Promise<boolean> {
+export async function installFromLockfile(dir: string, storeRoot: string, log: (line: string) => void, omitOptional = true): Promise<boolean> {
   const lock = JSON.parse(await readFile(join(dir, 'package-lock.json'), 'utf8')) as Lockfile;
   if (!lock.packages || (lock.lockfileVersion ?? 1) < 2) return false;
+  // Without --omit=optional, npm installs the optional packages that pass its platform checks: npm's.
+  if (!omitOptional && Object.values(lock.packages).some((e) => e.optional)) return false;
   if (Object.entries(lock.packages).some(([location, e]) => location !== '' && (!location.startsWith('node_modules/') || e.link || e.hasShrinkwrap))) return false;
   const { installed, omitted } = partition(lock.packages);
   // Bundled packages come inside their parent's tarball.
