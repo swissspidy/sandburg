@@ -1,4 +1,4 @@
-# ADR NNNN: The host's share of a run
+# ADR 0030: The host's share of a run
 
 - Status: Accepted
 - Date: 2026-10-23
