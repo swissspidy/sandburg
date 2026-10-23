@@ -86,6 +86,11 @@ function runSync(steps: Generator<TransformStep, string, string>): string {
   return step.value;
 }
 
+/** A compile's output by its key (see compileForRuntime), if it is cached. */
+export function compiled(key: string): string | undefined {
+  return cache.get(key);
+}
+
 export function compileForRuntime(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean } = {}): string {
   const key = createHash('sha256').update(kind).update(opts.asyncModules ? '\0async' : '').update('\0').update(path).update('\0').update(code).digest('hex');
   const hit = cache.get(key);

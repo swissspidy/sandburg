@@ -81,6 +81,8 @@ async function host(request, url) {
     entry = all[`POST /__sandburg/compile#${q.get('kind')}|${q.get('async') ?? ''}|${p.endsWith('x') ? 'x' : ''}|${/\.m[jt]s$/.test(p) ? 'm' : ''} ${key.slice(key.lastIndexOf(' ') + 1)}`];
   }
   if (!entry && request.method === 'POST' && path === '/__sandburg/compile') return compile(body, url);
+  // The runtime asks for large code by digest before it sends it to compile: not recorded is an answer.
+  if (!entry && path.startsWith('/__sandburg/compiled/')) return new Response('not compiled before', { status: 404, headers: { 'content-type': 'text/plain' } });
   if (!entry) {
     const message = `not recorded: ${key.slice(0, 200)}`;
     console.warn(`[sandburg demo] ${message}`);

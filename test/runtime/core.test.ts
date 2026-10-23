@@ -116,6 +116,20 @@ test('ESM and TypeScript files load like in Node 24', async () => {
   assert.equal(out.stdout.trim(), 'hi from esm file:///app/esm.mjs 1 5');
 });
 
+test('a .js file is an ES module by its syntax only where package.json has no "type"', async () => {
+  const out = await h.run(
+    {
+      'typeless/esm.js': `export const where = 'typeless';`,
+      'cjs/package.json': JSON.stringify({ type: 'commonjs' }),
+      'cjs/lib.js': `module.exports = async () => { await null; return 'commonjs'; };`,
+      'main.js': `const { where } = require('./typeless/esm.js'); require('./cjs/lib.js')().then((w) => console.log(where, w));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(out.stdout.trim(), 'typeless commonjs');
+});
+
 test('errors: missing modules, process.exit', async () => {
   const out = await h.run({ 'main.js': `try { require('nope'); } catch (e) { console.log(e.code); } process.exit(3);` }, '/app/main.js');
   assert.equal(out.stdout.trim(), 'MODULE_NOT_FOUND');
@@ -656,6 +670,20 @@ test('Buffer: UTF-8 conversions of long strings (native) match Node', async () =
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   // The values real Node 22 gives.
   assert.deepEqual(JSON.parse(out.stdout), [380, 380, true, 'é', 300, 8, '😀😀', 20, '.....héllo wörld 😀 h.', true, 0xfeff]);
+});
+
+test('Buffer: base64 and base64url of long buffers (native) match Node', async () => {
+  const bytes = Buffer.from(Array.from({ length: 1001 }, (_, i) => (i * 37) & 255));
+  const out = await h.run(
+    {
+      'main.js': `
+        const b = Buffer.from(Array.from({ length: 1001 }, (_, i) => (i * 37) & 255));
+        console.log(JSON.stringify([b.toString('base64'), b.toString('base64url'), b.toString('BASE64', 3, 700), b.toString('base64', 900, 2000), b.toString('base64', 500, 10)]));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), [bytes.toString('base64'), bytes.toString('base64url'), bytes.toString('base64', 3, 700), bytes.toString('base64', 900, 2000), '']);
 });
 
 test('fs: streamed and positional writes grow a file in place, as in Node', async () => {

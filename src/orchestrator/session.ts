@@ -180,6 +180,11 @@ export class Session {
   }
 
   async close(): Promise<void> {
+    // A seed run started beside an app (adapters/node/index.ts) finishes first: later runs start from it.
+    // So does a host install still running (started before the browser context, so a run that
+    // failed before its install phase may not have waited for it).
+    while (this.installs.size) await Promise.allSettled([...this.installs]);
+    await this.seeded();
     await this.browser?.close();
     await this.host.close();
     await this.egress.close();
@@ -214,13 +219,31 @@ export class Session {
     // A warm-up that fails costs its batch little: it only makes later apps slower.
     const timeouts = { start: 60_000, ready: 60_000 };
     await Promise.all(cold.map((p) => this.run(p, { runtime: options.runtime, outDir: resolve('.sandburg/warmup'), infraRetries: 0, timeouts })));
+    // The seeds the warm-ups started, so the batch's apps start from them.
+    await this.seeded();
     return cold.map((p) => p.name);
   }
 
+  /** Host installs in progress (see runOnce). */
+  private installs = new Set<Promise<unknown>>();
+
+  /** Seed runs in progress. */
+  private seeds = new Set<Promise<void>>();
+
+  /** Waits for the seed runs in progress (whether they pass or not). */
+  private async seeded(): Promise<void> {
+    while (this.seeds.size) await Promise.allSettled([...this.seeds]);
+  }
+
   /** Runs a seed project (see HostInstallOptions.runSeed); its result goes to .sandburg/seeds. */
-  private async runSeed(project: Project, checks: Checks, parent: RunOptions): Promise<void> {
-    const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds') });
-    if (result.status !== 'passed') throw new Error(`seed ${project.name} did not pass: ${result.failure?.message ?? result.status}`);
+  private runSeed(project: Project, checks: Checks, parent: RunOptions): Promise<void> {
+    const seed = (async () => {
+      const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds') });
+      if (result.status !== 'passed') throw new Error(`seed ${project.name} did not pass: ${result.failure?.message ?? result.status}`);
+    })();
+    this.seeds.add(seed);
+    void seed.catch(() => {}).finally(() => this.seeds.delete(seed));
+    return seed;
   }
 
   private async runOnce(projectInput: string | Project, options: RunOptions): Promise<RunResult> {
@@ -247,6 +270,18 @@ export class Session {
       if (run.probe.verdict === 'unsupported') {
         run.skipRemaining();
         return await run.finish(outDir);
+      }
+
+      // The host's half of the install (npm, on a cold machine) starts now, while the tab and the host
+      // page load: the install phase waits for it.
+      const hostInstall = adapter?.hostInstall?.(project, (line) => run.runtimeLogs.push(line), {
+        seed: options.seed,
+        installIn: options.installIn,
+        runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
+      });
+      if (hostInstall) {
+        this.installs.add(hostInstall);
+        void hostInstall.catch(() => {}).finally(() => this.installs.delete(hostInstall)); // reported by the install phase
       }
 
       // Requests routing cannot see (service worker scripts, for one) use the context's own
@@ -288,13 +323,7 @@ export class Session {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
           await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
-            const hostData = adapter!.hostInstall
-              ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line), {
-                  seed: options.seed,
-                  installIn: options.installIn,
-                  runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
-                })
-              : undefined;
+            const hostData = hostInstall ? await hostInstall : undefined;
             return watch(host('install', hostData));
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
