@@ -48,6 +48,7 @@ interface LockEntry {
   inBundle?: boolean;
   link?: boolean;
   hasShrinkwrap?: boolean;
+  optionalDependencies?: Record<string, string>;
 }
 
 /** One package to place: its tarball (in npm's cache), its store directory and where it goes. */
@@ -151,6 +152,20 @@ function partition(packages: Record<string, LockEntry>): { installed: [string, L
     else installed.push([location, entry]);
   }
   return { installed, omitted };
+}
+
+/** A package an install of a lockfile has in node_modules (links to directories elsewhere aside). */
+export interface InstalledPackage {
+  location: string;
+  version: string;
+  optionalDependencies?: Record<string, string>;
+}
+
+/** The packages `npm install --omit=optional` of a lockfile puts in node_modules (and the store does). */
+export function installedPackages(lock: Lockfile): InstalledPackage[] {
+  return partition(lock.packages ?? {})
+    .installed.filter(([location, e]) => location.startsWith('node_modules/') && !e.link && e.version)
+    .map(([location, e]) => ({ location, version: e.version!, optionalDependencies: e.optionalDependencies }));
 }
 
 /** sha512-… (or the strongest hash an integrity string has) as a cacache content path's parts. */

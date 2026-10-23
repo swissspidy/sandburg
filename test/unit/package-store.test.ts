@@ -10,7 +10,7 @@ import { join } from 'node:path';
 // The store reads tarballs from npm's cache: this test's own (`npm config get cache` follows it).
 const cache = await mkdtemp(join(tmpdir(), 'sandburg-npm-cache-'));
 process.env.npm_config_cache = cache;
-const { installFromLockfile, normalizeBin } = await import('../../src/adapters/node/package-store.ts');
+const { installFromLockfile, installedPackages, normalizeBin } = await import('../../src/adapters/node/package-store.ts');
 
 /** A ustar archive with npm pack's top directory. */
 function tar(entries: Record<string, string>): Buffer {
@@ -76,6 +76,10 @@ test('a lockfile installs from the store as npm installs it', async () => {
   const hidden = JSON.parse(readFileSync(join(nm, '.package-lock.json'), 'utf8'));
   assert.deepEqual(Object.keys(hidden), ['name', 'lockfileVersion', 'requires', 'packages']);
   assert.deepEqual(Object.keys(hidden.packages), Object.keys(packages).filter((k) => !k.startsWith('node_modules/@native')));
+  assert.deepEqual(
+    installedPackages(JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8'))).map((p) => p.location),
+    Object.keys(packages).filter((k) => !k.startsWith('node_modules/@native')),
+  );
 
   // Another install of the same packages links the store's files.
   const again = await project(packages);
