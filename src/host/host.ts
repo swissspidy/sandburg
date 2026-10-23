@@ -4,7 +4,7 @@
  * `window.__sandburg`; every call resolves to an `RpcResult` and never throws,
  * so errors keep their code across the page.evaluate boundary.
  */
-import { createAdapter } from 'sandburg:adapter';
+import { createAdapter, prepare } from 'sandburg:adapter';
 import type { AdapterContext, HostApi, RpcResult, RuntimeAdapter } from './types.ts';
 import type { FileTree, Framework, PackageJson, SerializedError } from '../types.ts';
 
@@ -86,4 +86,5 @@ const api: HostApi = {
 };
 
 window.__sandburg = api;
+prepare();
 document.documentElement.dataset.sandburg = 'ready';

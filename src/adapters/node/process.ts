@@ -24,6 +24,8 @@ export interface NodeProcessOptions {
   log(stream: 'stdout' | 'stderr', line: string): void;
   /** What the program is, for messages ("the app", "the backend"). */
   label?: string;
+  /** A runtime worker started earlier, waiting for its init message (see prepare() in browser.ts). */
+  worker?: Worker;
   /** Started by a TypeScript runner (tsx, ts-node): `./x.js` imports resolve to `./x.ts`. */
   tsRunner?: boolean;
 }
@@ -65,7 +67,7 @@ export class NodeProcess {
   constructor(opts: NodeProcessOptions) {
     this.label = opts.label ?? 'the app';
     const base = hostBase();
-    this.worker = new Worker(`${base}/node-worker.js`);
+    this.worker = opts.worker ?? new Worker(`${base}/node-worker.js`);
     this.worker.onmessage = (e: MessageEvent<FromWorker>) => this.onMessage(e.data, opts);
     this.worker.onerror = (e) => this.fail(new AdapterError('INTERNAL', `runtime worker error: ${e.message}`));
     // A WebAssembly thread of the app's process that crashed while its parent was blocked (it
