@@ -30,7 +30,7 @@ import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
 import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
-import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
+import { AXE_PATH, HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
 
@@ -447,7 +447,7 @@ export class Session {
             const q = await app.evaluate((h) => (window as unknown as { __sandburgQuiet?: (h: number) => { quiet: boolean; sinceChangeMs: number } }).__sandburgQuiet?.(h) ?? null, remainingMs);
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle);
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin + AXE_PATH);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         if (options.collectFiles && options.onAppFiles) {
@@ -516,6 +516,7 @@ async function runChecksPhase(
   outDir: string,
   options: RunOptions,
   appIdle?: (remainingMs: number) => Promise<boolean>,
+  axeUrl?: string,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -530,6 +531,7 @@ async function runChecksPhase(
       appConsole: () => run.console.filter((c) => c.source === 'app'),
       network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
       appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
+      axeUrl,
     }),
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
@@ -652,7 +654,7 @@ function recordDocuments(context: BrowserContext, run: RunState): void {
   context.on('response', (res) => {
     const req = res.request();
     if (!req.isNavigationRequest() || run.documents.length >= 200) return;
-    run.documents.push({ frame: res.frame(), url: res.url(), status: res.status() });
+    run.documents.push({ frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers() });
   });
 }
 
@@ -683,7 +685,7 @@ class RunState {
   network: EgressStats | null = null;
   console: ConsoleEntry[] = [];
   pageErrors: PageError[] = [];
-  documents: { frame: Frame; url: string; status: number }[] = [];
+  documents: { frame: Frame; url: string; status: number; csp?: boolean }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];

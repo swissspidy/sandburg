@@ -5,6 +5,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import * as esbuild from 'esbuild';
 import type { AdapterDescriptor } from '../types.ts';
@@ -26,6 +27,14 @@ const HOST_HTML = `<!doctype html>
 </body>
 </html>
 `;
+
+/**
+ * axe-core, which the accessibility check loads into the app's frame from its own origin (see
+ * runAxe in checks.ts): a module script, which the browser compiles off the main thread.
+ */
+export const AXE_PATH = '/__sandburg/axe.js';
+let axe: Promise<Buffer> | null = null;
+const axeSource = () => (axe ??= readFile(createRequire(import.meta.url).resolve('axe-core/axe.min.js')));
 
 const bundles = new Map<string, Promise<string>>();
 
@@ -120,6 +129,10 @@ export class HostServer {
       res.end(HOST_HTML);
     } else if (path === '/__sandburg/host.js') {
       const js = await bundleHost(adapter);
+      res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8' });
+      res.end(js);
+    } else if (path === AXE_PATH) {
+      const js = await axeSource();
       res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8' });
       res.end(js);
     } else if (path.startsWith('/__sandburg/') && adapter.serve) {

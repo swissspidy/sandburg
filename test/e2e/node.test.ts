@@ -82,6 +82,29 @@ test('a Next.js page that throws on the server is an app bug', async () => {
   assert.equal(result.failure?.class, 'app-bug', JSON.stringify(result.failure, null, 2));
 });
 
+test('the accessibility scan runs whether or not the page lets it load from its origin', async () => {
+  // An image without alt text, served with no policy, and with a policy that blocks every script, in
+  // a header or a <meta> element. The scan does not try what the policy refuses (the app's console
+  // would show it).
+  for (const csp of [null, 'header', 'meta']) {
+    const headers = JSON.stringify({ 'content-type': 'text/html', ...(csp === 'header' && { 'content-security-policy': "script-src 'none'" }) });
+    const meta = csp === 'meta' ? `<meta http-equiv="Content-Security-Policy" content="script-src &#39;none&#39;">` : '';
+    const project = projectFromFiles(
+      {
+        'package.json': JSON.stringify({ name: 'axe-scan', private: true, scripts: { dev: 'node server.js' } }),
+        'server.js': `require('node:http').createServer((q, s) => { s.writeHead(200, ${headers}); s.end('<!doctype html><html lang="en"><title>scan</title>${meta}<main><h1>scan</h1><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></main>'); }).listen(3000);`,
+      },
+      { name: 'axe-scan', path: 'axe-scan' },
+    );
+    const result = await session.run(project, { outDir });
+    const axe = result.checks.find((c) => c.id === 'axe');
+    assert.equal(axe?.status, 'failed', `${csp}: ${JSON.stringify(axe)}`);
+    assert.match(axe?.message ?? '', /image-alt/, String(csp));
+    assert.ok(!result.console.some((c) => c.text.includes('axe')), JSON.stringify(result.console));
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  }
+});
+
 test('a project without dependencies runs (npm creates no node_modules for it)', async () => {
   const project = projectFromFiles(
     {
