@@ -102,6 +102,16 @@ export function bundleNodeRuntime(): Promise<string> {
 
 const libs = new Map<RuntimeLib, Promise<string>>();
 
+/** Each library's script: what the runtime takes from the package. */
+const LIB_ENTRY: Record<RuntimeLib, (libs: string) => string> = {
+  crypto: (libs) => `(${libs} ??= {}).crypto = require(${JSON.stringify(RUNTIME_LIBS.crypto)});`,
+  zlib: (libs) => `(${libs} ??= {}).zlib = require(${JSON.stringify(RUNTIME_LIBS.zlib)});`,
+  // napi-rs' runtime re-exports WASI from @tybys/wasm-util; the rest of it is emnapi, which node:wasi does not use.
+  wasi: (libs) => `import { WASI } from '@tybys/wasm-util';\n(${libs} ??= {}).wasi = { WASI };`,
+};
+/** Where a library's entry resolves its imports from: wasi's from napi-rs' runtime, as the runtime would. */
+const libDir = (name: RuntimeLib) => (name === 'wasi' ? dirname(require.resolve(RUNTIME_LIBS.wasi)) : here('.'));
+
 /**
  * A runtime library's script (see RUNTIME_LIBS): it sets globalThis[Symbol.for(LIBS_KEY)][name] to the
  * package's exports. A file that the runtime's script has as a CommonJS module is taken from there
@@ -114,7 +124,7 @@ export function bundleRuntimeLib(name: RuntimeLib): Promise<string> {
       const shared = new Set([...runtime.matchAll(COMMONJS_MODULE)].map((m) => m[1]));
       const key = (k: string) => `globalThis[Symbol.for(${JSON.stringify(k)})]`;
       const r = await esbuild.build({
-        stdin: { contents: `${key(LIBS_KEY)} ??= {};\n${key(LIBS_KEY)}[${JSON.stringify(name)}] = require(${JSON.stringify(RUNTIME_LIBS[name])});`, resolveDir: here('.'), sourcefile: `node-${name}.js` },
+        stdin: { contents: LIB_ENTRY[name](key(LIBS_KEY)), resolveDir: libDir(name), sourcefile: `node-${name}.js` },
         absWorkingDir: ROOT,
         bundle: true,
         write: false,
