@@ -21,3 +21,7 @@ declare module 'browserify-zlib' {
 }
 declare module '@napi-rs/wasm-runtime';
 declare module '@pkgjs/parseargs';
+declare module 'sha.js/hash.js' {
+  const Hash: { prototype: { update(data: unknown, enc?: string): unknown } };
+  export default Hash;
+}
