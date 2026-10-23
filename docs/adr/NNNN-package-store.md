@@ -31,11 +31,14 @@ directory: ~1 s for every Vite 8 app (lightningcss-wasm, `@rolldown/binding-wasm
   from npm's cache by its integrity (checked against the tarball's bytes), on four worker threads,
   and hard-linked into each install (copied where links cannot be made). What lands in
   `node_modules` is what npm writes: the same files, bytes and modes (pacote: links and directories
-  in tarballs skipped, `.gitignore` as `.npmignore`, bin targets executable and without a CRLF after
-  `#!`), `.bin` links in bin-links' order (by depth, then path; the first package wins a name), npm's
-  hidden lockfile, and the empty scope directories npm leaves for omitted packages. A tree diff
-  (paths, modes, sizes, hashes, link targets) of lit-vite, vite-react-counter and next-app-router
-  against npm's installs is empty. A lockfile with links, git dependencies or shrinkwraps, or a
+  in tarballs skipped, `.gitignore` as `.npmignore`, the tarball's modes), `.bin` links in
+  bin-links' order (by depth, then path; the first package wins a name; a linked binary made
+  executable and without a CRLF after `#!`, as the install's own copy when that changes the store's
+  file), npm's hidden lockfile, and the empty scope directories npm leaves for omitted packages. Tree
+  diffs (paths, modes, sizes, hashes, link targets) against npm's installs of all 17 fixtures are
+  empty. Installed in sequence, npm's start from a closest install (`cp -al`) had left empty
+  directories and `.bin` links of the install it copied (angular-zone's `.bin/esbuild` pointed to
+  esbuild-wasm, where npm alone links esbuild); those are gone. A lockfile with links, git dependencies or shrinkwraps, or a
   tarball still missing from npm's cache after `npm cache add`, goes to `npm install` as before.
 - **The closest install lends its lockfile, not its files.** npm then resolves only the
   difference, as before; the store shares the files on every platform.
@@ -68,5 +71,3 @@ directory: ~1 s for every Vite 8 app (lightningcss-wasm, `@rolldown/binding-wasm
   store as well.
 - Side installs are no longer resolved again for each install: a newer `@napi-rs/wasm-runtime`
   reaches installs once `.sandburg/` is cleared or the layout changes, as with installs themselves.
-- Where the store differs from npm, it matches what an install runs on: bin targets npm would not
-  link (a name another package won) are still executable and without the CRLF in the store.
