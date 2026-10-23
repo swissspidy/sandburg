@@ -329,7 +329,9 @@ async function predictedBundle(key: string, known: string[], prefetcher: Prefetc
   await prefetcher.untilIdle(PREDICT_WAIT);
   const entries = [...new Set([...known, ...prefetcher.transformed.map((rel) => `t:${rel}`), ...[...prefetcher.raw].map((rel) => `f:${rel}`)])];
   const bundle = await buildBundle(key, entries);
-  for (const [mode, rel] of bundle.files) await recordLoad(key, mode, rel);
+  void (async () => {
+    for (const [mode, rel] of bundle.files) await recordLoad(key, mode, rel);
+  })();
   return bundle.body;
 }
 const PREDICT_WAIT = 8000;
