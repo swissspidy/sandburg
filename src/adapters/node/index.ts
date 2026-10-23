@@ -301,13 +301,16 @@ async function preloadBundle(key: string, hash: string): Promise<Buffer | null> 
  * Next.js' webpack cache, seeded per version (ADR 0014). In an app's first compile, almost every
  * module is the framework's (React, Next.js' client and server runtimes), the same in every app with
  * the same versions. For each set of versions, the session runs Sandburg's own seed app once; the
- * webpack cache it leaves (.next/cache, with the key Next.js derives the cache version from) is where
- * every later app with those versions starts. Webpack still checks each cached module against its
- * files, so the app's own modules are compiled; a different next.config gives a different cache
- * version, and webpack starts empty. The seed is the session's, never a project's: a project cannot
- * write a cache that another project's run starts from.
+ * webpack cache it leaves (with the key Next.js derives the cache version from) is where every later
+ * app with those versions starts. Webpack still checks each cached module against its files, so the
+ * app's own modules are compiled; a different next.config gives a different cache version, and
+ * webpack starts empty. The seed is the session's, never a project's: a project cannot write a cache
+ * that another project's run starts from.
+ *
+ * The cache is in .next/cache, or in .next/dev/cache from Next.js 16 on (next dev builds into
+ * .next/dev): a seed that kept .next/cache there kept nothing, and every app compiled from scratch.
  */
-const NEXT_SEED_DIRS = ['.next/cache'];
+const nextSeedDirs = (version: string) => [Number.parseInt(version, 10) >= 16 ? '.next/dev/cache' : '.next/cache'];
 const seeding = new Map<string, Promise<void>>();
 
 function nextSeedKey(versions: Record<string, string>): string {
@@ -363,12 +366,13 @@ async function viteSeedCache(project: Project, installKey: string, options: Host
 }
 
 /** The key of the Next.js seed cache for an install's versions, and whether it exists (seeding it first if needed). */
-async function nextSeedCache(resolved: Record<string, string>, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean } | null> {
+async function nextSeedCache(resolved: Record<string, string>, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; dirs: string[]; ready: boolean } | null> {
   const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
   if (!versions.next || !versions.react || !versions['react-dom']) return null;
   const key = nextSeedKey(versions);
+  const dirs = nextSeedDirs(versions.next);
   const stored = () => stat(join(devCacheRoot(), `${key}.json`)).then(() => true, () => false);
-  if (options?.seed) return { key, ready: false };
+  if (options?.seed) return { key, dirs, ready: false };
   if (!(await stored()) && options?.runSeed) {
     let pending = seeding.get(key);
     if (!pending) {
@@ -379,7 +383,7 @@ async function nextSeedCache(resolved: Record<string, string>, options: HostInst
     }
     await pending;
   }
-  return { key, ready: await stored() };
+  return { key, dirs, ready: await stored() };
 }
 
 /** The JS file behind a package binary (node_modules/.bin/<name>), from the installed packages' "bin" fields. */
@@ -515,11 +519,11 @@ export const node: AdapterDescriptor = {
       const seed = await nextSeedCache(info.resolved, options, log);
       if (seed && options?.seed) {
         // The seed run keeps its webpack cache under the shared key.
-        issuedCaches.set(seed.key, NEXT_SEED_DIRS);
+        issuedCaches.set(seed.key, seed.dirs);
         pendingSeeds.add(seed.key);
-        devCache = { key: seed.key, dirs: NEXT_SEED_DIRS, files: {}, waitFor: ['.next/cache/webpack/client-development/index.pack.gz', '.next/cache/webpack/server-development/index.pack.gz'] };
+        devCache = { key: seed.key, dirs: seed.dirs, files: {}, waitFor: [`${seed.dirs[0]}/webpack/client-development/index.pack.gz`, `${seed.dirs[0]}/webpack/server-development/index.pack.gz`] };
       } else if (seed?.ready) {
-        readableCaches.set(seed.key, NEXT_SEED_DIRS);
+        readableCaches.set(seed.key, seed.dirs);
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
       }
     }
