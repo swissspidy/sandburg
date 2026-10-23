@@ -50,6 +50,8 @@ export type ToWorker =
       preload?: string | null;
       /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
       filesBundle?: string | null;
+      /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
+      prefetched?: Record<string, SharedArrayBuffer>;
       nodeModules: Record<string, number> | null;
       /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
       pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
@@ -290,8 +292,9 @@ let sharedBytes: Uint8Array | null = null;
 function sharedPreload(): SharedPreload | null {
   if (shared || !preloadBytes) return shared;
   try {
-    const sab = new SharedArrayBuffer(preloadBytes.bytes.length);
-    new Uint8Array(sab).set(preloadBytes.bytes);
+    const whole = new Uint8Array(preloadBytes.bytes.buffer as ArrayBuffer);
+    const sab = new SharedArrayBuffer(whole.length);
+    new Uint8Array(sab).set(whole);
     shared = { sab, index: preloadBytes.index };
     sharedBytes = new Uint8Array(sab);
     // This runtime reads them there too (sharedFile is asked first), and lets go of its own copy.
@@ -305,15 +308,30 @@ function sharedPreload(): SharedPreload | null {
 
 /** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
 function readBundle(url: string): [string, Uint8Array, string][] {
+  const ahead = prefetchedBody(url);
+  if (ahead) return bundleFiles(ahead);
   const res = requestSync(url, true);
   if (res.status !== 200) return [];
   return bundleFiles(res.body as Uint8Array);
 }
 
+/** Bundles the page is downloading for this runtime (see init.prefetched), by URL. */
+let prefetched: Record<string, SharedArrayBuffer> = {};
+
+/** A bundle the page downloaded, in its shared memory (not copied), once it has; null if it failed or was not asked for. */
+function prefetchedBody(url: string): Uint8Array | null {
+  const sab = prefetched[url];
+  if (!sab) return null;
+  delete prefetched[url];
+  const state = new Int32Array(sab, 0, 2);
+  if (Atomics.wait(state, 0, 0, 60_000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
+  return new Uint8Array(sab, 8, Atomics.load(state, 1));
+}
+
 function bundleFiles(bytes: Uint8Array): [string, Uint8Array, string][] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const length = view.getUint32(0, true);
-  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as [string, string, number][];
+  const header = JSON.parse(new TextDecoder().decode(bytes.slice(4, 4 + length))) as [string, string, number][];
   const files: [string, Uint8Array, string][] = [];
   let at = 4 + length;
   for (const [mode, rel, size] of header) {
@@ -361,16 +379,24 @@ function downloadedOnSide(key: string): Uint8Array | null {
 function loadPreload(): void {
   preloaded = new Map();
   try {
-    const res = requestSync(preloadUrl!, true);
-    if (res.status !== 200) return;
-    const bytes = res.body as Uint8Array;
+    let bytes = prefetchedBody(preloadUrl!);
+    if (!bytes) {
+      const res = requestSync(preloadUrl!, true);
+      if (res.status !== 200) return;
+      bytes = res.body as Uint8Array;
+    }
     const index: Record<string, [number, number]> = {};
     for (const [rel, file, mode] of bundleFiles(bytes)) {
       preloaded.set(`${mode}/${rel}`, file);
-      index[`${mode}/${rel}`] = [file.byteOffset - bytes.byteOffset, file.length];
+      index[`${mode}/${rel}`] = [file.byteOffset, file.length];
     }
-    // Kept for threads and child processes only if this runtime has none to pass on.
-    if (!shared) preloadBytes = { bytes, index };
+    // Kept for threads and child processes only if this runtime has none to pass on; already in
+    // shared memory if the page downloaded it.
+    if (!shared && bytes.buffer instanceof SharedArrayBuffer) {
+      shared = { sab: bytes.buffer, index };
+      sharedBytes = new Uint8Array(bytes.buffer);
+      preloaded.clear();
+    } else if (!shared) preloadBytes = { bytes, index };
   } catch {
     // no bundle: files come one by one
   }
@@ -971,6 +997,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // SANDBURG_TS_RUNNER: started by the shell for tsx, ts-node … (see shell.ts).
   tsRunner = !!msg.tsRunner || msg.env?.SANDBURG_TS_RUNNER === '1';
   // A worker thread shares its parent's file system (installed packages it reads itself).
+  prefetched = msg.prefetched ?? {};
   pack = msg.pack ? { bytes: new Uint8Array(msg.pack.sab), index: msg.pack.index, message: msg.pack } : null;
   shared = msg.shared ?? null;
   if (msg.filesChannel) useChannel(msg.filesChannel);
@@ -994,7 +1021,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     for (const [rel, bytes] of readBundle(msg.filesBundle)) {
       const abs = `${msg.cwd}/${rel}`;
       vfs.mkdir(abs.slice(0, abs.lastIndexOf('/')) || '/', true);
-      vfs.write(abs, bytes);
+      // Files are not kept in shared memory (decoders do not read it).
+      vfs.write(abs, bytes.buffer instanceof SharedArrayBuffer ? bytes.slice() : bytes);
     }
   }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
