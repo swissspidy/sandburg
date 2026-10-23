@@ -291,9 +291,11 @@ export class Session {
       const runtimeAllow = originMatcher(allow);
       proxy = new EgressProxy(originMatcher(allow), run.network);
       await proxy.listen();
+      // Only the host server's port on *.sandburg.localhost bypasses the proxy: the gateway does not
+      // see plain HTTP (see EgressGateway.attach). The reference runtime's app is on a port of its own.
       context = await this.browser.newContext({
         viewport: { width: 1280, height: 800 },
-        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
+        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}${node ? '' : `:${this.host.port}`}` },
       });
       recordRequestFailures(context, run);
       recordDocuments(context, run);
@@ -386,7 +388,7 @@ export class Session {
       const { port } = await run.phase('start', timeouts.start, () => node.start());
       // *.sandburg.localhost resolves to loopback and bypasses the proxy.
       const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
-      await this.egress.attach(context, origin, node.egress, run.network ?? undefined);
+      await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
       run.capture(page, origin);
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });

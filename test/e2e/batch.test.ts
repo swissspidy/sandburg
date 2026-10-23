@@ -8,7 +8,12 @@ import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { Session, launchOptions } from '../../src/orchestrator/session.ts';
-import { HostServer } from '../../src/orchestrator/host-server.ts';
+import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
+import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
+import { EgressProxy } from '../../src/orchestrator/egress-proxy.ts';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getAdapter } from '../../src/adapters.ts';
 import { runBatch, type BatchItem } from '../../src/orchestrator/batch.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
@@ -94,8 +99,8 @@ async function canary(): Promise<{ server: Server; port: number; connections: ()
 }
 
 /** Every way an app can open a connection, aimed at `target`. */
-function escapeAttempts(port: number): string {
-  const targets = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`, 'https://example.com'];
+function escapeAttempts(port: number, more: string[] = []): string {
+  const targets = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`, 'https://example.com', ...more];
   return `
 const targets = ${JSON.stringify(targets)};
 for (const t of targets) {
@@ -117,7 +122,8 @@ test('no connection escapes the browser through the egress gateway', async () =>
   await session.open();
   try {
     const project = variant('escape', {
-      'src/main.tsx': (counter.files['src/main.tsx'] as string) + escapeAttempts(port),
+      // A *.sandburg.localhost name on another port than the host server's is not a sandbox origin.
+      'src/main.tsx': (counter.files['src/main.tsx'] as string) + escapeAttempts(port, [`http://escape.${SANDBOX_DOMAIN}:${port}`]),
     });
     const result = await session.run(project, {
       outDir,
@@ -131,7 +137,7 @@ test('no connection escapes the browser through the egress gateway', async () =>
     assert.equal(result.checks.find((c) => c.kind === 'functional')?.status, 'passed', JSON.stringify(result.failure));
     assert.equal(connections(), 0, 'the canary server was reached');
     const blocked = result.network.blocked.map((b) => `${b.method} ${new URL(b.url).host}`);
-    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, 'example.com']) {
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, 'example.com', `escape.${SANDBOX_DOMAIN}:${port}`]) {
       assert.ok(blocked.some((b) => b.endsWith(host)), `${host} not recorded as blocked: ${blocked.join(', ')}`);
     }
     assert.ok(blocked.some((b) => b.startsWith('WEBSOCKET')), 'WebSocket attempts are recorded');
@@ -171,5 +177,59 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
     await browser.close();
     await host.close();
     server.close();
+  }
+});
+
+test('the gateway sees HTTPS from pages and workers; another sandbox refuses requests', async () => {
+  const host = new HostServer();
+  await host.listen();
+  const browser = await chromium.launch(launchOptions({}));
+  const cacheDir = await mkdtemp(join(tmpdir(), 'sandburg-egress-'));
+  const stats = newEgressStats();
+  const allow = ['https://allowed.sandburg.test'];
+  const proxy = new EgressProxy(originMatcher(allow), stats);
+  await proxy.listen();
+  try {
+    const one = host.register('one', getAdapter('node'));
+    const two = host.register('two', getAdapter('node'));
+    // As a run's context (session.ts): only the host server's port bypasses the proxy.
+    const context = await browser.newContext({ proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}:${host.port}` } });
+    // Offline with an empty cache: every request the gateway sees is recorded as a miss.
+    await new EgressGateway({ cacheDir, offline: true }).attach(context, one, allow, stats);
+    const page = await context.newPage();
+    // A page of the sandbox's origin without its service worker (whose requests no routing sees).
+    await page.goto(`${one}/__sandburg/none`);
+    const loads = await page.evaluate(async (two) => {
+      const nested = `fetch('https://allowed.sandburg.test/nested').catch(() => {}).finally(() => postMessage('done'));`;
+      const outer = `fetch('https://allowed.sandburg.test/worker').catch(() => {});
+        const w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(nested)}], { type: 'text/javascript' })));
+        w.onmessage = () => postMessage('done');`;
+      await fetch('https://allowed.sandburg.test/page').catch(() => {});
+      await fetch('https://blocked.sandburg.test/page').catch(() => {});
+      await new Promise((resolve) => {
+        const w = new Worker(URL.createObjectURL(new Blob([outer], { type: 'text/javascript' })));
+        w.onmessage = resolve;
+      });
+      const load = (src: string) =>
+        new Promise((resolve) => {
+          const s = document.createElement('script');
+          s.src = src;
+          s.onload = () => resolve('loaded');
+          s.onerror = () => resolve('refused');
+          document.head.append(s);
+        });
+      return { own: await load('/__sandburg/ws-shim.js'), other: await load(`${two}/__sandburg/ws-shim.js`) };
+    }, two);
+    const missed = stats.failed.map((f) => new URL(f.url).pathname).sort();
+    assert.deepEqual(missed, ['/nested', '/page', '/worker'], JSON.stringify(stats));
+    assert.ok(stats.failed.every((f) => f.reason.startsWith('offline mode')), JSON.stringify(stats.failed));
+    assert.ok(stats.blocked.some((b) => b.url === 'https://blocked.sandburg.test/page' && b.reason === 'origin not allowlisted'), JSON.stringify(stats.blocked));
+    assert.deepEqual(loads, { own: 'loaded', other: 'refused' });
+    await context.close();
+  } finally {
+    await proxy.close();
+    await browser.close();
+    await host.close();
+    await rm(cacheDir, { recursive: true, force: true });
   }
 });
