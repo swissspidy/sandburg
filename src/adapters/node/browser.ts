@@ -63,6 +63,18 @@ const NEXT_ENV = { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 't
  */
 const ANGULAR_ENV = { NG_BUILD_PARALLEL_TS: '0' };
 
+/**
+ * Options for dev commands that start more Node processes than the server needs: here each is
+ * another runtime, which loads the CLI again and competes with the app for the cores.
+ * - `react-router dev` relaunches itself as a child process with --conditions=development unless it
+ *   has them (~2 s). It starts with them instead, as the child it would relaunch (without that
+ *   child's REACT_ROUTER_DEV_RESTARTED).
+ */
+function devCommandOptions(framework: string | undefined, command: string, argv: string[]): { execArgv: string[]; argv: string[] } {
+  if (framework === 'react-router' && /^react-router\s+dev(\s|$)/.test(command)) return { execArgv: ['--conditions=development'], argv };
+  return { execArgv: [], argv };
+}
+
 /** Entry scripts per framework: the programmatic equivalents of the dev commands. */
 const NEXT_DEV = `// Sandburg: \`next dev\` (webpack) via Next.js' programmatic API, as a custom server runs it.
 const http = require('node:http');
@@ -133,6 +145,7 @@ export function createAdapter(): RuntimeAdapter {
   let compilerError: AdapterError | null = null;
   let main = `/app/${START}`;
   let argv: string[] = [];
+  let execArgv: string[] = [];
   let shell = false;
   let proxy: ProxyRule[] = [];
   let devCache: HostInstall['devCache'] | null = null;
@@ -203,16 +216,17 @@ export function createAdapter(): RuntimeAdapter {
         else if ('bin' in host.start) {
           if (!bins[host.start.bin]) throw new AdapterError('APP', `the dev script runs "${host.start.bin}", which no installed package provides`);
           main = `/app/${bins[host.start.bin]}`;
-          argv = host.start.argv;
+          ({ execArgv, argv } = devCommandOptions(ctx.framework, host.start.command, host.start.argv));
         } else {
           main = `/app/${host.start.main}`;
-          argv = host.start.argv;
+          ({ execArgv, argv } = devCommandOptions(ctx.framework, host.start.command, host.start.argv));
         }
         ctx.log('stdout', `starting: ${host.start.command}`);
       }
       if (compilerError) throw compilerError;
       proc = new NodeProcess({
         tsRunner: host.start?.tsRunner,
+        execArgv,
         files,
         // PORT only for a single server: the servers of a dev script listen where it says.
         // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless

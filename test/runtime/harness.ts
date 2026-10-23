@@ -11,7 +11,7 @@ import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../src/node-run
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from '../../src/adapters/node/compile.ts';
 
 const PAGE = `<!doctype html><script>
-window.runNode = (files, main, requests) => new Promise((resolve) => {
+window.runNode = (files, main, requests, execArgv) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
   const out = { stdout: '', stderr: '', responses: [], fatal: null, exit: null };
   const bodies = new Map();
@@ -33,7 +33,7 @@ window.runNode = (files, main, requests) => new Promise((resolve) => {
     }
   };
   w.onerror = (e) => { out.fatal = 'worker error: ' + e.message; finish(); };
-  w.postMessage({ type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg' });
+  w.postMessage({ type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg', ...(execArgv ? { execArgv } : {}) });
   if (!requests.length) setTimeout(finish, 3000);
 });
 window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => {
@@ -115,8 +115,8 @@ export class RuntimeHarness {
     }>;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = []) {
-    return this.page.evaluate(([f, m, r]) => (window as unknown as { runNode: Function }).runNode(f, m, r), [files, main, requests] as const) as Promise<{
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[]) {
+    return this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, execArgv ?? null] as const) as Promise<{
       stdout: string;
       stderr: string;
       fatal: string | null;

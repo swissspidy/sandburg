@@ -10,7 +10,7 @@ import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import type { FromWorker } from './messages.ts';
 import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
-import { createChildProcess } from './child-process.ts';
+import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
@@ -60,6 +60,8 @@ export type ToWorker =
       base: string;
       ipc?: boolean;
       tsRunner?: boolean;
+      /** The program's node options (`node --conditions=development …`): its --conditions apply. */
+      execArgv?: string[];
       /** Set when this runtime is a worker thread (worker_threads.Worker) of another. */
       thread?: ThreadInit;
       /** A thread inherits these from its parent instead of scanning files it does not have. */
@@ -912,6 +914,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
+  if (!thread && msg.execArgv?.length) proc.execArgv = msg.execArgv;
   if (child) {
     (proc.chdir as (d: string) => void)(child.cwd);
     proc.execArgv = child.execArgv;
@@ -983,7 +986,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   moduleSystem = createModuleSystem({
     vfs,
     tsRunner,
-    conditions: child?.conditions,
+    conditions: child?.conditions ?? (!thread && msg.execArgv?.length ? nodeOptions(msg.execArgv, {}).conditions : undefined),
     packageOverride(filename: string) {
       for (const [pattern, make] of SQLITE_PACKAGES) {
         if (!pattern.test(filename)) continue;

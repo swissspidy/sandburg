@@ -226,6 +226,19 @@ test('WebSockets: a path the server rejects, and a server without upgrade handli
   assert.deepEqual(plain.events, [['reject', 404, 'the server does not accept WebSocket connections']]);
 });
 
+test("a program started with node options resolves with their --conditions (react-router dev's)", async () => {
+  const files = {
+    'node_modules/cond/package.json': JSON.stringify({ name: 'cond', exports: { development: './dev.js', default: './prod.js' } }),
+    'node_modules/cond/dev.js': "module.exports = 'development';",
+    'node_modules/cond/prod.js': "module.exports = 'production';",
+    'main.js': `console.log(require('cond'), JSON.stringify(process.execArgv));`,
+  };
+  const out = await h.run(files, '/app/main.js', [], ['--conditions=development']);
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout.trim(), 'development ["--conditions=development"]');
+  assert.equal((await h.run(files, '/app/main.js')).stdout.trim(), 'production []');
+});
+
 test('worker_threads: workerData, messages, a shared file system, SharedArrayBuffer + Atomics, exit codes', async () => {
   const out = await h.run(
     {

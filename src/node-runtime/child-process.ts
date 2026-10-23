@@ -96,7 +96,7 @@ function parseNodeArgs(argv: string[]): NodeCommand {
 }
 
 /** --conditions and --require/--import from node's options (and NODE_OPTIONS). */
-function nodeOptions(execArgv: string[], env: Record<string, string>) {
+export function nodeOptions(execArgv: string[], env: Record<string, string>) {
   const all = [...splitCommand(env.NODE_OPTIONS ?? ''), ...execArgv];
   const conditions: string[] = [];
   const preload: string[] = [];
