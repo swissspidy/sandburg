@@ -15,7 +15,7 @@ import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writ
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
-import { renameCommonJsNames } from './esm-names.ts';
+import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
@@ -26,7 +26,7 @@ import { installFromLockfile, installedPackages, sweepStore, unpackAhead, type I
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 13;
+export const TRANSFORM_VERSION = 14;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 15;
 
@@ -349,18 +349,22 @@ const MEMORY_MAX = 256 << 20;
  */
 export async function transformForRuntime(source: string, path: string, esm: boolean): Promise<string> {
   for (const patch of SOURCE_PATCHES) if (patch.file.test(path)) source = source.replace(patch.from, patch.to);
-  if (esm) source = renameCommonJsNames(source.replace(/^#!.*/, ''));
+  if (esm) source = source.replace(/^#!.*/, '');
   source = patchFunctionImport(patchAsyncFunction(source));
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
   const mark = (code: string) => patchInterop(esm ? `/*sandburg:esm*/\n${code}` : code);
+  // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
+  const convert = async (code: string) => {
+    const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
+    return esm && collidesWithWrapper(code, out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+  };
   try {
-    const out = await esbuild.transform(source, TRANSFORM_OPTIONS(path, esm));
-    return mark(out.code);
+    return mark(await convert(source));
   } catch {
     // Top-level await (e.g. vite/bin/vite.js): an async module (see tla.ts).
-    if (esm && hasTopLevelAwait(source.replace(/^#!.*/, ''))) {
+    if (esm && hasTopLevelAwait(source)) {
       try {
-        return mark((await esbuild.transform(toAsyncModule(source.replace(/^#!.*/, '')), TRANSFORM_OPTIONS(path, true))).code);
+        return mark(await convert(toAsyncModule(source)));
       } catch {
         // fall through
       }
@@ -377,7 +381,7 @@ export const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.Transform
   target: 'es2022',
   // import() goes through the runtime's loader (require), like everything else.
   supported: { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false },
-  define: esm ? { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' } : undefined,
+  define: esm ? ESM_DEFINE : undefined,
   logLevel: 'silent',
 });
 

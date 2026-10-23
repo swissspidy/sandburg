@@ -19,6 +19,8 @@ import type { EgressStats, OriginMatcher } from './egress.ts';
 interface Policy {
   allow: OriginMatcher;
   stats: EgressStats;
+  /** Refuse every tunnel (see the constructor). */
+  noTunnels: boolean;
 }
 
 export class EgressProxy {
@@ -27,8 +29,13 @@ export class EgressProxy {
   private sockets = new Set<Duplex>();
   port = 0;
 
-  constructor(allow: OriginMatcher, stats: EgressStats) {
-    this.policy = { allow, stats };
+  /**
+   * `noTunnels`: refuse every tunnel, for a context whose HTTPS the gateway intercepts (EgressGateway.attach):
+   * what reaches the proxy then is a request the gateway did not see (a popup's or a frame's before its
+   * interception is set), and it fails instead of reaching an allowlisted origin unpoliced.
+   */
+  constructor(allow: OriginMatcher, stats: EgressStats, { noTunnels = false } = {}) {
+    this.policy = { allow, stats, noTunnels };
     this.http = createServer((req, res) => {
       // Plain-HTTP proxying (absolute-URI requests): never allowed.
       const policy = this.policy;
@@ -62,8 +69,9 @@ export class EgressProxy {
     const port = Number(portText || 443);
     const origin = port === 443 ? `https://${host}` : `https://${host}:${port}`;
     policy.stats.requests++;
-    if (!host || !policy.allow(origin)) {
-      policy.stats.blocked.push({ url: origin, method: 'CONNECT', reason: 'origin not allowlisted' });
+    if (!host || !policy.allow(origin) || policy.noTunnels) {
+      const reason = !host || !policy.allow(origin) ? 'origin not allowlisted' : 'HTTPS the gateway did not intercept (a popup or frame before its interception)';
+      policy.stats.blocked.push({ url: origin, method: 'CONNECT', reason });
       socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
       return;
     }

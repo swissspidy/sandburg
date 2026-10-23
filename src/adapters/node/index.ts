@@ -16,15 +16,21 @@ import { projectFromFiles } from '../../project.ts';
 import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticInstall, subProject } from './plan.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
-import { compiled, compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
+import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
+import { diskCompileStore, sweepCompiles } from './compile-store.ts';
 import type { HostInstall } from './browser.ts';
 import { VITE_SEED_DIRS, VITE_SEED_WAIT, viteSeed } from './vite-seed.ts';
 import { warmups } from './warmup.ts';
 import { extraDependencies } from './install-rules.ts';
 
 const installer = sharedInstaller();
+
+// Compiles of code the runtime sends, kept on disk as transforms are (compile-store.ts).
+const compiledDir = join(installer.root, '..', 'compiled', `v${TRANSFORM_VERSION}`);
+storeCompiles(diskCompileStore(compiledDir));
+void sweepCompiles(compiledDir);
 const WS_SHIM = source('adapters/node/ws-shim.js');
 
 /**

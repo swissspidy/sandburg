@@ -404,7 +404,12 @@ export function createModuleSystem(host: LoaderHost) {
     const require = makeRequire(this);
     const dir = dirname(filename);
     // Web Worker globals Node lacks (self, location, importScripts) are undefined globals (worker.ts).
-    const params = ['exports', 'require', 'module', '__filename', '__dirname', '__sandburg_import_meta_url'];
+    // A converted ES module's file and directory have names no module declares (Node's ESM has no
+    // __filename or __dirname; the host's compile sends import.meta.filename and .dirname, and free
+    // uses, to these: ESM_WRAPPER_PARAMS in adapters/node/esm-names.ts).
+    const params = this.esm
+      ? ['exports', 'require', 'module', '__sandburg_filename', '__sandburg_dirname', '__sandburg_import_meta_url']
+      : ['exports', 'require', 'module', '__filename', '__dirname', '__sandburg_import_meta_url'];
     const source = `(function (${params.join(', ')}) {${stripShebang(content)}\n})\n//# sourceURL=${filename}`;
     const fn = (0, eval)(source) as (...args: unknown[]) => unknown;
     if (!this.esm) return fn.call(this.exports, this.exports, require, this, filename, dir, `file://${filename}`);

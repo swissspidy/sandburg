@@ -56,3 +56,23 @@ test('the egress proxy tunnels only to allowlisted origins and records the rest'
     echo.close();
   }
 });
+
+test('a proxy without tunnels refuses allowlisted origins too, and records why', async () => {
+  const stats = newEgressStats();
+  const proxy = new EgressProxy(originMatcher(['https://allowed.sandburg.test']), stats, { noTunnels: true });
+  await proxy.listen();
+  try {
+    assert.match((await connectVia(proxy.port, 'allowed.sandburg.test:443')).status, / 403 /);
+    assert.match((await connectVia(proxy.port, 'example.com:443')).status, / 403 /);
+    assert.deepEqual(
+      stats.blocked.map((b) => [b.url, b.reason]),
+      [
+        ['https://allowed.sandburg.test', 'HTTPS the gateway did not intercept (a popup or frame before its interception)'],
+        ['https://example.com', 'origin not allowlisted'],
+      ],
+    );
+    assert.equal(stats.tunneled, 0);
+  } finally {
+    await proxy.close();
+  }
+});
