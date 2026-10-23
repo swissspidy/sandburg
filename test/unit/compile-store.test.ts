@@ -12,10 +12,19 @@ test('compiles are stored on disk and found by a later process (by the same key)
     const dir = join(root, 'v1');
     storeCompiles(diskCompileStore(dir));
     const out = compileForRuntime(`export const stored = ${Date.now()};`, '/app/src/stored.mjs', 'esm');
-    // Written on the side.
-    for (let i = 0; i < 50 && !(await readdir(dir).catch(() => [])).length; i++) await new Promise((r) => setTimeout(r, 20));
-    const [sub] = await readdir(dir);
-    const [name] = await readdir(join(dir, sub));
+    // Written on the side: the hash directory first, then the file under a temporary name, renamed.
+    const written = async () => {
+      const [sub] = await readdir(dir).catch(() => []);
+      const name = sub && (await readdir(join(dir, sub))).find((n) => n.endsWith('.js'));
+      return name ? { sub, name } : null;
+    };
+    let found = await written();
+    for (let i = 0; i < 50 && !found; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      found = await written();
+    }
+    assert.ok(found, 'the compile was written');
+    const { sub, name } = found;
     const key = sub + name.replace(/\.js$/, '');
     assert.equal(diskCompileStore(dir).read(key), out);
     // What another process's store holds is found by its key (the digest route asks for it).
