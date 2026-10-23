@@ -16,7 +16,7 @@
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { execFileSync } from 'node:child_process';
 import { realpathSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, enableCompileCache } from 'node:module';
 import { dirname, join } from 'node:path';
 import { Writable } from 'node:stream';
 
@@ -37,6 +37,8 @@ interface Init {
 
 /** In the worker: loads npm once, then resolves each directory it is sent. */
 async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
+  // As npm's CLI does (bin/npm-cli.js): its modules load from V8's code cache.
+  enableCompileCache?.();
   const require = createRequire(join(npmRoot, 'package.json'));
   // npm's configuration also reads process.argv: only the flags count, as on the command line.
   process.argv = [process.execPath, join(npmRoot, 'bin', 'npm-cli.js')];
