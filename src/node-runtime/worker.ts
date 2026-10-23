@@ -36,6 +36,7 @@ import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActi
 import * as misc from './builtins/misc.ts';
 import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
+import ShaHash from 'sha.js/hash.js';
 import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
@@ -155,6 +156,7 @@ function patchUtf8(): void {
   const B = Buffer as unknown as {
     prototype: Record<string, (...a: unknown[]) => unknown> & { length: number; subarray(s: number, e: number): Uint8Array };
     from(v: unknown, enc?: unknown, len?: unknown): Buffer;
+    byteLength(v: unknown, enc?: unknown): number;
   };
   const encoder = new TextEncoder();
   const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
@@ -199,9 +201,25 @@ function patchUtf8(): void {
         enc = c;
       }
     }
+    if (typeof str === 'string' && str.length > SHORT && offset >= 0 && offset <= this.length && isUtf16(enc)) return utf16Into(this, str, offset, Math.min(length, this.length - offset));
     if (typeof str !== 'string' || str.length <= SHORT || !isUtf8(enc)) return write.call(this, str, a, b, c);
     return encodeInto(this, str, offset, Math.min(length, this.length - offset));
   };
+  // UTF-16: the polyfill builds an array of the string's bytes first. es-module-lexer (Vite) writes
+  // each module's source this way (55 ms of a warm Vite run). Whole code units only, as Node writes them.
+  const isUtf16 = (enc: unknown) => typeof enc === 'string' && /^(ucs-?2|utf-?16le)$/i.test(enc);
+  const utf16Into = (buf: Uint8Array, str: string, offset: number, length: number) => {
+    const units = Math.min(str.length, Math.floor(length / 2));
+    for (let i = 0, at = offset; i < units; i++, at += 2) {
+      const c = str.charCodeAt(i);
+      buf[at] = c & 0xff;
+      buf[at + 1] = c >>> 8;
+    }
+    return units * 2;
+  };
+  // The polyfill counts a string's UTF-8 bytes by encoding it into an array (vite's etag: 33 ms of a warm run).
+  const { byteLength } = B;
+  B.byteLength = (v: unknown, enc?: unknown) => (typeof v === 'string' && v.length > SHORT && isUtf8(enc) ? utf8Length(v) : byteLength(v, enc));
   B.prototype.utf8Write = function (this: Uint8Array, str: unknown, offset?: unknown, length?: unknown) {
     const o = typeof offset === 'number' ? offset : 0;
     return encodeInto(this, String(str), o, typeof length === 'number' ? length : this.length - o);
@@ -219,6 +237,49 @@ function patchUtf8(): void {
   }
 }
 patchUtf8();
+
+/**
+ * crypto's SHA hashes (sha.js, under crypto-browserify) copy the input into each 64-byte block one
+ * byte at a time: 38 ms of a warm Vite run, which hashes the lockfile (sha256) and every response
+ * (an etag, sha1). The same copy with Uint8Array.prototype.set.
+ */
+function patchHashCopy(): void {
+  const { update } = ShaHash.prototype;
+  type Self = { _block: Uint8Array; _blockSize: number; _len: number; _update(block: Uint8Array): void };
+  ShaHash.prototype.update = function (this: Self, data: unknown, enc?: string) {
+    const bytes = typeof data === 'string' ? Buffer.from(data, (enc || 'utf8') as BufferEncoding) : data;
+    if (!(bytes instanceof Uint8Array)) return update.call(this, data, enc);
+    const block = this._block;
+    const size = this._blockSize;
+    let accum = this._len;
+    for (let offset = 0; offset < bytes.length; ) {
+      const assigned = accum % size;
+      const take = Math.min(bytes.length - offset, size - assigned);
+      block.set(bytes.subarray(offset, offset + take), assigned);
+      accum += take;
+      offset += take;
+      if (accum % size === 0) this._update(block);
+    }
+    this._len += bytes.length;
+    return this;
+  };
+}
+patchHashCopy();
+
+/** The length of a string's UTF-8 (a lone surrogate is U+FFFD, three bytes, as Node encodes it). */
+export function utf8Length(s: string): number {
+  let n = s.length;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) continue;
+    if (c < 0x800) n += 1;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      n += 2;
+      i++;
+    } else n += 2;
+  }
+  return n;
+}
 
 /**
  * Base64 through the browser's Uint8Array.prototype.toBase64 where there is one: the buffer
