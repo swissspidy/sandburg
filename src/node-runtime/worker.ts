@@ -24,8 +24,7 @@ import pathBrowserify from 'path-browserify';
 import * as legacyUrl from 'url';
 import querystring from 'querystring-es3';
 import * as stringDecoder from 'string_decoder';
-import zlibBrowserify from 'browserify-zlib';
-import { nativeZlib } from './builtins/zlib-native.ts';
+import { nativeZlib, useZlibPort } from './builtins/zlib-native.ts';
 import { parseArgs } from '@pkgjs/parseargs';
 import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts, NativeMessageChannel, nativePostMessage } from './message-ports.ts';
@@ -721,28 +720,34 @@ function buildBuiltins() {
     return crypto;
   };
 
-  const zlibUnsupported = (name: string) => () => {
-    throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
+  // node:zlib: native streams over browserify-zlib (a runtime library: loaded when a program first requires it).
+  const makeZlib = () => {
+    const zlibBrowserify = runtimeLib<Record<string, unknown>>('zlib');
+    useZlibPort(zlibBrowserify as never);
+    const zlibUnsupported = (name: string) => () => {
+      throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
+    };
+    const zlib = Object.assign(Object.create(null), zlibBrowserify, typeof CompressionStream === 'function' ? nativeZlib : {}, {
+      createBrotliCompress: zlibUnsupported('createBrotliCompress'),
+      createBrotliDecompress: zlibUnsupported('createBrotliDecompress'),
+      brotliCompressSync: zlibUnsupported('brotliCompressSync'),
+      brotliDecompressSync: zlibUnsupported('brotliDecompressSync'),
+      brotliCompress: zlibUnsupported('brotliCompress'),
+      brotliDecompress: zlibUnsupported('brotliDecompress'),
+      crc32: (data: Uint8Array | string) => {
+        let c = ~0;
+        for (const b of typeof data === 'string' ? new TextEncoder().encode(data) : data) {
+          c ^= b;
+          for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+        }
+        return ~c >>> 0;
+      },
+    });
+    // browserify-zlib has its Z_* constants on the module, not on `constants`.
+    const zConstants = Object.fromEntries(Object.entries(zlibBrowserify).filter(([k, v]) => k.startsWith('Z_') && typeof v === 'number'));
+    zlib.constants = { ...zConstants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
+    return zlib;
   };
-  const zlib = Object.assign(Object.create(null), zlibBrowserify, typeof CompressionStream === 'function' ? nativeZlib : {}, {
-    createBrotliCompress: zlibUnsupported('createBrotliCompress'),
-    createBrotliDecompress: zlibUnsupported('createBrotliDecompress'),
-    brotliCompressSync: zlibUnsupported('brotliCompressSync'),
-    brotliDecompressSync: zlibUnsupported('brotliDecompressSync'),
-    brotliCompress: zlibUnsupported('brotliCompress'),
-    brotliDecompress: zlibUnsupported('brotliDecompress'),
-    crc32: (data: Uint8Array | string) => {
-      let c = ~0;
-      for (const b of typeof data === 'string' ? new TextEncoder().encode(data) : data) {
-        c ^= b;
-        for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
-      }
-      return ~c >>> 0;
-    },
-  });
-  // browserify-zlib has its Z_* constants on the module, not on `constants`.
-  const zConstants = Object.fromEntries(Object.entries(zlibBrowserify).filter(([k, v]) => k.startsWith('Z_') && typeof v === 'number'));
-  zlib.constants = { ...zConstants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
 
   const assertStrict = Object.assign((v: unknown, m?: string) => assert.strict(v, m as string), assert.strict);
 
@@ -780,7 +785,7 @@ function buildBuiltins() {
     querystring: () => querystring,
     punycode: () => ({ toASCII: (s: string) => url.domainToASCII(s), toUnicode: (s: string) => s, encode: (s: string) => s, decode: (s: string) => s }),
     crypto: makeCrypto,
-    zlib: () => zlib,
+    zlib: makeZlib,
     os: () => misc.os,
     tty: () => misc.tty,
     net: () => net,

@@ -714,15 +714,15 @@ test('fs: streamed and positional writes grow a file in place, as in Node', asyn
   assert.deepEqual(JSON.parse(out.stdout), ['aXYdefgh', 640 * 64 * 1024, true, 640 * 64 * 1024 + 3, true]);
 });
 
-test('crypto and wasi load as their own scripts, with the runtime’s Buffer and streams', async () => {
+test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buffer and streams', async () => {
   const runtime = await bundleNodeRuntime();
-  assert.ok(!runtime.includes('node_modules/crypto-browserify/') && !runtime.includes('node_modules/@napi-rs/wasm-runtime/'), 'the runtime script leaves them out');
+  assert.ok(!/node_modules\/(crypto-browserify|browserify-zlib|@napi-rs\/wasm-runtime)\//.test(runtime), 'the runtime script leaves them out');
   const out = await h.run(
     {
       'main.js': `
         const libs = globalThis[Symbol.for('sandburg.libs')];
         const before = Object.keys(libs ?? {});
-        const crypto = require('node:crypto'); const stream = require('stream'); const { WASI } = require('node:wasi');
+        const crypto = require('node:crypto'); const stream = require('stream'); const { WASI } = require('node:wasi'); const zlib = require('zlib');
         const hash = crypto.createHash('sha1');
         const digest = hash.update('abc').digest();
         const hmac = crypto.createHmac('sha256', 'k').update('m').digest('base64url');
@@ -732,14 +732,14 @@ test('crypto and wasi load as their own scripts, with the runtime’s Buffer and
           before, after: Object.keys(globalThis[Symbol.for('sandburg.libs')]).sort(),
           isBuffer: Buffer.isBuffer(digest) && Buffer.isBuffer(bytes), hex: digest.toString('hex'), hmac,
           stream: crypto.createHash('md5') instanceof stream.Transform, wasi: typeof wasi.wasiImport.fd_write,
-          same: require('crypto') === crypto,
+          same: require('crypto') === crypto, gz: Buffer.isBuffer(zlib.gzipSync('z')) && zlib.gunzipSync(zlib.gzipSync('z')).toString(),
         }));`,
     },
     '/app/main.js',
   );
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.deepEqual(JSON.parse(out.stdout.split('\n')[0]), {
-    before: [], after: ['crypto', 'wasi'], isBuffer: true, hex: 'a9993e364706816aba3e25717850c26c9cd0d89d',
-    hmac: 'tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew', stream: true, wasi: 'function', same: true,
+    before: [], after: ['crypto', 'wasi', 'zlib'], isBuffer: true, hex: 'a9993e364706816aba3e25717850c26c9cd0d89d',
+    hmac: 'tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew', stream: true, wasi: 'function', same: true, gz: 'z',
   });
 });
