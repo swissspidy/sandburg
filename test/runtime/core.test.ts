@@ -116,6 +116,20 @@ test('ESM and TypeScript files load like in Node 24', async () => {
   assert.equal(out.stdout.trim(), 'hi from esm file:///app/esm.mjs 1 5');
 });
 
+test('a .js file is an ES module by its syntax only where package.json has no "type"', async () => {
+  const out = await h.run(
+    {
+      'typeless/esm.js': `export const where = 'typeless';`,
+      'cjs/package.json': JSON.stringify({ type: 'commonjs' }),
+      'cjs/lib.js': `module.exports = async () => { await null; return 'commonjs'; };`,
+      'main.js': `const { where } = require('./typeless/esm.js'); require('./cjs/lib.js')().then((w) => console.log(where, w));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(out.stdout.trim(), 'typeless commonjs');
+});
+
 test('errors: missing modules, process.exit', async () => {
   const out = await h.run({ 'main.js': `try { require('nope'); } catch (e) { console.log(e.code); } process.exit(3);` }, '/app/main.js');
   assert.equal(out.stdout.trim(), 'MODULE_NOT_FOUND');
