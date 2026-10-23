@@ -101,6 +101,30 @@ const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit' }
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
 
+/**
+ * The runtime worker for the next process, started as the host page loads: it loads and evaluates
+ * the runtime (~200 ms) while the run mounts the project and the host installs it, and waits for its
+ * init message. One that failed to load is not used: the process starts its own and reports its error.
+ */
+let prepared: { worker: Worker; failed: boolean } | null = null;
+
+export function prepare(): void {
+  if (prepared) return;
+  const p = { worker: new Worker(`${hostBase()}/node-worker.js`), failed: false };
+  p.worker.onerror = (e) => {
+    e.preventDefault();
+    p.failed = true;
+  };
+  prepared = p;
+}
+
+function preparedWorker(): Worker | undefined {
+  const p = prepared;
+  prepared = null;
+  if (p?.failed) p.worker.terminate();
+  return p && !p.failed ? p.worker : undefined;
+}
+
 /** A port to the page's compiler for a runtime (each runtime blocks on its own; see compile-worker.ts). */
 function connectCompiler(compiler: Worker): MessagePort {
   const channel = new MessageChannel();
@@ -195,6 +219,7 @@ export function createAdapter(): RuntimeAdapter {
       }
       if (compilerError) throw compilerError;
       proc = new NodeProcess({
+        worker: preparedWorker(),
         tsRunner: host.start?.tsRunner,
         files,
         // PORT only for a single server: the servers of a dev script listen where it says.

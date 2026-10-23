@@ -24,6 +24,8 @@ export interface NodeProcessOptions {
   log(stream: 'stdout' | 'stderr', line: string): void;
   /** What the program is, for messages ("the app", "the backend"). */
   label?: string;
+  /** A runtime worker started earlier, waiting for its init message (see prepare() in browser.ts). */
+  worker?: Worker;
   /** Started by a TypeScript runner (tsx, ts-node): `./x.js` imports resolve to `./x.ts`. */
   tsRunner?: boolean;
 }
@@ -112,7 +114,7 @@ export class NodeProcess {
   constructor(opts: NodeProcessOptions) {
     this.label = opts.label ?? 'the app';
     const base = hostBase();
-    this.worker = new Worker(`${base}/node-worker.js`);
+    this.worker = opts.worker ?? new Worker(`${base}/node-worker.js`);
     const prefetched: Record<string, SharedArrayBuffer> = {};
     for (const url of [opts.preload, opts.filesBundle]) {
       const sab = prefetchBundle(url);

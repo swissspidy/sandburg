@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
 import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
 import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
+import type { AdapterDescriptor } from '../types.ts';
 import { classify } from '../classify.ts';
 import { loadProject } from '../project.ts';
 import type {
@@ -51,7 +52,32 @@ export interface SessionOptions {
    * of these keys are accepted in addition to the normal trust store.
    */
   extraCaCerts?: string | null;
+  /**
+   * Keep a tab ready for the next run (default: true): its browser context, egress routes and host
+   * page are set up, and its runtime loaded, ahead of the run (see Tab). False: each run opens its
+   * own when it starts.
+   */
+  spareTab?: boolean;
+}
 
+/**
+ * A run's tab: its own browser context (with the egress proxy and routes that police it), and the
+ * sandbox's host page loading in it. A session opens the next run's tab ahead of time (a spare), so
+ * a run starts with its host page loaded and its runtime evaluated (prepare() in the host page).
+ */
+interface Tab {
+  /** The sandbox's id: the first DNS label of its origin. */
+  id: string;
+  origin: string;
+  adapter: AdapterDescriptor;
+  context: BrowserContext;
+  page: Page;
+  proxy: EgressProxy;
+  network: EgressStats;
+  /** The host page has loaded (the load phase's work). */
+  loaded: Promise<void>;
+  /** The tab crashed or failed to load before a run took it. */
+  broken: boolean;
 }
 
 /**
@@ -117,6 +143,8 @@ export interface RunOptions {
    */
   collectFiles?: string;
   onAppFiles?: (files: FileTree) => void;
+  /** Called as each lifecycle phase of the run starts (a batch starts its next app when one reaches its checks). */
+  onPhase?: (phase: PhaseName) => void;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -177,6 +205,80 @@ export class Session {
       await this.host.close();
       throw missingBrowser(err) ?? err;
     }
+    // The first run's tab opens while the run loads its project and the host installs it.
+    this.prepareTab(getAdapter(DEFAULT_RUNTIME));
+  }
+
+  /** The next run's tab, opening (see Tab). */
+  private spare: Promise<Tab> | null = null;
+
+  /** Opens a spare tab for the next run on `adapter`, unless there is one. */
+  private prepareTab(adapter: AdapterDescriptor): void {
+    // Not with a visible browser: a spare is a window.
+    if (this.spare || this.options.spareTab === false || this.options.headless === false || !this.browser) return;
+    // No deadline of its own: the run that takes it waits for it within its own load timeout.
+    const spare = this.openTab(adapter, 0);
+    spare.then(
+      (tab) => tab.loaded.catch(() => (tab.broken = true)),
+      () => {},
+    );
+    this.spare = spare;
+  }
+
+  /** The spare tab if it is for `adapter` and still usable, else a new one. */
+  private async takeTab(adapter: AdapterDescriptor, loadTimeoutMs: number): Promise<Tab> {
+    const spare = this.spare;
+    this.spare = null;
+    const tab = await spare?.catch(() => null);
+    if (tab && tab.adapter === adapter && !tab.broken && !tab.page.isClosed()) return tab;
+    if (tab) void this.closeTab(tab);
+    return this.openTab(adapter, loadTimeoutMs);
+  }
+
+  /** A new browser context with its egress proxy and routes, and its host page loading. */
+  private async openTab(adapter: AdapterDescriptor, loadTimeoutMs: number): Promise<Tab> {
+    const browser = this.browser;
+    if (!browser) throw new Error('session is not open');
+    const id = `s-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+    const network = newEgressStats();
+    // Requests the gateway does not see go to the context's own egress proxy, which polices them
+    // with this sandbox's allowlist. The gateway intercepts HTTPS for the runtime's contexts: nothing
+    // else needs a tunnel there.
+    const proxy = new EgressProxy(originMatcher(adapter.egress), network, { noTunnels: true });
+    await proxy.listen();
+    let context: BrowserContext | null = null;
+    try {
+      // Only the host server's port on *.sandburg.localhost bypasses the proxy: the gateway does not
+      // see plain HTTP (see EgressGateway.attach).
+      context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}:${this.host.port}` },
+      });
+      await context.addInitScript(PAGE_QUIET_SCRIPT);
+      const page = await context.newPage();
+      const origin = this.host.register(id, adapter);
+      await this.egress.attach(context, origin, adapter.egress, network);
+      // The host page lives under /__sandburg/ so the app can own "/" (ADR 0004).
+      const loaded = (async () => {
+        await page.goto(origin + '/__sandburg/', { timeout: loadTimeoutMs });
+        await page.waitForSelector('html[data-sandburg="ready"]', { state: 'attached', timeout: loadTimeoutMs });
+      })();
+      loaded.catch(() => {}); // the load phase reports it
+      const tab: Tab = { id, origin, adapter, context, page, proxy, network, loaded, broken: false };
+      page.on('crash', () => (tab.broken = true));
+      return tab;
+    } catch (err) {
+      await context?.close().catch(() => {});
+      await proxy.close();
+      this.host.unregister(id);
+      throw err;
+    }
+  }
+
+  private async closeTab(tab: Tab): Promise<void> {
+    await tab.context.close().catch(() => {});
+    await tab.proxy.close();
+    this.host.unregister(tab.id);
   }
 
   async close(): Promise<void> {
@@ -185,6 +287,9 @@ export class Session {
     // failed before its install phase may not have waited for it).
     while (this.installs.size) await Promise.allSettled([...this.installs]);
     await this.seeded();
+    const spare = await this.spare?.catch(() => null);
+    this.spare = null;
+    if (spare) await this.closeTab(spare);
     await this.browser?.close();
     await this.host.close();
     await this.egress.close();
@@ -263,8 +368,10 @@ export class Session {
     const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
+    run.onPhase = options.onPhase;
     let context: BrowserContext | null = null;
     let proxy: EgressProxy | null = null;
+    let tab: Tab | null = null;
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -284,38 +391,38 @@ export class Session {
         void hostInstall.catch(() => {}).finally(() => this.installs.delete(hostInstall)); // reported by the install phase
       }
 
-      // Requests the gateway does not see go to the context's own egress proxy, which polices them
-      // with this sandbox's allowlist.
-      run.network = newEgressStats();
-      const allow = runtimeInfo.egress;
-      const runtimeAllow = originMatcher(allow);
-      // The gateway intercepts HTTPS for the runtime's contexts: nothing else needs a tunnel there.
-      proxy = new EgressProxy(originMatcher(allow), run.network, { noTunnels: !node });
-      await proxy.listen();
-      // Only the host server's port on *.sandburg.localhost bypasses the proxy: the gateway does not
-      // see plain HTTP (see EgressGateway.attach). The reference runtime's app is on a port of its own.
-      context = await this.browser.newContext({
-        viewport: { width: 1280, height: 800 },
-        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}${node ? '' : `:${this.host.port}`}` },
-      });
-      recordRequestFailures(context, run);
-      recordDocuments(context, run);
-      await context.addInitScript(PAGE_QUIET_SCRIPT);
-      const page = await context.newPage();
       if (node) {
+        // Requests the gateway does not see go to the context's own egress proxy, which polices them
+        // with this sandbox's allowlist. The reference runtime's app is on a port of its own.
+        run.network = newEgressStats();
+        proxy = new EgressProxy(originMatcher(node.egress), run.network);
+        await proxy.listen();
+        context = await this.browser.newContext({
+          viewport: { width: 1280, height: 800 },
+          proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
+        });
+        recordRequestFailures(context, run);
+        recordDocuments(context, run);
+        await context.addInitScript(PAGE_QUIET_SCRIPT);
+        const page = await context.newPage();
         await this.runNode(node, run, context, page, project, runId, outDir, timeouts, checks, options);
         run.skipRemaining();
         return await run.finish(outDir);
       }
-      const sandboxId = runId.toLowerCase();
-      const origin = this.host.register(sandboxId, adapter!);
-      await this.egress.attach(context, origin, allow, run.network);
+      const runtimeAllow = originMatcher(adapter!.egress);
+      // The spare tab, with its host page loaded or loading; the next run's opens meanwhile.
+      tab = await this.takeTab(adapter!, timeouts.load);
+      // Not for a seed run (it runs beside an app), nor a held one.
+      if (!options.seed && !options.hold) this.prepareTab(adapter!);
+      ({ context, proxy } = tab);
+      const { page, origin } = tab;
+      run.network = tab.network;
+      recordRequestFailures(context, run);
+      recordDocuments(context, run);
       run.capture(page, origin);
 
       const ok = await run.phase('load', timeouts.load, async () => {
-        // The host page lives under /__sandburg/ so the app can own "/" (ADR 0004).
-        await page.goto(origin + '/__sandburg/');
-        await page.waitForSelector('html[data-sandburg="ready"]', { state: 'attached' });
+        await tab!.loaded;
         return true;
       }).catch(() => false);
       const host = <K extends keyof HostApi>(name: K, ...args: Parameters<HostApi[K]>) =>
@@ -336,7 +443,8 @@ export class Session {
             // A dev server that answers 503 while it builds (Nuxt's "Dev server is loading...") shows a loading page.
             const loading = () => run.documents.filter((d) => d.frame === frame).at(-1)?.status === 503;
             const loadingPage = async () => loading() || (await frame.evaluate(() => document.documentElement.outerHTML.includes('__NUXT_LOADING__')).catch(() => false));
-            await failFastOnAppError(waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading), run, loadingPage);
+            const rendered = () => host('rendered', options.readySelector ?? null) as Promise<boolean>;
+            await failFastOnAppError(waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered), run, loadingPage);
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been
@@ -348,7 +456,7 @@ export class Session {
             const q = await app.evaluate((h) => (window as unknown as { __sandburgQuiet?: (h: number) => { quiet: boolean; sinceChangeMs: number } }).__sandburgQuiet?.(h) ?? null, remainingMs);
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle);
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         if (options.collectFiles && options.onAppFiles) {
@@ -362,9 +470,11 @@ export class Session {
       run.skipRemaining();
       return await run.finish(outDir);
     } finally {
-      await context?.close().catch(() => {});
-      await proxy?.close();
-      this.host.unregister(runId.toLowerCase());
+      if (tab) await this.closeTab(tab);
+      else {
+        await context?.close().catch(() => {});
+        await proxy?.close();
+      }
     }
   }
 
@@ -415,6 +525,7 @@ async function runChecksPhase(
   outDir: string,
   options: RunOptions,
   appIdle?: (remainingMs: number) => Promise<boolean>,
+  hostOrigin?: string,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -429,6 +540,7 @@ async function runChecksPhase(
       appConsole: () => run.console.filter((c) => c.source === 'app'),
       network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
       appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
+      hostOrigin,
     }),
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
@@ -551,7 +663,7 @@ function recordDocuments(context: BrowserContext, run: RunState): void {
   context.on('response', (res) => {
     const req = res.request();
     if (!req.isNavigationRequest() || run.documents.length >= 200) return;
-    run.documents.push({ frame: res.frame(), url: res.url(), status: res.status() });
+    run.documents.push({ frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers() });
   });
 }
 
@@ -582,7 +694,7 @@ class RunState {
   network: EgressStats | null = null;
   console: ConsoleEntry[] = [];
   pageErrors: PageError[] = [];
-  documents: { frame: Frame; url: string; status: number }[] = [];
+  documents: { frame: Frame; url: string; status: number; csp?: boolean }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];
@@ -603,7 +715,10 @@ class RunState {
   }
 
   /** Runs one lifecycle phase under a deadline and records its outcome. Rethrows on failure. */
+  onPhase?: (phase: PhaseName) => void;
+
   async phase<T>(name: PhaseName, timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+    this.onPhase?.(name);
     const start = performance.now();
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -742,9 +857,11 @@ async function appFrame(page: Page): Promise<Frame> {
  * the browser's own error page ("refused to connect"), when a dev server takes its port before it
  * can answer (Nuxt 4.6 does), and a dev server's loading page: Nuxt's, marked __NUXT_LOADING__,
  * which reloads itself once the app is built, or any 503 answer (`loading`). The app is loaded
- * again until it renders or the phase's deadline passes.
+ * again until it renders or the phase's deadline passes. `rendered` asks the host page first (one call,
+ * where Playwright's waitForFunction first sets itself up in the new frame), if there is one.
  */
-async function waitForRender(frame: Frame, selector?: string, reload?: () => Promise<unknown>, loading?: () => boolean): Promise<void> {
+async function waitForRender(frame: Frame, selector?: string, reload?: () => Promise<unknown>, loading?: () => boolean, rendered?: () => Promise<boolean>): Promise<void> {
+  if (rendered && (await rendered().catch(() => false)) && !loading?.()) return;
   for (let tries = 1; ; tries++) {
     // The run ended (the phase timed out and the tab closed): stop trying.
     if (frame.isDetached() || frame.page().isClosed()) throw new Error('the app frame is gone');

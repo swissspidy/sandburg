@@ -4,7 +4,7 @@
  * `window.__sandburg`; every call resolves to an `RpcResult` and never throws,
  * so errors keep their code across the page.evaluate boundary.
  */
-import { createAdapter } from 'sandburg:adapter';
+import { createAdapter, prepare } from 'sandburg:adapter';
 import type { AdapterContext, HostApi, RpcResult, RuntimeAdapter } from './types.ts';
 import type { FileTree, Framework, PackageJson, SerializedError } from '../types.ts';
 
@@ -76,6 +76,20 @@ const api: HostApi = {
         }),
       );
     }),
+  rendered: (selector: string | null) =>
+    call(async () => {
+      let doc: Document | null = null;
+      try {
+        doc = appFrame().contentDocument; // null for the browser's error page (another origin)
+      } catch {
+        return false;
+      }
+      if (!doc || doc.location.protocol === 'chrome-error:' || doc.documentElement.outerHTML.includes('__NUXT_LOADING__')) return false;
+      if (selector) return !!doc.querySelector(selector);
+      const root = doc.querySelector('#root, #app, #__next');
+      if (root) return root.childElementCount > 0 || (root.textContent ?? '').trim().length > 0;
+      return (doc.body?.innerText ?? '').trim().length > 0;
+    }),
   activity: () => call(async () => adapter?.activity?.() ?? null),
   dispose: () =>
     call(async () => {
@@ -86,4 +100,5 @@ const api: HostApi = {
 };
 
 window.__sandburg = api;
+prepare();
 document.documentElement.dataset.sandburg = 'ready';

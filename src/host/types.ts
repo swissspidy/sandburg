@@ -52,6 +52,12 @@ export interface HostApi {
   start(): Promise<RpcResult<StartResult>>;
   /** Runtime readiness, then load the app URL into the frame and wait for its load event. */
   ready(url: string, navigate?: boolean): Promise<RpcResult<void>>;
+  /**
+   * Whether the app frame shows a rendered app (its document, read from the host page, as
+   * waitForRender in session.ts reads it): `selector` matches, else #root/#app/#__next has content,
+   * else the body has text. False for the browser's error page and a dev server's loading page.
+   */
+  rendered(selector: string | null): Promise<RpcResult<boolean>>;
   activity(): Promise<RpcResult<{ inflight: number; idleMs: number } | null>>;
   dispose(): Promise<RpcResult<void>>;
 }
