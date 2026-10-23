@@ -133,7 +133,8 @@ export class CompileCache {
   async flush(): Promise<void> {
     if (this.flushing) clearTimeout(this.flushing);
     this.flushing = null;
-    await mkdir(this.dir(), { recursive: true });
+    // Called from a timer: a failure only loses what the next run would have reused.
+    if (!(await mkdir(this.dir(), { recursive: true }).then(() => true, () => false))) return;
     for (const key of [...this.dirty]) {
       this.dirty.delete(key);
       const bundle = await this.bundle(key);
