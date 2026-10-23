@@ -1,4 +1,4 @@
-# ADR NNNN: Compile less in the browser: a smaller runtime script, polyfills on first use
+# ADR 0028: Compile less in the browser: a smaller runtime script, polyfills on first use
 
 - Status: Accepted
 - Date: 2026-10-23
