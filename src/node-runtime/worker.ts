@@ -731,7 +731,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     } else {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
-      xhr.send(code);
+      // As a Blob: a string body is copied into the browser's request (and into the DevTools
+      // protocol's request events, which carry string bodies to the network allowlist's handler);
+      // a Blob's bytes stream to the host (next dev's 8 MB vendor chunk: ~0.85 s -> ~0.45 s).
+      xhr.send(new Blob([code]));
       if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
       out = xhr.responseText;
     }
