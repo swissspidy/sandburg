@@ -260,14 +260,38 @@ async function preloadUrl(key: string): Promise<string | null> {
   if (!entries.length) return null;
   const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0${PRELOAD_FILE_MAX}\0`).update(entries.join('\n')).digest('hex').slice(0, 16);
   issuedBundles.set(`${key}/${hash}`, entries);
+  // Built now, while the run's page and runtime start: a new bundle (the lists grew) took ~1.8 s to
+  // build for next dev, and the runtime asks for it synchronously with its first installed file.
+  void preloadBundle(key, hash);
   return `/__sandburg/preload/${key}/${hash}`;
+}
+
+/**
+ * The latest bundles, built or being built, of the installs used last (every runtime of a run asks
+ * for its install's; tens of MB each, so only a few are kept).
+ */
+const bundles = new Map<string, { hash: string; bundle: Promise<Buffer | null> }>();
+const BUNDLES_KEPT = 4;
+
+function preloadBundle(key: string, hash: string): Promise<Buffer | null> {
+  const known = bundles.get(key);
+  if (known?.hash === hash) return known.bundle;
+  const bundle = buildPreloadBundle(key, hash).catch(() => null);
+  bundles.delete(key);
+  bundles.set(key, { hash, bundle });
+  for (const old of bundles.keys()) if (bundles.size > BUNDLES_KEPT) bundles.delete(old);
+  // A failed build is tried again by the next request.
+  void bundle.then((b) => {
+    if (!b && bundles.get(key)?.bundle === bundle) bundles.delete(key);
+  });
+  return bundle;
 }
 
 /**
  * The bundle: a little-endian u32 header length, a JSON header [[mode, path, length], …], then the
  * files' bytes in that order (mode "t": compiled for the runtime, "f": raw).
  */
-async function preloadBundle(key: string, hash: string): Promise<Buffer | null> {
+async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | null> {
   const file = join(devCacheRoot(), `preload-${key}-${hash}.bin`);
   const cached = await readFile(file).catch(() => null);
   if (cached) return cached;
