@@ -12,11 +12,10 @@ test('compiles are stored on disk and found by a later process (by the same key)
     const dir = join(root, 'v1');
     storeCompiles(diskCompileStore(dir));
     const out = compileForRuntime(`export const stored = ${Date.now()};`, '/app/src/stored.mjs', 'esm');
-    // Written on the side.
-    for (let i = 0; i < 50 && !(await readdir(dir).catch(() => [])).length; i++) await new Promise((r) => setTimeout(r, 20));
-    const [sub] = await readdir(dir);
-    const [name] = await readdir(join(dir, sub));
-    const key = sub + name.replace(/\.js$/, '');
+    // Written on the side: wait for the file under its final name.
+    const files = await until(() => storedFiles(dir), (f) => f.length > 0);
+    assert.equal(files.length, 1);
+    const key = files[0].replace('/', '').replace(/\.js$/, '');
     assert.equal(diskCompileStore(dir).read(key), out);
     // What another process's store holds is found by its key (the digest route asks for it).
     const other = 'f'.repeat(64);
@@ -26,6 +25,21 @@ test('compiles are stored on disk and found by a later process (by the same key)
     assert.equal(compiled('e'.repeat(64)), undefined);
   } finally {
     storeCompiles({ read: () => undefined, write: () => {} });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a process that writes a quarter of the limit sweeps again', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sandburg-compiled-'));
+  try {
+    const dir = join(root, 'v1');
+    const store = diskCompileStore(dir, 400);
+    // 150 bytes each: a sweep after every second write (a quarter of 400), down to 300 bytes.
+    for (let i = 0; i < 6; i++) await store.write(`${i}`.padStart(64, 'a'), 'x'.repeat(150));
+    const left = await storedFiles(dir);
+    assert.ok(left.length * 150 <= 400, left.join(', '));
+    assert.ok(left.some((f) => f.endsWith('5.js')), 'the newest stays');
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -51,3 +65,22 @@ test('the sweep removes old versions and the oldest compiles beyond the limit', 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/** The finished compiles under `dir` ("ab/cdef….js"), not files still being written. */
+async function storedFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const sub of await readdir(dir).catch(() => [] as string[])) {
+    for (const name of await readdir(join(dir, sub)).catch(() => [] as string[])) if (name.endsWith('.js')) out.push(`${sub}/${name}`);
+  }
+  return out;
+}
+
+/** `get()` once `done` holds for its value, polling for up to 2 s. */
+async function until<T>(get: () => Promise<T>, done: (v: T) => boolean): Promise<T> {
+  let v = await get();
+  for (let i = 0; i < 100 && !done(v); i++) {
+    await new Promise((r) => setTimeout(r, 20));
+    v = await get();
+  }
+  return v;
+}

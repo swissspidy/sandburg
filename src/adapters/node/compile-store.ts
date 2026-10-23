@@ -6,7 +6,8 @@
  * cannot store code for another, as in memory.
  *
  * Unlike transforms (one per package version), compiles accumulate with every app and edit: beyond
- * COMPILED_MAX bytes, the oldest go when a process starts.
+ * COMPILED_MAX bytes, the oldest go when a process starts, and again after every quarter of it a
+ * process writes (a batch, or a long session, runs many apps in one process).
  */
 import { readFileSync } from 'node:fs';
 import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -18,7 +19,10 @@ export const COMPILED_MAX = 1 << 30;
 
 const fileOf = (dir: string, key: string) => join(dir, key.slice(0, 2), `${key.slice(2)}.js`);
 
-export function diskCompileStore(dir: string): CompileStore {
+/** The disk store. Its write resolves once the compile is written, and any sweep it started is done (for tests; the host does not wait). */
+export function diskCompileStore(dir: string, max = COMPILED_MAX): CompileStore & { write(key: string, out: string): Promise<void> } {
+  let written = 0;
+  let sweeping: Promise<void> | null = null;
   return {
     read(key) {
       try {
@@ -30,9 +34,16 @@ export function diskCompileStore(dir: string): CompileStore {
     write(key, out) {
       const file = fileOf(dir, key);
       const tmp = `${file}.${tmpSuffix()}.tmp`;
-      void mkdir(dirname(file), { recursive: true })
+      return mkdir(dirname(file), { recursive: true })
         .then(() => writeFile(tmp, out))
         .then(() => rename(tmp, file))
+        .then(() => {
+          written += Buffer.byteLength(out);
+          if (written < max / 4 || sweeping) return sweeping ?? undefined;
+          written = 0;
+          sweeping = sweepCompiles(dir, max).finally(() => (sweeping = null));
+          return sweeping;
+        })
         .catch(() => {});
     },
   };

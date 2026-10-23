@@ -51,7 +51,8 @@ browser waited for was:
 - **The prefetch transforms 8 files at a time.**
 - **Host compiles are kept on disk** (`.sandburg/compiled/v<TRANSFORM_VERSION>`,
   `src/adapters/node/compile-store.ts`), by the same key as in memory, the digest of what the host
-  compiled; the digest route finds them too. Beyond 1 GB the oldest go when a process starts.
+  compiled; the digest route finds them too. Beyond 1 GB the oldest go when a process starts, and
+  again after each 256 MB a process writes (a batch runs many apps in one process).
 
 ## Consequences
 
