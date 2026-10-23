@@ -412,12 +412,15 @@ function digestWritten(): void {
 /** The digest of a CommonJS file as written, if it has been computed and the file is unchanged. */
 function writtenDigest(path: string): string | null {
   const known = written.get(path);
-  if (!known || Atomics.load(new Int32Array(known.shared, 0, 1), 0) !== 1) return null;
+  if (!known || !digester || Atomics.load(digester.state, 1) !== 1) return null;
   try {
     if (vfs.read(path) !== known.data) return null;
   } catch {
     return null;
   }
+  // One the helper is still computing is waited for: asking for another would queue behind it.
+  const state = new Int32Array(known.shared, 0, 1);
+  if (Atomics.wait(state, 0, 0, 5000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
   written.delete(path);
   return hexOf(known.shared);
 }
