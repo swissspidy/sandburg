@@ -292,12 +292,67 @@ function requestSync(url: string, binary: boolean): { status: number; body: Uint
   return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
 }
 
+/**
+ * SHA-256 of code, computed on a helper thread while this one waits: WebCrypto's digest is
+ * asynchronous only, and natively ~5x faster than in JavaScript (next dev's 8 MB vendor chunk: ~50
+ * ms, ~240 ms in a JavaScript loop). The helper starts with the runtime; until it has (or if it ever
+ * fails to answer), there is no digest.
+ */
+const NativeWorker = globalThis.Worker;
+const nativeWorkerPost = NativeWorker?.prototype.postMessage;
+const DIGEST_HELPER = `onmessage = async ({ data }) => {
+  const state = new Int32Array(data.shared, 0, 2);
+  if (data.hello) return Atomics.store(state, 1, 1);
+  try {
+    new Uint8Array(data.shared, 8, 32).set(new Uint8Array(await crypto.subtle.digest('SHA-256', data.bytes)));
+    Atomics.store(state, 0, 1);
+  } catch {
+    Atomics.store(state, 0, 2);
+  }
+  Atomics.notify(state, 0);
+};`;
+/** The helper and its shared memory: the answer's state (0 waiting, 1 written, 2 failed), 1 once it runs, the digest. */
+let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } | null = null;
+
+function startDigester(): void {
+  try {
+    const worker = new NativeWorker(URL.createObjectURL(new Blob([DIGEST_HELPER], { type: 'text/javascript' })));
+    const shared = new SharedArrayBuffer(40);
+    digester = { worker, shared, state: new Int32Array(shared, 0, 2) };
+    nativeWorkerPost.call(worker, { hello: true, shared });
+  } catch {
+    digester = null;
+  }
+}
+
+/** The hex SHA-256 of text's UTF-8, or null when the helper is not there to compute it. */
+function digestOf(text: string): string | null {
+  const d = digester;
+  if (!d || Atomics.load(d.state, 1) !== 1) return null;
+  try {
+    // The bytes move to the helper (WebCrypto does not read shared memory).
+    const bytes = new TextEncoder().encode(text);
+    Atomics.store(d.state, 0, 0);
+    nativeWorkerPost.call(d.worker, { shared: d.shared, bytes: bytes.buffer }, { transfer: [bytes.buffer] });
+    // A helper that does not answer is not asked again (its late answer would land in reused memory).
+    if (Atomics.wait(d.state, 0, 0, 5000) === 'timed-out' || Atomics.load(d.state, 0) !== 1) throw new Error('no digest');
+  } catch {
+    digester = null;
+    return null;
+  }
+  let hex = '';
+  for (const b of new Uint8Array(d.shared, 8, 32)) hex += b.toString(16).padStart(2, '0');
+  return hex;
+}
+
 /** node_modules installed in the browser (see npm/install.ts): read from shared memory, not the host. */
 /**
  * The page's compiler (adapters/node/compile-worker.ts) when packages were installed in the browser:
  * a port to it, and this runtime's mailbox, where the answer is written while this thread waits.
  */
 let pageCompiler: { port: MessagePort; mailbox: SharedArrayBuffer } | null = null;
+/** Code this long is asked for by digest before it is sent to the host to compile. */
+const ASK_FIRST = 1 << 18;
 const MAILBOX_HEADER = 8;
 
 function compileInPage(request: { op: 'compile'; code: string; path: string; kind: string; asyncModules: boolean } | { op: 'tla'; files: Record<string, string> }): string {
@@ -670,6 +725,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     Object.values(msg.files).some((c) => typeof c === 'string' && c.includes('node:sqlite'));
   const sources = msg.inherit ? {} : Object.fromEntries(Object.entries(msg.files).filter(([p, c]) => typeof c === 'string' && !p.includes('node_modules/') && /\.[cm]?[jt]sx?$/.test(p) && /\bawait\b/.test(c)));
   pageCompiler = msg.compilePort ? { port: msg.compilePort, mailbox: new SharedArrayBuffer(1 << 20) } : null;
+  // Programs (not their small helper threads) compile large generated code: next dev's chunks.
+  if (installKey && !pageCompiler && (!thread || thread.process)) startDigester();
   if (Object.keys(sources).length && pageCompiler) {
     asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
   } else if (Object.keys(sources).length) {
@@ -731,14 +788,22 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if (pageCompiler) {
       out = compileInPage({ op: 'compile', code, path, kind, asyncModules: asyncModules && kind !== 'cjs' });
     } else {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${asyncModules && kind !== 'cjs' ? '&async=1' : ''}`, false);
-      // As a Blob: a string body is copied into the browser's request (and into the DevTools
-      // protocol's request events, which carry string bodies to the network allowlist's handler);
-      // a Blob's bytes stream to the host (next dev's 8 MB vendor chunk: ~0.85 s -> ~0.45 s).
-      xhr.send(new Blob([code]));
-      if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
-      out = xhr.responseText;
+      const async = asyncModules && kind !== 'cjs';
+      // Large code is asked for by the digest the host keys its compiles with (compileForRuntime):
+      // what the host compiled before, next dev's chunks in every later run of an app, comes back
+      // without being sent. Sending 8 MB costs ~0.35 s before the host sees the request; asking, ~10 ms.
+      const digest = code.length >= ASK_FIRST ? digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`) : null;
+      const known = digest ? requestSync(`${base}/compiled/${digest}`, false) : null;
+      if (known?.status === 200) {
+        out = known.body as string;
+      } else {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}`, false);
+        // As a Blob: a string body was slower to reach the host (the 8 MB chunk: ~0.85 s -> ~0.5 s).
+        xhr.send(new Blob([code]));
+        if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
+        out = xhr.responseText;
+      }
     }
     compiledCache.set(key, out);
     return out;
