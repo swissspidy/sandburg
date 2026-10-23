@@ -10,6 +10,7 @@ import type { AddressInfo } from 'node:net';
 import * as esbuild from 'esbuild';
 import type { AdapterDescriptor } from '../types.ts';
 import { source } from '../sources.ts';
+import { PAGE_CHECKS_PATH, runtimeBundle } from '../page-checks/index.ts';
 
 const HOST_ENTRY = source('host/host.ts');
 export const SANDBOX_DOMAIN = 'sandburg.localhost';
@@ -129,6 +130,10 @@ export class HostServer {
       res.end(HOST_HTML);
     } else if (path === '/__sandburg/host.js') {
       const js = await bundleHost(adapter);
+      res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8' });
+      res.end(js);
+    } else if (path === PAGE_CHECKS_PATH) {
+      const js = await runtimeBundle();
       res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8' });
       res.end(js);
     } else if (path === AXE_PATH) {

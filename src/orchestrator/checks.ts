@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url';
 import { expect } from '@playwright/test';
 import type { Frame, Page } from 'playwright-core';
 import type { CheckKind, CheckResult, CheckStatus, ConsoleEntry, NetworkEntry, PageError } from '../types.ts';
-import { isPageChecks, runPageChecks, type PageChecks } from '../page-checks/index.ts';
+import { AXE_PATH } from './host-server.ts';
+import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, type PageChecks } from '../page-checks/index.ts';
 
 export interface CheckContext {
   /** The app frame. Locators, getByRole etc. work as on a page. */
@@ -58,8 +59,8 @@ export interface ChecksInput {
   network: () => { failed: NetworkEntry[]; blocked: NetworkEntry[] };
   /** The document the app frame shows (its last navigation), if it was seen. */
   appDocument?: () => { url: string; status: number; csp?: boolean } | null;
-  /** Where the app's origin serves axe-core (AXE_PATH on a sandbox origin), if it does. */
-  axeUrl?: string;
+  /** The sandbox's origin, if the host server serves it: axe-core (AXE_PATH) and the page checks' runtime come from there. */
+  hostOrigin?: string;
 }
 
 export interface ChecksOutput {
@@ -76,8 +77,11 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
 
   // Artifacts first, so they show the app as it first rendered. They only read the page, and so does
   // loading axe-core, which goes on meanwhile (its scan runs after them).
-  const axeLoaded = loadAxe(app, input.appDocument?.()?.csp ? undefined : input.axeUrl);
+  const axeLoaded = loadAxe(app, input.hostOrigin && !input.appDocument?.()?.csp ? input.hostOrigin + AXE_PATH : undefined);
   axeLoaded.catch(() => {}); // the axe check reports it
+  // Checks that run in the page: their runtime loads meanwhile too.
+  const pageChecksLoaded = isPageChecks(input.checks) ? loadPageChecksRuntime(page, input.hostOrigin && input.hostOrigin + PAGE_CHECKS_PATH) : undefined;
+  pageChecksLoaded?.catch(() => {}); // the checks report it
   results.push(
     ...(await Promise.all([
       timed('screenshot', 'screenshot', 'Screenshot', false, async () => {
@@ -98,7 +102,7 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   if (isPageChecks(input.checks)) {
     const started = performance.now();
     try {
-      results.push(...(await runPageChecks(page, input.checks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 })));
+      results.push(...(await runPageChecks(page, input.checks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 }, pageChecksLoaded)));
     } catch (err) {
       results.push({
         id: 'functional:checks-file',
