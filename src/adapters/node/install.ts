@@ -19,7 +19,11 @@ import { renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
+import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, sweepStore, unpackAhead, type InstalledPackage } from './package-store.ts';
+
+/** --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds. */
+const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 13;
@@ -63,10 +67,13 @@ export class Installer {
 
   /** Unpacked packages, by integrity, that installs hard-link (package-store.ts). */
   private readonly store: string;
+  /** npm's resolution, in a worker that keeps packuments between installs (resolver.ts). */
+  private readonly resolver: Resolver;
 
   constructor(root: string) {
     this.root = root;
     this.store = join(root, '..', 'store');
+    this.resolver = new Resolver(root, ['--package-lock-only', ...INSTALL_FLAGS]);
     void this.sweep();
   }
 
@@ -139,11 +146,10 @@ export class Installer {
       if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
       // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
       // when the lockfile has what the store does not handle.
-      // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
-      const flags = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
+      const flags = INSTALL_FLAGS;
       const m = manifest as Manifest;
       const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
-      await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+      if (!(await this.resolver.resolve(tmp, log))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
       const packages = installedPackages(JSON.parse(await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => '{}')));
