@@ -24,7 +24,6 @@ import pathBrowserify from 'path-browserify';
 import * as legacyUrl from 'url';
 import querystring from 'querystring-es3';
 import * as stringDecoder from 'string_decoder';
-import cryptoBrowserify from 'crypto-browserify';
 import zlibBrowserify from 'browserify-zlib';
 import { nativeZlib } from './builtins/zlib-native.ts';
 import { parseArgs } from '@pkgjs/parseargs';
@@ -36,6 +35,7 @@ import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActi
 import * as misc from './builtins/misc.ts';
 import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
+import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
@@ -251,6 +251,13 @@ function hideWorkerGlobals(): void {
   }
 }
 const post = (msg: FromWorker, transfer: Transferable[] = []) => realPostMessage(msg, transfer);
+
+/** A polyfill left out of the runtime's script (RUNTIME_LIBS in bundle.ts), loaded the first time it is needed. */
+function runtimeLib<T>(name: RuntimeLib): T {
+  const libs = ((globalThis as Record<symbol, Record<string, unknown>>)[Symbol.for(LIBS_KEY)] ??= {});
+  if (!(name in libs)) realImportScripts(`${base}/node-${name}.js`);
+  return libs[name] as T;
+}
 
 installAsyncContext();
 
@@ -680,34 +687,39 @@ function buildBuiltins() {
     urlToHttpOptions: (u: URL) => ({ protocol: u.protocol, hostname: u.hostname, hash: u.hash, search: u.search, pathname: u.pathname, path: u.pathname + u.search, href: u.href, port: u.port ? Number(u.port) : undefined }),
   };
 
-  // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
-  const withBase64Url = <A extends unknown[]>(make: (...a: A) => { digest(enc?: string): Buffer | string }) => (...args: A) => {
-    const h = make(...args);
-    const digest = h.digest.bind(h);
-    h.digest = (enc?: string) => (enc === 'base64url' ? (digest() as Buffer).toString('base64url') : digest(enc));
-    return h;
+  // node:crypto: crypto-browserify (a runtime library: loaded when a program first requires it).
+  const makeCrypto = () => {
+    const cryptoBrowserify = runtimeLib<Record<string, unknown>>('crypto');
+    // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
+    const withBase64Url = <A extends unknown[]>(make: (...a: A) => { digest(enc?: string): Buffer | string }) => (...args: A) => {
+      const h = make(...args);
+      const digest = h.digest.bind(h);
+      h.digest = (enc?: string) => (enc === 'base64url' ? (digest() as Buffer).toString('base64url') : digest(enc));
+      return h;
+    };
+    const createHash = withBase64Url(cryptoBrowserify.createHash as never);
+    const createHmac = withBase64Url(cryptoBrowserify.createHmac as never);
+    const crypto = Object.assign(Object.create(null), cryptoBrowserify, {
+      createHash,
+      createHmac,
+      Hash: createHash,
+      Hmac: createHmac,
+      webcrypto: globalThis.crypto,
+      subtle: globalThis.crypto.subtle,
+      getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
+      randomUUID: () => globalThis.crypto.randomUUID(),
+      randomInt: (min: number, max?: number) => {
+        if (max === undefined) [min, max] = [0, min];
+        return min + Math.floor(Math.random() * (max - min));
+      },
+      timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
+      getHashes: () => ['md5', 'sha1', 'sha256', 'sha384', 'sha512'],
+      getCiphers: () => [],
+      constants: {},
+      hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
+    });
+    return crypto;
   };
-  const createHash = withBase64Url(cryptoBrowserify.createHash as never);
-  const createHmac = withBase64Url(cryptoBrowserify.createHmac as never);
-  const crypto = Object.assign(Object.create(null), cryptoBrowserify, {
-    createHash,
-    createHmac,
-    Hash: createHash,
-    Hmac: createHmac,
-    webcrypto: globalThis.crypto,
-    subtle: globalThis.crypto.subtle,
-    getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
-    randomUUID: () => globalThis.crypto.randomUUID(),
-    randomInt: (min: number, max?: number) => {
-      if (max === undefined) [min, max] = [0, min];
-      return min + Math.floor(Math.random() * (max - min));
-    },
-    timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
-    getHashes: () => ['md5', 'sha1', 'sha256', 'sha384', 'sha512'],
-    getCiphers: () => [],
-    constants: {},
-    hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
-  });
 
   const zlibUnsupported = (name: string) => () => {
     throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
@@ -767,7 +779,7 @@ function buildBuiltins() {
     url: () => url,
     querystring: () => querystring,
     punycode: () => ({ toASCII: (s: string) => url.domainToASCII(s), toUnicode: (s: string) => s, encode: (s: string) => s, decode: (s: string) => s }),
-    crypto: () => crypto,
+    crypto: makeCrypto,
     zlib: () => zlib,
     os: () => misc.os,
     tty: () => misc.tty,
@@ -809,7 +821,7 @@ function buildBuiltins() {
       // A WebAssembly build is about to start its threads (see threads.ts). Not in one of its threads:
       // they load it too, and start none.
       if (!thread || thread.process) wakeSpares();
-      return createWasi(fs, write);
+      return createWasi(fs, write, runtimeLib<{ WASI: unknown }>('wasi').WASI);
     },
     test: () => misc.stub('test'),
     sqlite: () => createNodeSqlite(sqliteFiles()),
