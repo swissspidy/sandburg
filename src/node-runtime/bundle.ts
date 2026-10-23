@@ -5,6 +5,28 @@ import { dirname, join } from 'node:path';
 import { source } from '../sources.ts';
 
 const here = (p: string) => source(`node-runtime/${p}`);
+
+/** The name of a runtime worker started as a spare for a later thread, and the message that wakes one (threads.ts). */
+export const SPARE_NAME = 'sandburg-spare';
+export const SPARE_WAKE = 'sandburg-spare-wake';
+
+/**
+ * A spare evaluates the runtime only when it is woken or a thread takes it. Evaluating the bundle
+ * costs a runtime 150-250 ms of CPU, and most programs that could start a thread (Vite loads
+ * esbuild, which loads worker_threads; rollup comes with a napi-rs WebAssembly build) start none. A
+ * spare compiles the script and waits; its first message loads the script again to run it, and is
+ * handed on unless it was the wake-up. The runtime stays an immediately invoked function, which V8
+ * compiles at once: wrapping it in a function to call later had every runtime parse it twice.
+ */
+const SPARE_BANNER = `"use strict";
+if (self.name === ${JSON.stringify(SPARE_NAME)} && !self.__sandburgSpareTaken) {
+  self.addEventListener('message', function first(e) {
+    self.removeEventListener('message', first);
+    self.__sandburgSpareTaken = true;
+    importScripts(location.href);
+    if (!e.data || e.data.type !== ${JSON.stringify(SPARE_WAKE)}) self.dispatchEvent(new MessageEvent('message', { data: e.data, ports: e.ports }));
+  });
+} else {`;
 const require = createRequire(import.meta.url);
 
 let cached: Promise<string> | null = null;
@@ -20,6 +42,8 @@ export function bundleNodeRuntime(): Promise<string> {
       target: 'es2022',
       logLevel: 'silent',
       inject: [here('globals-shim.ts')],
+      banner: { js: SPARE_BANNER },
+      footer: { js: '}' },
       define: { global: 'globalThis' },
       plugins: [
         {
