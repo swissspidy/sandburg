@@ -69,9 +69,13 @@ const ANGULAR_ENV = { NG_BUILD_PARALLEL_TS: '0' };
  * - `react-router dev` relaunches itself as a child process with --conditions=development unless it
  *   has them (~2 s). It starts with them instead, as the child it would relaunch (without that
  *   child's REACT_ROUTER_DEV_RESTARTED).
+ * - `nuxt dev` serves from its own process, and once it is ready starts two more (its fork pool) to
+ *   restart in after a change to nuxt.config, while the app's page loads. With --no-fork it
+ *   restarts in its own process.
  */
 function devCommandOptions(framework: string | undefined, command: string, argv: string[]): { execArgv: string[]; argv: string[] } {
   if (framework === 'react-router' && /^react-router\s+dev(\s|$)/.test(command)) return { execArgv: ['--conditions=development'], argv };
+  if (framework === 'nuxt' && /^(nuxt|nuxi)\s+dev(\s|$)/.test(command) && !argv.some((a) => /^--(no-)?fork(=|$)/.test(a))) return { execArgv: [], argv: [...argv, '--no-fork'] };
   return { execArgv: [], argv };
 }
 
