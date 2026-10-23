@@ -53,6 +53,8 @@ export type ToWorker =
       nodeModules: Record<string, number> | null;
       /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
       pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
+      /** The preload bundle's files, as the parent runtime read them: shared memory and its index (see sharedPreload). */
+      shared?: SharedPreload | null;
       /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
       compilePort?: MessagePort | null;
       base: string;
@@ -272,11 +274,41 @@ let installedRequests = 0;
 const PRELOAD_AFTER = 0;
 const PRELOAD_AFTER_THREAD = 40;
 
+/**
+ * The preload bundle as its runtime read it, in shared memory for the runtime's threads and child
+ * processes: they read its files there instead of asking the host for each (each of rolldown's
+ * WebAssembly threads asked for the same ~30 files, ~250 ms per thread). Copied from the bundle when
+ * the first one starts, once per runtime; a runtime passes on what it was given.
+ */
+type SharedPreload = { sab: SharedArrayBuffer; index: Record<string, [number, number]> };
+let preloadBytes: { bytes: Uint8Array; index: Record<string, [number, number]> } | null = null;
+let shared: SharedPreload | null = null;
+let sharedBytes: Uint8Array | null = null;
+
+function sharedPreload(): SharedPreload | null {
+  if (shared || !preloadBytes) return shared;
+  try {
+    const sab = new SharedArrayBuffer(preloadBytes.bytes.length);
+    new Uint8Array(sab).set(preloadBytes.bytes);
+    shared = { sab, index: preloadBytes.index };
+    sharedBytes = new Uint8Array(sab);
+    // This runtime reads them there too (sharedFile is asked first), and lets go of its own copy.
+    preloaded?.clear();
+  } catch {
+    // no shared memory: threads ask the host
+  }
+  preloadBytes = null;
+  return shared;
+}
+
 /** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
 function readBundle(url: string): [string, Uint8Array, string][] {
   const res = requestSync(url, true);
   if (res.status !== 200) return [];
-  const bytes = res.body as Uint8Array;
+  return bundleFiles(res.body as Uint8Array);
+}
+
+function bundleFiles(bytes: Uint8Array): [string, Uint8Array, string][] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const length = view.getUint32(0, true);
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as [string, string, number][];
@@ -327,16 +359,33 @@ function downloadedOnSide(key: string): Uint8Array | null {
 function loadPreload(): void {
   preloaded = new Map();
   try {
-    for (const [rel, bytes, mode] of readBundle(preloadUrl!)) preloaded.set(`${mode}/${rel}`, bytes);
+    const res = requestSync(preloadUrl!, true);
+    if (res.status !== 200) return;
+    const bytes = res.body as Uint8Array;
+    const index: Record<string, [number, number]> = {};
+    for (const [rel, file, mode] of bundleFiles(bytes)) {
+      preloaded.set(`${mode}/${rel}`, file);
+      index[`${mode}/${rel}`] = [file.byteOffset - bytes.byteOffset, file.length];
+    }
+    // Kept for threads and child processes only if this runtime has none to pass on.
+    if (!shared) preloadBytes = { bytes, index };
   } catch {
     // no bundle: files come one by one
   }
 }
 
+/** A file of the shared preload bundle (a copy: decoders do not read shared memory), or null. */
+function sharedFile(key: string): Uint8Array | null {
+  const at = shared?.index[key];
+  return at ? sharedBytes!.slice(at[0], at[0] + at[1]) : null;
+}
+
 function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
-    if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
     const key = url.slice(base.length + installKey.length + 5);
+    const own = sharedFile(key);
+    if (own) return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
+    if (!preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) loadPreload();
     const hit = preloaded?.get(key);
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
     const side = downloadedOnSide(key);
@@ -832,6 +881,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   tsRunner = !!msg.tsRunner || msg.env?.SANDBURG_TS_RUNNER === '1';
   // A worker thread shares its parent's file system (installed packages it reads itself).
   pack = msg.pack ? { bytes: new Uint8Array(msg.pack.sab), index: msg.pack.index, message: msg.pack } : null;
+  shared = msg.shared ?? null;
+  sharedBytes = shared ? new Uint8Array(shared.sab) : null;
   if (thread) {
     const installed = new Vfs((path) => {
       const data = installedFile(path.slice(projectRoot.length + 1));
@@ -889,7 +940,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
