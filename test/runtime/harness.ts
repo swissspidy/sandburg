@@ -7,7 +7,8 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { readFile } from 'node:fs/promises';
-import { bundleNodeRuntime, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
+import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
+import { RUNTIME_LIBS, type RuntimeLib } from '../../src/node-runtime/libs.ts';
 import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
 import type { HostRequest } from '../../src/types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from '../../src/adapters/node/compile.ts';
@@ -118,6 +119,11 @@ export class RuntimeHarness {
       if (url.pathname === '/__sandburg/node-worker.js') {
         res.writeHead(200, { 'content-type': 'text/javascript', 'cross-origin-embedder-policy': 'require-corp' });
         return res.end(js);
+      }
+      const lib = /^\/__sandburg\/node-([a-z]+)\.js$/.exec(url.pathname)?.[1];
+      if (lib && Object.hasOwn(RUNTIME_LIBS, lib)) {
+        res.writeHead(200, { 'content-type': 'text/javascript' });
+        return res.end(await bundleRuntimeLib(lib as RuntimeLib));
       }
       if (url.pathname === '/__sandburg/sqlite3.js') {
         res.writeHead(200, { 'content-type': 'text/javascript' });

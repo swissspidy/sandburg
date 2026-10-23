@@ -6,7 +6,6 @@
  * compiler, oxc, …) load through this in the main thread and in their worker
  * threads.
  */
-import { WASI as NapiWASI } from '@napi-rs/wasm-runtime';
 
 export interface WasiOptions {
   version?: 'preview1' | 'unstable';
@@ -19,7 +18,8 @@ export interface WasiOptions {
   stderr?: number;
 }
 
-export function createWasi(fs: unknown, write: (stream: 'stdout' | 'stderr', text: string) => void) {
+/** NapiWASI: @napi-rs/wasm-runtime's WASI, a runtime library (RUNTIME_LIBS in libs.ts) the runtime loads for node:wasi. */
+export function createWasi(fs: unknown, write: (stream: 'stdout' | 'stderr', text: string) => void, NapiWASI: unknown) {
   class WASI {
     private impl: {
       wasiImport: Record<string, unknown>;
