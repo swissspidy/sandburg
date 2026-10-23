@@ -497,7 +497,8 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
     const key = url.slice(base.length + installKey.length + 5);
     let own = sharedFile(key);
-    if (!own && !preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER) && !stillDownloading(preloadUrl)) {
+    // A miss in the shared bundle is a miss in the bundle: it is this install's, as loadPreload's would be.
+    if (!own && !preloaded && !shared && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER) && !stillDownloading(preloadUrl)) {
       loadPreload();
       // A bundle in shared memory (the page downloaded it) is read there.
       own = sharedFile(key);

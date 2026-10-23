@@ -19,6 +19,8 @@ import type { HostRequest, HostResponse } from '../types.ts';
 export const FILE_CHANNEL_PATH = '/__sandburg/files';
 /** Larger bodies are answered with status 0 (over a WebSocket, 40 MB took 4x as long as over HTTP). */
 export const MAX_BODY = 1 << 20;
+/** Larger frames from the client close the channel: a request is `<id> <path>`, and nothing is buffered beyond this. */
+export const MAX_FRAME = 1 << 16;
 /** The paths a runtime asks for over the channel: installed files. */
 const SERVED = /^\/__sandburg\/nm\//;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -84,6 +86,10 @@ function readFrames(socket: Duplex, onFrame: (opcode: number, payload: Buffer) =
         if (buf.length < 10) return;
         length = Number(buf.readBigUInt64BE(2));
         at = 10;
+      }
+      if (length > MAX_FRAME) {
+        buf = Buffer.alloc(0);
+        return void socket.destroy();
       }
       const masked = (buf[1] & 0x80) !== 0;
       const end = at + (masked ? 4 : 0) + length;

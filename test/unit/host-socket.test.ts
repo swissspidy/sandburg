@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { acceptFileChannel, MAX_BODY } from '../../src/orchestrator/host-socket.ts';
+import { acceptFileChannel, MAX_BODY, MAX_FRAME } from '../../src/orchestrator/host-socket.ts';
 import type { HostRequest } from '../../src/types.ts';
 
 const ORIGIN = 'http://box.sandburg.localhost:1';
@@ -71,4 +71,14 @@ test('the file channel refuses pages of other origins', async () => {
   const { server, url } = await channelServer();
   await assert.rejects(open(url, 'http://other.sandburg.localhost:1'));
   server.close();
+});
+
+test('the file channel closes on a frame larger than a request can be', async () => {
+  const { server, asked, url } = await channelServer();
+  const ws = await open(url, ORIGIN);
+  const closed = new Promise<void>((r) => ws.addEventListener('close', () => r()));
+  ws.send(`1 /__sandburg/nm/k/t/${'a'.repeat(MAX_FRAME)}`);
+  await closed;
+  server.close();
+  assert.deepEqual(asked, []);
 });
