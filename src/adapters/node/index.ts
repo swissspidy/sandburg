@@ -398,25 +398,25 @@ async function viteSeedCache(project: Project, installKey: string, options: Host
   return { key: seed.key, ready: false };
 }
 
-/** The key of the Next.js seed cache for an install's versions, and whether it exists (seeding it first if needed). */
-async function nextSeedCache(resolved: Record<string, string>, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; dirs: string[]; ready: boolean } | null> {
+/**
+ * The key of the Next.js seed cache for an install's versions, and whether it exists. Without one,
+ * the seed run starts beside the app, which does not wait for it: a seed run takes ~40 s, and the app
+ * compiles Next.js on its own in a few seconds more than with a seed. Later apps use the seed.
+ */
+async function nextSeedCache(resolved: Record<string, string>, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean; dirs: string[] } | null> {
   const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
   if (!versions.next || !versions.react || !versions['react-dom']) return null;
   const key = nextSeedKey(versions);
   const dirs = nextSeedDirs(versions.next);
   const stored = () => stat(join(devCacheRoot(), `${key}.json`)).then(() => true, () => false);
-  if (options?.seed) return { key, dirs, ready: false };
-  if (!(await stored()) && options?.runSeed) {
-    let pending = seeding.get(key);
-    if (!pending) {
-      log(`seeding the webpack cache for next@${versions.next} (once per set of versions)`);
-      const seed = nextSeedProject(versions);
-      pending = options.runSeed(seed.project, seed.checks).catch((e: Error) => log(`seeding failed: ${e.message}`));
-      seeding.set(key, pending);
-    }
-    await pending;
+  if (options?.seed) return { key, ready: false, dirs };
+  if (await stored()) return { key, ready: true, dirs };
+  if (options?.runSeed && !seeding.has(key)) {
+    log(`seeding the webpack cache for next@${versions.next} beside this app (once per set of versions)`);
+    const seed = nextSeedProject(versions);
+    seeding.set(key, options.runSeed(seed.project, seed.checks).catch((e: Error) => log(`seeding failed: ${e.message}`)));
   }
-  return { key, dirs, ready: await stored() };
+  return { key, ready: false, dirs };
 }
 
 /** The JS file behind a package binary (node_modules/.bin/<name>), from the installed packages' "bin" fields. */
