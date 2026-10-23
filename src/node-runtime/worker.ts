@@ -318,6 +318,21 @@ function readBundle(url: string): [string, Uint8Array, string][] {
 /** Bundles the page is downloading for this runtime (see init.prefetched), by URL. */
 let prefetched: Record<string, SharedArrayBuffer> = {};
 
+/**
+ * Whether the page is still downloading a bundle and files can be asked for over the file channel
+ * meanwhile: the host predicts a never-run install's first bundle, which can take seconds (ADR
+ * 0026), and the runtime would wait for all of it; it loads what it needs one file at a time
+ * instead (the host's prediction transforms those first), and reads the bundle once it is there.
+ */
+function stillDownloading(url: string): boolean {
+  const sab = prefetched[url];
+  if (!sab || Atomics.load(new Int32Array(sab, 0, 1), 0) !== 0 || !channel) return false;
+  // The channel opens as the runtime starts: worth a short wait.
+  const ready = new Int32Array(channel.ready);
+  Atomics.wait(ready, 0, 0, 100);
+  return Atomics.load(ready, 0) === 1;
+}
+
 /** A bundle the page downloaded, in its shared memory (not copied), once it has; null if it failed or was not asked for. */
 function prefetchedBody(url: string): Uint8Array | null {
   const sab = prefetched[url];
@@ -412,7 +427,7 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
   if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
     const key = url.slice(base.length + installKey.length + 5);
     let own = sharedFile(key);
-    if (!own && !preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER)) {
+    if (!own && !preloaded && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER) && !stillDownloading(preloadUrl)) {
       loadPreload();
       // A bundle in shared memory (the page downloaded it) is read there.
       own = sharedFile(key);
@@ -458,7 +473,7 @@ const settle = (shared, status, body) => {
 function open(url, ready) {
   socket = new WebSocket(url);
   socket.binaryType = 'arraybuffer';
-  socket.onopen = () => Atomics.store(ready, 0, 1);
+  socket.onopen = () => (Atomics.store(ready, 0, 1), Atomics.notify(ready, 0));
   socket.onmessage = ({ data }) => {
     const head = new DataView(data, 0, 8);
     const shared = asked.get(head.getUint32(0, true));
@@ -468,6 +483,7 @@ function open(url, ready) {
   };
   socket.onclose = () => {
     Atomics.store(ready, 0, 2);
+    Atomics.notify(ready, 0);
     for (const shared of asked.values()) settle(shared, 0, null);
     asked.clear();
   };
