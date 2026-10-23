@@ -435,7 +435,8 @@ export class Session {
             // A dev server that answers 503 while it builds (Nuxt's "Dev server is loading...") shows a loading page.
             const loading = () => run.documents.filter((d) => d.frame === frame).at(-1)?.status === 503;
             const loadingPage = async () => loading() || (await frame.evaluate(() => document.documentElement.outerHTML.includes('__NUXT_LOADING__')).catch(() => false));
-            await failFastOnAppError(waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading), run, loadingPage);
+            const rendered = () => host('rendered', options.readySelector ?? null) as Promise<boolean>;
+            await failFastOnAppError(waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered), run, loadingPage);
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been
@@ -845,9 +846,11 @@ async function appFrame(page: Page): Promise<Frame> {
  * the browser's own error page ("refused to connect"), when a dev server takes its port before it
  * can answer (Nuxt 4.6 does), and a dev server's loading page: Nuxt's, marked __NUXT_LOADING__,
  * which reloads itself once the app is built, or any 503 answer (`loading`). The app is loaded
- * again until it renders or the phase's deadline passes.
+ * again until it renders or the phase's deadline passes. `rendered` asks the host page first (one call,
+ * where Playwright's waitForFunction first sets itself up in the new frame), if there is one.
  */
-async function waitForRender(frame: Frame, selector?: string, reload?: () => Promise<unknown>, loading?: () => boolean): Promise<void> {
+async function waitForRender(frame: Frame, selector?: string, reload?: () => Promise<unknown>, loading?: () => boolean, rendered?: () => Promise<boolean>): Promise<void> {
+  if (rendered && (await rendered().catch(() => false)) && !loading?.()) return;
   for (let tries = 1; ; tries++) {
     // The run ended (the phase timed out and the tab closed): stop trying.
     if (frame.isDetached() || frame.page().isClosed()) throw new Error('the app frame is gone');

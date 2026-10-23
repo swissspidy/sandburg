@@ -76,6 +76,20 @@ const api: HostApi = {
         }),
       );
     }),
+  rendered: (selector: string | null) =>
+    call(async () => {
+      let doc: Document | null = null;
+      try {
+        doc = appFrame().contentDocument; // null for the browser's error page (another origin)
+      } catch {
+        return false;
+      }
+      if (!doc || doc.location.protocol === 'chrome-error:' || doc.documentElement.outerHTML.includes('__NUXT_LOADING__')) return false;
+      if (selector) return !!doc.querySelector(selector);
+      const root = doc.querySelector('#root, #app, #__next');
+      if (root) return root.childElementCount > 0 || (root.textContent ?? '').trim().length > 0;
+      return (doc.body?.innerText ?? '').trim().length > 0;
+    }),
   activity: () => call(async () => adapter?.activity?.() ?? null),
   dispose: () =>
     call(async () => {
