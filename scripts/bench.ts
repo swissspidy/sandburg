@@ -6,13 +6,15 @@
  *   node scripts/bench.ts [--base origin/main] [--head .] [--fixtures vite-react-counter,lit-vite,next-app-router]
  *                         [--modes cold,warm] [--rounds 3] [--json out.jsonl] [--summary out.md] [--fail-above 0.3]
  *
- * - A revision is a git ref, checked out in a worktree under .sandburg/bench (its node_modules is
- *   this checkout's when the lockfiles match, else npm ci), or `.` for this checkout as it is.
+ * - A revision is a git ref, checked out in a worktree under the temporary directory (its
+ *   node_modules is this checkout's when the lockfiles match, else npm ci), or `.` for this
+ *   checkout as it is (cold runs remove its .sandburg/).
  * - cold: a fresh session in a revision whose .sandburg/ was removed (npm's own cache stays warm);
  *   the time to the result, then Session.close (a seed run may finish then) separately.
  * - warm: a fresh session runs the fixture twice; the second run is measured.
  * - --fail-above 0.3 exits 1 when head's median total is more than 30% above base's for any
- *   fixture and mode (for CI, where runners are noisy: only large regressions are worth a red job).
+ *   fixture and mode, or when either has no result (for CI, where runners are noisy: only large
+ *   regressions are worth a red job).
  *
  * Set SANDBURG_CHROMIUM to use a Chromium other than Playwright's.
  */
@@ -72,9 +74,10 @@ function git(...a: string[]): string {
 function checkout(ref: string): { dir: string; label: string } {
   if (ref === '.') return { dir: root, label: `. (${git('rev-parse', '--short', 'HEAD')}${git('status', '--porcelain') ? '+dirty' : ''})` };
   const sha = git('rev-parse', '--verify', `${ref}^{commit}`);
-  const dir = join(root, '.sandburg', 'bench', sha.slice(0, 12));
+  // Not under this checkout's .sandburg/, which a cold run of `.` removes.
+  const dir = join(tmpdir(), 'sandburg-bench', sha.slice(0, 12));
   if (!existsSync(join(dir, 'package.json'))) {
-    mkdirSync(join(root, '.sandburg', 'bench'), { recursive: true });
+    mkdirSync(join(tmpdir(), 'sandburg-bench'), { recursive: true });
     git('worktree', 'add', '--detach', '--force', dir, sha);
   }
   if (!existsSync(join(dir, 'node_modules'))) {
@@ -155,13 +158,14 @@ for (const fixture of fixtures) {
     const phases = [...new Set([...b, ...h].flatMap((s) => Object.keys(s.phases)))];
     for (const p of phases) metric(p, (s) => s.phases[p]);
     const limit = args['fail-above'] ? Number(args['fail-above']) : Infinity;
-    if (ht > bt * (1 + limit)) regressions.push(`${fixture} ${mode}: ${sec(bt)} -> ${sec(ht)}`);
+    if (Number.isNaN(bt) || Number.isNaN(ht)) regressions.push(`${fixture} ${mode}: no result for ${Number.isNaN(bt) ? 'base' : 'head'}`);
+    else if (ht > bt * (1 + limit)) regressions.push(`${fixture} ${mode}: ${sec(bt)} -> ${sec(ht)}`);
   }
 }
 const table = lines.join('\n');
 console.log(table);
 if (args.summary) appendFileSync(args.summary, table + '\n');
 if (regressions.length) {
-  console.error(`\nRegressions above ${Number(args['fail-above']) * 100}%:\n${regressions.join('\n')}`);
+  console.error(`\nFailed${args['fail-above'] ? ` (regressions above ${Number(args['fail-above']) * 100}%, or no result)` : ' (no result)'}:\n${regressions.join('\n')}`);
   process.exit(1);
 }
