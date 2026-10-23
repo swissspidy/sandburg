@@ -7,6 +7,7 @@
  * a miss; everything else is aborted and recorded.
  */
 import { createHash } from 'node:crypto';
+import { STATUS_CODES } from 'node:http';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { request as playwrightRequest, type APIRequestContext, type BrowserContext, type CDPSession, type Frame, type Page } from 'playwright-core';
@@ -220,17 +221,18 @@ export class EgressGateway {
           { name: 'Access-Control-Allow-Credentials', value: 'true' },
         ];
         if (headers['access-control-request-headers']) responseHeaders.push({ name: 'Access-Control-Allow-Headers', value: headers['access-control-request-headers'] });
-        return void (await session.send('Fetch.fulfillRequest', { requestId, responseCode: 204, responseHeaders, body: '' }));
+        return void (await session.send('Fetch.fulfillRequest', { requestId, responseCode: 204, responsePhrase: STATUS_CODES[204], responseHeaders, body: '' }));
       }
       const answer = await this.answer(request.method, request.url, headers, allowed, stats);
       if ('abort' in answer) return void (await session.send('Fetch.failRequest', { requestId, errorReason: ERROR_REASONS[answer.abort] }));
       const { status, headers: responseHeaders, body } = answer.response;
-      await session.send('Fetch.fulfillRequest', {
-        requestId,
-        responseCode: status,
-        responseHeaders: Object.entries(responseHeaders).map(([name, value]) => ({ name, value })),
-        body: body.toString('base64'),
-      });
+      const fulfilled = Object.entries(responseHeaders).map(([name, value]) => ({ name, value }));
+      // As Playwright's fulfill: a cross-origin request's answer allows its origin unless it says
+      // otherwise (the registry answers a missing package's 404 without CORS headers).
+      if (headers.origin && headers.origin.trim() !== new URL(request.url).origin && !('access-control-allow-origin' in responseHeaders)) {
+        fulfilled.push({ name: 'access-control-allow-origin', value: headers.origin }, { name: 'access-control-allow-credentials', value: 'true' }, { name: 'vary', value: 'Origin' });
+      }
+      await session.send('Fetch.fulfillRequest', { requestId, responseCode: status, responsePhrase: STATUS_CODES[status] ?? '', responseHeaders: fulfilled, body: body.toString('base64') });
     } catch {
       // the request is gone (its page closed or it was cancelled)
     }

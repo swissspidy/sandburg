@@ -11,7 +11,8 @@ import { Session, launchOptions } from '../../src/orchestrator/session.ts';
 import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
 import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
 import { EgressProxy } from '../../src/orchestrator/egress-proxy.ts';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getAdapter } from '../../src/adapters.ts';
@@ -194,11 +195,22 @@ test('the gateway sees HTTPS from pages and workers; another sandbox refuses req
     const two = host.register('two', getAdapter('node'));
     // As a run's context (session.ts): only the host server's port bypasses the proxy.
     const context = await browser.newContext({ proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}:${host.port}` } });
-    // Offline with an empty cache: every request the gateway sees is recorded as a miss.
-    await new EgressGateway({ cacheDir, offline: true }).attach(context, one, allow, stats);
+    // Offline: every request the gateway sees and has no answer for is recorded as a miss. One
+    // answer is cached: the registry's kind, a 404 without CORS headers.
     const page = await context.newPage();
+    const userAgent = await page.evaluate(() => navigator.userAgent);
+    const cached = 'https://allowed.sandburg.test/missing-package';
+    const key = createHash('sha256').update(`GET ${cached}\n${userAgent}`).digest('hex');
+    await mkdir(join(cacheDir, key.slice(0, 2)), { recursive: true });
+    await writeFile(join(cacheDir, key.slice(0, 2), `${key}.body`), 'not found');
+    await writeFile(join(cacheDir, key.slice(0, 2), `${key}.json`), JSON.stringify({ url: cached, status: 404, headers: { 'content-type': 'text/plain' } }));
+    await new EgressGateway({ cacheDir, offline: true }).attach(context, one, allow, stats);
     // A page of the sandbox's origin without its service worker (whose requests no routing sees).
     await page.goto(`${one}/__sandburg/none`);
+    // Its origin is allowed to read the answer, as with Playwright's routing.
+    const missing = await page.evaluate((url) => fetch(url).then(async (r) => `${r.status} ${await r.text()}`), cached);
+    assert.equal(missing, '404 not found');
+    assert.equal(stats.cacheHits, 1);
     const loads = await page.evaluate(async (two) => {
       const nested = `fetch('https://allowed.sandburg.test/nested').catch(() => {}).finally(() => postMessage('done'));`;
       const outer = `fetch('https://allowed.sandburg.test/worker').catch(() => {});
