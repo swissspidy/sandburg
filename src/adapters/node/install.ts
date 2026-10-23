@@ -146,7 +146,8 @@ export class Installer {
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
       const packages = installedPackages(JSON.parse(await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => '{}')));
-      const additions = Promise.all([wasiBindingsFor(tmp, packages, log), wasmBuildsFor(tmp, packages, log)]);
+      const sides = join(this.root, '..', 'side-installs');
+      const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
       if (!(await installFromLockfile(tmp, this.store, log))) await run('npm', ['install', ...flags], tmp, log);
       await ahead;
@@ -402,7 +403,7 @@ async function packageType(installDir: string, rel: string): Promise<'module' | 
  * through node:wasi, so they are installed here, with their own dependencies (@napi-rs/wasm-runtime,
  * @emnapi/*), next to the native-only packages npm chose.
  */
-async function wasiBindingsFor(dir: string, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
+async function wasiBindingsFor(dir: string, sides: string, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
   const nm = join(dir, 'node_modules');
   const wanted: Record<string, string> = {};
   const candidates: Record<string, string> = {};
@@ -415,19 +416,26 @@ async function wasiBindingsFor(dir: string, packages: InstalledPackage[], log: (
     Object.assign(wanted, found.listed);
     Object.assign(candidates, found.candidates);
   }
+  // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
+  const install = (bindings: [string, string][]) =>
+    sideInstall(sides, { name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings) }, ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+  // The listed bindings are installed while npm view looks for the others. Most of those do not
+  // exist; when one does, all are installed together, as one tree.
+  const listed = Object.entries(wanted).filter(([name]) => !top.has(name));
+  const early = listed.length ? install(listed) : null;
+  early?.catch(() => {});
   const checks = await Promise.all(
     Object.entries(candidates)
       .filter(([name]) => !(name in wanted))
       .map(async ([name, range]) => ((await npmViewVersion(`${name}@${range}`)) ? ([name, range] as const) : null)),
   );
-  for (const hit of checks) if (hit) wanted[hit[0]] = hit[1];
+  const hits = checks.filter((hit) => hit !== null);
+  for (const hit of hits) wanted[hit[0]] = hit[1];
   const missing = Object.entries(wanted).filter(([name]) => !top.has(name));
   if (!missing.length) return async () => {};
-  const side = join(dir, '.sandburg-wasi');
-  await mkdir(side, { recursive: true });
-  await writeFile(join(side, 'package.json'), JSON.stringify({ name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(missing) }));
-  // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
-  await run('npm', ['install', '--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], side, log);
+  let side: string;
+  if (early && !hits.length) side = await early;
+  else side = await install(missing);
   return async () => {
     // Each binding goes to the top level with its dependencies (napi-rs's wasm runtime, emnapi) nested
     // inside it, so versions the project already has elsewhere cannot shadow the ones it was built with.
@@ -448,10 +456,44 @@ async function wasiBindingsFor(dir: string, packages: InstalledPackage[], log: (
         if (!existsSyncSafe(join(to, 'package.json'))) await cp(join(sideNm, dep), to, { recursive: true });
       }
     }
-    await rm(side, { recursive: true, force: true });
     log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
   };
 }
+
+/**
+ * A side install (a WebAssembly build or binding with its dependencies, which installs copy into
+ * place): npm installs each package.json once, as with installs themselves (the versions npm picks
+ * first stay), so every Vite app does not pay ~1 s of npm for the same lightningcss-wasm.
+ */
+function sideInstall(root: string, manifest: object, flags: string[], log: (line: string) => void): Promise<string> {
+  const key = createHash('sha256').update(`layout:${LAYOUT_VERSION}\0`).update(JSON.stringify([manifest, flags])).digest('hex').slice(0, 24);
+  let pending = sideInstalls.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const dir = join(root, key);
+      if (await access(join(dir, '.sandburg-complete')).then(() => true, () => false)) return dir;
+      const tmp = `${dir}.tmp-${tmpSuffix()}`;
+      await mkdir(tmp, { recursive: true });
+      try {
+        await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest));
+        await run('npm', ['install', ...flags], tmp, log);
+        await mkdir(join(tmp, 'node_modules'), { recursive: true });
+        await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()}\n`);
+        // Another process may have finished the same side install first.
+        await rename(tmp, dir).catch(async (e) => {
+          if (!(await access(join(dir, '.sandburg-complete')).then(() => true, () => false))) throw e;
+        });
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+      return dir;
+    })();
+    sideInstalls.set(key, pending);
+    pending.catch(() => sideInstalls.delete(key));
+  }
+  return pending;
+}
+const sideInstalls = new Map<string, Promise<string>>();
 
 /**
  * Whether a package version exists on the registry (npm view). Asked once per process: a Next.js app
@@ -485,7 +527,7 @@ function existsSyncSafe(path: string): boolean {
   }
 }
 
-async function wasmBuildsFor(dir: string, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
+async function wasmBuildsFor(dir: string, sideRoot: string, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
   const at = new Set(packages.map((p) => p.location));
   const found: { dir: string; version: string; build: (typeof WASM_BUILDS)[number]; side: Promise<string> | null }[] = [];
   const sides = new Map<string, Promise<string>>();
@@ -499,14 +541,8 @@ async function wasmBuildsFor(dir: string, packages: InstalledPackage[], log: (li
       const spec = `${build.wasm}@${build.wasmVersion ?? version}`;
       side = sides.get(spec) ?? null;
       if (!side) {
-        side = (async () => {
-          const sideDir = join(dir, `.sandburg-wasm-build-${sides.size}`);
-          await rm(sideDir, { recursive: true, force: true });
-          await mkdir(sideDir, { recursive: true });
-          await writeFile(join(sideDir, 'package.json'), JSON.stringify({ name: 'sandburg-wasm-build', private: true, dependencies: { [build.wasm]: build.wasmVersion ?? version } }));
-          await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], sideDir, log);
-          return sideDir;
-        })();
+        const dependencies = { [build.wasm]: build.wasmVersion ?? version };
+        side = sideInstall(sideRoot, { name: 'sandburg-wasm-build', private: true, dependencies }, ['--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
         sides.set(spec, side);
       }
     }
@@ -531,7 +567,6 @@ async function wasmBuildsFor(dir: string, packages: InstalledPackage[], log: (li
       for (const [file, shim] of Object.entries(build.also ?? {})) await replaceFile(join(pkgDir, file), shim);
       log(`${build.name} ${version}: using ${build.wasm}`);
     }
-    for (const side of sides.values()) await rm(await side, { recursive: true, force: true });
   };
 }
 
