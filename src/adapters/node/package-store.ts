@@ -18,7 +18,9 @@
  */
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { createHash, randomBytes } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
+import { createGunzip } from 'node:zlib';
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { availableParallelism, homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import {
@@ -38,7 +40,7 @@ import {
 } from 'node:fs';
 import { lstat, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, posix, relative, resolve } from 'node:path';
-import { untar } from '../../node-runtime/npm/tar.ts';
+import { TarReader, type TarFile } from '../../node-runtime/npm/tar.ts';
 
 interface LockEntry {
   version?: string;
@@ -70,11 +72,10 @@ const WORKER_TAG = 'sandburg-package-store';
 
 if (!isMainThread && (workerData as { tag?: string } | null)?.tag === WORKER_TAG) {
   parentPort!.on('message', ({ id, job }: { id: number; job: Job }) => {
-    try {
-      parentPort!.postMessage({ id, placed: place(job) });
-    } catch (e) {
-      parentPort!.postMessage({ id, error: e instanceof Error ? e.message : String(e) });
-    }
+    place(job).then(
+      (placed) => parentPort!.postMessage({ id, placed }),
+      (e: unknown) => parentPort!.postMessage({ id, error: e instanceof Error ? e.message : String(e) }),
+    );
   });
 }
 
@@ -335,8 +336,8 @@ async function runJobs(jobs: Job[], onPlaced: (index: number, placed: Placed) =>
 }
 
 /** In a worker: unpacks the job's tarball into the store unless it is there, and links it into place. */
-function place(job: Job): Placed {
-  if (!existsSync(job.store)) unpack(job);
+async function place(job: Job): Promise<Placed> {
+  if (!existsSync(job.store)) await unpack(job);
   if (job.dest) linkTree(job.store, job.dest);
   try {
     return JSON.parse(readFileSync(join(job.store, 'package.json'), 'utf8')) as Placed;
@@ -345,37 +346,44 @@ function place(job: Job): Placed {
   }
 }
 
-/** Unpacks a tarball into a new store directory, as pacote extracts it (see the module comment). */
-function unpack(job: Job): void {
-  const gz = readFileSync(job.tarball);
+/**
+ * Unpacks a tarball into a new store directory, as pacote extracts it (see the module comment). It
+ * streams: files are written as gunzip (on libuv's threads) produces them, and the tarball's hash
+ * is checked against its integrity before the directory goes into the store.
+ */
+async function unpack(job: Job): Promise<void> {
   const { algorithm, base64 } = contentHash(job.integrity)!;
-  if (createHash(algorithm).update(gz).digest('base64') !== base64) throw new Error(`${job.tarball}: integrity mismatch`);
+  const hash = createHash(algorithm);
   const tmp = `${job.store}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+  const reader = new TarReader();
+  const sawNpmignore = new Set<string>();
+  const made = new Set<string>();
+  const write = (file: TarFile) => {
+    let path = file.path;
+    // npm pack treats a .gitignore as .npmignore when there is none; pacote renames it.
+    if (basename(path) === '.npmignore') sawNpmignore.add(path);
+    else if (basename(path) === '.gitignore') {
+      const npmignore = posix.join(posix.dirname(path), '.npmignore');
+      if (sawNpmignore.has(npmignore)) return;
+      path = npmignore;
+    }
+    const abs = join(tmp, path);
+    const parent = dirname(abs);
+    if (!made.has(parent)) {
+      mkdirSync(parent, { recursive: true });
+      made.add(parent);
+    }
+    // The process's umask applies, as when npm writes the file.
+    writeFileSync(abs, file.data, { mode: (file.mode | 0o666 | 0o600) & 0o7777 });
+  };
   try {
-    const files = new Map<string, { data: Uint8Array; mode: number }>();
-    const sawNpmignore = new Set<string>();
-    for (const file of untar(gunzipSync(gz))) {
-      let path = file.path;
-      // npm pack treats a .gitignore as .npmignore when there is none; pacote renames it.
-      if (basename(path) === '.npmignore') sawNpmignore.add(path);
-      else if (basename(path) === '.gitignore') {
-        const npmignore = posix.join(posix.dirname(path), '.npmignore');
-        if (sawNpmignore.has(npmignore)) continue;
-        path = npmignore;
-      }
-      files.set(path, { data: file.data, mode: file.mode });
-    }
-    const made = new Set<string>();
-    for (const [path, { data, mode }] of files) {
-      const abs = join(tmp, path);
-      const parent = dirname(abs);
-      if (!made.has(parent)) {
-        mkdirSync(parent, { recursive: true });
-        made.add(parent);
-      }
-      // The process's umask applies, as when npm writes the file.
-      writeFileSync(abs, data, { mode: (mode | 0o666 | 0o600) & 0o7777 });
-    }
+    // 1 MB pieces: with the default 16 KB, Next.js's unpack took ~30% longer.
+    const source = createReadStream(job.tarball, { highWaterMark: 1 << 20 });
+    source.on('data', (chunk) => hash.update(chunk));
+    await pipeline(source, createGunzip({ chunkSize: 1 << 20 }), async (chunks: AsyncIterable<Buffer>) => {
+      for await (const chunk of chunks) for (const file of reader.push(chunk)) write(file);
+    });
+    if (hash.digest('base64') !== base64) throw new Error(`${job.tarball}: integrity mismatch`);
     mkdirSync(tmp, { recursive: true });
     try {
       renameSync(tmp, job.store);

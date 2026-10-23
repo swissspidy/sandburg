@@ -106,7 +106,7 @@ test('the store hands what it does not handle back to npm', async () => {
   const other = await cached('other', '1.0.0', { 'a.js': '' });
   const bad = await project({ 'node_modules/bad': { ...entry, integrity: other.integrity }, 'node_modules/ok': entry });
   const hex = Buffer.from(String(other.integrity).slice(7), 'base64').toString('hex');
-  await writeFile(join(cache, '_cacache', 'content-v2', 'sha512', hex.slice(0, 2), hex.slice(2, 4), hex.slice(4)), 'not a tarball');
+  await writeFile(join(cache, '_cacache', 'content-v2', 'sha512', hex.slice(0, 2), hex.slice(2, 4), hex.slice(4)), gzipSync(tar({ 'package.json': '{"name":"swapped"}' })));
   const lines: string[] = [];
   assert.equal(await installFromLockfile(bad, store, (l) => lines.push(l)), false);
   assert.equal(existsSync(join(bad, 'node_modules')), false);
