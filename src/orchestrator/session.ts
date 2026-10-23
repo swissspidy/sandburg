@@ -266,6 +266,15 @@ export class Session {
         return await run.finish(outDir);
       }
 
+      // The host's half of the install (npm, on a cold machine) starts now, while the tab and the host
+      // page load: the install phase waits for it.
+      const hostInstall = adapter?.hostInstall?.(project, (line) => run.runtimeLogs.push(line), {
+        seed: options.seed,
+        installIn: options.installIn,
+        runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
+      });
+      void hostInstall?.catch(() => {}); // reported by the install phase
+
       // Requests routing cannot see (service worker scripts, for one) use the context's own
       // proxy credentials, which select this sandbox's allowlist in the egress proxy.
       run.network = newEgressStats();
@@ -305,13 +314,7 @@ export class Session {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
           await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
-            const hostData = adapter!.hostInstall
-              ? await adapter!.hostInstall(project, (line) => run.runtimeLogs.push(line), {
-                  seed: options.seed,
-                  installIn: options.installIn,
-                  runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
-                })
-              : undefined;
+            const hostData = hostInstall ? await hostInstall : undefined;
             return watch(host('install', hostData));
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
