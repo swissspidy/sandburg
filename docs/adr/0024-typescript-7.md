@@ -34,8 +34,9 @@ Two WebAssembly builds of a TypeScript 7 compiler exist on npm:
   [`install-rules.ts`](../../src/adapters/node/install-rules.ts), `TSC_SHIM`), as the native code of
   sass-embedded, rollup, lightningcss and esbuild is:
   - **`--showConfig`** is answered in JavaScript: `tsconfig.json` (comments, trailing commas) and its
-    `extends` chain merged, path options relative to the project's config, `${configDir}`, enum
-    values in lower case and `plugins` left out, as tsc prints them.
+    `extends` chain merged, path options relative to the project's config, inherited `files`,
+    `include` and `exclude` prefixed with their config's directory, `${configDir}`, enum values in
+    lower case and `plugins` left out, as tsc prints them.
   - **Everything else runs tsrs** (`@tsrs/wasm`, pinned with `wasmVersion`, which installs a
     build at its own version instead of the package's). It runs on the calling thread: its Node
     entry point starts a worker thread for a larger stack, which the runtime does not give one, and
@@ -53,7 +54,8 @@ Two WebAssembly builds of a TypeScript 7 compiler exist on npm:
   and a type error stopping a dev script.
 - **`--showConfig` is approximate.** It does not add the options tsc derives from others
   (`moduleResolution` and `moduleDetection` from `module: nodenext`, `preserveConstEnums` from
-  `isolatedModules`). Next.js reads `paths`, `baseUrl` and the like from it, which it gets right.
+  `isolatedModules`), and it leaves `files` as written where tsc expands it to the files `include`
+  matches. Next.js reads `paths`, `baseUrl` and the like from it, which it gets right.
 - **Diagnostics follow tsrs**, which is experimental and follows TypeScript 7.1, not the 7.0 an app
   installs: a type check can disagree with the app's own `tsc` at the edges.
 - **tsrs is pinned.** A newer version is a deliberate bump, with the e2e tests run against it.

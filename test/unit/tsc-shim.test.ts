@@ -70,9 +70,21 @@ test('--showConfig applies extends, as tsc prints it', () => {
       jsx: 'react-jsx',
       paths: { '@/*': ['./*'] },
     },
-    exclude: ['node_modules'],
+    exclude: ['../base/node_modules'],
     include: ['**/*.ts'],
   });
+});
+
+test('--showConfig prefixes inherited files, include and exclude with their config\'s directory', () => {
+  const dir = project({
+    'base/tsconfig.base.json': JSON.stringify({ include: ['src/**/*.ts', './lib'], exclude: ['node_modules', '${configDir}/out'], files: ['main.ts'] }),
+    'app/tsconfig.json': JSON.stringify({ extends: '../base/tsconfig.base.json', compilerOptions: { strict: false } }),
+  });
+  const config = showConfig(dir, join(dir, 'app'), '-p', 'tsconfig.json');
+  // As tsc 7.0 prints them, except that tsc also expands files to the files include matches.
+  assert.deepEqual(config.include, ['../base/src/**/*.ts', '../base/./lib']);
+  assert.deepEqual(config.exclude, ['../base/node_modules', `${join(dir, 'app')}/out`]);
+  assert.deepEqual(config.files, ['../base/main.ts']);
 });
 
 test('--showConfig finds tsconfig.json in a --project directory, and a package an extends names', () => {

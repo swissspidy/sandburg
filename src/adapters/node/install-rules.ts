@@ -33,9 +33,10 @@ export function wasiBindings(optionalDependencies: Record<string, string> | unde
 /**
  * TypeScript 7's lib/tsc.js in the browser runtime (see WASM_BUILDS). `tsc --showConfig` prints the
  * project's configuration with `extends` applied: compilerOptions merged (a later config wins), path
- * options relative to the project's config, enum values in lower case, `plugins` left out, as tsc
- * prints them. Options tsc derives from others (preserveConstEnums from isolatedModules, ...) are
- * not added.
+ * options relative to the project's config, inherited files, include and exclude prefixed with their
+ * config's directory, enum values in lower case, `plugins` left out, as tsc prints them. Options tsc
+ * derives from others (preserveConstEnums from isolatedModules, ...) are not added, and `files` is
+ * not expanded to the files include matches.
  */
 export const TSC_SHIM = `// sandburg: TypeScript 7's native compiler cannot run in the browser runtime (see install-rules.ts)
 import fs from 'node:fs';
@@ -129,6 +130,12 @@ function showConfig(file, seen, rootDir) {
     else own[key] = value;
   }
   const { extends: _extends, compilerOptions: _compilerOptions, ...rest } = config;
+  // files, include and exclude are relative to the config that sets them: an inherited one is
+  // prefixed with its config's directory, as tsc prints it ("../base/src/**/*.ts", not normalized).
+  const prefix = path.relative(rootDir, dir).split(path.sep).join('/');
+  const pattern = (p) =>
+    typeof p !== 'string' ? p : p.startsWith('\${configDir}') ? rootDir + p.slice('\${configDir}'.length) : prefix && !path.isAbsolute(p) ? prefix + '/' + p : p;
+  for (const key of ['files', 'include', 'exclude']) if (Array.isArray(rest[key])) rest[key] = rest[key].map(pattern);
   return { ...merged, ...rest, compilerOptions: { ...merged.compilerOptions, ...own } };
 }
 `;
