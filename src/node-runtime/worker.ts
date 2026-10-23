@@ -214,6 +214,28 @@ function patchUtf8(): void {
 }
 patchUtf8();
 
+/**
+ * Base64 through the browser's Uint8Array.prototype.toBase64 where there is one: the buffer
+ * polyfill encodes in a JavaScript loop, ~19x slower (4 MB: 127 ms instead of 7), and webpack and
+ * Next.js encode source maps and hashes in base64 (~0.2 s of next dev's start). The output is the
+ * same: padded base64, and base64url without padding, as Node writes them.
+ */
+function patchBase64(): void {
+  const native = (Uint8Array.prototype as unknown as { toBase64?: (o?: object) => string }).toBase64;
+  if (typeof native !== 'function') return;
+  const B = Buffer as unknown as { prototype: { toString(this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown): string } };
+  const { toString } = B.prototype;
+  const URL_SAFE = { alphabet: 'base64url', omitPadding: true };
+  B.prototype.toString = function (this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown) {
+    const name = typeof enc === 'string' && this.length > 64 ? enc.toLowerCase() : '';
+    if (name !== 'base64' && name !== 'base64url') return toString.call(this, enc, start, end);
+    const s = typeof start === 'number' && start > 0 ? Math.floor(start) : 0;
+    const e = typeof end === 'number' && end < this.length ? Math.floor(end) : this.length;
+    return e <= s ? '' : native.call(this.subarray(s, e), name === 'base64url' ? URL_SAFE : undefined);
+  };
+}
+patchBase64();
+
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
 const realPostMessage = (self as unknown as Worker).postMessage.bind(self);
 const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
