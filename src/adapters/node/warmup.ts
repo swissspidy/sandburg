@@ -1,9 +1,9 @@
 /**
  * Warm-up projects: small apps on the stacks generated apps use most (Vite, Vite + React, Next.js),
  * which a session runs before a batch when their installs are missing (Session.prewarm). The first
- * app of a stack then starts from their install (npm installs only the difference), their shared
- * transforms and preloads, and, for Next.js, the webpack seed of their versions, instead of paying
- * for all of it, often in several tabs at once.
+ * app of a stack then starts from their lockfile and unpacked packages (npm resolves only the
+ * difference), their shared transforms and preloads, and, for Next.js, the webpack seed of their
+ * versions, instead of paying for all of it, often in several tabs at once.
  */
 import { projectFromFiles } from '../../project.ts';
 import type { Project } from '../../types.ts';
