@@ -119,6 +119,14 @@ export class HostServer {
       res.end('unknown sandbox');
       return;
     }
+    // Requests from another site (another sandbox: they are all *.sandburg.localhost) are refused: the
+    // egress gateway does not see a sandbox's plain-HTTP requests (see EgressGateway.attach).
+    const site = req.headers['sec-fetch-site'];
+    if (site === 'same-site' || site === 'cross-site') {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('requests from another site are refused');
+      return;
+    }
     const headers: Record<string, string> = { 'cache-control': 'no-store' };
     if (adapter.crossOriginIsolation) {
       headers['cross-origin-opener-policy'] = 'same-origin';

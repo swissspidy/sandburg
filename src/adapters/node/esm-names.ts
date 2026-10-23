@@ -2,19 +2,53 @@
  * ES modules may declare their own `require`, `module`, `exports`, `__dirname`
  * or `__filename` (Vite's CLI does: `const require = createRequire(import.meta.url)`,
  * `const __dirname = …`). In Node's ESM these are not predefined, but the runtime
- * runs converted ES modules inside a CommonJS wrapper, where they are, and
- * esbuild's conversion emits `require(…)` for imports. So such bindings are
- * renamed throughout the module first. Renaming every occurrence is safe: in an
- * ES module these names can only refer to the module's own bindings.
+ * runs converted ES modules inside a CommonJS wrapper, where some of them are, and
+ * esbuild's conversion emits `require(…)` for imports.
+ *
+ * esbuild renames a module's own `require` and `module` where its CommonJS output uses them, and
+ * the wrapper of a converted ES module names its file and directory parameters so that no module
+ * declares them (ESM_DEFINE sends `import.meta.dirname` and the free `__dirname` there). What can
+ * still clash is a declaration esbuild leaves alone (a top-level `let exports`): a converted module
+ * that does not parse in its wrapper (collidesWithWrapper) is converted again after
+ * renameCommonJsNames. That check is V8's parser (~30 ms for Vite's 1.4 MB node chunk); renaming
+ * parsed every such module with acorn (~350 ms for that chunk).
  */
 import * as acorn from 'acorn';
 
-const RESERVED = ['require', 'module', 'exports', '__dirname', '__filename'];
+// The CommonJS names, and the names a converted ES module's wrapper gives its file, directory and
+// import.meta.url (ESM_WRAPPER_PARAMS): a module declaring one would clash with the wrapper too.
+const RESERVED = ['require', 'module', 'exports', '__dirname', '__filename', '__sandburg_filename', '__sandburg_dirname', '__sandburg_import_meta_url'];
+
+/** The parameters of a converted ES module's wrapper, as the runtime's loader names them (Module.prototype._compile in loader.ts). */
+export const ESM_WRAPPER_PARAMS = ['exports', 'require', 'module', '__sandburg_filename', '__sandburg_dirname', '__sandburg_import_meta_url'];
+
+/** esbuild's define for an ES module converted for that wrapper: import.meta, and `__dirname` and `__filename` where the module does not declare them. */
+export const ESM_DEFINE: Record<string, string> = {
+  'import.meta.url': '__sandburg_import_meta_url',
+  'import.meta.dirname': '__sandburg_dirname',
+  'import.meta.filename': '__sandburg_filename',
+  __dirname: '__sandburg_dirname',
+  __filename: '__sandburg_filename',
+};
+
+/**
+ * Whether converted code (`source` before, `code` after) would not parse in its wrapper: it declares
+ * one of the wrapper's names where esbuild did not rename it. Parsed, never run.
+ */
+export function collidesWithWrapper(source: string, code: string): boolean {
+  if (!DECLARES.test(source)) return false;
+  try {
+    new Function(...ESM_WRAPPER_PARAMS, code);
+    return false;
+  } catch (e) {
+    return e instanceof SyntaxError;
+  }
+}
 const DECLARES = new RegExp(`\\b(?:const|let|var|function|class|as|import)\\s*\\{?[^;=]*?\\b(?:${RESERVED.join('|')})\\b`);
 
 type Node = acorn.Node & Record<string, unknown>;
 
-/** Renames module-declared `require`/`module`/`exports`/`__dirname`/`__filename` to `__sandburg_esm_<name>`. */
+/** Renames module-declared `require`/`module`/`exports`/`__dirname`/`__filename` (and the wrapper's own names, RESERVED) to `__sandburg_esm_<name>`. */
 export function renameCommonJsNames(code: string): string {
   if (!DECLARES.test(code)) return code;
   let ast: Node;

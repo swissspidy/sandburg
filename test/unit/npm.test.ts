@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { untar } from '../../src/node-runtime/npm/tar.ts';
+import { TarReader, untar } from '../../src/node-runtime/npm/tar.ts';
 import { Registry, type Fetch, type Manifest } from '../../src/node-runtime/npm/registry.ts';
 import { resolveTree, UnsupportedSpecError } from '../../src/node-runtime/npm/resolve.ts';
 import { installInBrowser, packFiles } from '../../src/node-runtime/npm/install.ts';
@@ -47,6 +47,17 @@ test('untar: files without the top directory, long names, no path escapes', () =
   assert.deepEqual(odd.map((f) => f.path), ['dist/index.js', 'lib/x.js']);
   const unicode = `lib/${'é'.repeat(60)}.js`; // 120 bytes: a pax path whose length counts bytes, not characters
   assert.deepEqual(untar(tar({ [unicode]: 'u' })).map((f) => f.path), [unicode]);
+});
+
+test('TarReader: the same files as untar, from an archive in pieces of any size', () => {
+  const archive = tar({ 'package.json': '{}', [`lib/${'y'.repeat(130)}.js`]: 'x'.repeat(1500), 'empty.js': '', 'index.js': 'module.exports = 1;' });
+  const whole = untar(archive).map((f) => [f.path, new TextDecoder().decode(f.data)]);
+  for (const piece of [1, 7, 511, 512, 513, 4096, archive.length]) {
+    const reader = new TarReader();
+    const files = [];
+    for (let at = 0; at < archive.length; at += piece) files.push(...reader.push(archive.slice(at, at + piece)));
+    assert.deepEqual(files.map((f) => [f.path, new TextDecoder().decode(f.data)]), whole, `pieces of ${piece}`);
+  }
 });
 
 /** A registry of a few packages, served from memory. */

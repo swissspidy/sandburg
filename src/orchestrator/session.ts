@@ -239,15 +239,18 @@ export class Session {
     if (!browser) throw new Error('session is not open');
     const id = `s-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
     const network = newEgressStats();
-    // Requests routing cannot see (service worker scripts, for one) use the context's own
-    // proxy credentials, which select this sandbox's allowlist in the egress proxy.
-    const proxy = new EgressProxy(originMatcher(adapter.egress), network);
+    // Requests the gateway does not see go to the context's own egress proxy, which polices them
+    // with this sandbox's allowlist. The gateway intercepts HTTPS for the runtime's contexts: nothing
+    // else needs a tunnel there.
+    const proxy = new EgressProxy(originMatcher(adapter.egress), network, { noTunnels: true });
     await proxy.listen();
     let context: BrowserContext | null = null;
     try {
+      // Only the host server's port on *.sandburg.localhost bypasses the proxy: the gateway does not
+      // see plain HTTP (see EgressGateway.attach).
       context = await browser.newContext({
         viewport: { width: 1280, height: 800 },
-        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}` },
+        proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}:${this.host.port}` },
       });
       await context.addInitScript(PAGE_QUIET_SCRIPT);
       const page = await context.newPage();
@@ -387,8 +390,8 @@ export class Session {
       }
 
       if (node) {
-        // Requests routing cannot see (service worker scripts, for one) use the context's own
-        // proxy credentials, which select this sandbox's allowlist in the egress proxy.
+        // Requests the gateway does not see go to the context's own egress proxy, which polices them
+        // with this sandbox's allowlist. The reference runtime's app is on a port of its own.
         run.network = newEgressStats();
         proxy = new EgressProxy(originMatcher(node.egress), run.network);
         await proxy.listen();
@@ -494,7 +497,7 @@ export class Session {
       const { port } = await run.phase('start', timeouts.start, () => node.start());
       // *.sandburg.localhost resolves to loopback and bypasses the proxy.
       const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
-      await this.egress.attach(context, origin, node.egress, run.network ?? undefined);
+      await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
       run.capture(page, origin);
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });

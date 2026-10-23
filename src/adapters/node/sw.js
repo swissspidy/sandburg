@@ -47,8 +47,8 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
   if (hooks.fetch && hooks.fetch(event, url)) return;
-  if (url.pathname === '/__sandburg/node-worker.js') {
-    event.respondWith(runtimeScript(event.request));
+  if (url.pathname === '/__sandburg/node-worker.js' || RUNTIME_LIB.test(url.pathname)) {
+    event.respondWith(runtimeScript(event.request, url.pathname));
     return;
   }
   if (url.pathname.startsWith('/__sandburg/') || url.pathname === '/__sw__.js') return;
@@ -57,23 +57,31 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(forward(event.request, url));
 });
 
+/** The polyfills a runtime loads when a program first needs them (RUNTIME_LIBS in node-runtime/libs.ts). */
+const RUNTIME_LIB = /^\/__sandburg\/node-[a-z]+\.js$/;
+
 /**
- * The node runtime's script, downloaded once and then answered from memory. A runtime starts one per
- * thread and child process, often dozens at once, and a browser reads a worker's script only as that
- * worker loads: while a parent runtime is blocked (napi-rs WebAssembly threads), downloads of a few MB
- * each would hold every connection to the host, and the app's own requests would wait behind them.
+ * The node runtime's script (and its libraries), downloaded once and then answered from memory. A
+ * runtime starts one per thread and child process, often dozens at once, and a browser reads a
+ * worker's script only as that worker loads: while a parent runtime is blocked (napi-rs WebAssembly
+ * threads), downloads of a few MB each would hold every connection to the host, and the app's own
+ * requests would wait behind them.
  */
-let runtime = null;
-async function runtimeScript(request) {
-  runtime ??= fetch(request).then(async (res) => {
-    if (!res.ok) throw new Error(`node-worker.js: ${res.status}`);
-    return { body: await res.arrayBuffer(), headers: [...res.headers] };
-  });
+const runtime = new Map();
+async function runtimeScript(request, path) {
+  let script = runtime.get(path);
+  if (!script) {
+    script = fetch(request).then(async (res) => {
+      if (!res.ok) throw new Error(`${path}: ${res.status}`);
+      return { body: await res.arrayBuffer(), headers: [...res.headers] };
+    });
+    runtime.set(path, script);
+  }
   try {
-    const { body, headers } = await runtime;
+    const { body, headers } = await script;
     return new Response(body, { headers });
   } catch (e) {
-    runtime = null;
+    runtime.delete(path);
     return new Response(String(e?.message ?? e), { status: 502 });
   }
 }

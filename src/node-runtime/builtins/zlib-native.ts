@@ -15,13 +15,16 @@
  * that is flushed later waits for what was written to be taken in, but cannot force it out.
  */
 import { Transform } from 'stream';
-import zlibBrowserify from 'browserify-zlib';
+import type zlibPort from 'browserify-zlib';
 
 type Format = 'gzip' | 'deflate' | 'deflate-raw';
 
 const HOLD = 1024 * 1024;
-// browserify-zlib has its constants on the module, not on `constants`.
-const Z_FULL_FLUSH = (zlibBrowserify as unknown as { Z_FULL_FLUSH: number }).Z_FULL_FLUSH;
+/** The JavaScript port: a runtime library (libs.ts), which the runtime loads with node:zlib (useZlibPort). */
+let zlibBrowserify: typeof zlibPort;
+export function useZlibPort(port: typeof zlibPort): void {
+  zlibBrowserify = port;
+}
 
 type Callback = (e?: Error | null) => void;
 
@@ -66,7 +69,7 @@ function compressor(format: Format): Transform {
       t.write(Buffer.alloc(0), () => {
         if (!inner) choose(ported[format]());
         const flush = (inner as unknown as { flush(kind: number | undefined, cb: () => void): void }).flush;
-        flush.call(inner, typeof kind === 'number' ? kind : Z_FULL_FLUSH, () => done && done());
+        flush.call(inner, typeof kind === 'number' ? kind : (zlibBrowserify as unknown as { Z_FULL_FLUSH: number }).Z_FULL_FLUSH, () => done && done());
       });
     },
     close: (cb?: () => void) => {

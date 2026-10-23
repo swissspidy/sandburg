@@ -22,8 +22,12 @@ const IMPORT_CONDITIONS = ['import', 'node', 'module-sync', 'node-addons', 'defa
 const ESM_MARKER = '/*sandburg:esm*/';
 const REQUIRE = /\brequire\(\s*(["'])([^"'\n\\]+)\1\s*\)/g;
 
-/** Transforms in progress at a time: the runtime's own threads need the other cores. */
-const CONCURRENCY = 3;
+/**
+ * Transforms in progress at a time. esbuild does a transform in its own process, on its own threads;
+ * the host's part of one is small (reading, hashing and patching the file), and the prefetch finds
+ * a file's requires only once it is transformed, so more at a time shortens the chain.
+ */
+const CONCURRENCY = 8;
 
 interface PackageJson {
   main?: string;

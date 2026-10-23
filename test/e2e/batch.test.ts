@@ -8,7 +8,13 @@ import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { Session, launchOptions } from '../../src/orchestrator/session.ts';
-import { HostServer } from '../../src/orchestrator/host-server.ts';
+import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
+import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
+import { EgressProxy } from '../../src/orchestrator/egress-proxy.ts';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getAdapter } from '../../src/adapters.ts';
 import { runBatch, type BatchItem } from '../../src/orchestrator/batch.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
@@ -94,8 +100,8 @@ async function canary(): Promise<{ server: Server; port: number; connections: ()
 }
 
 /** Every way an app can open a connection, aimed at `target`. */
-function escapeAttempts(port: number): string {
-  const targets = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`, 'https://example.com'];
+function escapeAttempts(port: number, more: string[] = []): string {
+  const targets = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`, 'https://example.com', ...more];
   return `
 const targets = ${JSON.stringify(targets)};
 for (const t of targets) {
@@ -117,7 +123,8 @@ test('no connection escapes the browser through the egress gateway', async () =>
   await session.open();
   try {
     const project = variant('escape', {
-      'src/main.tsx': (counter.files['src/main.tsx'] as string) + escapeAttempts(port),
+      // A *.sandburg.localhost name on another port than the host server's is not a sandbox origin.
+      'src/main.tsx': (counter.files['src/main.tsx'] as string) + escapeAttempts(port, [`http://escape.${SANDBOX_DOMAIN}:${port}`]),
     });
     const result = await session.run(project, {
       outDir,
@@ -131,7 +138,7 @@ test('no connection escapes the browser through the egress gateway', async () =>
     assert.equal(result.checks.find((c) => c.kind === 'functional')?.status, 'passed', JSON.stringify(result.failure));
     assert.equal(connections(), 0, 'the canary server was reached');
     const blocked = result.network.blocked.map((b) => `${b.method} ${new URL(b.url).host}`);
-    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, 'example.com']) {
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, 'example.com', `escape.${SANDBOX_DOMAIN}:${port}`]) {
       assert.ok(blocked.some((b) => b.endsWith(host)), `${host} not recorded as blocked: ${blocked.join(', ')}`);
     }
     assert.ok(blocked.some((b) => b.startsWith('WEBSOCKET')), 'WebSocket attempts are recorded');
@@ -171,5 +178,82 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
     await browser.close();
     await host.close();
     server.close();
+  }
+});
+
+test('the gateway sees HTTPS from pages and workers; another sandbox refuses requests', async () => {
+  const host = new HostServer();
+  await host.listen();
+  const browser = await chromium.launch(launchOptions({}));
+  const cacheDir = await mkdtemp(join(tmpdir(), 'sandburg-egress-'));
+  const stats = newEgressStats();
+  const allow = ['https://allowed.sandburg.test'];
+  const proxy = new EgressProxy(originMatcher(allow), stats, { noTunnels: true });
+  await proxy.listen();
+  try {
+    const one = host.register('one', getAdapter('node'));
+    const two = host.register('two', getAdapter('node'));
+    // As a run's context (session.ts): only the host server's port bypasses the proxy, which opens no tunnels.
+    const context = await browser.newContext({ proxy: { server: proxy.server, bypass: `<-loopback>,*.${SANDBOX_DOMAIN}:${host.port}` } });
+    // Offline: every request the gateway sees and has no answer for is recorded as a miss. One
+    // answer is cached: the registry's kind, a 404 without CORS headers.
+    const page = await context.newPage();
+    const userAgent = await page.evaluate(() => navigator.userAgent);
+    const cached = 'https://allowed.sandburg.test/missing-package';
+    const key = createHash('sha256').update(`GET ${cached}\n${userAgent}`).digest('hex');
+    await mkdir(join(cacheDir, key.slice(0, 2)), { recursive: true });
+    await writeFile(join(cacheDir, key.slice(0, 2), `${key}.body`), 'not found');
+    await writeFile(join(cacheDir, key.slice(0, 2), `${key}.json`), JSON.stringify({ url: cached, status: 404, headers: { 'content-type': 'text/plain' } }));
+    await new EgressGateway({ cacheDir, offline: true }).attach(context, one, allow, stats);
+    // A page of the sandbox's origin without its service worker (whose requests no routing sees).
+    await page.goto(`${one}/__sandburg/none`);
+    // Its origin is allowed to read the answer, as with Playwright's routing.
+    const missing = await page.evaluate((url) => fetch(url).then(async (r) => `${r.status} ${await r.text()}`), cached);
+    assert.equal(missing, '404 not found');
+    assert.equal(stats.cacheHits, 1);
+    const loads = await page.evaluate(async (two) => {
+      const nested = `fetch('https://allowed.sandburg.test/nested').catch(() => {}).finally(() => postMessage('done'));`;
+      const outer = `fetch('https://allowed.sandburg.test/worker').catch(() => {});
+        fetch('https://allowed.sandburg.test/worker-post', { method: 'POST', body: 'x' }).catch(() => {});
+        fetch('https://blocked.sandburg.test/worker').catch(() => {});
+        const w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(nested)}], { type: 'text/javascript' })));
+        w.onmessage = () => postMessage('done');`;
+      await fetch('https://allowed.sandburg.test/page').catch(() => {});
+      await fetch('https://blocked.sandburg.test/page').catch(() => {});
+      await new Promise((resolve) => {
+        const w = new Worker(URL.createObjectURL(new Blob([outer], { type: 'text/javascript' })));
+        w.onmessage = resolve;
+      });
+      const load = (src: string) =>
+        new Promise((resolve) => {
+          const s = document.createElement('script');
+          s.src = src;
+          s.onload = () => resolve('loaded');
+          s.onerror = () => resolve('refused');
+          document.head.append(s);
+        });
+      return { own: await load('/__sandburg/ws-shim.js'), other: await load(`${two}/__sandburg/ws-shim.js`) };
+    }, two);
+    // A popup's first request comes before its interception is set: the proxy refuses it (no tunnel)
+    // instead of passing it to the allowlisted origin.
+    const [popup] = await Promise.all([context.waitForEvent('page'), page.evaluate(() => void window.open('https://allowed.sandburg.test/popup'))]);
+    await popup.waitForLoadState().catch(() => {});
+    await popup.close();
+    assert.equal(stats.tunneled, 0, JSON.stringify(stats));
+    assert.ok(stats.blocked.some((b) => b.method === 'CONNECT' && b.url === 'https://allowed.sandburg.test' && /did not intercept/.test(b.reason)), JSON.stringify(stats.blocked));
+    const missed = stats.failed.map((f) => new URL(f.url).pathname).sort();
+    assert.deepEqual(missed, ['/nested', '/page', '/worker'], JSON.stringify(stats));
+    assert.ok(stats.failed.every((f) => f.reason.startsWith('offline mode')), JSON.stringify(stats.failed));
+    assert.ok(stats.blocked.some((b) => b.url === 'https://blocked.sandburg.test/page' && b.reason === 'origin not allowlisted'), JSON.stringify(stats.blocked));
+    // A worker's requests meet the same rules as the page's: origin allowlist, and only GET/HEAD upstream.
+    assert.ok(stats.blocked.some((b) => b.url === 'https://blocked.sandburg.test/worker' && b.reason === 'origin not allowlisted'), JSON.stringify(stats.blocked));
+    assert.ok(stats.blocked.some((b) => b.url === 'https://allowed.sandburg.test/worker-post' && b.method === 'POST'), JSON.stringify(stats.blocked));
+    assert.deepEqual(loads, { own: 'loaded', other: 'refused' });
+    await context.close();
+  } finally {
+    await proxy.close();
+    await browser.close();
+    await host.close();
+    await rm(cacheDir, { recursive: true, force: true });
   }
 });

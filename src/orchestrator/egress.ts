@@ -7,9 +7,10 @@
  * a miss; everything else is aborted and recorded.
  */
 import { createHash } from 'node:crypto';
+import { STATUS_CODES } from 'node:http';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { request as playwrightRequest, type APIRequestContext, type BrowserContext, type Request } from 'playwright-core';
+import { request as playwrightRequest, type APIRequestContext, type BrowserContext, type CDPSession, type Frame, type Page } from 'playwright-core';
 import type { NetworkEntry } from '../types.ts';
 
 export interface EgressOptions {
@@ -46,6 +47,9 @@ interface CacheMeta {
 const HOP_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'set-cookie']);
 /** Request headers forwarded upstream; they can change what a CDN serves (esm.sh picks its build target by user agent). */
 const FORWARDED = ['user-agent', 'accept'];
+
+/** Playwright's abort codes as the Fetch domain names them. */
+const ERROR_REASONS = { blockedbyclient: 'BlockedByClient', internetdisconnected: 'InternetDisconnected', failed: 'Failed' } as const;
 
 export function newEgressStats(): EgressStats {
   return { requests: 0, cacheHits: 0, cacheMisses: 0, tunneled: 0, failed: [], blocked: [] };
@@ -115,34 +119,50 @@ export class EgressGateway {
   }
 
   /**
-   * Routes all requests of `context`. `localOrigin` is the sandbox origin;
-   * `allow` lists upstream origins (e.g. "https://esm.sh").
+   * Routes the requests of `context`. `localOrigin` is the sandbox origin; `allow` lists upstream
+   * origins (e.g. "https://esm.sh").
+   *
+   * By default only HTTPS requests are intercepted (Chrome DevTools Protocol, Fetch domain, on each
+   * page): Playwright's routing pauses every request, the sandbox's own included, for a round trip
+   * through this process, and turns off the browser's HTTP cache while any route is set. A run's
+   * runtime makes hundreds of requests to its origin (one synchronous request per installed file
+   * without a preload bundle). What the interception does not see never gets out either: the context's
+   * proxy refuses plain HTTP and, for these contexts, opens no tunnels (a popup's first request comes
+   * before its interception is set), and records them (egress-proxy.ts); only the host server's own port
+   * on *.sandburg.localhost bypasses the proxy, where the host server refuses requests from another
+   * site (host-server.ts). `routeAll` routes every request through Playwright instead: for a
+   * context whose proxy is bypassed for every port on *.sandburg.localhost (the reference runtime).
    */
-  async attach(context: BrowserContext, localOrigin: string, allow: string[], stats: EgressStats = newEgressStats()): Promise<EgressStats> {
+  async attach(context: BrowserContext, localOrigin: string, allow: string[], stats: EgressStats = newEgressStats(), { routeAll = false } = {}): Promise<EgressStats> {
     const allowed = originMatcher(allow);
-    await context.route('**/*', async (route) => {
-      const req = route.request();
-      const url = new URL(req.url());
-      stats.requests++;
-      if (url.origin === localOrigin) return route.continue();
-      if (!allowed(url.origin)) {
-        stats.blocked.push({ url: req.url(), method: req.method(), reason: 'origin not allowlisted' });
-        return route.abort('blockedbyclient');
+    if (routeAll) {
+      await context.route('**/*', async (route) => {
+        const req = route.request();
+        stats.requests++;
+        if (new URL(req.url()).origin === localOrigin) return route.continue();
+        const answer = await this.answer(req.method(), req.url(), await req.allHeaders(), allowed, stats);
+        if ('abort' in answer) return route.abort(answer.abort).catch(() => {});
+        return await route.fulfill({ status: answer.response.status, headers: answer.response.headers, body: answer.response.body });
+      });
+    } else {
+      context.on('request', () => stats.requests++);
+      const intercept = async (target: Page | Frame) => {
+        const session = await context.newCDPSession(target);
+        session.on('Fetch.requestPaused', (e) => void this.paused(session, e, localOrigin, allowed, stats));
+        await session.send('Fetch.enable', { patterns: [{ urlPattern: 'https://*', requestStage: 'Request' }] });
+      };
+      // A frame of another origin in its own process (an iframe of an allowlisted site) has a
+      // session of its own; others are their page's (newCDPSession fails for them).
+      const watch = (page: Page) => page.on('frameattached', (frame) => void intercept(frame).catch(() => {}));
+      context.on('page', (page) => {
+        watch(page);
+        void intercept(page).catch(() => {});
+      });
+      for (const page of context.pages()) {
+        watch(page);
+        await intercept(page);
       }
-      if (req.method() !== 'GET' && req.method() !== 'HEAD') {
-        stats.blocked.push({ url: req.url(), method: req.method(), reason: 'only GET/HEAD reach allowlisted origins' });
-        return route.abort('blockedbyclient');
-      }
-      try {
-        const { response, hit } = await this.fetchCached(req, allowed);
-        if (hit) stats.cacheHits++;
-        else stats.cacheMisses++;
-        return await route.fulfill({ status: response.status, headers: response.headers, body: response.body });
-      } catch (err) {
-        stats.failed.push({ url: req.url(), method: req.method(), reason: err instanceof Error ? err.message : String(err) });
-        return route.abort(err instanceof OfflineMissError ? 'internetdisconnected' : 'failed').catch(() => {});
-      }
-    });
+    }
     // HTTP routing does not see WebSockets; without this they would only hit the dead proxy, unrecorded.
     // Sockets to the sandbox origin (dev-server HMR) are not routed: the browser reaches the
     // origin directly, whereas connectToServer() would connect from Node, which cannot resolve
@@ -160,23 +180,81 @@ export class EgressGateway {
     if (this.upstream) await (await this.upstream).dispose();
   }
 
-  private async fetchCached(req: Request, allowed: OriginMatcher): Promise<{ response: CachedResponse; hit: boolean }> {
-    const headers = await req.allHeaders();
+  /** What a request that is not the sandbox's gets: an abort (recorded), or the cached or upstream answer. */
+  private async answer(
+    method: string,
+    url: string,
+    headers: Record<string, string>,
+    allowed: OriginMatcher,
+    stats: EgressStats,
+  ): Promise<{ abort: 'blockedbyclient' | 'internetdisconnected' | 'failed' } | { response: CachedResponse }> {
+    if (!allowed(new URL(url).origin)) {
+      stats.blocked.push({ url, method, reason: 'origin not allowlisted' });
+      return { abort: 'blockedbyclient' };
+    }
+    if (method !== 'GET' && method !== 'HEAD') {
+      stats.blocked.push({ url, method, reason: 'only GET/HEAD reach allowlisted origins' });
+      return { abort: 'blockedbyclient' };
+    }
+    try {
+      const { response, hit } = await this.fetchCached(method, url, headers, allowed);
+      if (hit) stats.cacheHits++;
+      else stats.cacheMisses++;
+      return { response };
+    } catch (err) {
+      stats.failed.push({ url, method, reason: err instanceof Error ? err.message : String(err) });
+      return { abort: err instanceof OfflineMissError ? 'internetdisconnected' : 'failed' };
+    }
+  }
+
+  /** A request paused by the Fetch domain (see attach), answered as Playwright's routing would. */
+  private async paused(session: CDPSession, e: { requestId: string; request: { url: string; method: string; headers: Record<string, string> } }, localOrigin: string, allowed: OriginMatcher, stats: EgressStats): Promise<void> {
+    const { requestId, request } = e;
+    const headers = Object.fromEntries(Object.entries(request.headers).map(([k, v]) => [k.toLowerCase(), v]));
+    try {
+      if (new URL(request.url).origin === localOrigin) return void (await session.send('Fetch.continueRequest', { requestId }));
+      // A CORS preflight is answered here, allowing the request, as Playwright's routing does; the
+      // request itself is then answered or blocked below.
+      if (request.method === 'OPTIONS' && headers['access-control-request-method']) {
+        const responseHeaders = [
+          { name: 'Access-Control-Allow-Origin', value: headers.origin || '*' },
+          { name: 'Access-Control-Allow-Methods', value: headers['access-control-request-method'] || 'GET, POST, OPTIONS, DELETE' },
+          { name: 'Access-Control-Allow-Credentials', value: 'true' },
+        ];
+        if (headers['access-control-request-headers']) responseHeaders.push({ name: 'Access-Control-Allow-Headers', value: headers['access-control-request-headers'] });
+        return void (await session.send('Fetch.fulfillRequest', { requestId, responseCode: 204, responsePhrase: STATUS_CODES[204], responseHeaders, body: '' }));
+      }
+      const answer = await this.answer(request.method, request.url, headers, allowed, stats);
+      if ('abort' in answer) return void (await session.send('Fetch.failRequest', { requestId, errorReason: ERROR_REASONS[answer.abort] }));
+      const { status, headers: responseHeaders, body } = answer.response;
+      const fulfilled = Object.entries(responseHeaders).map(([name, value]) => ({ name, value }));
+      // As Playwright's fulfill: a cross-origin request's answer allows its origin unless it says
+      // otherwise (the registry answers a missing package's 404 without CORS headers).
+      if (headers.origin && headers.origin.trim() !== new URL(request.url).origin && !('access-control-allow-origin' in responseHeaders)) {
+        fulfilled.push({ name: 'access-control-allow-origin', value: headers.origin }, { name: 'access-control-allow-credentials', value: 'true' }, { name: 'vary', value: 'Origin' });
+      }
+      await session.send('Fetch.fulfillRequest', { requestId, responseCode: status, responsePhrase: STATUS_CODES[status] ?? '', responseHeaders: fulfilled, body: body.toString('base64') });
+    } catch {
+      // the request is gone (its page closed or it was cancelled)
+    }
+  }
+
+  private async fetchCached(method: string, url: string, headers: Record<string, string>, allowed: OriginMatcher): Promise<{ response: CachedResponse; hit: boolean }> {
     const forwarded: Record<string, string> = {};
     for (const name of FORWARDED) if (headers[name]) forwarded[name] = headers[name];
     const key = createHash('sha256')
-      .update(`${req.method()} ${req.url()}\n${forwarded['user-agent'] ?? ''}`)
+      .update(`${method} ${url}\n${forwarded['user-agent'] ?? ''}`)
       .digest('hex');
     const path = join(this.options.cacheDir, key.slice(0, 2), key);
 
     const cached = await readCache(path);
     const usable = cached && cacheable(cached.status) ? cached : null;
-    if (usable && (this.options.offline || isFresh(req.url(), usable.fetchedAt ?? 0))) return { response: usable, hit: true };
-    if (this.options.offline) throw new OfflineMissError(req.url());
+    if (usable && (this.options.offline || isFresh(url, usable.fetchedAt ?? 0))) return { response: usable, hit: true };
+    if (this.options.offline) throw new OfflineMissError(url);
 
     let pending = this.inflight.get(key);
     if (!pending) {
-      pending = this.fetchUpstream(req.method(), req.url(), forwarded, path, allowed);
+      pending = this.fetchUpstream(method, url, forwarded, path, allowed);
       this.inflight.set(key, pending);
       pending.finally(() => this.inflight.delete(key)).catch(() => {});
     }
