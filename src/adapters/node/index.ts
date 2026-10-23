@@ -141,8 +141,9 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
  * one synchronous request each, which dominates start-up (next dev loads ~1,700 files). They are
  * recorded per install and per package version, so an install that was never run still gets a
  * bundle for the packages other installs loaded (a new app with next@16 preloads Next.js).
- * Files over PRELOAD_FILE_MAX are left out: WebAssembly binaries (swc's is 30 MB). Large JavaScript
- * is in (webpack's 2.6 MB bundle5.js, Next.js' app-page runtime): each was a request of its own.
+ * Files over PRELOAD_FILE_MAX are left out: WebAssembly binaries (swc's is 30 MB), which the bundle
+ * only names, for the runtime to download on the side. Large JavaScript is in (webpack's 2.6 MB
+ * bundle5.js, Next.js' app-page runtime): each was a request of its own.
  */
 const PRELOAD_FILE_MAX = 10 << 20;
 const preloadLists = new Map<string, Map<string, true>>();
@@ -258,7 +259,7 @@ const issuedBundles = new Map<string, string[]>();
 async function preloadUrl(key: string): Promise<string | null> {
   const entries = await preloadEntries(key);
   if (!entries.length) return null;
-  const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0${PRELOAD_FILE_MAX}\0`).update(entries.join('\n')).digest('hex').slice(0, 16);
+  const hash = createHash('sha256').update(`${TRANSFORM_VERSION}\0${PRELOAD_FILE_MAX}\0side\0`).update(entries.join('\n')).digest('hex').slice(0, 16);
   issuedBundles.set(`${key}/${hash}`, entries);
   // Built now, while the run's page and runtime start: a new bundle (the lists grew) took ~1.8 s to
   // build for next dev, and the runtime asks for it synchronously with its first installed file.
@@ -299,9 +300,16 @@ async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | n
   if (!entries) return null;
   const header: [string, string, number][] = [];
   const bodies: Buffer[] = [];
+  const index = await installer.index(key);
   for (const entry of entries) {
     const mode = entry[0];
     const rel = entry.slice(2);
+    // A large raw file (a WebAssembly binary) is named with its size negated, for the runtime to
+    // download on the side as soon as it has the bundle, before the program asks for it.
+    if (mode === 'f' && (index[rel] ?? 0) > PRELOAD_FILE_MAX) {
+      header.push([mode, rel, -index[rel]]);
+      continue;
+    }
     const got = mode === 't' ? await installer.file(key, rel) : await installer.raw(key, rel);
     if (!got || got.body.length > PRELOAD_FILE_MAX) continue;
     header.push([mode, rel, got.body.length]);
@@ -488,7 +496,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (m) {
     const [, key, mode, rel] = m;
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
-    if (file && file.body.length <= PRELOAD_FILE_MAX) void recordLoad(key, mode, decodeURIComponent(rel));
+    if (file) void recordLoad(key, mode, decodeURIComponent(rel));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
   return null;
