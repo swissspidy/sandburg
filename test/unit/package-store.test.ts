@@ -70,6 +70,9 @@ test('a lockfile installs from the store as npm installs it', async () => {
   assert.equal(existsSync(join(nm, 'tool/.gitignore')), false);
   assert.equal(readlinkSync(join(nm, '.bin/tool')), '../tool/bin/tool.js');
   assert.equal(readlinkSync(join(nm, '.bin/x')), '../alpha/x.js');
+  // A binary is made executable only where it is linked (bin-links), as the tarball has it elsewhere.
+  assert.equal(statSync(join(nm, 'alpha/x.js')).mode & 0o111, 0o111);
+  assert.equal(statSync(join(nm, 'beta/x.js')).mode & 0o111, 0);
   assert.equal(readlinkSync(join(nm, 'beta/node_modules/.bin/tool')), '../tool/cli.js');
   assert.equal(readlinkSync(join(nm, 'gamma/node_modules/.bin/inner')), '../inner/i.js');
   assert.deepEqual(readdirSync(join(nm, '@native')), []);
@@ -85,6 +88,11 @@ test('a lockfile installs from the store as npm installs it', async () => {
   const again = await project(packages);
   assert.equal(await installFromLockfile(again, store, () => {}), true);
   assert.equal(lstatSync(join(again, 'node_modules/tool/lib/index.js')).ino, lstatSync(join(nm, 'tool/lib/index.js')).ino);
+  // A binary fixBin changed is the install's own copy: the store keeps the tarball's bytes.
+  assert.notEqual(lstatSync(join(again, 'node_modules/tool/bin/tool.js')).ino, lstatSync(join(nm, 'tool/bin/tool.js')).ino);
+  assert.equal(readFileSync(join(again, 'node_modules/tool/bin/tool.js'), 'utf8'), '#!/usr/bin/env node\nconsole.log(1);\r\n');
+  const stored = readdirSync(store).map((n) => join(store, n, 'bin/tool.js')).find((p) => existsSync(p))!;
+  assert.equal(readFileSync(stored, 'utf8'), '#!/usr/bin/env node\r\nconsole.log(1);\r\n');
 });
 
 test('the store hands what it does not handle back to npm', async () => {

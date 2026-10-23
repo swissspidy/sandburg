@@ -8,9 +8,9 @@
  *
  * What ends up in node_modules is what `npm install --ignore-scripts --omit=optional` writes: the
  * same files with the same contents and modes (pacote's rules: links and directories in the
- * tarball are skipped, .gitignore becomes .npmignore, bin targets are executable and lose a CRLF
- * after their #! line), the bin links in each node_modules/.bin (bin-links' rules: by depth, then
- * path, the first package wins a name) and npm's hidden lockfile. A lockfile this does not handle
+ * tarball are skipped, .gitignore becomes .npmignore), the bin links in each node_modules/.bin
+ * (bin-links' rules: by depth, then path, the first package wins a name; a linked binary is
+ * executable and loses a CRLF after its #! line) and npm's hidden lockfile. A lockfile this does not handle
  * (links, git dependencies, packages with their own shrinkwrap) returns false, and npm installs.
  *
  * Unpacking and linking run in worker threads (this module is also their script), off the host's
@@ -365,8 +365,6 @@ function unpack(job: Job): void {
       }
       files.set(path, { data: file.data, mode: file.mode });
     }
-    const pkg = files.get('package.json');
-    const bins = new Set(Object.values(normalizeBin(pkg ? (JSON.parse(Buffer.from(pkg.data).toString('utf8')) as Placed) : {})));
     const made = new Set<string>();
     for (const [path, { data, mode }] of files) {
       const abs = join(tmp, path);
@@ -379,18 +377,6 @@ function unpack(job: Job): void {
       writeFileSync(abs, data, { mode: (mode | 0o666 | 0o600) & 0o7777 });
     }
     mkdirSync(tmp, { recursive: true });
-    // bin-links: each binary is executable, and loses a CRLF after its #! line.
-    for (const bin of bins) {
-      const abs = join(tmp, bin);
-      if (!files.has(bin)) continue;
-      chmodSync(abs, 0o777 & ~umask);
-      const text = readFileSync(abs, 'utf8');
-      if (/^#![^\n]+\r\n/.test(text.slice(0, 2048))) {
-        rmSync(abs);
-        writeFileSync(abs, text.replace(/^(#![^\n]+)\r\n/, '$1\n'));
-        chmodSync(abs, 0o777 & ~umask);
-      }
-    }
     try {
       renameSync(tmp, job.store);
     } catch (e) {
@@ -446,6 +432,24 @@ export function normalizeBin(pkg: Placed): Record<string, string> {
 }
 
 /**
+ * bin-links' fixBin: a linked binary gets the executable mode and loses a CRLF after its #! line.
+ * The store keeps the tarball's modes and bytes (other installs may not link that binary), so a file
+ * this changes becomes the install's own copy.
+ */
+function fixBin(path: string): void {
+  const mode = 0o777 & ~umask;
+  const st = statSync(path);
+  if (!st.isFile()) return chmodSync(path, mode);
+  const text = readFileSync(path, 'utf8');
+  const crlf = /^#![^\n]+\r\n/.test(text.slice(0, 2048));
+  if (!crlf && (st.mode & 0o7777) === mode) return;
+  const body = crlf ? Buffer.from(text.replace(/^(#![^\n]+)\r\n/, '$1\n')) : readFileSync(path);
+  rmSync(path);
+  writeFileSync(path, body);
+  chmodSync(path, mode);
+}
+
+/**
  * node_modules/.bin links, as bin-links makes them: each package's binaries in the .bin of the
  * node_modules it is in, by depth and then path (en collation), the first package wins a name, and
  * a binary whose file is missing is not linked.
@@ -471,6 +475,7 @@ function linkBins(dir: string, placed: Map<string, Placed>): void {
       }
       mkdirSync(binDir, { recursive: true });
       symlinkSync(relative(dirname(to), absFrom), to, 'file');
+      fixBin(absFrom);
     }
   }
 }
