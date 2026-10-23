@@ -232,12 +232,15 @@ test("a program started with node options resolves with their --conditions (reac
     'node_modules/cond/package.json': JSON.stringify({ name: 'cond', exports: { development: './dev.js', default: './prod.js' } }),
     'node_modules/cond/dev.js': "module.exports = 'development';",
     'node_modules/cond/prod.js': "module.exports = 'production';",
-    'main.js': `console.log(require('cond'), JSON.stringify(process.execArgv));`,
+    'main.js': `console.log(require('cond'), JSON.stringify(process.execArgv));
+      // A worker thread has its parent's node options, as in Node.
+      const w = new (require('worker_threads').Worker)("require('worker_threads').parentPort.postMessage(require('cond'))", { eval: true });
+      w.on('message', (m) => { console.log('thread', m); w.terminate(); });`,
   };
   const out = await h.run(files, '/app/main.js', [], ['--conditions=development']);
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout.trim(), 'development ["--conditions=development"]');
-  assert.equal((await h.run(files, '/app/main.js')).stdout.trim(), 'production []');
+  assert.equal(out.stdout.trim(), 'development ["--conditions=development"]\nthread development');
+  assert.equal((await h.run(files, '/app/main.js')).stdout.trim(), 'production []\nthread production');
 });
 
 test('worker_threads: workerData, messages, a shared file system, SharedArrayBuffer + Atomics, exit codes', async () => {

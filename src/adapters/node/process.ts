@@ -131,7 +131,7 @@ export class NodeProcess {
     this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
       this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
     this.worker.postMessage(
-      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner },
+      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv },
       opts.compilePort ? [opts.compilePort] : [],
     );
   }

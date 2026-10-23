@@ -38,6 +38,8 @@ for (const [name, framework, what] of cases) {
     const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
     assert.equal(result.project.framework, framework);
     assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+    // react-router dev starts with --conditions=development (adapters/node/browser.ts) instead of relaunching itself.
+    if (framework === 'react-router') assert.deepEqual(result.console.filter((c) => /Relaunching/.test(c.text)).map((c) => c.text), []);
   });
 }
 

@@ -1187,7 +1187,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
-  if (!thread && msg.execArgv?.length) proc.execArgv = msg.execArgv;
+  // A worker thread has its parent's node options (Node's default for `execArgv`); a child process has its own (below).
+  if (msg.execArgv?.length) proc.execArgv = msg.execArgv;
   if (child) {
     (proc.chdir as (d: string) => void)(child.cwd);
     proc.execArgv = child.execArgv;
@@ -1196,7 +1197,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -1259,7 +1260,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   moduleSystem = createModuleSystem({
     vfs,
     tsRunner,
-    conditions: child?.conditions ?? (!thread && msg.execArgv?.length ? nodeOptions(msg.execArgv, {}).conditions : undefined),
+    conditions: child?.conditions ?? (msg.execArgv?.length ? nodeOptions(msg.execArgv, {}).conditions : undefined),
     packageOverride(filename: string) {
       for (const [pattern, make] of SQLITE_PACKAGES) {
         if (!pattern.test(filename)) continue;
