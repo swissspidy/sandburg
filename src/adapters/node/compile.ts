@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
-import { renameCommonJsNames } from './esm-names.ts';
+import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
@@ -127,20 +127,33 @@ export async function compileForRuntimeAsync(
   return step.value;
 }
 
-/** The compilation, yielding each esbuild transform it needs and taking back its output. */
+/**
+ * The compilation, yielding each esbuild transform it needs and taking back its output. A converted
+ * ES module that declares a name of its wrapper esbuild did not rename is compiled again with the
+ * names renamed first (see esm-names.ts).
+ */
 function* compileSteps(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean }): Generator<TransformStep, string, string> {
+  const out = yield* compileOnce(code, path, kind, opts, false);
+  return out.startsWith(ESM_MARKER) && collidesWithWrapper(code, out) ? yield* compileOnce(code, path, kind, opts, true) : out;
+}
+
+const ESM_MARKER = '/*sandburg:esm*/';
+
+function* compileOnce(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean }, rename: boolean): Generator<TransformStep, string, string> {
   // A hashbang (a package's bin script) is only valid as the very first line, and the ESM marker
   // goes before the code: blanked, keeping the line count.
   code = code.replace(/^#!.*/, '');
   let out = patchFunctionImport(patchAsyncFunction(kind === 'cjs' && /\beval\("/.test(code) ? yield* lowerEvalSteps(code) : code));
   let loader: esbuild.Loader = kind === 'ts' ? (path.endsWith('x') ? 'tsx' : 'ts') : 'js';
-  const esmSource = kind === 'esm';
+  // Code from an ES module is marked: the loader resolves its requests with import conditions, and
+  // runs it in the wrapper ESM_DEFINE is for.
+  const marked = kind !== 'cjs' && (kind === 'esm' || MODULE_SYNTAX.test(code));
   if (kind !== 'cjs') {
     // Types (and JSX) first, keeping the module syntax, so the rewrites below see plain JavaScript.
     const needsJs = (opts.asyncModules && MODULE_SYNTAX.test(out)) || /\bawait\b/.test(out) || /\b(require|module|exports|__dirname|__filename)\b/.test(out);
     if (needsJs) {
       let js = loader === 'js' ? out : yield { code: out, options: { loader, sourcefile: path, target: 'esnext', logLevel: 'silent' } };
-      js = renameCommonJsNames(js);
+      if (rename) js = renameCommonJsNames(js);
       if ((opts.asyncModules && MODULE_SYNTAX.test(js)) || hasTopLevelAwait(js)) js = toAsyncModule(js);
       out = js;
       loader = 'js';
@@ -159,7 +172,7 @@ function* compileSteps(code: string, path: string, kind: CompileKind, opts: { as
       sourcefile: kind === 'esm' && loader === 'js' ? esmSourcefile(path) : path,
       target: 'es2022',
       supported: LOWER,
-      define: kind === 'cjs' ? undefined : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' },
+      define: kind === 'cjs' ? undefined : marked ? ESM_DEFINE : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' },
       logLevel: 'silent',
     },
   };
@@ -175,8 +188,7 @@ function* compileSteps(code: string, path: string, kind: CompileKind, opts: { as
       };
     }
   }
-  // Marks code that came from an ES module: the loader resolves its requests with import conditions.
-  if (kind !== 'cjs' && (esmSource || MODULE_SYNTAX.test(code))) out = `/*sandburg:esm*/\n${out}`;
+  if (marked) out = `${ESM_MARKER}\n${out}`;
   return patchInterop(out);
 }
 
