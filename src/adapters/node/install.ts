@@ -19,7 +19,7 @@ import { renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
-import { installFromLockfile, installedPackages, type InstalledPackage } from './package-store.ts';
+import { installFromLockfile, installedPackages, unpackAhead, type InstalledPackage } from './package-store.ts';
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 13;
@@ -140,6 +140,8 @@ export class Installer {
       // when the lockfile has what the store does not handle.
       // --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds.
       const flags = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
+      const m = manifest as Manifest;
+      const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
       await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
@@ -147,6 +149,7 @@ export class Installer {
       const additions = Promise.all([wasiBindingsFor(tmp, packages, log), wasmBuildsFor(tmp, packages, log)]);
       additions.catch(() => {});
       if (!(await installFromLockfile(tmp, this.store, log))) await run('npm', ['install', ...flags], tmp, log);
+      await ahead;
       // npm creates no node_modules for a project without dependencies; the steps below read it.
       await mkdir(join(tmp, 'node_modules'), { recursive: true });
       // They change different directories: the bindings are new top-level packages, the builds go

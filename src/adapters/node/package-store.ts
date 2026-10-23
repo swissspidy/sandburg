@@ -56,7 +56,8 @@ interface Job {
   tarball: string;
   integrity: string;
   store: string;
-  dest: string;
+  /** null: only into the store. */
+  dest: string | null;
 }
 
 /** What a worker reports for a placed package: its package.json's name and bin. */
@@ -113,7 +114,16 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
   jobs.sort((a, b) => size(b.job.tarball) - size(a.job.tarball));
   try {
     const placed = new Map<string, Placed>();
-    await runJobs(jobs.map((j) => j.job), (i, p) => placed.set(jobs[i].location, p));
+    // Packages being unpacked ahead (unpackAhead) are linked once they are in the store.
+    const ahead = jobs.filter((j) => unpacking.has(j.job.store));
+    const now = jobs.filter((j) => !unpacking.has(j.job.store));
+    await Promise.all([
+      runJobs(now.map((j) => j.job), (i, p) => placed.set(now[i].location, p)),
+      ...ahead.map(async (j) => {
+        await unpacking.get(j.job.store);
+        await runJobs([j.job], (_, p) => placed.set(j.location, p));
+      }),
+    ]);
     // Bundled packages: their package.json, as their parent's tarball had it.
     for (const [location] of installed.filter(([, e]) => e.inBundle)) {
       try {
@@ -210,6 +220,66 @@ function storePath(storeRoot: string, integrity: string): string {
   return join(storeRoot, `${algorithm}-${hex}`);
 }
 
+/** The integrity of a tarball URL that npm's cache has fetched (its index entry), if any. */
+function cachedIntegrity(cache: string, url: string): string | null {
+  const key = `make-fetch-happen:request-cache:${url}`;
+  const hash = createHash('sha256').update(key).digest('hex');
+  try {
+    const lines = readFileSync(join(cache, '_cacache', 'index-v5', hash.slice(0, 2), hash.slice(2, 4), hash.slice(4)), 'utf8').split('\n');
+    for (const line of lines.reverse()) {
+      const json = line.slice(line.indexOf('\t') + 1);
+      if (!json) continue;
+      const entry = JSON.parse(json) as { key?: string; integrity?: string | null };
+      if (entry.key === key) return entry.integrity ?? null;
+    }
+  } catch {
+    // not fetched, or an entry npm would not read either
+  }
+  return null;
+}
+
+/** Store directories being unpacked ahead of an install (unpackAhead). */
+const unpacking = new Map<string, Promise<void>>();
+
+/**
+ * Unpacks into the store, while npm resolves the tree, the packages an install will probably have:
+ * those of a lockfile the install starts from, and dependencies pinned to a version whose tarball
+ * npm's cache has (`"next": "16.4.2"`). A guess costs only CPU: the install uses a package from the
+ * store only when its lockfile names the same integrity.
+ */
+export async function unpackAhead(dir: string, dependencies: Record<string, string>, storeRoot: string): Promise<void> {
+  const { cache, registry } = await npmConfig();
+  const integrities = new Set<string>();
+  try {
+    const lock = JSON.parse(await readFile(join(dir, 'package-lock.json'), 'utf8')) as Lockfile;
+    for (const [, e] of partition(lock.packages ?? {}).installed) if (e.integrity && !e.inBundle && contentHash(e.integrity)) integrities.add(e.integrity);
+  } catch {
+    // no lockfile
+  }
+  for (const [name, spec] of Object.entries(dependencies)) {
+    if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(spec)) continue;
+    const integrity = cachedIntegrity(cache, `${registry}${name}/-/${name.split('/').pop()}-${spec}.tgz`);
+    if (integrity && contentHash(integrity)) integrities.add(integrity);
+  }
+  const jobs: Job[] = [];
+  for (const integrity of integrities) {
+    const store = storePath(storeRoot, integrity);
+    const tarball = contentPath(cache, integrity);
+    if (!unpacking.has(store) && !existsSync(store) && existsSync(tarball)) jobs.push({ tarball, integrity, store, dest: null });
+  }
+  if (!jobs.length) return;
+  // Each job's promise settles when it is unpacked, or when the batch ends (it failed, or another
+  // failed first): an install then unpacks it itself.
+  const settle: (() => void)[] = [];
+  for (const job of jobs) unpacking.set(job.store, new Promise<void>((done) => settle.push(done)));
+  // Two threads: npm's resolution keeps a core.
+  await runJobs(jobs, (i) => settle[i](), 2).catch(() => {});
+  for (const [i, job] of jobs.entries()) {
+    settle[i]();
+    unpacking.delete(job.store);
+  }
+}
+
 function npm(args: string[], cwd: string): Promise<void> {
   return new Promise((done, fail) => {
     const child = spawn('npm', [...args, '--loglevel=error'], { cwd, stdio: 'ignore', env: { ...process.env, npm_config_update_notifier: 'false' } });
@@ -219,9 +289,9 @@ function npm(args: string[], cwd: string): Promise<void> {
 }
 
 /** Runs the jobs on a few worker threads; `onPlaced` gets each job's index and result. */
-async function runJobs(jobs: Job[], onPlaced: (index: number, placed: Placed) => void): Promise<void> {
+async function runJobs(jobs: Job[], onPlaced: (index: number, placed: Placed) => void, threads = 4): Promise<void> {
   if (!jobs.length) return;
-  const count = Math.max(1, Math.min(4, availableParallelism(), jobs.length));
+  const count = Math.max(1, Math.min(threads, availableParallelism(), jobs.length));
   const workers = Array.from({ length: count }, () => new Worker(new URL(import.meta.url), { workerData: { tag: WORKER_TAG } }));
   let next = 0;
   try {
@@ -252,7 +322,7 @@ async function runJobs(jobs: Job[], onPlaced: (index: number, placed: Placed) =>
 /** In a worker: unpacks the job's tarball into the store unless it is there, and links it into place. */
 function place(job: Job): Placed {
   if (!existsSync(job.store)) unpack(job);
-  linkTree(job.store, job.dest);
+  if (job.dest) linkTree(job.store, job.dest);
   try {
     return JSON.parse(readFileSync(join(job.store, 'package.json'), 'utf8')) as Placed;
   } catch {

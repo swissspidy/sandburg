@@ -10,7 +10,7 @@ import { join } from 'node:path';
 // The store reads tarballs from npm's cache: this test's own (`npm config get cache` follows it).
 const cache = await mkdtemp(join(tmpdir(), 'sandburg-npm-cache-'));
 process.env.npm_config_cache = cache;
-const { installFromLockfile, installedPackages, normalizeBin } = await import('../../src/adapters/node/package-store.ts');
+const { installFromLockfile, installedPackages, normalizeBin, unpackAhead } = await import('../../src/adapters/node/package-store.ts');
 
 /** A ustar archive with npm pack's top directory. */
 function tar(entries: Record<string, string>): Buffer {
@@ -103,6 +103,24 @@ test('the store hands what it does not handle back to npm', async () => {
   assert.equal(await installFromLockfile(bad, store, (l) => lines.push(l)), false);
   assert.equal(existsSync(join(bad, 'node_modules')), false);
   assert.match(lines.join('\n'), /integrity mismatch/);
+});
+
+test('packages are unpacked ahead from a lockfile and from pinned versions in npm\'s cache', async () => {
+  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const fromLock = await cached('locked', '1.0.0', { 'a.js': 'a' });
+  const pinned = await cached('pinned', '3.1.4', { 'p.js': 'p' });
+  // npm's cache index: the tarball URL's entry names its integrity.
+  const key = `make-fetch-happen:request-cache:https://registry.npmjs.org/pinned/-/pinned-3.1.4.tgz`;
+  const hash = createHash('sha256').update(key).digest('hex');
+  const bucket = join(cache, '_cacache', 'index-v5', hash.slice(0, 2), hash.slice(2, 4));
+  await mkdir(bucket, { recursive: true });
+  const json = JSON.stringify({ key, integrity: pinned.integrity, time: 0, size: 1, metadata: {} });
+  await writeFile(join(bucket, hash.slice(4)), `\n${createHash('sha1').update(json).digest('hex')}\t${json}`);
+  const dir = await project({ 'node_modules/locked': fromLock });
+  await unpackAhead(dir, { pinned: '3.1.4', ranged: '^1.0.0' }, store);
+  const unpacked = readdirSync(store).filter((n) => !n.includes('.tmp-'));
+  assert.equal(unpacked.length, 2);
+  assert.ok(unpacked.every((n) => existsSync(join(store, n, 'package.json'))));
 });
 
 test('package binaries are normalized as npm normalizes them', () => {
