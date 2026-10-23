@@ -16,6 +16,7 @@ import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticI
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compiled, compileForRuntime, projectHasTopLevelAwait, type CompileKind } from './compile.ts';
+import { CompileCache } from './compile-cache.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
 import type { HostInstall } from './browser.ts';
@@ -85,6 +86,10 @@ function cacheDigests(files: Record<string, string | { base64: string }>): Recor
   }
   return out;
 }
+
+/** What the host compiled for runs, by dev-cache key (see compile-cache.ts); keys issued to runs. */
+const compileCache = new CompileCache(devCacheRoot);
+const compileKeys = new Set<string>();
 
 /** Caches handed to runs to start from, and the directories they may hold (see cacheBundle). */
 const readableCaches = new Map<string, string[]>();
@@ -538,10 +543,19 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;
     try {
-      return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: compileForRuntime((await req.body()).toString('utf8'), req.query.get('path') ?? '/unknown.js', kind, { asyncModules: req.query.get('async') === '1' }) };
+      const [code, path, async, key] = [(await req.body()).toString('utf8'), req.query.get('path') ?? '/unknown.js', req.query.get('async') === '1', req.query.get('cache')];
+      const out = compileForRuntime(code, path, kind, { asyncModules: async });
+      if (key && compileKeys.has(key)) void compileCache.record(key, kind, async, path, code, out);
+      return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: out };
     } catch (e) {
       return { status: 400, headers: { 'content-type': 'text/plain' }, body: String((e as Error).message) };
     }
+  }
+  // What earlier runs of a project had compiled (see compile-cache.ts).
+  const compiles = /^\/__sandburg\/compile-cache\/([0-9a-f]{24})$/.exec(req.path);
+  if (compiles) {
+    const bundle = compileKeys.has(compiles[1]) ? await compileCache.bundle(compiles[1]) : null;
+    return bundle ? { status: 200, headers: { 'content-type': 'application/octet-stream' }, body: bundle } : null;
   }
   // The dev servers' caches of a finished run (see DEV_CACHE_DIRS): project-relative path → text.
   const bundled = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})\/bundle$/.exec(req.path);
@@ -622,6 +636,8 @@ export const node: AdapterDescriptor = {
     const cacheKey = devCacheKey(project, key);
     const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
     issuedCaches.set(cacheKey, cacheDirs);
+    compileKeys.add(cacheKey);
+    const compiles = { key: cacheKey, bundle: (await compileCache.has(cacheKey)) ? `/__sandburg/compile-cache/${cacheKey}` : null };
     let filesBundle: string | null = null;
     let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
     if (project.framework === 'next') {
@@ -658,7 +674,7 @@ export const node: AdapterDescriptor = {
     }
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
-    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, preload: await preloadUrl(key, entry) };
+    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, compileCache: compiles, preload: await preloadUrl(key, entry) };
   },
   serve,
   warmups,

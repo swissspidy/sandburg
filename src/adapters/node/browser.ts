@@ -35,6 +35,8 @@ export interface HostInstall {
     /** Files to wait for before the cache is saved (a seed run: webpack stores its cache when idle). */
     waitFor?: string[];
   };
+  /** Where the runtime records what the host compiles for it, and a bundle of what earlier runs of the project had compiled (see compile-cache.ts). */
+  compileCache?: { key: string; bundle: string | null } | null;
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
   proxy?: ProxyRule[];
   start?: ({ main: string; argv: string[] } | { bin: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
@@ -212,6 +214,7 @@ export function createAdapter(): RuntimeAdapter {
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
+        compileCache: host.compileCache ?? null,
         nodeModules,
         pack,
         compilePort: compiler ? connectCompiler(compiler) : null,

@@ -50,6 +50,8 @@ export type ToWorker =
       preload?: string | null;
       /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
       filesBundle?: string | null;
+      /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
+      compileCache?: { key: string; bundle: string | null } | null;
       nodeModules: Record<string, number> | null;
       /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
       pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
@@ -343,6 +345,34 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
   }
   return requestSync(url, binary);
+}
+
+/**
+ * What the host compiled for earlier runs of the project (Vite's SSR modules, the project's own
+ * files): fetched at the first compile, and looked up before asking the host.
+ */
+let compileCache: { key: string; bundle: string | null } | null = null;
+let compilesLoaded = false;
+
+function loadCompiles(into: Map<string, string>, asyncModules: boolean): void {
+  compilesLoaded = true;
+  if (!compileCache?.bundle) return;
+  try {
+    const res = requestSync(compileCache.bundle, true);
+    if (res.status !== 200) return;
+    const bytes = res.body as Uint8Array;
+    const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
+    const decoder = new TextDecoder();
+    const header = JSON.parse(decoder.decode(bytes.subarray(4, 4 + length))) as [string, number, string, number, number][];
+    let at = 4 + length;
+    for (const [kind, async, path, codeLength, outLength] of header) {
+      // The same key as hostCompile's; compiled as an async module or not, as this runtime would ask.
+      if (!!async === (asyncModules && kind !== 'cjs')) into.set(`${kind}:${path}\0${decoder.decode(bytes.subarray(at, at + codeLength))}`, decoder.decode(bytes.subarray(at + codeLength, at + codeLength + outLength)));
+      at += codeLength + outLength;
+    }
+  } catch {
+    // compiled by the host, one by one
+  }
 }
 
 function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
@@ -826,6 +856,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
   preloadUrl = msg.preload ?? null;
+  compileCache = msg.compileCache ?? null;
   projectRoot = msg.cwd;
   thread = msg.thread ?? null;
   // SANDBURG_TS_RUNNER: started by the shell for tsx, ts-node … (see shell.ts).
@@ -889,7 +920,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -921,6 +952,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   const compiledCache = new Map<string, string>();
   const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts'): string => {
     const key = `${kind}:${path}\0${code}`;
+    if (!compilesLoaded && !pageCompiler) loadCompiles(compiledCache, asyncModules);
     const hit = compiledCache.get(key);
     if (hit !== undefined) return hit;
     let out: string;
@@ -938,7 +970,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
         out = known.body as string;
       } else {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}`, false);
+        xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}${compileCache ? `&cache=${compileCache.key}` : ''}`, false);
         // As a Blob: a string body was slower to reach the host (the 8 MB chunk: ~0.85 s -> ~0.5 s).
         xhr.send(new Blob([code]));
         if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
