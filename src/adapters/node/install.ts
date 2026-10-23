@@ -9,7 +9,7 @@
  * lowered so AsyncLocalStorage works; see src/node-runtime/async-context.ts).
  */
 import { spawn } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { lstatSync, readdirSync, statSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
@@ -519,16 +519,18 @@ async function placeNextSwcWasm(dir: string): Promise<void> {
 
 async function buildIndex(dir: string): Promise<FileIndex> {
   const index: FileIndex = {};
-  async function walk(abs: string): Promise<void> {
-    for (const entry of await readdir(abs, { withFileTypes: true })) {
+  // Synchronous: 0.1-0.2 s for the 10,500 files of a Next.js install, where awaiting each lstat took
+  // 1.1-1.3 s (0.6 s with each directory's entries side by side). Once per install and process.
+  function walk(abs: string): void {
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
       if (entry.name === '.bin' || entry.name === '.cache' || entry.name === '.sandburg-transformed') continue;
       const full = join(abs, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else if (entry.isFile()) index[relative(dir, full).split(sep).join('/')] = (await lstat(full)).size;
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) index[relative(dir, full).split(sep).join('/')] = lstatSync(full).size;
       // npm does not create symlinks without workspaces; others are skipped
     }
   }
-  await walk(join(dir, 'node_modules'));
+  walk(join(dir, 'node_modules'));
   return index;
 }
 
