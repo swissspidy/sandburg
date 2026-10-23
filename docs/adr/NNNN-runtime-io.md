@@ -51,6 +51,12 @@ read behind the first package.json: not worth a cache of its own.
 
 ## Consequences
 
+- The branch against the one before it (scripts/bench.ts, 3 interleaved rounds, medians, total to
+  the result): warm `vite-react-counter` 4.38 → 3.81 s, `lit-vite` 3.30 → 2.90 s,
+  `next-app-router` 12.65 → 12.36 s (no Next.js seed in the benchmark's checkouts),
+  `node-express` 1.14 → 1.15 s; cold `vite-react-counter` 12.16 → 10.65 s, `lit-vite`
+  10.63 → 9.46 s, `next-app-router` 41.78 → 37.00 s (plus `Session.close`, 5.1 → 6.3 s, for its
+  seed), `node-express` 4.30 → 3.05 s.
 - Interleaved A/B of each change, medians (each commit message has its numbers):
   - shared bundle, warm: `vite-react-counter` 5.06 → 3.99 s, `lit-vite` 3.74 → 2.72 s (n=4);
   - WebSocket, cold: start `vite-react-counter` 3.53 → 2.67 s, `lit-vite` 2.74 → 2.28 s,
