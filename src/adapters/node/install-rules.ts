@@ -54,6 +54,9 @@ if (args.includes('--showConfig')) {
   const config = showConfig(file, new Set(), path.dirname(file));
   delete config.compilerOptions.plugins;
   process.stdout.write(JSON.stringify(config, null, 4) + '\\n');
+  // Done, as tsc is: a process that only ends once its event loop has stayed idle a while ends
+  // 0.2 s later (next dev waits for this one as it starts).
+  process.exit(0);
 } else {
   // On this thread, as tsrs runs under Bun: its Node entry point starts a worker thread for a larger
   // stack, which the runtime does not give one, and the worker kept the process alive. Output is

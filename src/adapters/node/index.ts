@@ -425,20 +425,40 @@ async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | n
 const nextSeedDirs = (version: string) => [Number.parseInt(version, 10) >= 16 ? '.next/dev/cache' : '.next/cache'];
 const seeding = new Map<string, Promise<void>>();
 
-function nextSeedKey(versions: Record<string, string>): string {
-  return createHash('sha256').update(`next-seed\0${JSON.stringify(versions)}\0${NODE_VERSION}\0${TRANSFORM_VERSION}`).digest('hex').slice(0, 24);
+/**
+ * The App Router's seed fits apps with an app directory, the Pages Router's those without: webpack
+ * names a module by the index of the loader rule that compiled it (`??ruleSet[1].rules[9]…`), and
+ * Next.js has more rules with an app directory, so a Pages Router app found none of its modules in
+ * the App Router's seed (its first compile built ~200 of Next.js' modules on the client).
+ */
+type NextRouter = 'app' | 'pages';
+const nextRouter = (project: Project): NextRouter => (Object.keys(project.files).some((p) => /^(src\/)?app\//.test(p)) ? 'app' : 'pages');
+
+function nextSeedKey(versions: Record<string, string>, router: NextRouter): string {
+  return createHash('sha256').update(`next-seed\0${router === 'app' ? '' : `${router}\0`}${JSON.stringify(versions)}\0${NODE_VERSION}\0${TRANSFORM_VERSION}`).digest('hex').slice(0, 24);
 }
 
-function nextSeedProject(versions: Record<string, string>): { project: Project; checks: Record<string, (ctx: { app: { goto?: unknown }; page: { evaluate(f: () => Promise<unknown>): Promise<unknown> } }) => Promise<void>> } {
-  const files = {
+function nextSeedProject(versions: Record<string, string>, router: NextRouter): { project: Project; checks: Record<string, (ctx: { app: { goto?: unknown }; page: { evaluate(f: () => Promise<unknown>): Promise<unknown> } }) => Promise<void>> } {
+  const counter = `import { useState } from 'react';\nexport default function Counter() {\n  const [n, setN] = useState(0);\n  return <button onClick={() => setN(n + 1)}>Count {n}</button>;\n}\n`;
+  const files: Record<string, string> = {
     'package.json': JSON.stringify({ name: 'sandburg-next-seed', private: true, scripts: { dev: 'next dev' }, dependencies: versions }, null, 2),
-    'app/layout.js': `export const metadata = { title: 'Seed' };\nexport default function RootLayout({ children }) {\n  return (<html lang="en"><body>{children}</body></html>);\n}\n`,
-    'app/page.js': `import Counter from './counter';\nimport Link from 'next/link';\nexport default function Page() {\n  return (<main><h1>Seed</h1><Counter /><Link href="/about">About</Link></main>);\n}\n`,
-    'app/counter.js': `'use client';\nimport { useState } from 'react';\nexport default function Counter() {\n  const [n, setN] = useState(0);\n  return <button onClick={() => setN(n + 1)}>Count {n}</button>;\n}\n`,
-    'app/about/page.js': `export default function About() {\n  return <p>About</p>;\n}\n`,
-    'app/api/ping/route.js': `export async function GET() {\n  return Response.json({ ok: true });\n}\n`,
+    ...(router === 'app'
+      ? {
+          'app/layout.js': `export const metadata = { title: 'Seed' };\nexport default function RootLayout({ children }) {\n  return (<html lang="en"><body>{children}</body></html>);\n}\n`,
+          'app/page.js': `import Counter from './counter';\nimport Link from 'next/link';\nexport default function Page() {\n  return (<main><h1>Seed</h1><Counter /><Link href="/about">About</Link></main>);\n}\n`,
+          'app/counter.js': `'use client';\n${counter}`,
+          'app/about/page.js': `export default function About() {\n  return <p>About</p>;\n}\n`,
+          'app/api/ping/route.js': `export async function GET() {\n  return Response.json({ ok: true });\n}\n`,
+        }
+      : {
+          'pages/index.js': `import Head from 'next/head';\nimport Link from 'next/link';\nimport Counter from '../components/counter';\nexport default function Page() {\n  return (<main><Head><title>Seed</title></Head><h1>Seed</h1><Counter /><Link href="/about">About</Link></main>);\n}\n`,
+          'components/counter.js': counter,
+          'pages/about.js': `export default function About() {\n  return <p>About</p>;\n}\n`,
+          'pages/api/ping.js': `export default function handler(req, res) {\n  res.status(200).json({ ok: true });\n}\n`,
+        }),
   };
-  const project = projectFromFiles(files, { name: `sandburg-next-seed@${versions.next}`, path: `sandburg:next-seed/${versions.next}` });
+  const name = router === 'app' ? 'next-seed' : `next-${router}-seed`;
+  const project = projectFromFiles(files, { name: `sandburg-${name}@${versions.next}`, path: `sandburg:${name}/${versions.next}` });
   // Compile what apps compile first: a page with a client component, another route, a route handler.
   const checks = {
     'the page, a route and a route handler compile': async ({ app }: { app: { getByRole(r: string, o: object): { click(): Promise<void> }; evaluate(f: () => Promise<unknown>): Promise<unknown> } }) => {
@@ -482,17 +502,17 @@ async function viteSeedCache(project: Project, installKey: string, options: Host
  * the seed run starts beside the app, which does not wait for it: a seed run takes ~40 s, and the app
  * compiles Next.js on its own in a few seconds more than with a seed. Later apps use the seed.
  */
-async function nextSeedCache(resolved: Record<string, string>, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean; dirs: string[] } | null> {
+async function nextSeedCache(resolved: Record<string, string>, router: NextRouter, options: HostInstallOptions | undefined, log: (line: string) => void): Promise<{ key: string; ready: boolean; dirs: string[] } | null> {
   const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
   if (!versions.next || !versions.react || !versions['react-dom']) return null;
-  const key = nextSeedKey(versions);
+  const key = nextSeedKey(versions, router);
   const dirs = nextSeedDirs(versions.next);
   const stored = () => stat(join(devCacheRoot(), `${key}.json`)).then(() => true, () => false);
   if (options?.seed) return { key, ready: false, dirs };
   if (await stored()) return { key, ready: true, dirs };
   if (options?.runSeed && !seeding.has(key)) {
-    log(`seeding the webpack cache for next@${versions.next} beside this app (once per set of versions)`);
-    const seed = nextSeedProject(versions);
+    log(`seeding the webpack cache for next@${versions.next} beside this app (once per set of versions and router)`);
+    const seed = nextSeedProject(versions, router);
     seeding.set(key, options.runSeed(seed.project, seed.checks).catch((e: Error) => log(`seeding failed: ${e.message}`)));
   }
   return { key, ready: false, dirs };
@@ -654,7 +674,7 @@ export const node: AdapterDescriptor = {
     let filesBundle: string | null = null;
     let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
     if (project.framework === 'next') {
-      const seed = await nextSeedCache(info.resolved, options, log);
+      const seed = await nextSeedCache(info.resolved, nextRouter(project), options, log);
       if (seed && options?.seed) {
         // The seed run keeps its webpack cache under the shared key.
         issuedCaches.set(seed.key, seed.dirs);
