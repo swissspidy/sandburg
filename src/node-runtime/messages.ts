@@ -6,6 +6,8 @@ export type FromWorker =
   | { type: 'response-start'; id: number; status: number; statusText: string; headers: [string, string][] }
   | { type: 'response-chunk'; id: number; chunk: Uint8Array }
   | { type: 'response-end'; id: number }
+  /** A whole response (see request() in worker.ts): one message instead of start, chunks and end. */
+  | { type: 'response-full'; id: number; status: number; statusText: string; headers: [string, string][]; body: ArrayBuffer }
   | { type: 'response-error'; id: number; message: string }
   | { type: 'exit'; code: number }
   /** trap: a WebAssembly trap ended a thread of this runtime (or the runtime itself, if it is a thread). */

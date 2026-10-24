@@ -1512,18 +1512,82 @@ function postFatal(e: unknown) {
   post({ type: 'fatal', message, stack, ...(trap && { trap }) });
 }
 
+/**
+ * Responses that end where they start (most of a dev server's: res.end(code)) go to the page as one
+ * message (response-full) instead of start, chunks and end, each a task on the page's main thread
+ * (which the app's frame shares) and on the service worker's. A response is held for a few
+ * microtasks (res.end finishes through process.nextTick, a microtask here), not until another task:
+ * that task would queue behind everything the runtime has queued. One still going then streams.
+ */
+const RESPONSE_HOLD_MAX = 1 << 20;
+const RESPONSE_HOLD_MICROTASKS = 16;
+let heldResponses: (() => void)[] = [];
+function releaseHeld(depth: number) {
+  if (depth > 0) return queueMicrotask(() => releaseHeld(depth - 1));
+  const held = heldResponses;
+  heldResponses = [];
+  for (const release of held) release();
+}
+
 function request(msg: Extract<ToWorker, { type: 'request' }>) {
   const server = servers.get(msg.port);
   if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}` });
+  const id = msg.id;
+  /** The start and chunks held until the end of the task; null once the response streams. */
+  let held: { start: [number, string, [string, string][]] | null; chunks: Uint8Array[]; size: number } | null = { start: null, chunks: [], size: 0 };
+  const release = () => {
+    if (!held) return;
+    const h = held;
+    held = null;
+    if (h.start) post({ type: 'response-start', id, status: h.start[0], statusText: h.start[1], headers: h.start[2] });
+    for (const chunk of h.chunks) post({ type: 'response-chunk', id, chunk }, [chunk.buffer as ArrayBuffer]);
+  };
+  const hold = () => {
+    if (heldResponses.length === 0) releaseHeld(RESPONSE_HOLD_MICROTASKS);
+    heldResponses.push(release);
+  };
   try {
     server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
-      start: (status, statusText, headers) => post({ type: 'response-start', id: msg.id, status, statusText, headers }),
-      chunk: (data) => post({ type: 'response-chunk', id: msg.id, chunk: data }, [data.buffer]),
-      end: () => post({ type: 'response-end', id: msg.id }),
+      start: (status, statusText, headers) => {
+        if (!held) return post({ type: 'response-start', id, status, statusText, headers });
+        held.start = [status, statusText, headers];
+        hold();
+      },
+      chunk: (data) => {
+        if (held && held.size + data.length <= RESPONSE_HOLD_MAX) {
+          held.chunks.push(data);
+          held.size += data.length;
+          return;
+        }
+        release();
+        post({ type: 'response-chunk', id, chunk: data }, [data.buffer as ArrayBuffer]);
+      },
+      end: () => {
+        const start = held?.start;
+        if (held && start) {
+          const h = held;
+          held = null;
+          const body = h.chunks.length === 1 && h.chunks[0].byteOffset === 0 && h.chunks[0].byteLength === h.chunks[0].buffer.byteLength ? h.chunks[0] : concatBytes(h.chunks, h.size);
+          return post({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
+        }
+        release();
+        post({ type: 'response-end', id });
+      },
     });
   } catch (e) {
-    post({ type: 'response-error', id: msg.id, message: String((e as Error)?.stack ?? e) });
+    release();
+    post({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
   }
+}
+
+function concatBytes(chunks: Uint8Array[], size: number): Uint8Array {
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
 }
 
 self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
@@ -1779,6 +1843,12 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
   if (own && m.type.startsWith('response-')) {
     if (m.type === 'response-start') own.start(m.status as number, m.statusText as string, m.headers as [string, string][]);
     else if (m.type === 'response-chunk') own.chunk(m.chunk as Uint8Array);
+    else if (m.type === 'response-full') {
+      loopbackRequests.delete(m.id as number);
+      own.start(m.status as number, m.statusText as string, m.headers as [string, string][]);
+      if ((m.body as ArrayBuffer).byteLength) own.chunk(new Uint8Array(m.body as ArrayBuffer));
+      own.end();
+    }
     else {
       loopbackRequests.delete(m.id as number);
       if (m.type === 'response-end') own.end();
@@ -1799,6 +1869,9 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
       return true;
     case 'response-chunk':
       post(m as FromWorker, [(m.chunk as Uint8Array).buffer as ArrayBuffer]);
+      return true;
+    case 'response-full':
+      post(m as FromWorker, [m.body as ArrayBuffer]);
       return true;
     case 'response-start':
     case 'response-end':
