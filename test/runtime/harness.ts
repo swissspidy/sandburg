@@ -29,7 +29,7 @@ window.prefetch = (url) => {
 };
 window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
-  const out = { stdout: '', stderr: '', responses: [], fatal: null, exit: null };
+  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null };
   const bodies = new Map();
   let pending = requests.length;
   const finish = () => { w.terminate(); resolve(out); };
@@ -42,6 +42,13 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
     else if (m.type === 'listening') requests.forEach((r, i) => w.postMessage({ type: 'request', id: i, port: m.port, method: r.method || 'GET', url: r.url, headers: [['host', 'localhost']], body: null }));
     else if (m.type === 'response-start') bodies.set(m.id, { status: m.status, headers: m.headers, chunks: [] });
     else if (m.type === 'response-chunk') bodies.get(m.id).chunks.push(new TextDecoder().decode(m.chunk));
+    else if (m.type === 'response-full') {
+      // A response that ended in the task that started it, in one message (see request() in worker.ts).
+      const body = new TextDecoder().decode(m.body);
+      out.whole.push(m.id);
+      out.responses[m.id] = { status: m.status, body, chunks: body ? 1 : 0 };
+      if (--pending === 0) finish();
+    }
     else if (m.type === 'response-end' || m.type === 'response-error') {
       const b = bodies.get(m.id) || { status: 0, chunks: [m.message] };
       out.responses[m.id] = { status: b.status, body: b.chunks.join(''), chunks: b.chunks.length };
@@ -198,6 +205,8 @@ export class RuntimeHarness {
       fatal: string | null;
       exit: number | null;
       responses: { status: number; body: string; chunks: number }[];
+      /** The ids of the requests whose response came in one message (response-full). */
+      whole: number[];
     }>;
   }
 

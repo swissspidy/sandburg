@@ -3,10 +3,10 @@
  * Worker, as the host page sees it. Used by the node adapter (the app is the
  * process) and by the esbuild adapter (the app's backend is the process).
  */
-import { AdapterError } from '../../host/types.ts';
+import { AdapterError, type Activity } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
 import type { FromWorker } from '../../node-runtime/messages.ts';
-import type { BridgedRequest } from '../sw-bridge.ts';
+import type { BridgeReply, BridgedRequest } from '../sw-bridge.ts';
 
 export interface NodeProcessOptions {
   files: FileTree;
@@ -106,12 +106,15 @@ export class NodeProcess {
   private crashes = new BroadcastChannel('sandburg-wasm-thread-crash');
   private ready = false;
   private waiters = new Set<() => void>();
-  private pending = new Map<number, MessagePort>();
+  private pending = new Map<number, BridgeReply>();
+  /** When each pending request was sent (see activity()). */
+  private sent = new Map<number, number>();
+  private lastRequest = performance.now();
   private sockets = new Map<number, MessagePort>();
   private nextId = 1;
   private label: string;
   private partial = { stdout: '', stderr: '' };
-  private trees = new Map<number, (files: Record<string, CacheFile>) => void>();
+  private trees = new Map<number, (files: Record<string, CacheFile> | null) => void>();
   /** When the page last sent the runtime a request or heard from it (see activity()). */
   private lastActivity = performance.now();
 
@@ -141,8 +144,9 @@ export class NodeProcess {
     return this.until(() => this.ready);
   }
 
-  run(main: string, argv: string[] = []): void {
-    this.worker.postMessage({ type: 'run', main, argv });
+  /** `track`: project directories whose changes the runtime notes from now on (see readTree's ifChanged). */
+  run(main: string, argv: string[] = [], track?: string[]): void {
+    this.worker.postMessage({ type: 'run', main, argv, track });
   }
 
   /** Resolves with the first listening port (or `port`, once it listens). Rejects if the program crashes or exits first. */
@@ -170,9 +174,9 @@ export class NodeProcess {
       const channel = new MessageChannel();
       channel.port1.onmessage = (e) => {
         const m = e.data as { type: string; status?: number; headers?: [string, string][] };
-        if (m.type === 'start' || m.type === 'error') {
+        if (m.type === 'start' || m.type === 'full' || m.type === 'error') {
           const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
-          if (m.type === 'start' && m.status! < 400 && /html/.test(type) && found === null) found = port;
+          if (m.type !== 'error' && m.status! < 400 && /html/.test(type) && found === null) found = port;
           settled++;
           channel.port1.close();
           for (const w of this.waiters) w();
@@ -218,14 +222,15 @@ export class NodeProcess {
   }
 
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
-  request(port: number, request: BridgedRequest, reply: MessagePort): void {
+  request(port: number, request: BridgedRequest, reply: BridgeReply): void {
     if (this.failure && this.exitCode === null) {
       reply.postMessage({ type: 'error', message: `${this.label} crashed: ${this.failure.message.split('\n')[0]}` });
       return;
     }
     const id = this.nextId++;
     this.pending.set(id, reply);
-    this.lastActivity = performance.now();
+    this.lastActivity = this.lastRequest = performance.now();
+    this.sent.set(id, this.lastRequest);
     // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
     const headers: [string, string][] = request.headers
       .filter(([k]) => !/^(cookie|accept-encoding|host)$/i.test(k))
@@ -267,11 +272,14 @@ export class NodeProcess {
    * The files under project directories, keyed by project-relative path; with match (a regular
    * expression's source), also the project's files whose path matches, as base64.
    */
-  readTree(dirs: string[], match?: string): Promise<Record<string, CacheFile>> {
+  readTree(dirs: string[], match?: string): Promise<Record<string, CacheFile>>;
+  /** With ifChanged: null when no file under the directories run() tracks changed since the program started. */
+  readTree(dirs: string[], match: undefined, ifChanged: true): Promise<Record<string, CacheFile> | null>;
+  readTree(dirs: string[], match?: string, ifChanged?: boolean): Promise<Record<string, CacheFile> | null> {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.trees.set(id, resolve);
-      this.worker.postMessage({ type: 'read-tree', id, dirs, match });
+      this.worker.postMessage({ type: 'read-tree', id, dirs, match, ifChanged });
     });
   }
 
@@ -285,8 +293,16 @@ export class NodeProcess {
    * runtime last said anything (a response, a log line). Checks stop waiting for an assertion that
    * keeps failing once the runtime is idle: nothing is still coming.
    */
-  activity(): { inflight: number; idleMs: number } {
-    return { inflight: this.pending.size, idleMs: Math.round(performance.now() - this.lastActivity) };
+  activity(): Activity {
+    const now = performance.now();
+    let newestMs = Infinity;
+    for (const t of this.sent.values()) newestMs = Math.min(newestMs, now - t);
+    return {
+      inflight: this.pending.size,
+      idleMs: Math.round(now - this.lastActivity),
+      sinceRequestMs: Math.round(now - this.lastRequest),
+      newestInflightMs: this.pending.size ? Math.round(newestMs) : null,
+    };
   }
 
   private onMessage(m: FromWorker, opts: NodeProcessOptions) {
@@ -324,7 +340,7 @@ export class NodeProcess {
         } else if (!this.ports.includes(m.port)) this.ports.push(m.port);
         break;
       case 'tree':
-        this.trees.get(m.id)?.(m.files);
+        this.trees.get(m.id)?.(m.unchanged ? null : m.files);
         this.trees.delete(m.id);
         break;
       case 'process-exit':
@@ -340,11 +356,21 @@ export class NodeProcess {
         this.exitCode = m.code;
         if (!this.ports.length) this.fail(new AdapterError('APP', `${this.label} exited with code ${m.code} before it started listening`));
         break;
-      case 'response-start': {
+      case 'response-start':
+      case 'response-full': {
         for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
         // A redirect to the server's own address (built from Host, now localhost) stays on the page's origin.
         const headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v) : v]);
-        this.pending.get(m.id)?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
+        const reply = this.pending.get(m.id);
+        if (m.type === 'response-start') {
+          reply?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
+          break;
+        }
+        // The whole response at once (see request() in worker.ts).
+        reply?.postMessage({ type: 'full', status: m.status, statusText: m.statusText, headers, body: m.body }, [m.body]);
+        reply?.close();
+        this.pending.delete(m.id);
+        this.sent.delete(m.id);
         break;
       }
       case 'ws-accept':
@@ -369,10 +395,12 @@ export class NodeProcess {
         this.pending.get(m.id)?.postMessage({ type: 'end' });
         this.pending.get(m.id)?.close();
         this.pending.delete(m.id);
+        this.sent.delete(m.id);
         break;
       case 'response-error':
         this.pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
         this.pending.delete(m.id);
+        this.sent.delete(m.id);
         break;
     }
     for (const w of this.waiters) w();

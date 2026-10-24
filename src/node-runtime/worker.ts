@@ -77,7 +77,8 @@ export type ToWorker =
     }
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
-  | { type: 'run'; main: string; argv?: string[]; preload?: string[] }
+  /** `track`: project directories whose files the runtime notes changes to from now on (see read-tree's ifChanged). */
+  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
   /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
   | { type: 'spares' }
   /** The parent closed this child process's IPC channel. */
@@ -94,7 +95,7 @@ export type ToWorker =
    * The files under some directories (dev servers' caches, kept for the next run); with match, also
    * the project's files whose path matches it, outside node_modules and dot directories (an app's databases).
    */
-  | { type: 'read-tree'; id: number; dirs: string[]; match?: string }
+  | { type: 'read-tree'; id: number; dirs: string[]; match?: string; ifChanged?: boolean }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
   | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
   | { type: 'ws-close'; id: number; code?: number; reason?: string }
@@ -1481,6 +1482,7 @@ function exitWhenIdle() {
 }
 
 function run(msg: Extract<ToWorker, { type: 'run' }>) {
+  if (msg.track) vfs.track(msg.track.map((d) => `${projectRoot}/${d}`));
   if (!usesSqlite) return start(msg);
   // Work in progress: a child process that has not started its program yet is not idle (see
   // exitWhenIdle), however long SQLite's WebAssembly takes to load.
@@ -1529,18 +1531,82 @@ function postFatal(e: unknown) {
   post({ type: 'fatal', message, stack, ...(trap && { trap }) });
 }
 
+/**
+ * Responses that end where they start (most of a dev server's: res.end(code)) go to the page as one
+ * message (response-full) instead of start, chunks and end, each a task on the page's main thread
+ * (which the app's frame shares) and on the service worker's. A response is held for a few
+ * microtasks (res.end finishes through process.nextTick, a microtask here), not until another task:
+ * that task would queue behind everything the runtime has queued. One still going then streams.
+ */
+const RESPONSE_HOLD_MAX = 1 << 20;
+const RESPONSE_HOLD_MICROTASKS = 16;
+let heldResponses: (() => void)[] = [];
+function releaseHeld(depth: number) {
+  if (depth > 0) return queueMicrotask(() => releaseHeld(depth - 1));
+  const held = heldResponses;
+  heldResponses = [];
+  for (const release of held) release();
+}
+
 function request(msg: Extract<ToWorker, { type: 'request' }>) {
   const server = servers.get(msg.port);
   if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}` });
+  const id = msg.id;
+  /** The start and chunks held until the end of the task; null once the response streams. */
+  let held: { start: [number, string, [string, string][]] | null; chunks: Uint8Array[]; size: number } | null = { start: null, chunks: [], size: 0 };
+  const release = () => {
+    if (!held) return;
+    const h = held;
+    held = null;
+    if (h.start) post({ type: 'response-start', id, status: h.start[0], statusText: h.start[1], headers: h.start[2] });
+    for (const chunk of h.chunks) post({ type: 'response-chunk', id, chunk }, [chunk.buffer as ArrayBuffer]);
+  };
+  const hold = () => {
+    if (heldResponses.length === 0) releaseHeld(RESPONSE_HOLD_MICROTASKS);
+    heldResponses.push(release);
+  };
   try {
     server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
-      start: (status, statusText, headers) => post({ type: 'response-start', id: msg.id, status, statusText, headers }),
-      chunk: (data) => post({ type: 'response-chunk', id: msg.id, chunk: data }, [data.buffer]),
-      end: () => post({ type: 'response-end', id: msg.id }),
+      start: (status, statusText, headers) => {
+        if (!held) return post({ type: 'response-start', id, status, statusText, headers });
+        held.start = [status, statusText, headers];
+        hold();
+      },
+      chunk: (data) => {
+        if (held && held.size + data.length <= RESPONSE_HOLD_MAX) {
+          held.chunks.push(data);
+          held.size += data.length;
+          return;
+        }
+        release();
+        post({ type: 'response-chunk', id, chunk: data }, [data.buffer as ArrayBuffer]);
+      },
+      end: () => {
+        const start = held?.start;
+        if (held && start) {
+          const h = held;
+          held = null;
+          const body = h.chunks.length === 1 && h.chunks[0].byteOffset === 0 && h.chunks[0].byteLength === h.chunks[0].buffer.byteLength ? h.chunks[0] : concatBytes(h.chunks, h.size);
+          return post({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
+        }
+        release();
+        post({ type: 'response-end', id });
+      },
     });
   } catch (e) {
-    post({ type: 'response-error', id: msg.id, message: String((e as Error)?.stack ?? e) });
+    release();
+    post({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
   }
+}
+
+function concatBytes(chunks: Uint8Array[], size: number): Uint8Array {
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
 }
 
 self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
@@ -1571,6 +1637,8 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
+  // Nothing changed under the tracked directories since the program started: no need to read them.
+  else if (msg.type === 'read-tree' && msg.ifChanged && !msg.match && vfs.trackedChanged() === false) post({ type: 'tree', id: msg.id, files: {}, unchanged: true });
   else if (msg.type === 'read-tree') {
     const files: Record<string, string | { base64: string }> = {};
     const utf8 = new TextDecoder('utf-8', { fatal: true });
@@ -1797,6 +1865,12 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
   if (own && m.type.startsWith('response-')) {
     if (m.type === 'response-start') own.start(m.status as number, m.statusText as string, m.headers as [string, string][]);
     else if (m.type === 'response-chunk') own.chunk(m.chunk as Uint8Array);
+    else if (m.type === 'response-full') {
+      loopbackRequests.delete(m.id as number);
+      own.start(m.status as number, m.statusText as string, m.headers as [string, string][]);
+      if ((m.body as ArrayBuffer).byteLength) own.chunk(new Uint8Array(m.body as ArrayBuffer));
+      own.end();
+    }
     else {
       loopbackRequests.delete(m.id as number);
       if (m.type === 'response-end') own.end();
@@ -1817,6 +1891,9 @@ function relayFromNested(m: { type: string; [k: string]: unknown }, from: global
       return true;
     case 'response-chunk':
       post(m as FromWorker, [(m.chunk as Uint8Array).buffer as ArrayBuffer]);
+      return true;
+    case 'response-full':
+      post(m as FromWorker, [m.body as ArrayBuffer]);
       return true;
     case 'response-start':
     case 'response-end':

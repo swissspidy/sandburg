@@ -12,7 +12,7 @@ const cache = await mkdtemp(join(tmpdir(), 'sandburg-npm-cache-'));
 process.env.npm_config_cache = cache;
 // unpackAhead's cache index keys name the configured registry; the tests write npmjs.org's.
 process.env.npm_config_registry = 'https://registry.npmjs.org/';
-const { installFromLockfile, installedPackages, normalizeBin, sweepStore, unpackAhead } = await import('../../src/adapters/node/package-store.ts');
+const { installFromLockfile, installedPackages, normalizeBin, sweepStore, unpackAhead, unpackHint } = await import('../../src/adapters/node/package-store.ts');
 
 /** A ustar archive with npm pack's top directory. */
 function tar(entries: Record<string, string>): Buffer {
@@ -131,6 +131,29 @@ test('packages are unpacked ahead from a lockfile and from pinned versions in np
   const unpacked = readdirSync(store).filter((n) => !n.includes('.tmp-'));
   assert.equal(unpacked.length, 2);
   assert.ok(unpacked.every((n) => existsSync(join(store, n, 'package.json'))));
+});
+
+test('packages npm picks are unpacked as it resolves, when their tarball is what its integrity says', async () => {
+  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const good = await cached('picked', '1.0.0', { 'a.js': 'a' });
+  const tampered = await cached('tampered', '1.0.0', { 't.js': 't' });
+  // The tarball in npm's cache is not the one its integrity names.
+  const hex = Buffer.from(String(tampered.integrity).slice(7), 'base64').toString('hex');
+  await writeFile(join(cache, '_cacache', 'content-v2', 'sha512', hex.slice(0, 2), hex.slice(2, 4), hex.slice(4)), gzipSync(tar({ 'package.json': '{"name":"tampered","version":"1.0.0"}', 't.js': 'evil' })));
+  const missing = `sha512-${createHash('sha512').update('not cached').digest('base64')}`;
+  for (const integrity of [String(good.integrity), String(tampered.integrity), missing, 'not an integrity']) unpackHint(integrity, store);
+  const name = (e: Record<string, unknown>) => `sha512-${Buffer.from(String(e.integrity).slice(7), 'base64').toString('hex')}`;
+  for (let i = 0; i < 100 && !existsSync(join(store, name(good), 'a.js')); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(readFileSync(join(store, name(good), 'a.js'), 'utf8'), 'a');
+  // An install right after takes what is still waiting, and unpacks the tampered one itself: refused.
+  const lines: string[] = [];
+  const dir = await project({ 'node_modules/picked': good, 'node_modules/tampered': tampered });
+  assert.equal(await installFromLockfile(dir, store, (l) => lines.push(l)), false);
+  assert.match(lines.join('\n'), /integrity mismatch/);
+  assert.ok(!existsSync(join(store, name(tampered))));
+  const ok = await project({ 'node_modules/picked': good });
+  assert.equal(await installFromLockfile(ok, store, () => {}), true);
+  assert.equal(readFileSync(join(ok, 'node_modules', 'picked', 'a.js'), 'utf8'), 'a');
 });
 
 test('package binaries are normalized as npm normalizes them', () => {

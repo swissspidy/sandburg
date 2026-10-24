@@ -6,6 +6,8 @@ export type FromWorker =
   | { type: 'response-start'; id: number; status: number; statusText: string; headers: [string, string][] }
   | { type: 'response-chunk'; id: number; chunk: Uint8Array }
   | { type: 'response-end'; id: number }
+  /** A whole response (see request() in worker.ts): one message instead of start, chunks and end. */
+  | { type: 'response-full'; id: number; status: number; statusText: string; headers: [string, string][]; body: ArrayBuffer }
   | { type: 'response-error'; id: number; message: string }
   | { type: 'exit'; code: number }
   /** trap: a WebAssembly trap ended a thread of this runtime (or the runtime itself, if it is a thread). */
@@ -21,4 +23,5 @@ export type FromWorker =
   | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
   /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
   | { type: 'process-exit'; command: string; code: number; stderr: string }
-  | { type: 'tree'; id: number; files: Record<string, string | { base64: string }> };
+  /** `unchanged`: read-tree's ifChanged, and nothing under the tracked directories changed (files is empty). */
+  | { type: 'tree'; id: number; files: Record<string, string | { base64: string }>; unchanged?: boolean };

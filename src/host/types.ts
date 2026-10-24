@@ -22,8 +22,20 @@ export interface RuntimeAdapter {
   /** Rejects when the app's runtime fails after it started (the app frame would wait on it forever). */
   failed?(): Promise<never>;
   /** Requests the app's servers are still answering, and how long the runtime has been quiet. */
-  activity?(): { inflight: number; idleMs: number } | null;
+  activity?(): Activity | null;
   dispose(): Promise<void>;
+}
+
+/** What the app's servers are doing: their requests from the page, and when the runtime last spoke. */
+export interface Activity {
+  /** Requests still being answered. */
+  inflight: number;
+  /** Since the runtime last sent or heard anything (a request, a response, a log line). */
+  idleMs: number;
+  /** Since the page last sent a request. */
+  sinceRequestMs?: number;
+  /** Age of the youngest request still in flight (null when none is). */
+  newestInflightMs?: number | null;
 }
 
 export interface StartResult {
@@ -58,7 +70,13 @@ export interface HostApi {
    * else the body has text. False for the browser's error page and a dev server's loading page.
    */
   rendered(selector: string | null): Promise<RpcResult<boolean>>;
-  activity(): Promise<RpcResult<{ inflight: number; idleMs: number } | null>>;
+  activity(): Promise<RpcResult<Activity | null>>;
+  /**
+   * Waits until the app has settled (see Activity): no request sent for `quietMs`, and none in
+   * flight that was sent within `longMs` (a long-lived stream or long poll does not count), or
+   * `maxMs` passed. Whether it settled; null without a runtime that reports its activity.
+   */
+  settled(quietMs: number, longMs: number, maxMs: number): Promise<RpcResult<boolean | null>>;
   dispose(): Promise<RpcResult<void>>;
 }
 
