@@ -9,7 +9,7 @@ import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import type { FromWorker } from './messages.ts';
-import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
@@ -72,11 +72,15 @@ export type ToWorker =
       thread?: ThreadInit;
       /** A thread inherits these from its parent instead of scanning files it does not have. */
       inherit?: { asyncModules: boolean; usesSqlite: boolean };
+      /** Raised once anything but the install wrote in node_modules (see trackNodeModulesWrites); the main runtime's, for threads. */
+      nodeModulesWrites?: Int32Array;
     }
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
   /** `track`: project directories whose files the runtime notes changes to from now on (see read-tree's ifChanged). */
   | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
+  /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
+  | { type: 'spares' }
   /** The parent closed this child process's IPC channel. */
   | { type: 'disconnect' }
   /** A net connection between runtimes (see netMessage). */
@@ -830,6 +834,7 @@ let tsRunner = false;
 let threads: ReturnType<typeof createWorkerThreads>;
 let childProcess: ReturnType<typeof createChildProcess>;
 let nodeModulesIndex: Record<string, number> | null = null;
+let nodeModulesWrites: Int32Array | undefined;
 
 function write(stream: 'stdout' | 'stderr', text: string) {
   post({ type: 'log', stream, text });
@@ -1084,7 +1089,7 @@ function buildBuiltins() {
     child_process: () => childProcess,
     worker_threads: () => {
       // Threads may be spawned while this thread is blocked; have runtimes ready for them (see threads.ts).
-      warmRuntimes(base, WARM_RUNTIMES);
+      if (!wasiChildThread()) warmRuntimes(base, WARM_RUNTIMES);
       return threads.module;
     },
     cluster: () => misc.cluster,
@@ -1120,6 +1125,18 @@ function buildBuiltins() {
 }
 
 let moduleSystem: ReturnType<typeof createModuleSystem>;
+
+/**
+ * Whether this runtime is one of a napi-rs WebAssembly build's threads (its `wasi-worker.mjs`).
+ * Such a thread starts no threads itself: emnapi asks the thread that loaded the build to spawn
+ * them (a `spawn-thread` message), so it needs no spare runtimes. Rolldown's four threads each
+ * booted four spares that no one took: 16 runtimes compiling the runtime's script during a Vite
+ * start. Should one start a thread after all, it gets a new runtime, as when no spare is left.
+ */
+function wasiChildThread(): boolean {
+  return !!thread && !thread.process && WASI_WORKER.test(thread.main);
+}
+const WASI_WORKER = /\/node_modules\/(?:@[^/]+\/)?[^/]+-wasm32-wasi\/wasi-worker\.mjs$/;
 /** Runtime workers booted ahead of time for threads (see threads.ts). */
 const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
 
@@ -1145,8 +1162,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       return data;
     });
     for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) installed.addRemote(`${msg.cwd}/${rel}`, size);
-    vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd, thread.snapshot);
+    vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd, thread.snapshot, msg.nodeModulesWrites);
   }
+  // The main runtime's, before the project's files are written (some may be in node_modules).
+  nodeModulesWrites = thread ? msg.nodeModulesWrites : trackNodeModulesWrites(vfs, msg.cwd, msg.nodeModules);
   nodeModulesIndex = msg.nodeModules;
   for (const [path, content] of Object.entries(msg.files)) {
     const abs = `${msg.cwd}/${path}`;
@@ -1184,7 +1203,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   if (!thread) vfs.mkdir('/tmp', true);
   // WebAssembly threads (napi-rs wasm32-wasi builds) may be spawned while this thread is blocked: have runtimes ready.
-  if (Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
+  if (!wasiChildThread() && Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
@@ -1198,7 +1217,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -1597,6 +1616,9 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
     init(msg);
   }
   else if (msg.type === 'run') run(msg);
+  else if (msg.type === 'spares') {
+    if (!proc) warmRuntimes(location.pathname.replace(/\/node-worker\.js$/, ''), WARM_RUNTIMES);
+  }
   else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) nestedPorts.get(msg.port)!.postMessage(msg, msg.body ? [msg.body] : []);
   else if (msg.type === 'request') request(msg);
   else if (msg.type === 'ws-open' && !servers.has(msg.port) && nestedPorts.has(msg.port)) {

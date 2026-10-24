@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vfs } from '../../src/node-runtime/vfs.ts';
-import { ThreadVfs } from '../../src/node-runtime/threads.ts';
+import { ThreadVfs, serveVfsCall, trackNodeModulesWrites } from '../../src/node-runtime/threads.ts';
 
 // A worker thread whose parent runtime is blocked (busy in a synchronous request): after a short wait
 // its VFS answers reads from its snapshot of the project, which leaves out node_modules. The installed
@@ -71,4 +71,61 @@ test('a thread whose parent is blocked answers from its snapshot after all', () 
   assert.ok(performance.now() - started >= 4500);
   assert.equal(thread.exists('/app/.nuxt/nuxt.d.ts'), false); // at once now: the parent is known to be blocked
   assert.ok(performance.now() - started < 6000);
+});
+
+// Module resolution in a thread looks for many node_modules paths the install does not have
+// (`<package>/node_modules/<name>` for each package up the tree). While nothing but the install has
+// written in node_modules, the thread answers those itself; once something has, it asks its parent.
+test('a thread tells that a node_modules path is not installed without asking, until node_modules is written', () => {
+  const installed = new Vfs(() => new TextEncoder().encode('{}'));
+  installed.addRemote('/app/node_modules/@napi-rs/wasm-runtime/package.json', 2);
+  const parent = new Vfs(() => new TextEncoder().encode('{}'));
+  const flag = trackNodeModulesWrites(parent, '/app', { 'node_modules/@napi-rs/wasm-runtime/package.json': 2 });
+  // The main runtime writes a dev server's cache before it registers the install (the cache makes /app/node_modules).
+  parent.mkdir('/app/node_modules/.vite/deps', true);
+  parent.addRemote('/app/node_modules/@napi-rs/wasm-runtime/package.json', 2);
+  parent.mkdir('/app/src', true);
+  parent.write('/app/src/main.ts', new Uint8Array());
+  const asked: string[] = [];
+  const thread = new ThreadVfs(
+    (m) => {
+      const msg = m as Parameters<typeof serveVfsCall>[1];
+      asked.push(`${msg.op} ${msg.args[0]}`);
+      serveVfsCall(parent, msg); // a parent that answers at once
+    },
+    installed,
+    '/app',
+    {},
+    flag,
+  );
+
+  assert.equal(thread.exists('/app/node_modules/@napi-rs/wasm-runtime/node_modules/@emnapi/core'), false);
+  assert.equal(thread.kind('/app/node_modules/@emnapi/core/package.json'), null);
+  assert.throws(() => thread.stat('/app/node_modules/@emnapi/core'), { code: 'ENOENT' });
+  assert.equal(thread.exists('/app/node_modules/@napi-rs/wasm-runtime/package.json'), true);
+  // Not node_modules, though the path goes through it; and a cache the parent writes.
+  assert.equal(thread.exists('/app/node_modules/../src/main.ts'), true);
+  assert.equal(thread.exists('/app/node_modules/.vite/deps/_metadata.json'), false);
+  assert.deepEqual(asked, ['exists /app/node_modules/../src/main.ts', 'exists /app/node_modules/.vite/deps/_metadata.json']);
+  assert.equal(thread.exists('/app/node_modules'), true);
+  assert.equal(Atomics.load(flag, 0), 0);
+
+  // A cache written in node_modules leaves the flag down; a package written there raises it.
+  parent.write('/app/node_modules/.vite/deps/_metadata.json', new Uint8Array());
+  assert.equal(Atomics.load(flag, 0), 0);
+  thread.mkdir('/app/node_modules/@emnapi/core', true);
+  assert.equal(Atomics.load(flag, 0), 1);
+  asked.length = 0;
+  assert.equal(thread.exists('/app/node_modules/@emnapi/core'), true);
+  assert.equal(thread.exists('/app/node_modules/@emnapi/runtime'), false);
+  assert.deepEqual(asked, ['exists /app/node_modules/@emnapi/core', 'exists /app/node_modules/@emnapi/runtime']);
+});
+
+test('an empty node_modules directory the install does not have raises the flag', () => {
+  const parent = new Vfs(() => new Uint8Array());
+  const flag = trackNodeModulesWrites(parent, '/app', { 'node_modules/a/package.json': 2 });
+  parent.mkdir('/app/node_modules/a', true);
+  assert.equal(Atomics.load(flag, 0), 0);
+  parent.mkdir('/app/src/node_modules', true);
+  assert.equal(Atomics.load(flag, 0), 1);
 });
