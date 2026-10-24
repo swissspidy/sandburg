@@ -26,9 +26,20 @@ self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim(
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'sandburg-port' && event.ports[0]) {
     port = event.ports[0];
+    // Replies to requests sent on any port the page gave, the current one or an earlier one.
+    port.onmessage = (e) => replies.get(e.data.id)?.(e.data);
+    // The app is about to load: every app page loads the shim first thing (a script that blocks parsing).
+    if (!hooks.fetch) void runtimeScript(new Request(WS_SHIM), WS_SHIM);
     for (const resolve of waiting.splice(0)) resolve(port);
   }
 });
+
+/**
+ * The handlers of the requests in flight, by id: requests and their replies share the port the page
+ * gave (one channel for all of them, not one per request).
+ */
+const replies = new Map();
+let nextRequestId = 1;
 
 async function getPort() {
   if (port) return port;
@@ -47,7 +58,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
   if (hooks.fetch && hooks.fetch(event, url)) return;
-  if (url.pathname === '/__sandburg/node-worker.js' || RUNTIME_LIB.test(url.pathname)) {
+  if (url.pathname === '/__sandburg/node-worker.js' || url.pathname === WS_SHIM || RUNTIME_LIB.test(url.pathname)) {
     event.respondWith(runtimeScript(event.request, url.pathname));
     return;
   }
@@ -56,6 +67,9 @@ self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
   event.respondWith(forward(event.request, url));
 });
+
+/** The WebSocket shim each app page loads (SHIM below): fetched as the app starts, then answered from memory. */
+const WS_SHIM = '/__sandburg/ws-shim.js';
 
 /** The polyfills a runtime loads when a program first needs them (RUNTIME_LIBS in node-runtime/libs.ts). */
 const RUNTIME_LIB = /^\/__sandburg\/node-[a-z]+\.js$/;
@@ -87,7 +101,7 @@ async function runtimeScript(request, path) {
 }
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
-const SHIM = (hooks.shim ?? '') + '<script src="/__sandburg/ws-shim.js"></script>';
+const SHIM = (hooks.shim ?? '') + `<script src="${WS_SHIM}"></script>`;
 
 /**
  * Inserts the WebSocket shim (ws-shim.js) into an HTML page, first thing in <head>, so it runs
@@ -129,7 +143,7 @@ async function forward(request, url) {
     return new Response(String(e.message), { status: 503 });
   }
   const body = request.method === 'GET' || request.method === 'HEAD' ? null : await request.arrayBuffer();
-  const { port1, port2 } = new MessageChannel();
+  const id = nextRequestId++;
   const headers = [];
   request.headers.forEach((value, name) => headers.push([name, value]));
   // Forbidden headers are not in request.headers; servers read Referer (SolidStart's single-flight actions).
@@ -138,7 +152,7 @@ async function forward(request, url) {
     const referrer = new URL(request.referrer);
     headers.push(['referer', hooks.appPath && referrer.origin === self.location.origin ? referrer.origin + hooks.appPath(referrer) : request.referrer]);
   }
-  p.postMessage({ type: 'request', method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [port2, body] : [port2]);
+  p.postMessage({ type: 'request', id, method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [body] : []);
   return new Promise((resolve) => {
     let controller;
     const stream = new ReadableStream({
@@ -146,12 +160,11 @@ async function forward(request, url) {
         controller = c;
       },
       cancel() {
-        port1.close();
+        replies.delete(id);
       },
     });
-    port1.onmessage = (e) => {
-      const m = e.data;
-      if (m.type === 'start') {
+    replies.set(id, (m) => {
+      if (m.type === 'start' || m.type === 'full') {
         // Set-Cookie cannot be set from a service worker response; the page applies cookies itself.
         const h = new Headers();
         for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
@@ -161,6 +174,12 @@ async function forward(request, url) {
         // A redirect to one of the app's own paths (/login) stays where the deployment serves the app.
         if (hooks.sitePath && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
+        // A whole response (the runtime had it all in one task): no more messages for it.
+        if (m.type === 'full') {
+          replies.delete(id);
+          if (body && m.body.byteLength) controller.enqueue(new Uint8Array(m.body));
+          controller.close();
+        }
         // App pages get the WebSocket shim (the host page relays their WebSockets to the runtime).
         if (body && request.mode === 'navigate' && /text\/html/i.test(h.get('content-type') ?? '')) {
           body = body.pipeThrough(injectShim());
@@ -173,14 +192,14 @@ async function forward(request, url) {
         try {
           controller.close();
         } catch {}
-        port1.close();
+        replies.delete(id);
       } else if (m.type === 'error') {
         resolve(new Response(m.message, { status: 502, headers: { 'content-type': 'text/plain' } }));
         try {
           controller.error(new Error(m.message));
         } catch {}
-        port1.close();
+        replies.delete(id);
       }
-    };
+    });
   });
 }

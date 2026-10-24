@@ -6,7 +6,7 @@
 import { AdapterError } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
 import type { FromWorker } from '../../node-runtime/messages.ts';
-import type { BridgedRequest } from '../sw-bridge.ts';
+import type { BridgeReply, BridgedRequest } from '../sw-bridge.ts';
 
 export interface NodeProcessOptions {
   files: FileTree;
@@ -106,7 +106,7 @@ export class NodeProcess {
   private crashes = new BroadcastChannel('sandburg-wasm-thread-crash');
   private ready = false;
   private waiters = new Set<() => void>();
-  private pending = new Map<number, MessagePort>();
+  private pending = new Map<number, BridgeReply>();
   private sockets = new Map<number, MessagePort>();
   private nextId = 1;
   private label: string;
@@ -170,9 +170,9 @@ export class NodeProcess {
       const channel = new MessageChannel();
       channel.port1.onmessage = (e) => {
         const m = e.data as { type: string; status?: number; headers?: [string, string][] };
-        if (m.type === 'start' || m.type === 'error') {
+        if (m.type === 'start' || m.type === 'full' || m.type === 'error') {
           const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
-          if (m.type === 'start' && m.status! < 400 && /html/.test(type) && found === null) found = port;
+          if (m.type !== 'error' && m.status! < 400 && /html/.test(type) && found === null) found = port;
           settled++;
           channel.port1.close();
           for (const w of this.waiters) w();
@@ -218,7 +218,7 @@ export class NodeProcess {
   }
 
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
-  request(port: number, request: BridgedRequest, reply: MessagePort): void {
+  request(port: number, request: BridgedRequest, reply: BridgeReply): void {
     if (this.failure && this.exitCode === null) {
       reply.postMessage({ type: 'error', message: `${this.label} crashed: ${this.failure.message.split('\n')[0]}` });
       return;
@@ -340,11 +340,20 @@ export class NodeProcess {
         this.exitCode = m.code;
         if (!this.ports.length) this.fail(new AdapterError('APP', `${this.label} exited with code ${m.code} before it started listening`));
         break;
-      case 'response-start': {
+      case 'response-start':
+      case 'response-full': {
         for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
         // A redirect to the server's own address (built from Host, now localhost) stays on the page's origin.
         const headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v) : v]);
-        this.pending.get(m.id)?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
+        const reply = this.pending.get(m.id);
+        if (m.type === 'response-start') {
+          reply?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
+          break;
+        }
+        // The whole response at once (see request() in worker.ts).
+        reply?.postMessage({ type: 'full', status: m.status, statusText: m.statusText, headers, body: m.body }, [m.body]);
+        reply?.close();
+        this.pending.delete(m.id);
         break;
       }
       case 'ws-accept':
