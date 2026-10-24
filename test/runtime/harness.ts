@@ -7,7 +7,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { readFile } from 'node:fs/promises';
-import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
+import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SPARE_SCRIPT, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
 import { RUNTIME_LIBS, type RuntimeLib } from '../../src/node-runtime/libs.ts';
 import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
 import type { HostRequest } from '../../src/types.ts';
@@ -58,8 +58,15 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
   w.onerror = (e) => { out.fatal = 'worker error: ' + e.message; finish(); };
   const init = { type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg', ...extra };
   if (extra.prefetch) init.prefetched = { [extra.preload]: window.prefetch(extra.preload) };
-  w.postMessage(init);
-  if (!requests.length) setTimeout(finish, 3000);
+  // As the page does at a run's mount (adapters/node/browser.ts): the runtime starts its spares, then waits for init.
+  const start = () => {
+    w.postMessage(init);
+    if (!requests.length) setTimeout(finish, 3000);
+  };
+  if (extra.spares) {
+    w.postMessage({ type: 'spares' });
+    setTimeout(start, extra.spares);
+  } else start();
 });
 window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
@@ -97,6 +104,8 @@ export class RuntimeHarness {
   private install: Install = { files: {}, bundled: [] };
   /** What the host was asked for: `http <path>` or `ws <path>`. */
   asked: string[] = [];
+  /** Answer /__sandburg/node-spare.js with a 404, as a host that does not serve it. */
+  noSpareScript = false;
 
   /** The host's answer for an install's file or its preload bundle, as the node adapter serves them. */
   private installed(path: string): Buffer | null {
@@ -123,9 +132,14 @@ export class RuntimeHarness {
         res.writeHead(body ? 200 : 404, { 'content-type': 'application/octet-stream' });
         return res.end(body ?? 'not found');
       }
-      if (url.pathname === '/__sandburg/node-worker.js') {
+      if (url.pathname === '/__sandburg/node-worker.js' || url.pathname === '/__sandburg/node-spare.js') {
+        this.asked.push(`http ${url.pathname}`);
+        if (this.noSpareScript && url.pathname.endsWith('spare.js')) {
+          res.writeHead(404);
+          return res.end();
+        }
         res.writeHead(200, { 'content-type': 'text/javascript', 'cross-origin-embedder-policy': 'require-corp' });
-        return res.end(js);
+        return res.end(url.pathname.endsWith('spare.js') ? SPARE_SCRIPT : js);
       }
       const lib = /^\/__sandburg\/node-([a-z]+)\.js$/.exec(url.pathname)?.[1];
       if (lib && Object.hasOwn(RUNTIME_LIBS, lib)) {
@@ -184,8 +198,8 @@ export class RuntimeHarness {
     }>;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[]) {
-    return this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, execArgv ? { execArgv } : {}] as const) as Promise<{
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number } = {}) {
+    return this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, { ...(execArgv ? { execArgv } : {}), ...options }] as const) as Promise<{
       stdout: string;
       stderr: string;
       fatal: string | null;

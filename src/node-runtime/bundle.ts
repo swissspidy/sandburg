@@ -28,6 +28,24 @@ if (self.name === ${JSON.stringify(SPARE_NAME)} && !self.__sandburgSpareTaken) {
     if (!e.data || e.data.type !== ${JSON.stringify(SPARE_WAKE)}) self.dispatchEvent(new MessageEvent('message', { data: e.data, ports: e.ports }));
   });
 } else {`;
+/**
+ * What a spare runtime loads (/__sandburg/node-spare.js): nothing of the runtime until it is woken or
+ * a thread takes it, when it loads the runtime's script, once, and runs it. Starting a spare on the
+ * runtime's own script cost ~140 ms of CPU in a busy tab (compiling 0.86 MB), and a woken spare
+ * compiled it again to run it; spares now cost so little that a run can start them before it knows
+ * whether its program starts threads. Its first message is handed on unless it was the wake-up. A
+ * host that serves the runtime's script with SPARE_BANNER as a spare's (it answers node-spare.js with
+ * node-worker.js) gets the behaviour from before.
+ */
+export const SPARE_SCRIPT = `"use strict";
+self.addEventListener('message', function first(e) {
+  self.removeEventListener('message', first);
+  self.__sandburgSpareTaken = true;
+  importScripts(new URL('node-worker.js', location.href).href);
+  if (!e.data || e.data.type !== ${JSON.stringify(SPARE_WAKE)}) self.dispatchEvent(new MessageEvent('message', { data: e.data, ports: e.ports }));
+});
+`;
+
 const require = createRequire(import.meta.url);
 
 /** Where the bundles' module paths are relative to (their names in esbuild's CommonJS wrappers). */

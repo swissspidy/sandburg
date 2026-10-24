@@ -57,3 +57,30 @@ test('installed files: a preload bundle the page downloaded is not requested aga
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/preload/')).map((a) => a.endsWith('?by=page')), [true]);
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/nm/')), []);
 });
+
+test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare runtimes; another thread does', async () => {
+  // Each thread loads worker_threads, as napi-rs' wasi-worker.mjs does; the program waits for the
+  // runtimes they start to load. emnapi's threads ask the thread that loaded the build to spawn
+  // more, so spares of their own are never taken.
+  const thread = `require('worker_threads').parentPort.postMessage('up');`;
+  const spares = async (entry: string) => {
+    const files = { ...install.files, [`node_modules/${entry}`]: thread };
+    const main = {
+      'main.js': `
+        const { Worker } = require('worker_threads');
+        setTimeout(() => {
+          const w = new Worker('/app/node_modules/${entry}');
+          w.on('message', (m) => { console.log(m); setTimeout(() => process.exit(0), 1000); });
+        }, 300);`,
+    };
+    const out = await h.runInstalled(main, { files, bundled: [] }, '/app/main.js');
+    assert.equal(out.fatal, null);
+    assert.equal(out.stdout, 'up\n');
+    return h.asked.filter((a) => a === 'http /__sandburg/node-spare.js').length;
+  };
+  const other = await spares('@demo/tool/worker.mjs');
+  const wasi = await spares('@demo/tool-wasm32-wasi/wasi-worker.mjs');
+  // The program's spares (and their replacements) are the same in both runs.
+  const warm = await h.page.evaluate(() => Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4)));
+  assert.equal(other - wasi, warm, `spares started: ${other} with another thread, ${wasi} with a WebAssembly thread`);
+});
