@@ -313,7 +313,8 @@ export function createAdapter(): RuntimeAdapter {
         });
         return target ? { proc: p, port: target } : null;
       });
-      p.run(main, argv);
+      // A cache restored from an earlier run is stored again only if the run changed it (see dispose).
+      p.run(main, argv, devCache?.digests && !devCache.waitFor ? devCache.dirs : undefined);
       // A dev script may start several servers (an API and the page's dev server): the page's is the app.
       port = shell ? await p.pagePort() : await p.listening();
       p.appPort = port;
@@ -334,24 +335,35 @@ export function createAdapter(): RuntimeAdapter {
     async dispose() {
       // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
       if (proc && devCache && !proc.failure) {
-        const read = () => Promise.race([proc!.readTree(devCache!.dirs), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
-        let tree = await read();
+        const timeout = () => new Promise<null>((r) => setTimeout(() => r(null), 5000));
+        const read = () => Promise.race([proc!.readTree(devCache!.dirs), timeout()]);
+        // A cache restored from an earlier run, whose directories the runtime tracked (see start), is
+        // read only if the run changed a file there: null when it did not (nothing to store).
+        let tree = devCache.digests && !devCache.waitFor ? await Promise.race([proc.readTree(devCache.dirs, undefined, true), timeout()]) : await read();
+        /** For a cache that waits (waitFor): whether its tree settled (every file there, none mid-write, unchanged since the last look). */
+        let settled = false;
         if (devCache.waitFor) {
           // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment).
+          // At most 40 s, however long each read takes (a read gives up after 5 s).
+          const deadline = performance.now() + 40_000;
           const size = (t: typeof tree) => (t ? Object.values(t).reduce((n, f) => n + (typeof f === 'string' ? f.length : f.base64.length), 0) : -1);
-          // The same files as well: webpack writes each pack under a temporary name, then renames it.
+          // The same files as well: webpack writes each pack under a temporary name (<name>_), then renames it.
           const same = (a: typeof tree, b: typeof tree) => size(a) === size(b) && Object.keys(a ?? {}).sort().join('\0') === Object.keys(b ?? {}).sort().join('\0');
-          for (let i = 0; i < 40; i++) {
-            await new Promise((r) => setTimeout(r, 1000));
+          while (performance.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 250));
             const next = await read();
-            const ready = next && devCache.waitFor.every((f) => f in next);
+            const ready = next && devCache.waitFor.every((f) => f in next) && !Object.keys(next).some((f) => f.endsWith('_'));
             const stable = ready && same(next, tree);
             tree = next;
-            if (stable) break;
+            if (stable) {
+              settled = true;
+              break;
+            }
           }
         }
         // Vite writes an optimized environment's _metadata.json last.
-        const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
+        // One that never settled is not stored: it may hold a pack webpack was still writing.
+        const complete = tree && (devCache.waitFor ? settled : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
         const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
         const digests = devCache.digests;
         const changed =
@@ -361,7 +373,7 @@ export function createAdapter(): RuntimeAdapter {
             ? Object.keys(digests).length !== Object.keys(tree!).length ||
               (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
             : Object.keys(devCache.files).length !== Object.keys(tree!).length || Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
-        if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
+        if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: new Blob([JSON.stringify(tree)]) }).catch(() => {});
       }
       proc?.terminate();
       proc = null;

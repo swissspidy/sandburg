@@ -68,6 +68,8 @@ export interface AdapterDescriptor {
   warmups?(): Project[];
   /** Whether a project's install is already there. */
   isWarm?(project: Project): Promise<boolean>;
+  /** Gets the host ready for a first install while the session opens (Session.open). */
+  prepare?(): void;
 }
 
 export interface HostInstallOptions {
