@@ -8,6 +8,8 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdir, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Session } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
@@ -21,6 +23,67 @@ before(async () => {
   await session.open();
 });
 after(() => session?.close());
+
+/** The stored Next.js seeds (webpack caches; ADR 0016): file → its paths. */
+async function nextSeeds(): Promise<Map<string, string[]>> {
+  const dir = fileURLToPath(new URL('../../.sandburg/dev-cache', import.meta.url));
+  const seeds = new Map<string, string[]>();
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!/^[0-9a-f]{24}\.json$/.test(name)) continue;
+    const paths = Object.keys(JSON.parse(await readFile(join(dir, name), 'utf8')) as object);
+    if (paths.some((p) => p.startsWith('.next/'))) seeds.set(join(dir, name), paths);
+  }
+  return seeds;
+}
+
+// First: later tests start from the seed it stores.
+test('the first Next.js app of each router starts a seed run beside it, which stores all of webpack\'s cache', async () => {
+  for (const file of (await nextSeeds()).keys()) await Promise.all([rm(file), rm(`${file}.bin`, { force: true })]);
+  const own = new Session();
+  await own.open();
+  try {
+    for (const dir of [fixture('next-app-router'), fixture('next-pages-router')]) {
+      const result = await own.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
+      assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+    }
+  } finally {
+    // Waits for the seed runs.
+    await own.close();
+  }
+  // One for the App Router, one for the Pages Router (webpack's names for modules differ between them).
+  const seeds = [...(await nextSeeds()).values()];
+  assert.equal(seeds.length, 2);
+  for (const seed of seeds) {
+    for (const compiler of ['client', 'server']) assert.ok(seed.includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), seed.join('\n'));
+    // Not while webpack was still writing a pack (under <name>_).
+    assert.ok(!seed.some((p) => p.endsWith('_')), seed.join('\n'));
+  }
+});
+
+test('an app cannot store a seed: the host refuses a cache under a seed\'s key from its run', async () => {
+  const seeds = await nextSeeds();
+  assert.ok(seeds.size > 0, 'the test before stores the seeds');
+  const before = await Promise.all([...seeds.keys()].map((file) => readFile(file, 'utf8')));
+  const keys = [...seeds.keys()].map((file) => /([0-9a-f]{24})\.json$/.exec(file)![1]);
+  const statuses: number[] = [];
+  const dir = fixture('next-pages-router');
+  const result = await session.run(dir, {
+    outDir,
+    checks: {
+      // The app's page can reach the host's routes on its origin, and learns a seed's key from its
+      // bundle's URL: its run was not issued that key.
+      'posts a cache under each seed key': async ({ app }) => {
+        for (const key of keys) {
+          const body = JSON.stringify({ '.next/dev/cache/webpack/client-development/index.pack.gz': 'planted' });
+          statuses.push(await app.evaluate(([k, b]) => fetch(`/__sandburg/dev-cache/${k}`, { method: 'POST', body: b }).then((r) => r.status), [key, body] as const));
+        }
+      },
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  assert.deepEqual(statuses, keys.map(() => 403));
+  assert.deepEqual(await Promise.all([...seeds.keys()].map((file) => readFile(file, 'utf8'))), before);
+});
 
 test('a Next.js 16 app (App Router, API route) runs on the node runtime', async () => {
   const dir = fixture('next-app-router');

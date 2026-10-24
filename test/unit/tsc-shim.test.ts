@@ -106,3 +106,11 @@ test('--showConfig reports an extends cycle instead of looping', () => {
     (e: { stderr: Buffer }) => /circularity detected/.test(e.stderr.toString()),
   );
 });
+
+test('--showConfig exits once it has printed, as tsc does, whatever else the event loop has', () => {
+  const dir = project({ 'tsconfig.json': '{ "compilerOptions": { "strict": true } }' });
+  // A timer that would keep the process alive: the runtime ends a process only after its loop has
+  // stayed idle for a while (next dev waits for this one as it starts).
+  const out = execFileSync(process.execPath, ['--import', 'data:text/javascript,setInterval(() => {}, 1000)', join(dir, 'node_modules/typescript/lib/tsc.js'), '--showConfig'], { cwd: dir, encoding: 'utf8', timeout: 10_000 });
+  assert.deepEqual(JSON.parse(out).compilerOptions, { strict: true });
+});
