@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
+import type { ToParent, VfsCall } from './messages.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
 export interface ThreadInit {
@@ -39,7 +40,7 @@ export const WASM_CRASH_CHANNEL = 'sandburg-wasm-thread-crash';
 
 // --- the shared VFS ----------------------------------------------------------------------
 
-type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'writeAt' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
+export type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'writeAt' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
 const HEADER = 16;
 const READ_OPS = new Set<VfsOp>(['exists', 'stat', 'read', 'readdir']);
 /** How long a thread waits for its parent before reading from its snapshot instead. */
@@ -52,9 +53,9 @@ const PARENT_BLOCKED_MS = 5000;
 
 /** A thread's VFS: every operation runs on the parent's VFS. */
 export class RemoteVfs extends Vfs {
-  private post: (msg: unknown) => void;
+  private post: (msg: VfsCall) => void;
 
-  constructor(post: (msg: unknown) => void) {
+  constructor(post: (msg: VfsCall) => void) {
     super(() => {
       throw new Error('RemoteVfs does not fetch remote files itself');
     });
@@ -173,7 +174,7 @@ export class ThreadVfs extends RemoteVfs {
   private root: string;
   private nodeModulesWrites: Int32Array | null;
 
-  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>, nodeModulesWrites?: Int32Array) {
+  constructor(post: (msg: VfsCall) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>, nodeModulesWrites?: Int32Array) {
     super(post);
     this.installed = installed;
     this.root = cwd;
@@ -344,7 +345,7 @@ export function projectSnapshot(vfs: Vfs, root: string): Record<string, Uint8Arr
 }
 
 /** Serves a thread's VFS call on this thread's VFS and wakes the thread. */
-export function serveVfsCall(vfs: Vfs, msg: { sab: SharedArrayBuffer; op: VfsOp; args: unknown[] }): void {
+export function serveVfsCall(vfs: Vfs, msg: VfsCall): void {
   const header = new Int32Array(msg.sab, 0, 4);
   const capacity = msg.sab.byteLength - HEADER;
   let status = 1;
@@ -390,9 +391,9 @@ export interface ThreadHost {
   /** This thread, when it is a worker thread (for parentPort and workerData). */
   self: ThreadInit | null;
   /** Sends to this thread's parent (child side). */
-  postToParent(msg: unknown, transfer?: Transferable[]): void;
+  postToParent(msg: ToParent, transfer?: Transferable[]): void;
   /** Messages of a nested runtime about servers it runs (listening, responses, WebSockets), which this runtime passes on. */
-  relay(msg: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean;
+  relay(msg: ToParent, from: globalThis.Worker): boolean;
   /** Ends this process with an error: a WebAssembly thread of it crashed (see Worker's 'fatal'). */
   crash(message: string, stack?: string): void;
 }
@@ -479,13 +480,13 @@ function takeSpare(): globalThis.Worker | undefined {
   return warm.splice(i < 0 ? 0 : i, 1)[0]?.worker;
 }
 
-export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: { type: string; [k: string]: unknown }) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
+export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: ToParent) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
   const worker = takeSpare() ?? new globalThis.Worker(`${host.base()}/node-worker.js`);
   if (warmTarget) queueMicrotask(refill);
-  worker.onmessage = (e: MessageEvent) => {
-    const m = e.data as { type: string; [k: string]: unknown };
-    if (m.type === 'wt-message') adoptMailboxes(e.ports, m.mailboxes as Parameters<typeof adoptMailboxes>[1]);
-    if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m as unknown as Parameters<typeof serveVfsCall>[1]);
+  worker.onmessage = (e: MessageEvent<ToParent>) => {
+    const m = e.data;
+    if (m.type === 'wt-message') adoptMailboxes(e.ports, m.mailboxes);
+    if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m);
     else if (!host.relay(m, worker)) onMessage(m);
   };
   worker.onerror = (e) => {
@@ -547,7 +548,7 @@ export function createWorkerThreads(host: ThreadHost) {
       );
     }
 
-    private onChild(m: { type: string; [k: string]: unknown }) {
+    private onChild(m: ToParent) {
       switch (m.type) {
         case 'ready':
           // The thread runs its entry on its own (see ThreadInit.main).
@@ -557,7 +558,7 @@ export function createWorkerThreads(host: ThreadHost) {
           this.emit('message', m.data);
           break;
         case 'log':
-          host.write(m.stream as 'stdout' | 'stderr', m.text as string);
+          host.write(m.stream, m.text);
           break;
         case 'fatal': {
           // A WebAssembly trap (memory access out of bounds, a Rust panic) in a thread leaves the
@@ -565,18 +566,22 @@ export function createWorkerThreads(host: ThreadHost) {
           // rolldown waits forever for a crashed thread's work. Natively that is a segfault or an
           // abort, which ends the process, so the process ends here too.
           if (m.trap) {
-            const crashed = /^a WebAssembly thread crashed/.test(String(m.message));
-            host.crash(crashed ? String(m.message) : `a WebAssembly thread crashed (worker ${this.threadId}): RuntimeError: ${m.message}`, m.stack ? String(m.stack) : undefined);
+            const crashed = /^a WebAssembly thread crashed/.test(m.message);
+            host.crash(crashed ? m.message : `a WebAssembly thread crashed (worker ${this.threadId}): RuntimeError: ${m.message}`, m.stack);
           }
-          const err = new Error(String(m.message));
-          if (m.stack) err.stack = String(m.stack);
+          const err = new Error(m.message);
+          if (m.stack) err.stack = m.stack;
           if (this.listenerCount('error')) this.emit('error', err);
           else host.write('stderr', `Uncaught (in worker ${this.threadId}) ${err.stack}\n`);
           this.finish(1);
           break;
         }
         case 'exit':
+          // An app may exit with a string (process.exit('1')).
           this.finish(Number(m.code ?? 0));
+          break;
+        // Its servers' messages are relayed (ThreadHost.relay); the rest are not a thread's.
+        default:
           break;
       }
     }

@@ -8,7 +8,7 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import type { FromWorker } from './messages.ts';
+import type { FromWorker, NetMessage, ToParent } from './messages.ts';
 import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
@@ -312,7 +312,8 @@ function patchBase64(): void {
 patchBase64();
 
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
-const realPostMessage = (self as unknown as Worker).postMessage.bind(self);
+/** To the page, or to the runtime that started this one (a thread's or child process's parent). */
+const realPostMessage = (self as unknown as Worker).postMessage.bind(self) as (msg: ToParent, transfer?: Transferable[]) => void;
 const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
 
 /**
@@ -1522,7 +1523,8 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
 function postFatal(e: unknown) {
   const trap = !!thread && e instanceof WebAssembly.RuntimeError;
   const message = String((e as Error)?.message ?? e);
-  const stack = (e as Error)?.stack;
+  // What the program threw: its stack may be anything (the message types say string).
+  const stack = (e as Error)?.stack ? String((e as Error).stack) : undefined;
   // Straight to the page as well: the parent that would pass the crash on may be blocked.
   if (trap && thread?.mainProcess) {
     const channel = new NativeBroadcastChannel(WASM_CRASH_CHANNEL);
@@ -1702,19 +1704,6 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
 
 const sockets = new Map<number, { socket: UpgradeSocket; codec: WsClientCodec }>();
 
-/**
- * net connections between runtimes (see net.ts): a socket here, its peer in the parent or a nested
- * runtime. A connection starts with net-connect to the runtime that has the server; then either
- * side sends data, end (half close) and close.
- */
-type NetMessage =
-  | { type: 'net-connect'; id: number; key: number | string }
-  | { type: 'net-connected'; id: number }
-  | { type: 'net-refused'; id: number; message: string }
-  | { type: 'net-data'; id: number; data: ArrayBuffer }
-  | { type: 'net-end'; id: number }
-  | { type: 'net-close'; id: number }
-  | { type: 'net-listening'; key: number | string };
 type Send = (m: NetMessage, transfer?: Transferable[]) => void;
 const netConns = new Map<number, NetSocket>();
 /** Net servers in nested runtimes. */
@@ -1857,59 +1846,75 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
 const announce = (port: number | string, ephemeral?: boolean) => {
   if (typeof port === 'number' || thread) post({ type: 'listening', port, ...(ephemeral && { ephemeral }) });
 };
-function relayFromNested(m: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean {
-  if (m.type.startsWith('net-')) {
-    netMessage(m as unknown as NetMessage, (x, t) => from.postMessage(x, t ?? []), from);
-    return true;
-  }
-  const own = loopbackRequests.get(m.id as number);
-  if (own && m.type.startsWith('response-')) {
-    if (m.type === 'response-start') own.start(m.status as number, m.statusText as string, m.headers as [string, string][]);
-    else if (m.type === 'response-chunk') own.chunk(m.chunk as Uint8Array);
-    else if (m.type === 'response-full') {
-      loopbackRequests.delete(m.id as number);
-      own.start(m.status as number, m.statusText as string, m.headers as [string, string][]);
-      if ((m.body as ArrayBuffer).byteLength) own.chunk(new Uint8Array(m.body as ArrayBuffer));
-      own.end();
+function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
+  switch (m.type) {
+    case 'net-connect':
+    case 'net-connected':
+    case 'net-refused':
+    case 'net-data':
+    case 'net-end':
+    case 'net-close':
+    case 'net-listening':
+      netMessage(m, (x, t) => from.postMessage(x, t ?? []), from);
+      return true;
+    case 'response-start':
+    case 'response-chunk':
+    case 'response-full':
+    case 'response-end':
+    case 'response-error': {
+      const own = loopbackRequests.get(m.id);
+      if (!own) break;
+      if (m.type === 'response-start') own.start(m.status, m.statusText, m.headers);
+      else if (m.type === 'response-chunk') own.chunk(m.chunk);
+      else if (m.type === 'response-full') {
+        loopbackRequests.delete(m.id);
+        own.start(m.status, m.statusText, m.headers);
+        if (m.body.byteLength) own.chunk(new Uint8Array(m.body));
+        own.end();
+      }
+      else {
+        loopbackRequests.delete(m.id);
+        if (m.type === 'response-end') own.end();
+        else own.error(String(m.message));
+      }
+      return true;
     }
-    else {
-      loopbackRequests.delete(m.id as number);
-      if (m.type === 'response-end') own.end();
-      else own.error(String(m.message));
-    }
-    return true;
+    default:
+      break;
   }
   switch (m.type) {
     case 'process-exit':
-      post(m as FromWorker);
+      post(m);
       return true;
     case 'lb-request':
-      loopbackRequest(m as unknown as Parameters<typeof loopbackRequest>[0], from);
+      loopbackRequest(m, from);
       return true;
     case 'listening':
-      nestedPorts.set(m.port as number | string, from);
-      announce(m.port as number | string, m.ephemeral as boolean | undefined);
+      nestedPorts.set(m.port, from);
+      announce(m.port, m.ephemeral);
       return true;
     case 'response-chunk':
-      post(m as FromWorker, [(m.chunk as Uint8Array).buffer as ArrayBuffer]);
+      post(m, [m.chunk.buffer as ArrayBuffer]);
       return true;
     case 'response-full':
-      post(m as FromWorker, [m.body as ArrayBuffer]);
+      post(m, [m.body]);
       return true;
     case 'response-start':
     case 'response-end':
     case 'response-error':
     case 'ws-accept':
     case 'ws-message':
-      post(m as FromWorker);
+      post(m);
       return true;
     case 'ws-reject':
     case 'ws-closed':
-      nestedSockets.delete(m.id as number);
-      post(m as FromWorker);
+      nestedSockets.delete(m.id);
+      post(m);
       return true;
+    // The rest are for the nested runtime's own parent object (its Worker or ChildProcess).
+    default:
+      return false;
   }
-  return false;
 }
 
 /** Opens a WebSocket to a virtual server: an upgrade request, then the WebSocket protocol over the socket. */

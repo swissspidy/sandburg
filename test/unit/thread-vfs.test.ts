@@ -88,8 +88,7 @@ test('a thread tells that a node_modules path is not installed without asking, u
   parent.write('/app/src/main.ts', new Uint8Array());
   const asked: string[] = [];
   const thread = new ThreadVfs(
-    (m) => {
-      const msg = m as Parameters<typeof serveVfsCall>[1];
+    (msg) => {
       asked.push(`${msg.op} ${msg.args[0]}`);
       serveVfsCall(parent, msg); // a parent that answers at once
     },

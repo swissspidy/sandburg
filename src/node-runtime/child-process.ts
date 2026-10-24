@@ -197,7 +197,7 @@ export function createChildProcess(host: ChildProcessHost) {
         host,
         init,
         (m) => {
-          if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text as string);
+          if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text);
           else if (m.type === 'message') this.emit('message', m.data);
           else if (m.type === 'exit') this.finish(Number(m.code ?? 0), null);
           else if (m.type === 'fatal') {

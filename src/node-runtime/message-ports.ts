@@ -17,7 +17,7 @@
 import { EventEmitter } from 'events';
 
 /** A port's mailbox: the shared memory of its channel, and which of the two inboxes is this port's. */
-interface Mailbox {
+export interface Mailbox {
   sab: SharedArrayBuffer;
   side: 0 | 1;
 }
