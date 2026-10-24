@@ -12,6 +12,7 @@ import type { HostRequest, HostResponse } from '../../src/types.ts';
 
 let root: string;
 let serve: (req: HostRequest) => Promise<HostResponse | null>;
+let cacheEntries: (value: unknown, dirs: string[]) => Record<string, unknown>;
 const KEY = '0123456789abcdef01234567';
 const OTHER = 'fedcba9876543210fedcba98';
 
@@ -25,7 +26,7 @@ before(async () => {
   await writeFile(join(install, 'package.json'), '{"secret":"the project"}');
   await writeFile(join(root, 'host-secret.txt'), 'the host');
   await symlink(join(root, 'host-secret.txt'), join(install, 'node_modules', 'pkg', 'link.json'));
-  ({ serve } = await import('../../src/adapters/node/index.ts'));
+  ({ serve, cacheEntries } = await import('../../src/adapters/node/index.ts'));
 });
 after(() => rm(root, { recursive: true, force: true }));
 
@@ -72,4 +73,26 @@ test('a cache is stored only under a key the host issued, and read only when han
   await mkdir(devCache, { recursive: true });
   await writeFile(join(devCache, `${KEY}.json`), cache);
   assert.equal(await serve(req(`/__sandburg/dev-cache/${KEY}/bundle`)), null);
+});
+
+test("what a run sends as its cache is kept only for files inside the cache's directories", () => {
+  const dirs = ['node_modules/.vite', 'client/node_modules/.vite'];
+  const sent = {
+    'node_modules/.vite/deps/react.js': 'export default 1',
+    'client/node_modules/.vite/deps/_metadata.json': '{}',
+    'node_modules/.vite/pack.gz': { base64: 'AAAA' },
+    // Outside the directories, or climbing out of them.
+    'node_modules/.vite/../../package.json': 'x',
+    'node_modules/.vite/deps/../../../../etc/passwd': 'x',
+    '/etc/passwd': 'x',
+    'node_modules/.vite-other/x.js': 'x',
+    'node_modules/.vite': 'x',
+    'src/main.ts': 'x',
+    // Neither text nor { base64 } alone.
+    'node_modules/.vite/a.js': 1,
+    'node_modules/.vite/b.js': { base64: 'AAAA', mode: 0o777 },
+    'node_modules/.vite/c.js': null,
+  };
+  assert.deepEqual(Object.keys(cacheEntries(sent, dirs)).sort(), ['client/node_modules/.vite/deps/_metadata.json', 'node_modules/.vite/deps/react.js', 'node_modules/.vite/pack.gz']);
+  for (const value of [null, 'text', 42, []]) assert.deepEqual(cacheEntries(value, dirs), {});
 });

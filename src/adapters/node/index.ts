@@ -65,7 +65,7 @@ const issuedCaches = new Map<string, string[]>();
 const DEV_CACHE_MAX = 256 << 20;
 
 /** The entries of a cache that are text files under `dirs`. */
-function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
+export function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
   const out: Record<string, string | { base64: string }> = {};
   if (!value || typeof value !== 'object') return out;
   for (const [path, content] of Object.entries(value)) {
