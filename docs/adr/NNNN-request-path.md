@@ -44,12 +44,11 @@ Chromium traces:
 
 ## Decision
 
-- **Whole responses in one message.** The runtime holds a response's start and its chunks until the
-  end of the task that started it (a message on a native MessageChannel, not a timer); a response
-  that has ended by then goes to the page as one `response-full` message (status, headers and the
+- **Whole responses in one message.** The runtime holds a response's start and its chunks for a few
+  microtasks (16): `res.end()` finishes through `process.nextTick`, a microtask here. A response that
+  has ended by then goes to the page as one `response-full` message (status, headers and the
   body as a transferred ArrayBuffer), and from the page to the service worker as one `full` message.
-  A response still going at the end of the task, or whose body passes 1 MB, streams as before from
-  there on. Responses of servers in child processes and threads are passed up the same way; a
+  A response still going after that, or whose body passes 1 MB, streams as before from there on. Responses of servers in child processes and threads are passed up the same way; a
   loopback request (a dev proxy) gets them as start, chunk and end.
 - **One port for every request.** The service worker gives each request an id and sends it on the
   port the page gave it; the page's replies carry the id and go back on that port. No MessageChannel
@@ -60,15 +59,22 @@ Chromium traces:
 
 ## Consequences
 
-- Microbenchmarks (static pages in the runtime, warm, interleaved, medians):
-  - 60-module import chain: all modules loaded in ~228 ms with whole responses and the shim, ~261 ms
-    before (n=6); per request 1.7 vs 2.0 ms. With one port: ~234 ms against ~240 ms (n=6, noise).
-  - 300 modules imported at once: 285-330 ms against 337-370 ms (whole responses and the shim, n=4);
-    one port: ~286 ms against ~318 ms (n=4).
-  - The shim: 1.9-3.1 ms per app document instead of 4-5.5 ms.
-- Fixtures: see the branch's benchmark below (BENCH).
+- Microbenchmarks (static pages in the runtime's static file server, warm, interleaved, medians),
+  the branch against main: a 60-module import chain loads in 239 vs 264 ms (n=6), 1.65 vs 1.85 ms
+  per request; 300 modules imported at once in 244 vs 311 ms (n=4). Per change (each commit message
+  has its numbers): whole responses and the shim, chain 228 vs 261 ms, burst 285-330 vs 337-370 ms;
+  one port, burst 286 vs 318 ms, chain unchanged. The shim: 1.9-3.1 ms per app document instead of
+  4-5.5 ms.
+- Fixtures (scripts/bench.ts, warm, both sides as refs, 8 interleaved rounds, medians): `lit-vite`
+  total 1.47 → 1.43 s, ready 0.24 → 0.22 s; `vite-react-counter` total 2.02 → 2.00 s, ready
+  0.48 → 0.41 s. Ready is heavy-tailed on both sides (`lit-vite` 204-377 ms): a run in which the dev
+  server stalls ~100 ms on one module (seen in the runtime's own time to first byte, not in the
+  bridge) is ~120 ms slower. Shorter benchmarks of the same code went either way (4 rounds:
+  `lit-vite` ready 0.25 → 0.34 s and `vite-react-counter` 0.44 → 0.51 s; the shim alone, 5 rounds:
+  `lit-vite` 0.33 → 0.26 s). `sveltekit-app` (4.95 → 4.95 s) and `astro-app` (4.88 → 4.99 s, n=4)
+  are their server render, unchanged.
 - **Behaviour**: none an app can see. Responses are the same bytes, status and headers; a response
-  that ends in one task reaches the page at the end of that task instead of in pieces during it. The
+  that ends where it starts reaches the page a few microtasks after its end, in one piece. The
   app frame's request for `/__sandburg/ws-shim.js` is answered by the service worker (one request
   from the service worker to the host per run instead of one per app document).
 
