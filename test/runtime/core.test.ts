@@ -472,6 +472,27 @@ test('worker_threads: a thread started while its parent is blocked runs (WebAsse
   assert.equal(out.stdout.trim(), 'wait ok 42');
 });
 
+test('worker_threads: a thread started by a blocked thread runs too (only napi-rs WebAssembly threads boot no spares)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Worker } = require('worker_threads');
+        const w = new Worker('/app/pool.js');
+        w.on('message', (m) => { console.log(m); process.exit(0); });`,
+      'pool.js': `
+        const { Worker, parentPort } = require('worker_threads');
+        const shared = new Int32Array(new SharedArrayBuffer(8));
+        setTimeout(() => {
+          new Worker('const s = require("worker_threads").workerData; Atomics.store(s, 0, 7); Atomics.notify(s, 0);', { eval: true, workerData: shared });
+          parentPort.postMessage('wait ' + Atomics.wait(shared, 0, 0, 10000) + ' ' + Atomics.load(shared, 0));
+        }, 1500);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), 'wait ok 7');
+});
+
 test('child_process: shell commands, npm scripts and package binaries run as Node programs', async () => {
   const out = await h.run(
     {
