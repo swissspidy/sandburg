@@ -15,9 +15,10 @@
  */
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { execFileSync } from 'node:child_process';
-import { realpathSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { realpathSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire, enableCompileCache } from 'node:module';
 import { dirname, join } from 'node:path';
+import { format } from 'node:url';
 import { Writable } from 'node:stream';
 
 /** Bytes of packuments (by their length on the wire) the worker keeps. */
@@ -26,6 +27,10 @@ const PACKUMENT_BYTES = 96 << 20;
 const IDLE_MS = 30_000;
 
 const WORKER_TAG = 'sandburg-npm-resolver';
+/** Packuments read ahead at once (most of the wait is the registry's, for stale cache entries). */
+const READ_AHEAD = 4;
+/** The spec types pacote fetches from a registry's packuments. */
+const REGISTRY_SPECS = new Set(['version', 'range', 'tag']);
 
 interface Init {
   tag: string;
@@ -45,6 +50,9 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   const sink = new Writable({ write: (_chunk, _encoding, done) => done() });
   let ready: Promise<{ flat: object; Arborist: new (o: object) => { reify(o: object): Promise<unknown> } }> | null = null;
   const cache = new PackumentCache(PACKUMENT_BYTES);
+  const ahead = new ReadAhead(require, cache);
+  /** Resolutions running (a small one runs beside another). */
+  let active = 0;
   parentPort!.on('message', async ({ id, dir, force }: { id: number; dir: string; force: boolean }) => {
     try {
       ready ??= (async () => {
@@ -55,9 +63,14 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
         return { flat: npm.flatOptions, Arborist: require('@npmcli/arborist') };
       })();
       const { flat, Arborist } = await ready;
+      ahead.start(dir, !active++);
       // As lib/commands/install.js runs it, with this worker's packuments.
       const opts = { ...flat, ...(force ? { force: true } : {}), npmCommand: 'install', auditLevel: null, path: dir, add: [], workspaces: undefined, packumentCache: cache };
-      await new Arborist(opts).reify(opts);
+      try {
+        await new Arborist(opts).reify(opts);
+      } finally {
+        active--;
+      }
       parentPort!.postMessage({ id });
     } catch (e) {
       parentPort!.postMessage({ id, error: e instanceof Error ? e.message : String(e) });
@@ -65,15 +78,50 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   });
 }
 
-/** pacote's packument cache, keeping large packuments too: least recently used out first. */
-export class PackumentCache extends Map<string, { _contentLength?: number }> {
+type Packument = { _contentLength?: number };
+
+/**
+ * pacote's packument cache, keeping large packuments too: least recently used out first. A
+ * packument being read ahead (pending) is there too: pacote awaits what get() returns.
+ */
+export class PackumentCache extends Map<string, Packument> {
   private bytes = 0;
   private readonly max: number;
+  private reading = new Map<string, Promise<Packument>>();
   constructor(max: number) {
     super();
     this.max = max;
   }
+  /** `read` is a packument being read ahead; one that fails is read again (`again`) for whoever waits for it. */
+  pending(key: string, read: Promise<Packument>, again: () => Promise<Packument>): void {
+    const shared: Promise<Packument> = read.then(
+      (packument) => {
+        if (this.reading.get(key) === shared) this.reading.delete(key);
+        this.set(key, packument);
+        return packument;
+      },
+      () => {
+        if (this.reading.get(key) === shared) this.reading.delete(key);
+        return again();
+      },
+    );
+    shared.catch(() => {});
+    this.reading.set(key, shared);
+  }
+  /** Packuments pacote is reading itself: it asks has() just before, and set()s or delete()s after. */
+  private fetching = new Set<string>();
+  override has(key: string) {
+    const known = this.reading.has(key) || super.has(key);
+    if (!known) this.fetching.add(key);
+    return known;
+  }
+  /** Whether a packument is here, being read ahead, or being read by pacote. */
+  knows(key: string): boolean {
+    return this.reading.has(key) || this.fetching.has(key) || super.has(key);
+  }
   override get(key: string) {
+    const reading = this.reading.get(key);
+    if (reading) return reading as Packument;
     const value = super.get(key);
     if (value !== undefined) {
       super.delete(key);
@@ -81,8 +129,9 @@ export class PackumentCache extends Map<string, { _contentLength?: number }> {
     }
     return value;
   }
-  override set(key: string, value: { _contentLength?: number }) {
+  override set(key: string, value: Packument) {
     this.delete(key);
+    this.fetching.delete(key);
     const size = value?._contentLength ?? 0;
     // Without a length it cannot be counted, so it is not kept (as npm's own cache does).
     if (!size || size > this.max / 2) return this;
@@ -95,9 +144,151 @@ export class PackumentCache extends Map<string, { _contentLength?: number }> {
     return this;
   }
   override delete(key: string) {
+    this.fetching.delete(key);
     const value = super.get(key);
     if (value !== undefined) this.bytes -= value._contentLength ?? 0;
     return super.delete(key);
+  }
+}
+
+type Options = Record<string, unknown>;
+interface Spec {
+  type: string;
+  name: string;
+  rawSpec: string;
+  escapedName: string;
+}
+interface Pacote {
+  manifest(spec: unknown, opts: Options): Promise<Record<string, unknown>>;
+  packument(spec: unknown, opts: Options): Promise<Packument>;
+}
+interface Npa {
+  (spec: string): Spec;
+  resolve(name: string, spec: string): Spec;
+}
+
+/**
+ * Reads ahead, while npm resolves, the packuments it will ask for next. npm reads a package's
+ * peers one after the other (build-ideal-tree's #loadPeerSet), and for each a cache entry older
+ * than the registry's max-age (5 minutes for npmjs.org) waits for the registry to revalidate it:
+ * lit-vite's resolution took 4.1 s with every entry stale, 2.0 s with every entry fresh. Here, as
+ * each manifest comes back, the packuments of the packages it brings in are read (revalidated, if
+ * stale) side by side, into the cache npm reads from, as npm would read them itself: the same
+ * requests, with the same options, only earlier. A package npm places has its dependencies,
+ * optional dependencies and peers loaded; one it loads only as an optional peer (Vite's vitest,
+ * vitest's playwright) has only its peers loaded, unless something depends on it; a dependency's
+ * own dev dependencies are never installed. Only packuments npm's cache has are read ahead, so a
+ * wrong guess never goes to the registry for a package npm has not fetched before.
+ */
+class ReadAhead {
+  private readonly npa: Npa;
+  private readonly pacote: Pacote;
+  private readonly cacache: { get: { info(cache: string, key: string): Promise<unknown> } };
+  private readonly registryFetch: { pickRegistry(spec: Spec, opts: Options): string };
+  private readonly cache: PackumentCache;
+  /** Names a resolution's starting lockfile has: npm does not fetch them. */
+  private locked = new Set<string>();
+  /** Names npm places in the tree (as far as the manifests read so far tell), and the manifests read. */
+  private placed = new Set<string>();
+  private manifests = new Map<string, Record<string, unknown>>();
+  private seen = new Set<string>();
+  private queue: (() => Promise<void>)[] = [];
+  private running = 0;
+
+  constructor(require: NodeJS.Require, cache: PackumentCache) {
+    this.npa = require('npm-package-arg') as Npa;
+    this.pacote = require('pacote') as Pacote;
+    this.cacache = require('cacache') as ReadAhead['cacache'];
+    this.registryFetch = require('npm-registry-fetch') as ReadAhead['registryFetch'];
+    this.cache = cache;
+    const original = this.pacote.manifest.bind(this.pacote);
+    this.pacote.manifest = async (spec, opts) => {
+      const manifest = await original(spec, opts);
+      // As build-ideal-tree's #fetchManifest asks (an old lockfile's inflation asks for less).
+      if (opts.fullMetadata) this.read(manifest, opts);
+      return manifest;
+    };
+  }
+
+  /** A resolution of dir starts. What the last one learnt goes, unless another is still running (`alone`). */
+  start(dir: string, alone: boolean): void {
+    if (alone) {
+      this.locked.clear();
+      this.placed.clear();
+      this.manifests.clear();
+      this.seen.clear();
+    }
+    try {
+      const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as { packages?: Record<string, unknown> };
+      for (const location of Object.keys(lock.packages ?? {})) this.locked.add(location.slice(location.lastIndexOf('node_modules/') + 13));
+    } catch {
+      // none: npm resolves every dependency
+    }
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as Record<string, Record<string, unknown> | undefined>;
+      for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) for (const name of Object.keys(pkg[field] ?? {})) this.placed.add(name);
+    } catch {
+      // npm reports it
+    }
+  }
+
+  private read(manifest: Record<string, unknown>, opts: Options): void {
+    const name = typeof manifest.name === 'string' ? manifest.name : '';
+    this.manifests.set(name, manifest);
+    const placed = this.placed.has(name);
+    const optionalPeers = (manifest.peerDependenciesMeta ?? {}) as Record<string, { optional?: boolean } | undefined>;
+    for (const field of placed ? ['dependencies', 'optionalDependencies', 'peerDependencies'] : ['peerDependencies']) {
+      const deps = manifest[field];
+      if (!deps || typeof deps !== 'object') continue;
+      for (const [dep, range] of Object.entries(deps as Record<string, unknown>)) {
+        if (typeof range !== 'string' || this.locked.has(dep)) continue;
+        // A package npm installs: its own dependencies are wanted too (from its manifest, if read already).
+        if (placed && (field !== 'peerDependencies' || !optionalPeers[dep]?.optional) && !this.placed.has(dep)) {
+          this.placed.add(dep);
+          const known = this.manifests.get(dep);
+          if (known) this.read(known, opts);
+        }
+        this.packument(dep, range, opts);
+      }
+    }
+  }
+
+  private packument(name: string, range: string, opts: Options): void {
+    let spec: Spec;
+    try {
+      spec = this.npa.resolve(name, range);
+    } catch {
+      return;
+    }
+    if (!REGISTRY_SPECS.has(spec.type)) return;
+    // pacote's own URL and cache key for it (registry.js).
+    const url = `${String(this.registryFetch.pickRegistry(spec, opts)).replace(/\/+$/, '')}/${spec.escapedName}`;
+    const key = `full:${url}`;
+    if (this.seen.has(key) || this.cache.knows(key)) return;
+    this.seen.add(key);
+    const options = { ...opts, fullMetadata: true, packumentCache: undefined };
+    this.queue.push(async () => {
+      const entry = `make-fetch-happen:request-cache:${format(new URL(url), { auth: false, fragment: false, search: true, unicode: false })}`;
+      if (!(await this.cacache.get.info(String(opts.cache), entry)) || this.cache.knows(key)) return;
+      const read = () => this.pacote.packument(spec, options);
+      const reading = read();
+      this.cache.pending(key, reading, read);
+      await reading;
+    });
+    this.drain();
+  }
+
+  private drain(): void {
+    while (this.running < READ_AHEAD && this.queue.length) {
+      this.running++;
+      void this.queue
+        .shift()!()
+        .catch(() => {})
+        .finally(() => {
+          this.running--;
+          this.drain();
+        });
+    }
   }
 }
 
