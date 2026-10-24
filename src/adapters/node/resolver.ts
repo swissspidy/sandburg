@@ -281,7 +281,9 @@ class ReadAhead {
     const key = `full:${url}`;
     if (this.seen.has(key) || this.cache.knows(key)) return;
     this.seen.add(key);
-    const options = { ...opts, fullMetadata: true, packumentCache: undefined };
+    // As build-ideal-tree's #fetchManifest asks for it: not with the package's own resolved URL and
+    // integrity that this manifest's options may carry (pacote ignores both for a packument).
+    const options = { ...opts, fullMetadata: true, packumentCache: undefined, resolved: undefined, integrity: undefined, avoid: undefined };
     this.queue.push(async () => {
       const entry = `make-fetch-happen:request-cache:${format(new URL(url), { auth: false, fragment: false, search: true, unicode: false })}`;
       if (!(await this.cacache.get.info(String(opts.cache), entry)) || this.cache.knows(key)) return;
