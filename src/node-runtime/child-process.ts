@@ -11,9 +11,9 @@
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost, type ThreadInit } from './threads.ts';
-import type { ToWorker } from './worker.ts';
 import { timers } from './builtins/process.ts';
 import { runScript } from './shell.ts';
+import type { ToWorker } from './messages.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
 

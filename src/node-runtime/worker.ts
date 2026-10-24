@@ -8,312 +8,37 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
-import type { FromWorker, NetMessage, ToParent } from './messages.ts';
-import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import type { FromWorker, NetMessage, ToParent, ToWorker, SharedPreload } from './messages.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
-import { createWasi } from './builtins/wasi.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
 import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
-import { createNodeSqlite } from './builtins/sqlite/node-sqlite.ts';
-import events, { EventEmitter } from 'events';
-import * as rs from 'readable-stream';
-import util from 'util';
-import assert from 'assert';
 import pathBrowserify from 'path-browserify';
-import * as legacyUrl from 'url';
-import querystring from 'querystring-es3';
-import * as stringDecoder from 'string_decoder';
-import { nativeZlib, useZlibPort } from './builtins/zlib-native.ts';
-import { parseArgs } from '@pkgjs/parseargs';
-import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
-import { adoptMailboxes, installNodeMessagePorts, NativeMessageChannel, nativePostMessage, type Mailbox } from './message-ports.ts';
-import { createFs } from './builtins/fs.ts';
-import { http, https, loopback, servers, serverEvents, type BridgeResponse, type UpgradeSocket } from './builtins/http.ts';
-import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
-import * as misc from './builtins/misc.ts';
-import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
+import { installAsyncContext } from './async-context.ts';
+import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
+import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
+import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive } from './builtins/process.ts';
+import { netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
-import ShaHash from 'sha.js/hash.js';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
-import type { FileTree } from '../types.ts';
+import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
+import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile } from './host-files.ts';
+import { buildBuiltins } from './builtins.ts';
+import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested } from './peers.ts';
 
-export type ToWorker =
-  | {
-      type: 'init';
-      cwd: string;
-      env: Record<string, string>;
-      files: FileTree;
-      installKey: string | null;
-      /** A bundle of the install's files that runs load (see adapters/node/index.ts). */
-      preload?: string | null;
-      /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
-      filesBundle?: string | null;
-      /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
-      compileCache?: { key: string; bundle: string | null } | null;
-      /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
-      prefetched?: Record<string, SharedArrayBuffer>;
-      nodeModules: Record<string, number> | null;
-      /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
-      pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
-      /** The preload bundle's files, as the parent runtime read them: shared memory and its index (see sharedPreload). */
-      shared?: SharedPreload | null;
-      /** A port to the parent's file channel (see openChannel) and its ready flag. */
-      filesChannel?: { port: MessagePort; ready: SharedArrayBuffer } | null;
-      /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
-      compilePort?: MessagePort | null;
-      base: string;
-      ipc?: boolean;
-      tsRunner?: boolean;
-      /** The program's node options (`node --conditions=development …`): its --conditions apply. */
-      execArgv?: string[];
-      /** Set when this runtime is a worker thread (worker_threads.Worker) of another. */
-      thread?: ThreadInit;
-      /** A thread inherits these from its parent instead of scanning files it does not have. */
-      inherit?: { asyncModules: boolean; usesSqlite: boolean };
-      /** Raised once anything but the install wrote in node_modules (see trackNodeModulesWrites); the main runtime's, for threads. */
-      nodeModulesWrites?: Int32Array;
-    }
-  /** From the parent thread to this worker thread's parentPort. */
-  | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }
-  /** `track`: project directories whose files the runtime notes changes to from now on (see read-tree's ifChanged). */
-  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
-  /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
-  | { type: 'spares' }
-  /** The parent closed this child process's IPC channel. */
-  | { type: 'disconnect' }
-  /** A net connection between runtimes (see netMessage). */
-  | NetMessage
-  | { type: 'request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
-  /** A message for the program (with init.ipc): process.on('message'). */
-  | { type: 'message'; data: unknown }
-  /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
-  /** Writes a project file, as an editor would (file watchers see the change). */
-  | { type: 'write-file'; path: string; content: string }
-  /**
-   * The files under some directories (dev servers' caches, kept for the next run); with match, also
-   * the project's files whose path matches it, outside node_modules and dot directories (an app's databases).
-   */
-  | { type: 'read-tree'; id: number; dirs: string[]; match?: string; ifChanged?: boolean }
-  | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
-  | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
-  | { type: 'ws-close'; id: number; code?: number; reason?: string }
-  /** The reply to a loopback request this runtime sent its parent (see loopback.route). */
-  | { type: 'lb-start'; id: number; status: number; statusText: string; headers: [string, string][] }
-  | { type: 'lb-chunk'; id: number; chunk: ArrayBuffer }
-  | { type: 'lb-end'; id: number }
-  | { type: 'lb-error'; id: number; message: string; code?: string };
-
-/** An EventEmitter whose listeners run in the async context it was created in (events.EventEmitterAsyncResource). */
-class EventEmitterAsyncResource extends EventEmitter {
-  readonly asyncResource: AsyncResource;
-  constructor(options?: { name?: string; captureRejections?: boolean }) {
-    super(options);
-    this.asyncResource = new AsyncResource(options?.name ?? new.target.name);
-  }
-  emit(event: string | symbol, ...args: unknown[]): boolean {
-    return this.asyncResource.runInAsyncScope(() => super.emit(event, ...args));
-  }
-  emitDestroy(): void {
-    this.asyncResource.emitDestroy();
-  }
-  get asyncId(): number {
-    return this.asyncResource.asyncId();
-  }
-  get triggerAsyncId(): number {
-    return this.asyncResource.triggerAsyncId();
-  }
-}
-
-/** The buffer polyfill predates the base64url encoding (Node 15+); hashes and ids use it. */
-function patchBase64Url(): void {
-  const B = Buffer as unknown as {
-    prototype: { toString(enc?: string, s?: number, e?: number): string; write(str: string, a?: unknown, b?: unknown, c?: unknown): number };
-    from(v: unknown, enc?: unknown, len?: unknown): Buffer;
-    isEncoding(e: string): boolean;
-    byteLength(v: unknown, enc?: string): number;
-  };
-  const isUrl = (enc: unknown) => typeof enc === 'string' && enc.toLowerCase() === 'base64url';
-  const toB64 = (s: string) => s.replace(/-/g, '+').replace(/_/g, '/');
-  const { toString, write } = B.prototype;
-  const { from, isEncoding, byteLength } = B;
-  B.prototype.toString = function (this: Buffer, enc?: string, s?: number, e?: number) {
-    return isUrl(enc) ? toString.call(this, 'base64', s, e).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : toString.call(this, enc, s, e);
-  };
-  B.prototype.write = function (this: Buffer, str: string, a?: unknown, b?: unknown, c?: unknown) {
-    if (isUrl(a)) return write.call(this, toB64(str), 'base64');
-    if (isUrl(b)) return write.call(this, toB64(str), a, 'base64');
-    if (isUrl(c)) return write.call(this, toB64(str), a, b, 'base64');
-    return write.call(this, str, a, b, c);
-  };
-  B.from = function (v: unknown, enc?: unknown, len?: unknown) {
-    return typeof v === 'string' && isUrl(enc) ? from.call(Buffer, toB64(v), 'base64') : from.call(Buffer, v, enc, len);
-  };
-  B.isEncoding = (e: string) => isUrl(e) || isEncoding(e);
-  B.byteLength = (v: unknown, enc?: string) => (typeof v === 'string' && isUrl(enc) ? byteLength(toB64(v), 'base64') : byteLength(v, enc));
-}
 patchBase64Url();
 
-/**
- * UTF-8 through the browser's TextEncoder/TextDecoder: the buffer polyfill converts in JavaScript
- * loops, ~13x slower than Node (11 MB: 560 ms instead of 40). Tools convert a lot (webpack's cache,
- * loaders, source maps).
- */
-function patchUtf8(): void {
-  const B = Buffer as unknown as {
-    prototype: Record<string, (...a: unknown[]) => unknown> & { length: number; subarray(s: number, e: number): Uint8Array };
-    from(v: unknown, enc?: unknown, len?: unknown): Buffer;
-    byteLength(v: unknown, enc?: unknown): number;
-  };
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
-  const isUtf8 = (enc: unknown) => enc === undefined || enc === null || (typeof enc === 'string' && /^utf-?8$/i.test(enc));
-  const { from } = B;
-  const { toString, write } = B.prototype as unknown as Record<string, (this: Uint8Array, ...a: unknown[]) => unknown>;
-  // Short strings stay in JavaScript: the native encoder's call costs more than it saves there.
-  const SHORT = 64;
-  B.from = function (v: unknown, enc?: unknown, len?: unknown) {
-    if (typeof v === 'string' && v.length > SHORT && isUtf8(enc)) {
-      const bytes = encoder.encode(v);
-      return from.call(B, bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    }
-    return from.call(B, v, enc, len);
-  };
-  const slice = (buf: Uint8Array, start?: unknown, end?: unknown) => {
-    const s = typeof start === 'number' && start > 0 ? Math.floor(start) : 0;
-    const e = typeof end === 'number' && end < buf.length ? Math.floor(end) : buf.length;
-    return e <= s ? '' : decoder.decode(buf.subarray(s, e));
-  };
-  B.prototype.toString = function (this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown) {
-    return isUtf8(enc) && this.length > SHORT ? slice(this, start, end) : Reflect.apply(toString, this, [enc, start, end]);
-  };
-  B.prototype.utf8Slice = function (this: Uint8Array, start?: unknown, end?: unknown) {
-    return slice(this, start, end);
-  };
-  const encodeInto = (buf: Uint8Array, str: string, offset: number, length: number) => {
-    const start = Math.max(0, Math.min(offset, buf.length));
-    return encoder.encodeInto(str, buf.subarray(start, Math.min(buf.length, start + length))).written;
-  };
-  // buf.write(string[, offset[, length]][, encoding])
-  B.prototype.write = function (this: Uint8Array, str: unknown, a?: unknown, b?: unknown, c?: unknown) {
-    let offset = 0;
-    let length = this.length;
-    let enc: unknown;
-    if (typeof a === 'string') enc = a;
-    else {
-      if (typeof a === 'number') offset = a;
-      if (typeof b === 'string') enc = b;
-      else {
-        if (typeof b === 'number') length = b;
-        enc = c;
-      }
-    }
-    if (typeof str === 'string' && str.length > SHORT && offset >= 0 && offset <= this.length && isUtf16(enc)) return utf16Into(this, str, offset, Math.min(length, this.length - offset));
-    if (typeof str !== 'string' || str.length <= SHORT || !isUtf8(enc)) return write.call(this, str, a, b, c);
-    return encodeInto(this, str, offset, Math.min(length, this.length - offset));
-  };
-  // UTF-16: the polyfill builds an array of the string's bytes first. es-module-lexer (Vite) writes
-  // each module's source this way (55 ms of a warm Vite run). Whole code units only, as Node writes them.
-  const isUtf16 = (enc: unknown) => typeof enc === 'string' && /^(ucs-?2|utf-?16le)$/i.test(enc);
-  const utf16Into = (buf: Uint8Array, str: string, offset: number, length: number) => {
-    const units = Math.min(str.length, Math.floor(length / 2));
-    for (let i = 0, at = offset; i < units; i++, at += 2) {
-      const c = str.charCodeAt(i);
-      buf[at] = c & 0xff;
-      buf[at + 1] = c >>> 8;
-    }
-    return units * 2;
-  };
-  // The polyfill counts a string's UTF-8 bytes by encoding it into an array (vite's etag: 33 ms of a warm run).
-  const { byteLength } = B;
-  B.byteLength = (v: unknown, enc?: unknown) => (typeof v === 'string' && v.length > SHORT && isUtf8(enc) ? utf8Length(v) : byteLength(v, enc));
-  B.prototype.utf8Write = function (this: Uint8Array, str: unknown, offset?: unknown, length?: unknown) {
-    const o = typeof offset === 'number' ? offset : 0;
-    return encodeInto(this, String(str), o, typeof length === 'number' ? length : this.length - o);
-  };
-  // Node's other undocumented per-encoding methods, which packages call directly (busboy, under Next.js'
-  // server actions, decodes form fields with buf.latin1Slice): the same as toString() and write().
-  for (const enc of ['latin1', 'ascii', 'hex', 'base64', 'ucs2']) {
-    B.prototype[`${enc}Slice`] ??= function (this: Uint8Array, start?: unknown, end?: unknown) {
-      return Reflect.apply(toString, this, [enc, typeof start === 'number' ? start : 0, typeof end === 'number' ? end : this.length]);
-    };
-    B.prototype[`${enc}Write`] ??= function (this: Uint8Array, str: unknown, offset?: unknown, length?: unknown) {
-      const o = typeof offset === 'number' ? offset : 0;
-      return Reflect.apply(write, this, [String(str), o, typeof length === 'number' ? length : this.length - o, enc]);
-    };
-  }
-}
 patchUtf8();
 
-/**
- * crypto's SHA hashes (sha.js, under crypto-browserify) copy the input into each 64-byte block one
- * byte at a time: 38 ms of a warm Vite run, which hashes the lockfile (sha256) and every response
- * (an etag, sha1). The same copy with Uint8Array.prototype.set.
- */
-function patchHashCopy(): void {
-  const { update } = ShaHash.prototype;
-  type Self = { _block: Uint8Array; _blockSize: number; _len: number; _update(block: Uint8Array): void };
-  ShaHash.prototype.update = function (this: Self, data: unknown, enc?: string) {
-    const bytes = typeof data === 'string' ? Buffer.from(data, (enc || 'utf8') as BufferEncoding) : data;
-    if (!(bytes instanceof Uint8Array)) return update.call(this, data, enc);
-    const block = this._block;
-    const size = this._blockSize;
-    let accum = this._len;
-    for (let offset = 0; offset < bytes.length; ) {
-      const assigned = accum % size;
-      const take = Math.min(bytes.length - offset, size - assigned);
-      block.set(bytes.subarray(offset, offset + take), assigned);
-      accum += take;
-      offset += take;
-      if (accum % size === 0) this._update(block);
-    }
-    this._len += bytes.length;
-    return this;
-  };
-}
 patchHashCopy();
 
-/** The length of a string's UTF-8 (a lone surrogate is U+FFFD, three bytes, as Node encodes it). */
-export function utf8Length(s: string): number {
-  let n = s.length;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x80) continue;
-    if (c < 0x800) n += 1;
-    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
-      n += 2;
-      i++;
-    } else n += 2;
-  }
-  return n;
-}
-
-/**
- * Base64 through the browser's Uint8Array.prototype.toBase64 where there is one: the buffer
- * polyfill encodes in a JavaScript loop, ~19x slower (4 MB: 127 ms instead of 7), and webpack and
- * Next.js encode source maps and hashes in base64 (~0.2 s of next dev's start). The output is the
- * same: padded base64, and base64url without padding, as Node writes them.
- */
-function patchBase64(): void {
-  const native = (Uint8Array.prototype as unknown as { toBase64?: (o?: object) => string }).toBase64;
-  if (typeof native !== 'function') return;
-  const B = Buffer as unknown as { prototype: { toString(this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown): string } };
-  const { toString } = B.prototype;
-  const URL_SAFE = { alphabet: 'base64url', omitPadding: true };
-  B.prototype.toString = function (this: Uint8Array, enc?: unknown, start?: unknown, end?: unknown) {
-    const name = typeof enc === 'string' && this.length > 64 ? enc.toLowerCase() : '';
-    if (name !== 'base64' && name !== 'base64url') return toString.call(this, enc, start, end);
-    const s = typeof start === 'number' && start > 0 ? Math.floor(start) : 0;
-    const e = typeof end === 'number' && end < this.length ? Math.floor(end) : this.length;
-    return e <= s ? '' : native.call(this.subarray(s, e), name === 'base64url' ? URL_SAFE : undefined);
-  };
-}
 patchBase64();
 
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
 /** To the page, or to the runtime that started this one (a thread's or child process's parent). */
-const realPostMessage = (self as unknown as Worker).postMessage.bind(self) as (msg: ToParent, transfer?: Transferable[]) => void;
+export const realPostMessage = (self as unknown as Worker).postMessage.bind(self) as (msg: ToParent, transfer?: Transferable[]) => void;
 const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
 
 /**
@@ -326,10 +51,10 @@ function hideWorkerGlobals(): void {
     Object.defineProperty(globalThis, name, { value: undefined, writable: true, configurable: true, enumerable: false });
   }
 }
-const post = (msg: FromWorker, transfer: Transferable[] = []) => realPostMessage(msg, transfer);
+export const post = (msg: FromWorker, transfer: Transferable[] = []) => realPostMessage(msg, transfer);
 
 /** A polyfill left out of the runtime's script (RUNTIME_LIBS in bundle.ts), loaded the first time it is needed. */
-function runtimeLib<T>(name: RuntimeLib): T {
+export function runtimeLib<T>(name: RuntimeLib): T {
   const libs = ((globalThis as Record<symbol, Record<string, unknown>>)[Symbol.for(LIBS_KEY)] ??= {});
   if (!(name in libs)) realImportScripts(`${base}/node-${name}.js`);
   return libs[name] as T;
@@ -337,8 +62,8 @@ function runtimeLib<T>(name: RuntimeLib): T {
 
 installAsyncContext();
 
-let base = '/__sandburg';
-let installKey: string | null = null;
+export let base = '/__sandburg';
+export let installKey: string | null = null;
 let projectRoot = '/app';
 
 /**
@@ -349,21 +74,11 @@ let projectRoot = '/app';
  * single request costs ~10-50 ms (next dev's first ten took ~0.2 s). A worker thread switches after
  * PRELOAD_AFTER_THREAD files, so the small WebAssembly helper threads never hold the bundle.
  */
-let preloadUrl: string | null = null;
-let preloaded: Map<string, Uint8Array> | null = null;
-let installedRequests = 0;
-const PRELOAD_AFTER = 0;
-const PRELOAD_AFTER_THREAD = 40;
+export let preloadUrl: string | null = null;
+export let preloaded: Map<string, Uint8Array> | null = null;
 
-/**
- * The preload bundle as its runtime read it, in shared memory for the runtime's threads and child
- * processes: they read its files there instead of asking the host for each (each of rolldown's
- * WebAssembly threads asked for the same ~30 files, ~250 ms per thread). Copied from the bundle when
- * the first one starts, once per runtime; a runtime passes on what it was given.
- */
-type SharedPreload = { sab: SharedArrayBuffer; index: Record<string, [number, number]> };
 let preloadBytes: { bytes: Uint8Array; index: Record<string, [number, number]> } | null = null;
-let shared: SharedPreload | null = null;
+export let shared: SharedPreload | null = null;
 let sharedBytes: Uint8Array | null = null;
 
 function sharedPreload(): SharedPreload | null {
@@ -383,95 +98,10 @@ function sharedPreload(): SharedPreload | null {
   return shared;
 }
 
-/** The files of a bundle (a little-endian u32 header length, a JSON header [[mode, path, length], …], the bytes). */
-function readBundle(url: string): [string, Uint8Array, string][] {
-  const ahead = prefetchedBody(url);
-  if (ahead) return bundleFiles(ahead);
-  const res = requestSync(url, true);
-  if (res.status !== 200) return [];
-  return bundleFiles(res.body as Uint8Array);
-}
-
 /** Bundles the page is downloading for this runtime (see init.prefetched), by URL. */
-let prefetched: Record<string, SharedArrayBuffer> = {};
+export let prefetched: Record<string, SharedArrayBuffer> = {};
 
-/**
- * Whether the page is still downloading a bundle and files can be asked for over the file channel
- * meanwhile: the host predicts a never-run install's first bundle, which can take seconds (ADR
- * 0026), and the runtime would wait for all of it; it loads what it needs one file at a time
- * instead (the host's prediction transforms those first), and reads the bundle once it is there.
- */
-let waitedForChannel = false;
-
-function stillDownloading(url: string): boolean {
-  const sab = prefetched[url];
-  if (!sab || Atomics.load(new Int32Array(sab, 0, 1), 0) !== 0 || !channel) return false;
-  // The channel opens as the runtime starts: worth one short wait (a host without one may not answer).
-  const ready = new Int32Array(channel.ready);
-  if (!waitedForChannel) Atomics.wait(ready, 0, 0, 100);
-  waitedForChannel = true;
-  return Atomics.load(ready, 0) === 1;
-}
-
-/** A bundle the page downloaded, in its shared memory (not copied), once it has; null if it failed or was not asked for. */
-function prefetchedBody(url: string): Uint8Array | null {
-  const sab = prefetched[url];
-  if (!sab) return null;
-  delete prefetched[url];
-  const state = new Int32Array(sab, 0, 2);
-  if (Atomics.wait(state, 0, 0, 60_000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
-  return new Uint8Array(sab, 8, Atomics.load(state, 1));
-}
-
-function bundleFiles(bytes: Uint8Array): [string, Uint8Array, string][] {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const length = view.getUint32(0, true);
-  const header = JSON.parse(new TextDecoder().decode(bytes.slice(4, 4 + length))) as [string, string, number][];
-  const files: [string, Uint8Array, string][] = [];
-  let at = 4 + length;
-  for (const [mode, rel, size] of header) {
-    // A negative size names a file that is not in the bundle (see downloadOnSide).
-    if (size < 0) {
-      downloadOnSide(mode, rel, -size);
-      continue;
-    }
-    files.push([rel, bytes.subarray(at, at + size), mode]);
-    at += size;
-  }
-  return files;
-}
-
-/**
- * Large installed files the preload bundle only names (WebAssembly binaries: swc's is 30 MB), which
- * the program reads later with a synchronous request each (~0.3 s for swc's). The digest helper
- * downloads them into shared memory as soon as the bundle is read, and a read waits for what is left
- * of the download instead of making it. Only a program's runtime does (not its threads).
- */
-const onSide = new Map<string, { state: Int32Array; shared: SharedArrayBuffer }>();
-
-function downloadOnSide(mode: string, rel: string, size: number): void {
-  if (thread || !digester || !installKey) return;
-  try {
-    const shared = new SharedArrayBuffer(8 + size);
-    onSide.set(`${mode}/${rel}`, { state: new Int32Array(shared, 0, 2), shared });
-    nativeWorkerPost.call(digester.worker, { fetch: new URL(`${base}/nm/${installKey}/${mode}/${rel}`, workerHref).href, shared });
-  } catch {
-    onSide.delete(`${mode}/${rel}`);
-  }
-}
-
-/** A file downloaded on the side (a copy: decoders do not read shared memory), or null to request it. */
-function downloadedOnSide(key: string): Uint8Array | null {
-  const side = onSide.get(key);
-  if (!side) return null;
-  onSide.delete(key);
-  // Waited for only if the helper runs (it may not have started yet).
-  if (!digester || Atomics.load(digester.state, 1) !== 1) return null;
-  if (Atomics.wait(side.state, 0, 0, 60_000) === 'timed-out' || Atomics.load(side.state, 0) !== 1) return null;
-  return new Uint8Array(side.shared, 8, Atomics.load(side.state, 1)).slice();
-}
-
-function loadPreload(): void {
+export function loadPreload(): void {
   preloaded = new Map();
   try {
     let bytes = prefetchedBody(preloadUrl!);
@@ -498,351 +128,47 @@ function loadPreload(): void {
 }
 
 /** A file of the shared preload bundle (a copy: decoders do not read shared memory), or null. */
-function sharedFile(key: string): Uint8Array | null {
+export function sharedFile(key: string): Uint8Array | null {
   const at = shared?.index[key];
   return at ? sharedBytes!.slice(at[0], at[0] + at[1]) : null;
-}
-
-function syncGet(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
-  if (preloadUrl && installKey && url.startsWith(`${base}/nm/${installKey}/`)) {
-    const key = url.slice(base.length + installKey.length + 5);
-    let own = sharedFile(key);
-    // A miss in the shared bundle is a miss in the bundle: it is this install's, as loadPreload's would be.
-    if (!own && !preloaded && !shared && ++installedRequests > (thread ? PRELOAD_AFTER_THREAD : PRELOAD_AFTER) && !stillDownloading(preloadUrl)) {
-      loadPreload();
-      // A bundle in shared memory (the page downloaded it) is read there.
-      own = sharedFile(key);
-    }
-    if (own) return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
-    const hit = preloaded?.get(key);
-    if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
-    const side = downloadedOnSide(key);
-    if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
-  }
-  return requestSync(url, binary);
 }
 
 /**
  * What the host compiled for earlier runs of the project (Vite's SSR modules, the project's own
  * files): fetched at the first compile, and looked up before asking the host.
  */
-let compileCache: { key: string; bundle: string | null } | null = null;
-let compilesLoaded = false;
-
-function loadCompiles(into: Map<string, string>, asyncModules: boolean): void {
-  compilesLoaded = true;
-  if (!compileCache?.bundle) return;
-  try {
-    const res = requestSync(compileCache.bundle, true);
-    if (res.status !== 200) return;
-    const bytes = res.body as Uint8Array;
-    const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
-    const decoder = new TextDecoder();
-    const header = JSON.parse(decoder.decode(bytes.subarray(4, 4 + length))) as [string, number, string, number, number][];
-    let at = 4 + length;
-    for (const [kind, async, path, codeLength, outLength] of header) {
-      // The same key as hostCompile's; compiled as an async module or not, as this runtime would ask.
-      if (!!async === (asyncModules && kind !== 'cjs')) into.set(`${kind}:${path}\0${decoder.decode(bytes.subarray(at, at + codeLength))}`, decoder.decode(bytes.subarray(at + codeLength, at + codeLength + outLength)));
-      at += codeLength + outLength;
-    }
-  } catch {
-    // compiled by the host, one by one
-  }
-}
-
-function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
-  const fast = url.startsWith(`${base}/nm/`) ? viaChannel(url) : null;
-  if (fast) return { status: fast.status, body: binary ? fast.body : new TextDecoder().decode(fast.body) };
-  const xhr = new XMLHttpRequest();
-  xhr.open('GET', url, false);
-  if (binary) xhr.responseType = 'arraybuffer';
-  xhr.send();
-  return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
-}
-
-/**
- * SHA-256 of code, computed on a helper thread while this one waits: WebCrypto's digest is
- * asynchronous only, and natively ~5x faster than in JavaScript (next dev's 8 MB vendor chunk: ~50
- * ms, ~240 ms in a JavaScript loop). The helper starts with the runtime; until it has (or if it ever
- * fails to answer), there is no digest.
- */
-const NativeWorker = globalThis.Worker;
-const workerHref = globalThis.location?.href;
-const nativeWorkerPost = NativeWorker?.prototype.postMessage;
-const DIGEST_HELPER = `let socket = null, ids = 0;
-const asked = new Map();
-const settle = (shared, status, body) => {
-  const state = new Int32Array(shared, 0, 3);
-  if (body) new Uint8Array(shared, 12).set(body);
-  Atomics.store(state, 1, body ? body.length : 0);
-  Atomics.store(state, 2, status);
-  Atomics.store(state, 0, 1);
-  Atomics.notify(state, 0);
-};
-function open(url, ready) {
-  socket = new WebSocket(url);
-  socket.binaryType = 'arraybuffer';
-  socket.onopen = () => (Atomics.store(ready, 0, 1), Atomics.notify(ready, 0));
-  socket.onmessage = ({ data }) => {
-    const head = new DataView(data, 0, 8);
-    const shared = asked.get(head.getUint32(0, true));
-    if (!shared) return;
-    asked.delete(head.getUint32(0, true));
-    settle(shared, head.getUint32(4, true), new Uint8Array(data, 8));
-  };
-  socket.onclose = () => {
-    Atomics.store(ready, 0, 2);
-    Atomics.notify(ready, 0);
-    for (const shared of asked.values()) settle(shared, 0, null);
-    asked.clear();
-  };
-}
-const handle = async ({ data }) => {
-  if (data.channel) return open(data.channel, new Int32Array(data.ready));
-  if (data.port) return void (data.port.onmessage = handle);
-  if (data.get) {
-    if (!socket || socket.readyState !== 1) return settle(data.shared, 0, null);
-    const id = ++ids;
-    asked.set(id, data.shared);
-    return socket.send(id + ' ' + data.get);
-  }
-  const state = new Int32Array(data.shared, 0, 2);
-  if (data.hello) return Atomics.store(state, 1, 1);
-  if (data.fetch) {
-    try {
-      const res = await fetch(data.fetch);
-      const body = new Uint8Array(await res.arrayBuffer());
-      if (!res.ok || body.length + 8 > data.shared.byteLength) throw new Error(String(res.status));
-      new Uint8Array(data.shared, 8).set(body);
-      Atomics.store(state, 1, body.length);
-      Atomics.store(state, 0, 1);
-    } catch {
-      Atomics.store(state, 0, 2);
-    }
-    return Atomics.notify(state, 0);
-  }
-  try {
-    new Uint8Array(data.shared, 8, 32).set(new Uint8Array(await crypto.subtle.digest('SHA-256', data.bytes)));
-    Atomics.store(state, 0, 1);
-  } catch {
-    Atomics.store(state, 0, 2);
-  }
-  Atomics.notify(state, 0);
-};
-onmessage = handle;`;
-/** The helper and its shared memory: the answer's state (0 waiting, 1 written, 2 failed), 1 once it runs, the digest. */
-let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } | null = null;
-
-function startDigester(): void {
-  try {
-    const worker = new NativeWorker(URL.createObjectURL(new Blob([DIGEST_HELPER], { type: 'text/javascript' })));
-    const shared = new SharedArrayBuffer(40);
-    digester = { worker, shared, state: new Int32Array(shared, 0, 2) };
-    nativeWorkerPost.call(worker, { hello: true, shared });
-    openChannel(worker);
-  } catch {
-    digester = null;
-  }
-}
-
-/**
- * Installed files over a WebSocket to the host (src/orchestrator/host-socket.ts), which the helper
- * holds: a synchronous XMLHttpRequest costs ~5-7 ms, mostly Playwright's interception of every
- * request (a round trip to Playwright each); a WebSocket message is not intercepted, ~0.5 ms. The
- * runtime waits on its mailbox (state, body length, status, then the body) while the helper asks.
- * Until the socket is open, or if it closes, or for a body over 1 MB (status 0), requests are HTTP.
- * Threads and child processes ask their parent's helper, through a port of their own (shareChannel).
- */
-let channel: { post(message: unknown, transfer?: Transferable[]): void; ready: SharedArrayBuffer; mailbox: SharedArrayBuffer | null } | null = null;
-const CHANNEL_MAILBOX = 12 + (1 << 20);
-
-function openChannel(worker: Worker): void {
-  if (channel || !globalThis.location || typeof WebSocket === 'undefined') return;
-  const ready = new SharedArrayBuffer(4);
-  channel = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), ready, mailbox: null };
-  const url = new URL(`${base}/files`, workerHref);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  nativeWorkerPost.call(worker, { channel: url.href, ready });
-}
-
-/** A port to this runtime's file channel for a thread or child process it starts (the helper answers it directly). */
-function shareChannel(): { port: MessagePort; ready: SharedArrayBuffer } | null {
-  const c = channel;
-  if (!c) return null;
-  const pair = new NativeMessageChannel();
-  c.post({ port: pair.port2 }, [pair.port2]);
-  return { port: pair.port1, ready: c.ready };
-}
-
-function useChannel(given: { port: MessagePort; ready: SharedArrayBuffer }): void {
-  channel = { post: (m, t = []) => nativePostMessage.call(given.port, m, t), ready: given.ready, mailbox: null };
-}
-
-/** A GET over the channel: the status and a copy of the body (decoders do not read shared memory), or null to use HTTP. */
-function viaChannel(url: string): { status: number; body: Uint8Array } | null {
-  const c = channel;
-  if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
-  c.mailbox ??= new SharedArrayBuffer(CHANNEL_MAILBOX);
-  const state = new Int32Array(c.mailbox, 0, 3);
-  Atomics.store(state, 0, 0);
-  c.post({ get: url, shared: c.mailbox });
-  // A helper that does not answer is not asked again (its late answer would land in the mailbox).
-  if (Atomics.wait(state, 0, 0, 120_000) === 'timed-out') {
-    channel = null;
-    return null;
-  }
-  const status = Atomics.load(state, 2);
-  return status ? { status, body: new Uint8Array(c.mailbox, 12, Atomics.load(state, 1)).slice() } : null;
-}
-
-/** The hex SHA-256 of text's UTF-8, or null when the helper is not there to compute it. */
-function digestOf(text: string): string | null {
-  const d = digester;
-  if (!d || Atomics.load(d.state, 1) !== 1) return null;
-  try {
-    // The bytes move to the helper (WebCrypto does not read shared memory).
-    const bytes = new TextEncoder().encode(text);
-    Atomics.store(d.state, 0, 0);
-    nativeWorkerPost.call(d.worker, { shared: d.shared, bytes: bytes.buffer }, { transfer: [bytes.buffer] });
-    // A helper that does not answer is not asked again (its late answer would land in reused memory).
-    if (Atomics.wait(d.state, 0, 0, 5000) === 'timed-out' || Atomics.load(d.state, 0) !== 1) throw new Error('no digest');
-  } catch {
-    digester = null;
-    return null;
-  }
-  return hexOf(d.shared);
-}
-
-function hexOf(shared: SharedArrayBuffer): string {
-  let hex = '';
-  for (const b of new Uint8Array(shared, 8, 32)) hex += b.toString(16).padStart(2, '0');
-  return hex;
-}
-
-/**
- * Digests of large files the program writes (next dev's chunks, required soon after), computed by
- * the helper as they are written, for when the file is compiled as CommonJS: the runtime does not
- * wait for them then. A digest is of the file's bytes, which are the code's UTF-8 unless they are
- * not valid UTF-8 (no compile has that digest then) or start with a byte order mark (skipped).
- */
-const written = new Map<string, { data: Uint8Array; shared: SharedArrayBuffer }>();
-const toDigest = new Set<string>();
-const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
-
-function digestWhenWritten(path: string): void {
-  if (!digester || path.includes('/node_modules/') || !/\.c?js$/.test(path)) return;
-  if (!toDigest.size) nativeSetTimeout(digestWritten);
-  toDigest.add(path);
-}
-
-function digestWritten(): void {
-  const d = digester;
-  for (const path of toDigest) {
-    let data: Uint8Array;
-    try {
-      data = vfs.read(path);
-    } catch {
-      continue;
-    }
-    if (!d || data.length < ASK_FIRST || (data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf)) continue;
-    const prefix = new TextEncoder().encode(`cjs\0${path}\0`);
-    const bytes = new Uint8Array(prefix.length + data.length);
-    bytes.set(prefix);
-    bytes.set(data, prefix.length);
-    const shared = new SharedArrayBuffer(40);
-    written.set(path, { data, shared });
-    nativeWorkerPost.call(d.worker, { shared, bytes: bytes.buffer }, { transfer: [bytes.buffer] });
-  }
-  toDigest.clear();
-}
-
-/** The digest of a CommonJS file as written, if it has been computed and the file is unchanged. */
-function writtenDigest(path: string): string | null {
-  const known = written.get(path);
-  if (!known || !digester || Atomics.load(digester.state, 1) !== 1) return null;
-  try {
-    if (vfs.read(path) !== known.data) return null;
-  } catch {
-    return null;
-  }
-  // One the helper is still computing is waited for: asking for another would queue behind it.
-  const state = new Int32Array(known.shared, 0, 1);
-  if (Atomics.wait(state, 0, 0, 5000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
-  written.delete(path);
-  return hexOf(known.shared);
-}
+export let compileCache: { key: string; bundle: string | null } | null = null;
 
 /** node_modules installed in the browser (see npm/install.ts): read from shared memory, not the host. */
 /**
  * The page's compiler (adapters/node/compile-worker.ts) when packages were installed in the browser:
  * a port to it, and this runtime's mailbox, where the answer is written while this thread waits.
  */
-let pageCompiler: { port: MessagePort; mailbox: SharedArrayBuffer } | null = null;
-/** Code this long is asked for by digest before it is sent to the host to compile. */
-const ASK_FIRST = 1 << 18;
-const MAILBOX_HEADER = 8;
+export let pageCompiler: { port: MessagePort; mailbox: SharedArrayBuffer } | null = null;
 
-function compileInPage(request: { op: 'compile'; code: string; path: string; kind: string; asyncModules: boolean } | { op: 'tla'; files: Record<string, string> }): string {
-  const compiler = pageCompiler!;
-  for (;;) {
-    const state = new Int32Array(compiler.mailbox, 0, 2);
-    Atomics.store(state, 0, 0);
-    nativePostMessage.call(compiler.port, { ...request, mailbox: compiler.mailbox }, []);
-    while (Atomics.load(state, 0) === 0) Atomics.wait(state, 0, 0);
-    const status = Atomics.load(state, 0);
-    const length = Atomics.load(state, 1);
-    // Too big for the mailbox: a bigger one, and ask again (the page kept the answer).
-    if (status === 3) {
-      compiler.mailbox = new SharedArrayBuffer(MAILBOX_HEADER + length);
-      continue;
-    }
-    const text = new TextDecoder().decode(new Uint8Array(compiler.mailbox, MAILBOX_HEADER, length).slice());
-    if (status !== 1) throw Object.assign(new SyntaxError(text), { code: 'ERR_COMPILE' });
-    return text;
-  }
-}
+export let pack: { bytes: Uint8Array; index: Record<string, [number, number]>; message: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } } | null = null;
 
-/** A port to the page's compiler for a new runtime (a thread or child process): its parent connects it. */
-function connectPageCompiler(): MessagePort | null {
-  if (!pageCompiler) return null;
-  const channel = new NativeMessageChannel();
-  nativePostMessage.call(pageCompiler.port, { op: 'connect', port: channel.port2 }, [channel.port2]);
-  return channel.port1;
-}
-
-let pack: { bytes: Uint8Array; index: Record<string, [number, number]>; message: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } } | null = null;
-
-/** An installed file (path relative to the project), or null. */
-function installedFile(rel: string): Uint8Array | null {
-  if (pack) {
-    const at = pack.index[rel];
-    return at ? pack.bytes.slice(at[0], at[0] + at[1]) : null;
-  }
-  const res = syncGet(`${base}/nm/${installKey}/f/${rel}`, true);
-  return res.status === 200 ? (res.body as Uint8Array) : null;
-}
-
-let vfs: Vfs = new Vfs((path) => {
+export let vfs: Vfs = new Vfs((path) => {
   const data = installedFile(path.slice(projectRoot.length + 1));
   if (!data) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
   return data;
 });
 
-let proc: ReturnType<typeof createProcess>;
+export let proc: ReturnType<typeof createProcess>;
 /** This runtime as a worker thread (null in the main thread). */
-let thread: ThreadInit | null = null;
+export let thread: ThreadInit | null = null;
 let tsRunner = false;
-let threads: ReturnType<typeof createWorkerThreads>;
-let childProcess: ReturnType<typeof createChildProcess>;
+export let threads: ReturnType<typeof createWorkerThreads>;
+export let childProcess: ReturnType<typeof createChildProcess>;
 let nodeModulesIndex: Record<string, number> | null = null;
 let nodeModulesWrites: Int32Array | undefined;
 
-function write(stream: 'stdout' | 'stderr', text: string) {
+export function write(stream: 'stdout' | 'stderr', text: string) {
   post({ type: 'log', stream, text });
 }
 
 /** How the SQLite modules see files: the VFS, relative to the process's working directory. */
-function sqliteFiles(): FileAccess {
+export function sqliteFiles(): FileAccess {
   return {
     exists: (p) => vfs.exists(p),
     read: (p) => vfs.read(p),
@@ -865,267 +191,6 @@ let usesSqlite = false;
  */
 let asyncModules = false;
 
-function buildBuiltins() {
-  const fs = createFs(vfs, () => (proc.cwd as () => string)());
-  const path = Object.assign(Object.create(null), pathBrowserify, {
-    toNamespacedPath: (p: string) => p,
-    matchesGlob: () => false,
-  });
-  path.posix = path;
-  path.win32 = path;
-  // Node's path has no enumerable 'default' (tools copy its keys: @vercel/nft).
-  Object.defineProperty(path, 'default', { value: path, enumerable: false, writable: true, configurable: true });
-
-  // Like Node, the module itself is the legacy Stream class (an EventEmitter with pipe());
-  // libraries such as `send` inherit from it.
-  const LegacyStream = rs.Stream as unknown as { new (opts?: object): object; prototype: object; call(self: unknown, opts?: object): void };
-  function Stream(this: unknown, opts?: object) {
-    LegacyStream.call(this, opts);
-  }
-  Stream.prototype = LegacyStream.prototype;
-  const stream = Object.assign(Stream as unknown as Record<string, unknown>, rs, {
-    Stream,
-    promises: rs.promises ?? { pipeline: util.promisify(rs.pipeline), finished: util.promisify(rs.finished) },
-    isReadable: (s: { readable?: boolean }) => !!s?.readable,
-    isErrored: (s: { errored?: unknown }) => !!s?.errored,
-    getDefaultHighWaterMark: () => 65536,
-    setDefaultHighWaterMark: () => {},
-  });
-  // Node >= 17: Readable.fromWeb / toWeb and friends. readable-stream has them, but they call Node internals.
-  const Readable = rs.Readable as unknown as Record<string, unknown>;
-  Readable.fromWeb = (web: ReadableStream, opts?: object) => {
-    const reader = web.getReader();
-    return new rs.Readable({
-      ...opts,
-      read() {
-        reader.read().then(({ done, value }) => this.push(done ? null : Buffer.from(value)), (e) => this.destroy(e));
-      },
-      destroy(err, cb) {
-        // A stream that errored rejects its cancel(): the error is already err (read() above).
-        reader.cancel(err).then(() => cb(err), () => cb(err));
-      },
-    });
-  };
-  Readable.toWeb = (node: NodeJS.ReadableStream) =>
-    new ReadableStream({
-      start(controller) {
-        node.on('data', (c: Buffer | string) => controller.enqueue(typeof c === 'string' ? new TextEncoder().encode(c) : new Uint8Array(c)));
-        node.on('end', () => controller.close());
-        node.on('error', (e: Error) => controller.error(e));
-      },
-      cancel() {
-        (node as unknown as { destroy(): void }).destroy?.();
-      },
-    });
-  const Writable = rs.Writable as unknown as Record<string, unknown>;
-  Writable.fromWeb = (web: WritableStream) => {
-    const writer = web.getWriter();
-    return new rs.Writable({
-      write(chunk, _e, cb) {
-        writer.write(chunk).then(() => cb(), cb);
-      },
-      final(cb) {
-        writer.close().then(() => cb(), cb);
-      },
-    });
-  };
-  Writable.toWeb = (node: NodeJS.WritableStream) =>
-    new WritableStream({
-      write: (chunk) => new Promise<void>((res) => (node.write(chunk) ? res() : node.once('drain', () => res()))),
-      close: () => new Promise<void>((res) => node.end(res)),
-    });
-
-  const nodeUtil = Object.assign(Object.create(null), util, {
-    types: { ...(util as unknown as { types?: object }).types, isPromise: (v: unknown) => v instanceof Promise, isUint8Array: (v: unknown) => v instanceof Uint8Array, isAnyArrayBuffer: (v: unknown) => v instanceof ArrayBuffer, isArrayBufferView: ArrayBuffer.isView, isNativeError: (v: unknown) => v instanceof Error, isProxy: () => false, isExternal: () => false, isBoxedPrimitive: () => false, isModuleNamespaceObject: () => false },
-    TextEncoder,
-    TextDecoder,
-    stripVTControlCharacters: (s: string) => s.replace(/\u001b\[[0-9;]*[A-Za-z]/g, ''),
-    styleText: (_style: unknown, text: string) => text,
-    isDeepStrictEqual: (a: unknown, b: unknown) => {
-      try {
-        assert.deepStrictEqual(a, b);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    toUSVString: (s: string) => (s as unknown as { toWellFormed?(): string }).toWellFormed?.() ?? s,
-    getSystemErrorName: (n: number) => `E${-n}`,
-    getSystemErrorMap: () => new Map(),
-    aborted: (signal: AbortSignal) => new Promise((r) => signal.addEventListener('abort', r, { once: true })),
-    transferableAbortSignal: (s: AbortSignal) => s,
-    parseEnv: (s: string) => Object.fromEntries(s.split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])),
-    getCallSites: () => [],
-    parseArgs,
-    formatWithOptions: (_options: unknown, ...args: unknown[]) => (util as unknown as { format(...a: unknown[]): string }).format(...args),
-    debug: (util as unknown as { debuglog: unknown }).debuglog,
-  });
-  nodeUtil.inspect.custom ??= Symbol.for('nodejs.util.inspect.custom');
-
-  const url = {
-    ...legacyUrl,
-    URL,
-    URLSearchParams,
-    fileURLToPath: (u: string | URL) => {
-      const s = String(u);
-      if (!s.startsWith('file:')) throw Object.assign(new TypeError('The URL must be of scheme file'), { code: 'ERR_INVALID_URL_SCHEME' });
-      return decodeURIComponent(new URL(s).pathname);
-    },
-    pathToFileURL: (p: string) => new URL(`file://${encodeURI(p.startsWith('/') ? p : `${(proc.cwd as () => string)()}/${p}`).replace(/[?#]/g, encodeURIComponent)}`),
-    domainToASCII: (d: string) => new URL(`http://${d}`).hostname,
-    domainToUnicode: (d: string) => d,
-    urlToHttpOptions: (u: URL) => ({ protocol: u.protocol, hostname: u.hostname, hash: u.hash, search: u.search, pathname: u.pathname, path: u.pathname + u.search, href: u.href, port: u.port ? Number(u.port) : undefined }),
-  };
-
-  // node:crypto: crypto-browserify (a runtime library: loaded when a program first requires it).
-  const makeCrypto = () => {
-    const cryptoBrowserify = runtimeLib<Record<string, unknown>>('crypto');
-    // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
-    const withBase64Url = <A extends unknown[]>(make: (...a: A) => { digest(enc?: string): Buffer | string }) => (...args: A) => {
-      const h = make(...args);
-      const digest = h.digest.bind(h);
-      h.digest = (enc?: string) => (enc === 'base64url' ? (digest() as Buffer).toString('base64url') : digest(enc));
-      return h;
-    };
-    const createHash = withBase64Url(cryptoBrowserify.createHash as never);
-    const createHmac = withBase64Url(cryptoBrowserify.createHmac as never);
-    const crypto = Object.assign(Object.create(null), cryptoBrowserify, {
-      createHash,
-      createHmac,
-      Hash: createHash,
-      Hmac: createHmac,
-      webcrypto: globalThis.crypto,
-      subtle: globalThis.crypto.subtle,
-      getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
-      randomUUID: () => globalThis.crypto.randomUUID(),
-      randomInt: (min: number, max?: number) => {
-        if (max === undefined) [min, max] = [0, min];
-        return min + Math.floor(Math.random() * (max - min));
-      },
-      timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
-      getHashes: () => ['md5', 'sha1', 'sha256', 'sha384', 'sha512'],
-      getCiphers: () => [],
-      constants: {},
-      hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
-    });
-    return crypto;
-  };
-
-  // node:zlib: native streams over browserify-zlib (a runtime library: loaded when a program first requires it).
-  const makeZlib = () => {
-    const zlibBrowserify = runtimeLib<Record<string, unknown>>('zlib');
-    useZlibPort(zlibBrowserify as never);
-    const zlibUnsupported = (name: string) => () => {
-      throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
-    };
-    const zlib = Object.assign(Object.create(null), zlibBrowserify, typeof CompressionStream === 'function' ? nativeZlib : {}, {
-      createBrotliCompress: zlibUnsupported('createBrotliCompress'),
-      createBrotliDecompress: zlibUnsupported('createBrotliDecompress'),
-      brotliCompressSync: zlibUnsupported('brotliCompressSync'),
-      brotliDecompressSync: zlibUnsupported('brotliDecompressSync'),
-      brotliCompress: zlibUnsupported('brotliCompress'),
-      brotliDecompress: zlibUnsupported('brotliDecompress'),
-      crc32: (data: Uint8Array | string) => {
-        let c = ~0;
-        for (const b of typeof data === 'string' ? new TextEncoder().encode(data) : data) {
-          c ^= b;
-          for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
-        }
-        return ~c >>> 0;
-      },
-    });
-    // browserify-zlib has its Z_* constants on the module, not on `constants`.
-    const zConstants = Object.fromEntries(Object.entries(zlibBrowserify).filter(([k, v]) => k.startsWith('Z_') && typeof v === 'number'));
-    zlib.constants = { ...zConstants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
-    return zlib;
-  };
-
-  const assertStrict = Object.assign((v: unknown, m?: string) => assert.strict(v, m as string), assert.strict);
-
-  const table: Record<string, () => unknown> = {
-    fs: () => fs,
-    'fs/promises': () => fs.promises,
-    path: () => path,
-    'path/posix': () => path,
-    'path/win32': () => path,
-    buffer: () => ({ Buffer, SlowBuffer: Buffer, kMaxLength: 2 ** 31 - 1, kStringMaxLength: 2 ** 29, constants: { MAX_LENGTH: 2 ** 31 - 1, MAX_STRING_LENGTH: 2 ** 29 }, Blob, File, atob, btoa, isUtf8: () => true, isAscii: (b: Uint8Array) => b.every((x) => x < 128), transcode: (b: Uint8Array) => b, INSPECT_MAX_BYTES: 50 }),
-    events: () => Object.assign(events, { EventEmitter, EventEmitterAsyncResource, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), setMaxListeners: () => {}, addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
-    stream: () => stream,
-    'stream/promises': () => stream.promises,
-    'stream/web': () => ({ ReadableStream, WritableStream, TransformStream, TextEncoderStream, TextDecoderStream, ByteLengthQueuingStrategy, CountQueuingStrategy, CompressionStream, DecompressionStream }),
-    'stream/consumers': () => ({
-      text: async (s: AsyncIterable<Uint8Array | string>) => {
-        let t = '';
-        for await (const c of s) t += typeof c === 'string' ? c : new TextDecoder().decode(c);
-        return t;
-      },
-      buffer: async (s: AsyncIterable<Uint8Array>) => {
-        const parts: Uint8Array[] = [];
-        for await (const c of s) parts.push(c);
-        return Buffer.concat(parts);
-      },
-      json: async (s: AsyncIterable<Uint8Array>) => JSON.parse(new TextDecoder().decode(Buffer.concat(await (async () => { const p: Uint8Array[] = []; for await (const c of s) p.push(c); return p; })()))),
-    }),
-    string_decoder: () => stringDecoder,
-    util: () => nodeUtil,
-    'util/types': () => nodeUtil.types,
-    sys: () => nodeUtil,
-    assert: () => assert,
-    'assert/strict': () => assertStrict,
-    url: () => url,
-    querystring: () => querystring,
-    punycode: () => ({ toASCII: (s: string) => url.domainToASCII(s), toUnicode: (s: string) => s, encode: (s: string) => s, decode: (s: string) => s }),
-    crypto: makeCrypto,
-    zlib: makeZlib,
-    os: () => misc.os,
-    tty: () => misc.tty,
-    net: () => net,
-    tls: () => misc.tls,
-    dns: () => misc.dns,
-    'dns/promises': () => misc.dns.promises,
-    http: () => http,
-    https: () => https,
-    http2: () => misc.http2,
-    _http_agent: () => ({ Agent: http.Agent, globalAgent: http.globalAgent }),
-    _http_common: () => ({ methods: http.METHODS }),
-    child_process: () => childProcess,
-    worker_threads: () => {
-      // Threads may be spawned while this thread is blocked; have runtimes ready for them (see threads.ts).
-      if (!wasiChildThread()) warmRuntimes(base, WARM_RUNTIMES);
-      return threads.module;
-    },
-    cluster: () => misc.cluster,
-    vm: () => misc.vm,
-    v8: () => misc.v8,
-    perf_hooks: () => misc.perfHooks,
-    diagnostics_channel: () => misc.diagnosticsChannel,
-    async_hooks: () => asyncHooks,
-    timers: () => ({ ...timers, promises: timersPromises }),
-    'timers/promises': () => timersPromises,
-    process: () => proc,
-    console: () => console,
-    constants: () => ({ ...misc.os.constants.signals, ...fs.constants }),
-    readline: () => misc.readline,
-    'readline/promises': () => misc.readline.promises,
-    inspector: () => misc.inspector,
-    'inspector/promises': () => misc.inspector,
-    repl: () => misc.stub('repl'),
-    dgram: () => misc.stub('dgram'),
-    domain: () => ({ create: () => Object.assign(new EventEmitter(), { run: (fn: () => unknown) => fn(), add() {}, remove() {}, bind: (fn: unknown) => fn, intercept: (fn: unknown) => fn, enter() {}, exit() {}, dispose() {} }) }),
-    trace_events: () => ({ createTracing: () => ({ enable() {}, disable() {}, enabled: false }), getEnabledCategories: () => '' }),
-    wasi: () => {
-      // A WebAssembly build is about to start its threads (see threads.ts). Not in one of its threads:
-      // they load it too, and start none.
-      if (!thread || thread.process) wakeSpares();
-      return createWasi(fs, write, runtimeLib<{ WASI: unknown }>('wasi').WASI);
-    },
-    test: () => misc.stub('test'),
-    sqlite: () => createNodeSqlite(sqliteFiles()),
-    sea: () => ({ isSea: () => false }),
-  };
-  return table;
-}
-
 let moduleSystem: ReturnType<typeof createModuleSystem>;
 
 /**
@@ -1135,12 +200,12 @@ let moduleSystem: ReturnType<typeof createModuleSystem>;
  * booted four spares that no one took: 16 runtimes compiling the runtime's script during a Vite
  * start. Should one start a thread after all, it gets a new runtime, as when no spare is left.
  */
-function wasiChildThread(): boolean {
+export function wasiChildThread(): boolean {
   return !!thread && !thread.process && WASI_WORKER.test(thread.main);
 }
 const WASI_WORKER = /\/node_modules\/(?:@[^/]+\/)?[^/]+-wasm32-wasi\/wasi-worker\.mjs$/;
 /** Runtime workers booted ahead of time for threads (see threads.ts). */
-const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
+export const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
 
 function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
@@ -1704,218 +769,10 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
 
 const sockets = new Map<number, { socket: UpgradeSocket; codec: WsClientCodec }>();
 
-type Send = (m: NetMessage, transfer?: Transferable[]) => void;
-const netConns = new Map<number, NetSocket>();
-/** Net servers in nested runtimes. */
-const nestedNet = new Map<number | string, globalThis.Worker>();
-let nextNetId = -1 - Math.floor(Math.random() * 2 ** 40);
-
-function bindRemote(socket: NetSocket, id: number, send: Send) {
-  netConns.set(id, socket);
-  socket.peer = {
-    data: (chunk) => {
-      const buf = chunk.slice().buffer;
-      send({ type: 'net-data', id, data: buf }, [buf]);
-    },
-    end: () => send({ type: 'net-end', id }),
-    close: () => {
-      netConns.delete(id);
-      send({ type: 'net-close', id });
-    },
-  };
-  socket.once('close', () => netConns.delete(id));
-}
-
-netLinks.connect = (key, socket) => {
-  const nested = nestedNet.get(key);
-  // A server in a nested runtime, else ask the parent (it may have one).
-  const send: Send | null = nested ? (m, t) => nested.postMessage(m, t ?? []) : thread ? (m, t) => realPostMessage(m, t ?? []) : null;
-  if (!send) return false;
-  const id = nextNetId--;
-  bindRemote(socket, id, send);
-  send({ type: 'net-connect', id, key });
-  return true;
-};
-netEvents.on('listening', (key: number | string) => {
-  if (thread) realPostMessage({ type: 'net-listening', key } satisfies NetMessage);
-});
-
-/** A net message from another runtime; `reply` goes back to it. */
-function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker | null): void {
-  switch (m.type) {
-    case 'net-connect': {
-      const server = netServers.get(m.key);
-      if (!server) return reply({ type: 'net-refused', id: m.id, message: `connect ECONNREFUSED ${typeof m.key === 'string' ? m.key : `127.0.0.1:${m.key}`}` });
-      const socket = new NetSocket();
-      bindRemote(socket, m.id, reply);
-      socket.connecting = false;
-      socket.pending = false;
-      server.accept(socket);
-      return reply({ type: 'net-connected', id: m.id });
-    }
-    case 'net-connected':
-      return void netConns.get(m.id)?.established();
-    case 'net-refused': {
-      const socket = netConns.get(m.id);
-      netConns.delete(m.id);
-      return socket?.refuse(m.message);
-    }
-    case 'net-data':
-      return netConns.get(m.id)?.receive(new Uint8Array(m.data));
-    case 'net-end':
-      return netConns.get(m.id)?.receive(null);
-    case 'net-close': {
-      const socket = netConns.get(m.id);
-      netConns.delete(m.id);
-      if (socket) {
-        socket.peer = null;
-        socket.destroy();
-      }
-      return;
-    }
-    case 'net-listening':
-      if (from) nestedNet.set(m.key, from);
-      return;
-  }
-}
-
-/**
- * Servers in nested runtimes (child processes, worker threads) are reachable like this runtime's own:
- * requests and WebSockets for their ports go down to them, and their replies come back up.
- */
-const nestedPorts = new Map<number | string, globalThis.Worker>();
-const nestedSockets = new Map<number, globalThis.Worker>();
-/** Requests this runtime's programs made to servers in nested runtimes (http.request to localhost). */
-const loopbackRequests = new Map<number, BridgeResponse & { error(message: string, code?: string): void }>();
-let nextLoopbackId = -1 - Math.floor(Math.random() * 2 ** 40);
-/**
- * A request to a server this runtime does not run: down to the nested runtime that runs it, else up
- * to the parent, which looks among its own servers and its other children (a Vite dev server
- * proxying /api to a backend that the same dev script started).
- */
-loopback.route = (target, method, url, headers, body, bridge) => {
-  const worker = nestedPorts.get(target);
-  if (!worker && !thread) return false;
-  const id = nextLoopbackId--;
-  loopbackRequests.set(id, bridge);
-  const buf = body ? body.slice().buffer : null;
-  const msg = { id, port: target, method, url, headers, body: buf };
-  if (worker) worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
-  else realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
-  return true;
-};
-
-/** The parent's reply to a request sent up by loopback.route. */
-function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
-  const bridge = loopbackRequests.get(m.id);
-  if (!bridge) return;
-  if (m.type === 'lb-start') bridge.start(m.status, m.statusText, m.headers);
-  else if (m.type === 'lb-chunk') bridge.chunk(new Uint8Array(m.chunk));
-  else {
-    loopbackRequests.delete(m.id);
-    if (m.type === 'lb-end') bridge.end();
-    else bridge.error(m.message, m.code);
-  }
-}
-
-/** A loopback request from a nested runtime: served here, or routed on (see loopback.route). */
-function loopbackRequest(m: { id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }, from: globalThis.Worker) {
-  const reply = (x: ToWorker, t: Transferable[] = []) => from.postMessage(x, t);
-  const id = m.id;
-  const bridge = {
-    start: (status: number, statusText: string, headers: [string, string][]) => reply({ type: 'lb-start', id, status, statusText, headers }),
-    chunk: (data: Uint8Array) => {
-      const chunk = data.slice().buffer;
-      reply({ type: 'lb-chunk', id, chunk }, [chunk]);
-    },
-    end: () => reply({ type: 'lb-end', id }),
-    error: (message: string, code?: string) => reply({ type: 'lb-error', id, message, code }),
-  };
-  const body = m.body ? new Uint8Array(m.body) : null;
-  const server = servers.get(m.port);
-  try {
-    if (server) server.dispatch(m.method, m.url, m.headers, body, bridge);
-    else if (nestedPorts.get(m.port) === from || !loopback.route!(m.port, m.method, m.url, m.headers, body, bridge)) {
-      bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
-    }
-  } catch (e) {
-    bridge.error(String((e as Error)?.message ?? e));
-  }
-}
 /** Only TCP ports are the host's business; a nested runtime's parent also learns its socket paths. */
-const announce = (port: number | string, ephemeral?: boolean) => {
+export const announce = (port: number | string, ephemeral?: boolean) => {
   if (typeof port === 'number' || thread) post({ type: 'listening', port, ...(ephemeral && { ephemeral }) });
 };
-function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
-  switch (m.type) {
-    case 'net-connect':
-    case 'net-connected':
-    case 'net-refused':
-    case 'net-data':
-    case 'net-end':
-    case 'net-close':
-    case 'net-listening':
-      netMessage(m, (x, t) => from.postMessage(x, t ?? []), from);
-      return true;
-    case 'response-start':
-    case 'response-chunk':
-    case 'response-full':
-    case 'response-end':
-    case 'response-error': {
-      const own = loopbackRequests.get(m.id);
-      if (!own) break;
-      if (m.type === 'response-start') own.start(m.status, m.statusText, m.headers);
-      else if (m.type === 'response-chunk') own.chunk(m.chunk);
-      else if (m.type === 'response-full') {
-        loopbackRequests.delete(m.id);
-        own.start(m.status, m.statusText, m.headers);
-        if (m.body.byteLength) own.chunk(new Uint8Array(m.body));
-        own.end();
-      }
-      else {
-        loopbackRequests.delete(m.id);
-        if (m.type === 'response-end') own.end();
-        else own.error(String(m.message));
-      }
-      return true;
-    }
-    default:
-      break;
-  }
-  switch (m.type) {
-    case 'process-exit':
-      post(m);
-      return true;
-    case 'lb-request':
-      loopbackRequest(m, from);
-      return true;
-    case 'listening':
-      nestedPorts.set(m.port, from);
-      announce(m.port, m.ephemeral);
-      return true;
-    case 'response-chunk':
-      post(m, [m.chunk.buffer as ArrayBuffer]);
-      return true;
-    case 'response-full':
-      post(m, [m.body]);
-      return true;
-    case 'response-start':
-    case 'response-end':
-    case 'response-error':
-    case 'ws-accept':
-    case 'ws-message':
-      post(m);
-      return true;
-    case 'ws-reject':
-    case 'ws-closed':
-      nestedSockets.delete(m.id);
-      post(m);
-      return true;
-    // The rest are for the nested runtime's own parent object (its Worker or ChildProcess).
-    default:
-      return false;
-  }
-}
 
 /** Opens a WebSocket to a virtual server: an upgrade request, then the WebSocket protocol over the socket. */
 function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {

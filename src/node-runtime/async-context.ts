@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 /**
  * AsyncLocalStorage for the browser (ADR 0006).
  *
@@ -152,3 +153,24 @@ export const asyncHooks = {
   createHook: () => ({ enable() { return this; }, disable() { return this; } }),
   asyncWrapProviders: {},
 };
+
+/** An EventEmitter whose listeners run in the async context it was created in (events.EventEmitterAsyncResource). */
+export class EventEmitterAsyncResource extends EventEmitter {
+  readonly asyncResource: AsyncResource;
+  constructor(options?: { name?: string; captureRejections?: boolean }) {
+    super(options);
+    this.asyncResource = new AsyncResource(options?.name ?? new.target.name);
+  }
+  emit(event: string | symbol, ...args: unknown[]): boolean {
+    return this.asyncResource.runInAsyncScope(() => super.emit(event, ...args));
+  }
+  emitDestroy(): void {
+    this.asyncResource.emitDestroy();
+  }
+  get asyncId(): number {
+    return this.asyncResource.asyncId();
+  }
+  get triggerAsyncId(): number {
+    return this.asyncResource.triggerAsyncId();
+  }
+}
