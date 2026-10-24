@@ -3,6 +3,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import { join, resolve } from 'node:path';
 import { adapterNames } from '../adapters.ts';
 import type { FailureClass, Project, RunResult } from '../types.ts';
@@ -54,6 +55,7 @@ export interface BatchSummary {
 }
 
 export interface BatchOptions extends RunOptions {
+  /** Apps that start and run at a time (default: defaultParallel()). */
   parallel?: number;
   /** Batch summary goes to <batchDir>/<batchId>/summary.json. Default: .sandburg/batches */
   batchDir?: string;
@@ -77,6 +79,16 @@ export interface BatchOptions extends RunOptions {
   memoryReserve?: number;
   /** Bytes of memory available (default: availableMemory). For tests. */
   availableMemory?: () => number;
+}
+
+/**
+ * Apps a batch starts at a time unless told: one per core, up to 8. A run keeps several threads of
+ * the renderer busy, so more apps than cores did not finish sooner (24 corpus apps on 4 cores: 41.9 s
+ * at 4, 41.4 s at 6; 12 on 2 cores: 39.5-40.9 s at 2, 40.2-42.3 s at 4), and each open app holds
+ * its renderer's memory (0.5-1 GB).
+ */
+export function defaultParallel(): number {
+  return Math.max(1, Math.min(8, availableParallelism()));
 }
 
 /**
@@ -104,7 +116,7 @@ export async function discoverProjects(dir: string): Promise<BatchItem[]> {
 }
 
 export async function runBatch(session: Session, items: BatchItem[], options: BatchOptions = {}): Promise<{ summary: BatchSummary; results: RunResult[] }> {
-  const parallel = Math.max(1, options.parallel ?? 4);
+  const parallel = Math.max(1, options.parallel ?? defaultParallel());
   const batchId = `b-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
   const startedAt = new Date();
   const t0 = performance.now();

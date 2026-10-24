@@ -2,7 +2,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { Session, type RunOptions, type SessionOptions } from './orchestrator/session.ts';
-import { discoverProjects, runBatch } from './orchestrator/batch.ts';
+import { defaultParallel, discoverProjects, runBatch } from './orchestrator/batch.ts';
 import { loadProject } from './project.ts';
 import { SnapshotStore } from './store.ts';
 import type { FileTree, RunResult } from './types.ts';
@@ -26,7 +26,7 @@ Options:
                        (batch: a project's own checks.spec.ts takes precedence)
   --checks-in <where>  host (default: the checks file is imported here) or page (its code runs in
                        the sandbox tab, with Playwright-shaped locators and expect)
-  --parallel <n>       batch/compare: tabs at a time (default: 4)
+  --parallel <n>       batch/compare: tabs at a time (default: one per core, up to 8)
   --no-prewarm         batch/compare: do not warm up common stacks first (only runs when their
                        installs are missing)
   --out <dir>          Results directory (default: .sandburg/runs)
@@ -47,7 +47,7 @@ const OPTIONS = {
   'install-in': { type: 'string', default: 'host' },
   checks: { type: 'string' },
   'checks-in': { type: 'string', default: 'host' },
-  parallel: { type: 'string', default: '4' },
+  parallel: { type: 'string', default: String(defaultParallel()) },
   prewarm: { type: 'boolean', default: true },
   out: { type: 'string' },
   cache: { type: 'string' },

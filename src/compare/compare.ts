@@ -4,7 +4,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runBatch, type BatchItem, type BatchSummary } from '../orchestrator/batch.ts';
+import { defaultParallel, runBatch, type BatchItem, type BatchSummary } from '../orchestrator/batch.ts';
 import type { NodeRuntime, RunOptions, Session } from '../orchestrator/session.ts';
 import type { RunResult } from '../types.ts';
 
@@ -97,7 +97,7 @@ export async function compare(session: Session, items: BatchItem[], options: Com
   const vcpuHourUsd = options.vcpuHourUsd ?? 0.0504;
   const browserRun = await runBatch(session, items, {
     ...options,
-    parallel: options.parallel ?? 4,
+    parallel: options.parallel ?? defaultParallel(),
     onResult: (r, item) => options.onResult?.('browser', r, item),
   });
   const referenceRun = await runBatch(session, items, {
