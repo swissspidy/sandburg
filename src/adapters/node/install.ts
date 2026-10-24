@@ -9,7 +9,7 @@
  * lowered so AsyncLocalStorage works; see src/node-runtime/async-context.ts).
  */
 import { spawn } from 'node:child_process';
-import { lstatSync, readdirSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
@@ -282,6 +282,24 @@ export class Installer {
     const index = await this.index(key);
     if (!(rel in index)) return null;
     return { body: await readFile(join(this.root, key, rel)), type: 'application/octet-stream' };
+  }
+
+  /**
+   * A small file's original bytes, read synchronously (a few hundred of them for a read-ahead
+   * answer: ~10 ms, where awaiting each read took ~60 ms), or null; only for paths in `index`, the
+   * install's (as `raw` checks).
+   */
+  rawSync(combinedKey: string, combinedRel: string, index: FileIndex): Buffer | null {
+    if (!(combinedRel in index)) return null;
+    const at = this.locate(combinedKey, combinedRel);
+    if (!at) return null;
+    const { key, rel } = at;
+    if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
+    try {
+      return readFileSync(join(this.root, key, rel));
+    } catch {
+      return null;
+    }
   }
 
   /** A file for the browser: JavaScript is compiled for the runtime (and cached); everything else is raw. */

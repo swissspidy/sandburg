@@ -122,6 +122,20 @@ export class RuntimeHarness {
     return Buffer.concat([length, header, ...files.map((f) => f[2])]);
   }
 
+  /** A read-ahead answer, as the node adapter's (readAhead): the raw file and those after it in its directory, up to `until`. */
+  private ahead(path: string, until: string | null): Buffer | null {
+    const rel = decodeURIComponent(path.replace(/^\/__sandburg\/nm\/[0-9a-f]{24}\/f\//, ''));
+    const dir = rel.slice(0, rel.lastIndexOf('/') + 1);
+    const names = Object.keys(this.install.files).filter((p) => p.startsWith(dir) && !p.slice(dir.length).includes('/')).map((p) => p.slice(dir.length)).sort();
+    const after = names.slice(names.indexOf(rel.slice(dir.length)) + 1).filter((n) => until === null || n < until);
+    if (!after.length) return null;
+    const files = [rel, ...after.map((n) => dir + n)].map((p) => [p, Buffer.from(this.install.files[p])] as const);
+    const header = Buffer.from(JSON.stringify(files.map(([p, bytes]) => ['f', p, bytes.length])));
+    const length = Buffer.alloc(4);
+    length.writeUInt32LE(header.length);
+    return Buffer.concat([length, header, ...files.map((f) => f[1])]);
+  }
+
   async open(): Promise<void> {
     const js = await bundleNodeRuntime();
     this.server = createServer(async (req, res) => {
@@ -178,9 +192,12 @@ export class RuntimeHarness {
     this.server.on('upgrade', (req, socket) => {
       const origin = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
       acceptFileChannel(req, socket, origin, async (r: HostRequest) => {
-        this.asked.push(`ws ${r.path}`);
+        const query = r.query.toString();
+        this.asked.push(`ws ${r.path}${query ? `?${query}` : ''}`);
+        if (r.query.get('used') === '1') return { status: 204, body: '' };
         const body = this.installed(r.path);
-        return body ? { status: 200, body } : null;
+        const ahead = body && r.query.get('ahead') === '1' ? this.ahead(r.path, r.query.get('until')) : null;
+        return ahead ? { status: 207, body: ahead } : body ? { status: 200, body } : null;
       });
     });
     await new Promise<void>((r) => this.server.listen(0, '127.0.0.1', r));

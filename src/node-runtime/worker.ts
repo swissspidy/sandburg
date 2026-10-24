@@ -517,8 +517,61 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
     const side = downloadedOnSide(key);
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
+    const early = sentAhead(key, url);
+    if (early) return { status: 200, body: binary ? early : new TextDecoder().decode(early) };
+    const res = key.startsWith('f/') ? readAhead(url, key.slice(2)) : null;
+    if (res) return { status: res.status, body: binary ? res.body : new TextDecoder().decode(res.body) };
   }
   return requestSync(url, binary);
+}
+
+/**
+ * Installed files the host sent ahead with another (see readAhead in src/adapters/node/index.ts),
+ * by "mode/path", until they are read; at most AHEAD_MAX bytes. `covered` holds, by directory, the
+ * ranges of file names (first, last) that answers covered, sorted: a name in one is not asked for
+ * ahead again (the host left it out), and an answer stops at the next range.
+ */
+const ahead = new Map<string, Uint8Array>();
+const covered = new Map<string, [string, string][]>();
+let aheadBytes = 0;
+const AHEAD_MAX = 64 << 20;
+
+/**
+ * A raw installed file that is not in the preload bundle, asked for with the files after it in its
+ * directory: a dev server's first pre-bundle reads a package's files one after another (esbuild read
+ * lucide-react's 1,550 icons and their source maps, ~2 ms a request, 7 s of a cold run). Over the
+ * file channel only (the host's answer is then a bundle, status 207); null to ask over HTTP.
+ */
+function readAhead(url: string, rel: string): { status: number; body: Uint8Array } | null {
+  const at = rel.lastIndexOf('/');
+  const dir = rel.slice(0, at);
+  const name = rel.slice(at + 1);
+  const ranges = covered.get(dir) ?? [];
+  if (aheadBytes >= AHEAD_MAX || ranges.some(([first, last]) => first <= name && name <= last)) return viaChannel(url);
+  const until = ranges.find(([first]) => first > name)?.[0];
+  const res = viaChannel(`${url}?ahead=1${until === undefined ? '' : `&until=${encodeURIComponent(until)}`}`);
+  if (!res || res.status !== 207) return res;
+  const files = bundleFiles(res.body);
+  for (const [path, bytes, mode] of files.slice(1)) {
+    ahead.set(`${mode}/${path}`, bytes);
+    aheadBytes += bytes.length;
+  }
+  const last = files[files.length - 1][0];
+  covered.set(dir, [...ranges, [name, last.slice(last.lastIndexOf('/') + 1)] as [string, string]].sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+  return { status: 200, body: files[0][1] };
+}
+
+/**
+ * A file the host sent ahead, or null. Its use is told to the host, which records it as loaded (as if
+ * it had been asked for), so the install's later runs preload it; files never read are not recorded.
+ */
+function sentAhead(key: string, url: string): Uint8Array | null {
+  const bytes = ahead.get(key);
+  if (!bytes) return null;
+  ahead.delete(key);
+  aheadBytes -= bytes.length;
+  channel?.post({ note: `${url}?used=1` });
+  return bytes;
 }
 
 /**
@@ -599,6 +652,7 @@ function open(url, ready) {
 const handle = async ({ data }) => {
   if (data.channel) return open(data.channel, new Int32Array(data.ready));
   if (data.port) return void (data.port.onmessage = handle);
+  if (data.note) return void (socket && socket.readyState === 1 && socket.send('0 ' + data.note));
   if (data.get) {
     if (!socket || socket.readyState !== 1) return settle(data.shared, 0, null);
     const id = ++ids;
