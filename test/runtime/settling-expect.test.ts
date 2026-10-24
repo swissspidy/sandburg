@@ -2,7 +2,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '@playwright/test';
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 import { settlingExpect } from '../../src/orchestrator/checks.ts';
 import { PAGE_QUIET_SCRIPT } from '../../src/orchestrator/session.ts';
 
@@ -104,6 +104,27 @@ test('an assertion that waits is checked more often than Playwright polls: it pa
   await page.setContent(change);
   const not = await timed(() => e(page.locator('h1')).not.toHaveText('posting'));
   assert.ok(not.error === null && not.ms < 1_150, `.not: ${Math.round(not.ms)} ms`);
+});
+
+test('once a check beside it passes, the assertion starts no further attempts', async () => {
+  // A state the check beside it saw and the assertion then missed: the assertion keeps timing out,
+  // its one-shot checks (timeout 1 ms) pass.
+  let attempts = 0;
+  let idleCalls = 0;
+  const base = {
+    configure: ({ timeout }: { timeout: number }) => () => ({
+      toHaveText: () =>
+        timeout === 1
+          ? Promise.resolve()
+          : (attempts++, new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('timed out'), { matcherResult: { timeout } })), timeout))),
+    }),
+  } as unknown as typeof expect;
+  const e = settlingExpect(base, 3_000, async () => (idleCalls++, false), opts);
+  const { error } = await timed(() => e({ locator() {}, evaluate() {} } as unknown as Locator).toHaveText('posted'));
+  assert.equal(error, null);
+  // The assertion's own attempt ends at the floor (500 ms); after it, nothing more is tried.
+  await new Promise((r) => setTimeout(r, 1_500));
+  assert.deepEqual({ attempts, idleCalls }, { attempts: 1, idleCalls: 0 });
 });
 
 test('a failing assertion fails as it would without the checks beside it: same message, same time', async () => {

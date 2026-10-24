@@ -198,9 +198,9 @@ function probeable(receiver: unknown, matcher: string | symbol): boolean {
 
 /**
  * `outcome`, or sooner: the first of `probe`'s tries, from `afterMs` and every `everyMs` while it is
- * pending, that passes. A probe that fails changes nothing.
+ * pending, that passes (then `onWin`). A probe that fails changes nothing.
  */
-function sooner<T>(outcome: Promise<T>, probe: () => Promise<T>, afterMs: number, everyMs: number): Promise<T> {
+function sooner<T>(outcome: Promise<T>, probe: () => Promise<T>, afterMs: number, everyMs: number, onWin?: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let done = false;
     let timer: NodeJS.Timeout | undefined;
@@ -224,6 +224,7 @@ function sooner<T>(outcome: Promise<T>, probe: () => Promise<T>, afterMs: number
         (v) => {
           if (done) return;
           finish();
+          onWin?.();
           resolve(v);
         },
         () => {
@@ -267,7 +268,8 @@ export function settlingExpect(
   type Chain = Record<string | symbol, unknown>;
   const matchers = (args: unknown[], path: (string | symbol)[], timeout: number): Chain =>
     path.reduce<Chain>((m, p) => m[p] as Chain, (base.configure({ timeout }) as unknown as (...a: unknown[]) => Chain)(...args));
-  const settle = async (first: Promise<unknown>, again: (timeout: number) => unknown): Promise<unknown> => {
+  // stopped(): a probe passed (sooner), so no further attempt starts; the one in flight ends on its own timeout.
+  const settle = async (first: Promise<unknown>, again: (timeout: number) => unknown, stopped = () => false): Promise<unknown> => {
     const start = performance.now();
     let attempt = first;
     for (;;) {
@@ -276,7 +278,7 @@ export function settlingExpect(
       } catch (err) {
         const left = timeoutMs - (performance.now() - start);
         const timedOut = !!(err as { matcherResult?: { timeout?: number } }).matcherResult?.timeout;
-        if (!timedOut || left < 100) throw err;
+        if (!timedOut || left < 100 || stopped()) throw err;
         if (await idle(left).catch(() => false)) {
           const waited = ((performance.now() - start) / 1000).toFixed(1);
           if (err instanceof Error) err.message += `\n\nStopped waiting after ${waited} s of ${timeoutMs / 1000} s: the app was idle (no request in flight, no timer due, no change to the page).`;
@@ -297,14 +299,15 @@ export function settlingExpect(
           const call = (timeout: number) => (matchers(args, path, timeout)[prop] as (...a: unknown[]) => unknown)(...margs);
           const first = call(own ? timeoutMs : Math.min(floorMs, timeoutMs));
           if (typeof (first as { then?: unknown } | null)?.then !== 'function') return first;
-          const outcome = own ? (first as Promise<unknown>) : settle(first as Promise<unknown>, call);
+          let won = false;
+          const outcome = own ? (first as Promise<unknown>) : settle(first as Promise<unknown>, call, () => won);
           if (!probeable(args[0], prop)) return outcome;
           // A one-shot check of the same assertion (its own timeout, if it has one, replaced).
           const probe = () =>
             (matchers(args, path, PROBE_TIMEOUT_MS)[prop] as (...a: unknown[]) => Promise<unknown>)(
               ...margs.map((a) => (typeof a === 'object' && a !== null && 'timeout' in a ? { ...a, timeout: PROBE_TIMEOUT_MS } : a)),
             );
-          return sooner(outcome, probe, probeAfterMs, probeEveryMs);
+          return sooner(outcome, probe, probeAfterMs, probeEveryMs, () => (won = true));
         };
       },
     });
