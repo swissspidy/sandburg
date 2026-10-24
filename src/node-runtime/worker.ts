@@ -900,7 +900,8 @@ function buildBuiltins() {
         reader.read().then(({ done, value }) => this.push(done ? null : Buffer.from(value)), (e) => this.destroy(e));
       },
       destroy(err, cb) {
-        reader.cancel(err).finally(() => cb(err));
+        // A stream that errored rejects its cancel(): the error is already err (read() above).
+        reader.cancel(err).then(() => cb(err), () => cb(err));
       },
     });
   };

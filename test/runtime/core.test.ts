@@ -907,3 +907,19 @@ test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buff
     hmac: 'tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew', stream: true, wasi: 'function', same: true, gz: 'z',
   });
 });
+
+test('stream: Readable.fromWeb of a stream that errors ends in an error event, without an unhandled rejection', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const { Readable } = require('stream');
+        process.on('unhandledRejection', (e) => console.log('unhandled', e && e.message));
+        const web = new ReadableStream({ pull(c) { c.error(new Error('broken')); } });
+        Readable.fromWeb(web).on('error', (e) => console.log('error', e.message)).resume();
+        setTimeout(() => console.log('done'), 50);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(out.stdout, 'error broken\ndone\n');
+});
