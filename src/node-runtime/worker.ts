@@ -27,7 +27,7 @@ import * as stringDecoder from 'string_decoder';
 import { nativeZlib, useZlibPort } from './builtins/zlib-native.ts';
 import { parseArgs } from '@pkgjs/parseargs';
 import { AsyncResource, asyncHooks, installAsyncContext } from './async-context.ts';
-import { adoptMailboxes, installNodeMessagePorts, NativeMessageChannel, nativePostMessage } from './message-ports.ts';
+import { adoptMailboxes, installNodeMessagePorts, NativeMessageChannel, nativePostMessage, type Mailbox } from './message-ports.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https, loopback, servers, serverEvents, type BridgeResponse, type UpgradeSocket } from './builtins/http.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive, timersPromises } from './builtins/process.ts';
@@ -76,7 +76,7 @@ export type ToWorker =
       nodeModulesWrites?: Int32Array;
     }
   /** From the parent thread to this worker thread's parentPort. */
-  | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
+  | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }
   /** `track`: project directories whose files the runtime notes changes to from now on (see read-tree's ifChanged). */
   | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
   /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
