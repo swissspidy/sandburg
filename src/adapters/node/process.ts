@@ -16,6 +16,8 @@ export interface NodeProcessOptions {
   preload?: string | null;
   /** The URL of a bundle of project files to start with. */
   filesBundle?: string | null;
+  /** What the host compiled for earlier runs of the project (see compile-cache.ts). */
+  compileCache?: { key: string; bundle: string | null } | null;
   nodeModules: Record<string, number> | null;
   /** node_modules installed in the browser: one block of shared memory and its index (see npm/install.ts). */
   pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
@@ -28,6 +30,8 @@ export interface NodeProcessOptions {
   worker?: Worker;
   /** Started by a TypeScript runner (tsx, ts-node): `./x.js` imports resolve to `./x.ts`. */
   tsRunner?: boolean;
+  /** Node options of the program (`node --conditions=development …`). */
+  execArgv?: string[];
 }
 
 /** A file of a dev server's cache: text, or binary as base64. */
@@ -127,7 +131,7 @@ export class NodeProcess {
     this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
       this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
     this.worker.postMessage(
-      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner },
+      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv },
       opts.compilePort ? [opts.compilePort] : [],
     );
   }

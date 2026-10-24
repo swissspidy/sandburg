@@ -38,8 +38,22 @@ for (const [name, framework, what] of cases) {
     const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
     assert.equal(result.project.framework, framework);
     assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+    // react-router dev starts with --conditions=development (adapters/node/browser.ts) instead of relaunching itself.
+    if (framework === 'react-router') assert.deepEqual(result.console.filter((c) => /Relaunching/.test(c.text)).map((c) => c.text), []);
   });
 }
+
+test('a second run of a SvelteKit app starts from the dependencies its first run pre-bundled', async () => {
+  const dir = fixture('sveltekit-app');
+  for (let i = 0; i < 2; i++) {
+    const result = await session.run(dir, { outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+    if (i === 0) continue;
+    // Both environments' (client and ssr) and vite-plugin-svelte's metadata were kept.
+    const optimizer = result.console.filter((c) => /re-optimiz|bundling dependencies/.test(c.text)).map((c) => c.text);
+    assert.deepEqual(optimizer, []);
+  }
+});
 
 test('a SvelteKit load() that throws is an app bug', async () => {
   const project = await loadProject(fixture('sveltekit-app'));

@@ -177,8 +177,8 @@ export class RuntimeHarness {
     }>;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = []) {
-    return this.page.evaluate(([f, m, r]) => (window as unknown as { runNode: Function }).runNode(f, m, r), [files, main, requests] as const) as Promise<{
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[]) {
+    return this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, execArgv ? { execArgv } : {}] as const) as Promise<{
       stdout: string;
       stderr: string;
       fatal: string | null;

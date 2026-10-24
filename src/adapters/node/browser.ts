@@ -30,9 +30,13 @@ export interface HostInstall {
     key: string;
     dirs: string[];
     files: Record<string, string | { base64: string }>;
+    /** The SHA-256 (hex) of each file of the cache the run starts from, when it comes as a bundle (filesBundle) instead of `files`. */
+    digests?: Record<string, string>;
     /** Files to wait for before the cache is saved (a seed run: webpack stores its cache when idle). */
     waitFor?: string[];
   };
+  /** Where the runtime records what the host compiles for it, and a bundle of what earlier runs of the project had compiled (see compile-cache.ts). */
+  compileCache?: { key: string; bundle: string | null } | null;
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
   proxy?: ProxyRule[];
   start?: ({ main: string; argv: string[] } | { bin: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
@@ -51,6 +55,36 @@ const BACKEND_PREFIX = /^\/__sandburg_backend\/(\d+)(\/[^?]*)?(\?.*)?$/;
  * doing in Next.js 16 (it leaves the module ESM).
  */
 const NEXT_ENV = { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 'true' };
+
+/**
+ * napi-rs WebAssembly packages (rolldown, oxc, Astro's compiler, satteri) start a pool of 4 async
+ * workers (emnapi's asyncWorkPoolSize) on their first async call, each a runtime here that boots and
+ * instantiates the package's WebAssembly while the program waits: one each.
+ */
+const RUNTIME_ENV = { NAPI_RS_ASYNC_WORK_POOL_SIZE: '1' };
+
+/**
+ * The Angular CLI compiles TypeScript on its own thread, not in a worker thread (NG_BUILD_PARALLEL_TS=0;
+ * the same compilation and diagnostics). A worker thread here is another runtime that loads
+ * TypeScript and the Angular compiler again (~1 s of a warm ng serve), for little parallelism.
+ */
+const ANGULAR_ENV = { NG_BUILD_PARALLEL_TS: '0' };
+
+/**
+ * Options for dev commands that start more Node processes than the server needs: here each is
+ * another runtime, which loads the CLI again and competes with the app for the cores.
+ * - `react-router dev` relaunches itself as a child process with --conditions=development unless it
+ *   has them (~2 s). It starts with them instead, as the child it would relaunch (without that
+ *   child's REACT_ROUTER_DEV_RESTARTED).
+ * - `nuxt dev` serves from its own process, and once it is ready starts two more (its fork pool) to
+ *   restart in after a change to nuxt.config, while the app's page loads. With --no-fork it
+ *   restarts in its own process.
+ */
+function devCommandOptions(framework: string | undefined, command: string, argv: string[]): { execArgv: string[]; argv: string[] } {
+  if (framework === 'react-router' && /^react-router\s+dev(\s|$)/.test(command)) return { execArgv: ['--conditions=development'], argv };
+  if (framework === 'nuxt' && /^(nuxt|nuxi)\s+dev(\s|$)/.test(command) && !argv.some((a) => /^--(no-)?fork(=|$)/.test(a))) return { execArgv: [], argv: [...argv, '--no-fork'] };
+  return { execArgv: [], argv };
+}
 
 /** Entry scripts per framework: the programmatic equivalents of the dev commands. */
 const NEXT_DEV = `// Sandburg: \`next dev\` (webpack) via Next.js' programmatic API, as a custom server runs it.
@@ -101,6 +135,12 @@ const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit' }
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
 
+/** The SHA-256 (hex) of a file read from the runtime (text, or binary as base64). */
+async function sha256(file: string | { base64: string }): Promise<string> {
+  const bytes = typeof file === 'string' ? new TextEncoder().encode(file) : Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * The runtime worker for the next process, started as the host page loads: it loads and evaluates
  * the runtime (~200 ms) while the run mounts the project and the host installs it, and waits for its
@@ -140,6 +180,7 @@ export function createAdapter(): RuntimeAdapter {
   let compilerError: AdapterError | null = null;
   let main = `/app/${START}`;
   let argv: string[] = [];
+  let execArgv: string[] = [];
   let shell = false;
   let proxy: ProxyRule[] = [];
   let devCache: HostInstall['devCache'] | null = null;
@@ -210,10 +251,10 @@ export function createAdapter(): RuntimeAdapter {
         else if ('bin' in host.start) {
           if (!bins[host.start.bin]) throw new AdapterError('APP', `the dev script runs "${host.start.bin}", which no installed package provides`);
           main = `/app/${bins[host.start.bin]}`;
-          argv = host.start.argv;
+          ({ execArgv, argv } = devCommandOptions(ctx.framework, host.start.command, host.start.argv));
         } else {
           main = `/app/${host.start.main}`;
-          argv = host.start.argv;
+          ({ execArgv, argv } = devCommandOptions(ctx.framework, host.start.command, host.start.argv));
         }
         ctx.log('stdout', `starting: ${host.start.command}`);
       }
@@ -221,14 +262,16 @@ export function createAdapter(): RuntimeAdapter {
       proc = new NodeProcess({
         worker: preparedWorker(),
         tsRunner: host.start?.tsRunner,
+        execArgv,
         files,
         // PORT only for a single server: the servers of a dev script listen where it says.
         // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
         // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
-        env: { ...DEV_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? NEXT_ENV : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
+        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? NEXT_ENV : {}), ...(ctx.framework === 'angular' ? ANGULAR_ENV : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
+        compileCache: host.compileCache ?? null,
         nodeModules,
         pack,
         compilePort: compiler ? connectCompiler(compiler) : null,
@@ -307,9 +350,17 @@ export function createAdapter(): RuntimeAdapter {
             if (stable) break;
           }
         }
-        const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : devCache.dirs.some((d) => `${d}/_metadata.json` in tree!));
+        // Vite writes an optimized environment's _metadata.json last.
+        const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
         const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
-        const changed = complete && Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p]));
+        const digests = devCache.digests;
+        const changed =
+          complete &&
+          // A file the run deleted counts as a change too.
+          (digests
+            ? Object.keys(digests).length !== Object.keys(tree!).length ||
+              (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
+            : Object.keys(devCache.files).length !== Object.keys(tree!).length || Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
         if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
       }
       proc?.terminate();
