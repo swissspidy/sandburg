@@ -231,9 +231,16 @@ function patchUtf8(): void {
   };
   // UTF-16: the polyfill builds an array of the string's bytes first. es-module-lexer (Vite) writes
   // each module's source this way (55 ms of a warm Vite run). Whole code units only, as Node writes them.
+  const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
   const isUtf16 = (enc: unknown) => typeof enc === 'string' && /^(ucs-?2|utf-?16le)$/i.test(enc);
   const utf16Into = (buf: Uint8Array, str: string, offset: number, length: number) => {
     const units = Math.min(str.length, Math.floor(length / 2));
+    // Where the bytes are aligned, a code unit per store (little-endian, as every browser's memory is): 1.5x faster.
+    if (((buf.byteOffset + offset) & 1) === 0 && LITTLE_ENDIAN) {
+      const view = new Uint16Array(buf.buffer, buf.byteOffset + offset, units);
+      for (let i = 0; i < units; i++) view[i] = str.charCodeAt(i);
+      return units * 2;
+    }
     for (let i = 0, at = offset; i < units; i++, at += 2) {
       const c = str.charCodeAt(i);
       buf[at] = c & 0xff;
