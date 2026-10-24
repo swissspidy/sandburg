@@ -117,6 +117,7 @@ export class RuntimeHarness {
         return res.end(body ?? 'not found');
       }
       if (url.pathname === '/__sandburg/node-worker.js') {
+        this.asked.push(`http ${url.pathname}`);
         res.writeHead(200, { 'content-type': 'text/javascript', 'cross-origin-embedder-policy': 'require-corp' });
         return res.end(js);
       }

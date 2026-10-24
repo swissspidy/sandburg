@@ -1083,7 +1083,7 @@ function buildBuiltins() {
     child_process: () => childProcess,
     worker_threads: () => {
       // Threads may be spawned while this thread is blocked; have runtimes ready for them (see threads.ts).
-      warmRuntimes(base, WARM_RUNTIMES);
+      if (!wasiChildThread()) warmRuntimes(base, WARM_RUNTIMES);
       return threads.module;
     },
     cluster: () => misc.cluster,
@@ -1119,6 +1119,18 @@ function buildBuiltins() {
 }
 
 let moduleSystem: ReturnType<typeof createModuleSystem>;
+
+/**
+ * Whether this runtime is one of a napi-rs WebAssembly build's threads (its `wasi-worker.mjs`).
+ * Such a thread starts no threads itself: emnapi asks the thread that loaded the build to spawn
+ * them (a `spawn-thread` message), so it needs no spare runtimes. Rolldown's four threads each
+ * booted four spares that no one took: 16 runtimes compiling the runtime's script during a Vite
+ * start. Should one start a thread after all, it gets a new runtime, as when no spare is left.
+ */
+function wasiChildThread(): boolean {
+  return !!thread && !thread.process && WASI_WORKER.test(thread.main);
+}
+const WASI_WORKER = /\/node_modules\/(?:@[^/]+\/)?[^/]+-wasm32-wasi\/wasi-worker\.mjs$/;
 /** Runtime workers booted ahead of time for threads (see threads.ts). */
 const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
 
@@ -1183,7 +1195,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   if (!thread) vfs.mkdir('/tmp', true);
   // WebAssembly threads (napi-rs wasm32-wasi builds) may be spawned while this thread is blocked: have runtimes ready.
-  if (Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
+  if (!wasiChildThread() && Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
