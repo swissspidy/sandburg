@@ -511,7 +511,7 @@ async function nextSeedCache(resolved: Record<string, string>, router: NextRoute
   if (options?.seed) return { key, ready: false, dirs };
   if (await stored()) return { key, ready: true, dirs };
   if (options?.runSeed && !seeding.has(key)) {
-    log(`seeding the webpack cache for next@${versions.next} beside this app (once per set of versions)`);
+    log(`seeding the webpack cache for next@${versions.next} beside this app (once per set of versions and router)`);
     const seed = nextSeedProject(versions, router);
     seeding.set(key, options.runSeed(seed.project, seed.checks).catch((e: Error) => log(`seeding failed: ${e.message}`)));
   }
