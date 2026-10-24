@@ -692,4 +692,5 @@ export const node: AdapterDescriptor = {
   serve,
   warmups,
   isWarm: (project) => installer.installed(project, extraDependencies(project)),
+  prepare: () => installer.prepare(),
 };

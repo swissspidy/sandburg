@@ -198,6 +198,8 @@ export class Session {
   }
 
   async open(): Promise<void> {
+    // While the browser launches: the host gets ready for a first install (npm loaded).
+    getAdapter(DEFAULT_RUNTIME).prepare?.();
     await this.host.listen();
     try {
       this.browser = await chromium.launch(launchOptions(this.options));

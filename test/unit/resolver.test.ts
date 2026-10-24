@@ -102,6 +102,8 @@ test('the resolver writes the lockfile npm does, and reads ahead only what npm r
     const cliAsked = reg.asked.splice(0).sort();
     assert.ok(!cliAsked.includes('heavy') && cliAsked.includes('extra'));
     const resolver = new Resolver(join(root, 'resolver'), flags);
+    // Warmed as a session opens: it reads nothing from the registry, and changes nothing below.
+    resolver.warm();
     assert.equal(await resolver.resolve(dirs.first, () => {}), true);
     // What npm read, and nothing else (heavy is in npm's cache, but only an optional peer depends on it).
     assert.deepEqual(reg.asked.splice(0).sort(), cliAsked);

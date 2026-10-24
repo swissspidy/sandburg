@@ -368,6 +368,23 @@ export class Resolver {
     }
   }
 
+  /**
+   * Starts the worker, which loads npm and resolves an empty project (Arborist's code compiled and
+   * warm), unless it runs already: ~0.3 s that a first resolution then does not wait for. It ends
+   * after IDLE_MS without installs, as after any resolution.
+   */
+  warm(): void {
+    if (this.worker) return;
+    const dir = join(this.dir, '.npm-resolver-warm');
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'package.json'), '{"name":"sandburg-warm","private":true}\n');
+    } catch {
+      return;
+    }
+    void this.resolve(dir, () => {}, { small: true });
+  }
+
   private start(): Worker {
     if (this.worker) return this.worker;
     const configDir = join(this.dir, '.npm-resolver');

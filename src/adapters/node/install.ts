@@ -78,6 +78,11 @@ export class Installer {
     void this.sweep();
   }
 
+  /** Loads npm in the resolver's worker (see Resolver.warm), so that a first install does not wait for it. */
+  prepare(): void {
+    this.resolver.warm();
+  }
+
   /**
    * Removes installs of an earlier layout (LAYOUT_VERSION) that have not changed for a day: their
    * keys are never asked for again.
