@@ -176,8 +176,29 @@ interface Npa {
   resolve(name: string, spec: string): Spec;
 }
 
+/** A cache index entry of make-fetch-happen's, as cacache returns it. */
+interface CacheEntry {
+  time?: number;
+  metadata?: { resHeaders?: Record<string, string> };
+}
+
 /**
- * Reads ahead, while npm resolves, the packuments it will ask for next. npm reads a package's
+ * Whether npm would ask the registry about a cached packument before using it: always with
+ * --prefer-online, never offline or with --prefer-offline, else once it is older than its
+ * Cache-Control max-age (5 minutes on npmjs.org). Only a guess of make-fetch-happen's rule, for
+ * deciding what to read ahead: the reading itself is npm's.
+ */
+export function revalidates(entry: CacheEntry, opts: Options): boolean {
+  if (opts.offline || opts.preferOffline) return false;
+  if (opts.preferOnline) return true;
+  const control = entry.metadata?.resHeaders?.['cache-control'] ?? '';
+  const maxAge = /(?:^|,)\s*max-age=(\d+)/.exec(control)?.[1];
+  if (!maxAge || /no-cache|no-store/.test(control)) return true;
+  return Date.now() - (entry.time ?? 0) >= Number(maxAge) * 1000;
+}
+
+/**
+ * Reads ahead, while npm resolves, the stale packuments it will ask for next. npm reads a package's
  * peers one after the other (build-ideal-tree's #loadPeerSet), and for each a cache entry older
  * than the registry's max-age (5 minutes for npmjs.org) waits for the registry to revalidate it:
  * lit-vite's resolution took 4.1 s with every entry stale, 2.0 s with every entry fresh. Here, as
@@ -186,8 +207,10 @@ interface Npa {
  * requests, with the same options, only earlier. A package npm places has its dependencies,
  * optional dependencies and peers loaded; one it loads only as an optional peer (Vite's vitest,
  * vitest's playwright) has only its peers loaded, unless something depends on it; a dependency's
- * own dev dependencies are never installed. Only packuments npm's cache has are read ahead, so a
- * wrong guess never goes to the registry for a package npm has not fetched before.
+ * own dev dependencies are never installed. Only packuments npm's cache has, and that npm would
+ * revalidate, are read ahead: a wrong guess never goes to the registry for a package npm has not
+ * fetched before, and a fresh entry is left to npm (reading it ahead would only reorder npm's own
+ * parsing on its thread, which slowed next-app-router's resolution by ~0.4 s).
  */
 class ReadAhead {
   private readonly npa: Npa;
@@ -286,7 +309,10 @@ class ReadAhead {
     const options = { ...opts, fullMetadata: true, packumentCache: undefined, resolved: undefined, integrity: undefined, avoid: undefined };
     this.queue.push(async () => {
       const entry = `make-fetch-happen:request-cache:${format(new URL(url), { auth: false, fragment: false, search: true, unicode: false })}`;
-      if (!(await this.cacache.get.info(String(opts.cache), entry)) || this.cache.knows(key)) return;
+      const cached = (await this.cacache.get.info(String(opts.cache), entry)) as CacheEntry | null;
+      // A fresh entry is read from npm's cache without the registry: reading it ahead would only
+      // move npm's parsing earlier on its own thread, ahead of what it waits for.
+      if (!cached || !revalidates(cached, opts) || this.cache.knows(key)) return;
       const read = () => this.pacote.packument(spec, options);
       const reading = read();
       this.cache.pending(key, reading, read);

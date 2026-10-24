@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PackumentCache } from '../../src/adapters/node/resolver.ts';
+import { PackumentCache, revalidates } from '../../src/adapters/node/resolver.ts';
 
 test('the resolver keeps packuments by their size, least recently used out first', () => {
   const cache = new PackumentCache(100);
@@ -29,6 +29,17 @@ test('a packument read ahead is what pacote gets, and one that fails is read aga
   cache.pending('b', Promise.reject(new Error('offline')), async () => ({ _contentLength: 10, again: ++again }) as { _contentLength: number });
   assert.deepEqual(await cache.get('b'), { _contentLength: 10, again: 1 });
   assert.equal(again, 1);
+});
+
+test('only packuments npm would revalidate are read ahead', () => {
+  const entry = (age: number, control: string) => ({ time: Date.now() - age * 1000, metadata: { resHeaders: { 'cache-control': control } } });
+  assert.equal(revalidates(entry(10, 'public, max-age=300'), {}), false);
+  assert.equal(revalidates(entry(400, 'public, max-age=300'), {}), true);
+  assert.equal(revalidates(entry(10, 'no-cache'), {}), true);
+  assert.equal(revalidates(entry(10, ''), {}), true);
+  assert.equal(revalidates(entry(10, 'public, max-age=300'), { preferOnline: true }), true);
+  assert.equal(revalidates(entry(400, 'public, max-age=300'), { preferOffline: true }), false);
+  assert.equal(revalidates(entry(400, 'public, max-age=300'), { offline: true }), false);
 });
 
 /** A registry of a few packages: npm's full packuments, and the names it was asked for. */
