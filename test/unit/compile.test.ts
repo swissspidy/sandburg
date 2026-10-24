@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compileForRuntime, compileForRuntimeAsync, projectHasTopLevelAwait, projectHasTopLevelAwaitAsync } from '../../src/adapters/node/compile.ts';
+import { compileForRuntime, compileForRuntimeAsync, projectHasTopLevelAwait, projectHasTopLevelAwaitAsync, StringLru } from '../../src/adapters/node/compile.ts';
 import { transformForRuntime } from '../../src/adapters/node/install.ts';
 import { ESM_WRAPPER_PARAMS } from '../../src/adapters/node/esm-names.ts';
 
@@ -126,4 +126,24 @@ test("a module declaring one of the wrapper's own names is renamed first too", a
   for (const out of [compileForRuntime(src, '/app/src/w.mjs', 'esm'), await transformForRuntime(src, 'node_modules/p/w.mjs', true)]) {
     assert.deepEqual(runEsm(out).d, ['mine', '/app/node_modules/p/lib', '/app/node_modules/p/lib']);
   }
+});
+
+test('the host keeps its compiles up to a number of characters, least recently used out first', () => {
+  const lru = new StringLru<string | null>(100);
+  lru.set('a', 'x'.repeat(39));
+  lru.set('b', 'x'.repeat(39));
+  assert.equal(lru.length, 80);
+  lru.get('a');
+  lru.set('c', 'x'.repeat(39));
+  assert.equal(lru.get('b'), undefined, 'the least recently used went');
+  assert.equal(lru.get('a')?.length, 39);
+  assert.equal(lru.size, 2);
+  assert.ok(lru.length <= 100);
+  lru.set('d', null);
+  assert.equal(lru.get('d'), null, 'null is a value');
+  lru.set('a', 'y');
+  assert.equal(lru.length, 2 + 40 + 1, 'replacing a value counts the new one');
+  lru.set('huge', 'x'.repeat(200));
+  assert.equal(lru.get('huge'), undefined, 'a value larger than the bound is not kept');
+  assert.equal(lru.size, 3);
 });
