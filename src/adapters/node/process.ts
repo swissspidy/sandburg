@@ -402,6 +402,10 @@ export class NodeProcess {
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         break;
+      // The page's runtime is started with init right away, and has no parent for process.send().
+      case 'booted':
+      case 'message':
+        break;
     }
     for (const w of this.waiters) w();
   }

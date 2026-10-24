@@ -78,7 +78,7 @@ export async function runPageChecks(page: Page, checks: PageChecks, options: Pag
   const out = (await main.evaluate(([code, opts]) => window.__sandburgPageChecks!.run(code, opts), [checks.code, options] as const)) as unknown;
   if (!out || typeof out !== 'object') throw new Error('page checks: no result from the page');
   if ('error' in out) {
-    return [{ id: 'functional:checks-file', kind: 'functional', name: 'checks file', blocking: true, durationMs: 0, status: 'error', message: String((out as { error: unknown }).error).slice(0, MAX_MESSAGE) }];
+    return [{ id: 'functional:checks-file', kind: 'functional', name: 'checks file', blocking: true, durationMs: 0, status: 'error', message: String(out.error).slice(0, MAX_MESSAGE) }];
   }
   const results = (out as PageChecksOutput & { results: unknown }).results;
   if (!Array.isArray(results)) throw new Error('page checks: malformed result from the page');

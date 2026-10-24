@@ -104,7 +104,7 @@ test('http: a response that ends in the task that started it comes in one messag
   ]);
   // Whole: /whole, /pieces (three writes in one task), /empty and HEAD. A body over 1 MB, and responses
   // still going at the end of the task, stream.
-  assert.deepEqual(out.whole.sort(), [0, 1, 2, 6]);
+  assert.deepEqual(out.whole.sort((a, b) => a - b), [0, 1, 2, 6]);
   assert.equal(out.responses[4].chunks, 2);
 });
 
@@ -119,7 +119,7 @@ test('http: whole responses of a server in a child process come up in one messag
   );
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.deepEqual(out.responses.map((r) => r.body), ['from the child: /a', 'from the child: /b']);
-  assert.deepEqual(out.whole.sort(), [0, 1]);
+  assert.deepEqual(out.whole.sort((a, b) => a - b), [0, 1]);
 });
 
 test('http listen: port 0, a taken port and reusePort as in Node; BroadcastChannel ref/unref', async () => {

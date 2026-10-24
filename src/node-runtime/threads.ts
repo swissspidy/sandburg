@@ -128,7 +128,7 @@ export class RemoteVfs extends Vfs {
   }
   override kind(path: string): 'file' | 'dir' | null {
     try {
-      return this.stat(path).kind as 'file' | 'dir';
+      return this.stat(path).kind;
     } catch {
       return null;
     }

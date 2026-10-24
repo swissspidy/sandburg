@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "node", "promise"],
+  "categories": { "correctness": "error" },
+  "ignorePatterns": ["fixtures/**", "corpus/**", "integrations/harbor/tasks/**", "dist/**", "dist-pages/**", ".sandburg/**"],
+  "rules": {
+    "typescript/no-floating-promises": ["error", { "allowForKnownSafeCalls": [{ "from": "package", "package": "node:test", "name": ["test", "it", "describe", "suite", "before", "after", "beforeEach", "afterEach"] }] }],
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/switch-exhaustiveness-check": ["error", { "considerDefaultExhaustiveForUnions": true }],
+    "typescript/require-array-sort-compare": "error",
+    "typescript/restrict-plus-operands": "error",
+    "typescript/no-useless-default-assignment": "error",
+    "eslint/no-fallthrough": "error",
+    "eslint/eqeqeq": ["error", "smart"],
+    "eslint/no-self-compare": "error",
+    "eslint/no-new-func": "error",
+    "eslint/no-eval": "error",
+    "typescript/no-implied-eval": "error",
+
+    "typescript/unbound-method": "off",
+    "typescript/restrict-template-expressions": "off",
+    "typescript/no-base-to-string": "off",
+    "typescript/no-redundant-type-constituents": "off",
+    "typescript/no-meaningless-void-operator": "off",
+    "promise/no-callback-in-promise": "off",
+    "unicorn/prefer-string-starts-ends-with": "off",
+    "unicorn/no-useless-spread": "off",
+    "unicorn/no-thenable": "off",
+    "unicorn/no-new-array": "off",
+    "unicorn/no-useless-fallback-in-spread": "off",
+    "eslint/no-control-regex": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/node-runtime/**", "src/page-checks/runtime.ts", "test/**"],
+      "rules": { "eslint/no-new-func": "off", "eslint/no-eval": "off", "typescript/no-implied-eval": "off" }
+    }
+  ]
+}

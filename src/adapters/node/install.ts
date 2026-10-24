@@ -160,7 +160,7 @@ export class Installer {
       await mkdir(tmp, { recursive: true });
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
-      const base = await this.startFromClosest(manifest as Manifest, tmp, lock !== null);
+      const base = await this.startFromClosest(manifest, tmp, lock !== null);
       if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
       // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
       // when the lockfile has what the store does not handle.

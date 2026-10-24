@@ -81,7 +81,7 @@ export function tokenize(script: string, env: Record<string, string>): Token[] {
         tokens.push({ op: two });
         i++;
       } else if (c === '>' || c === '<') tokens.push({ op: '>' });
-      else tokens.push({ op: c as '&' | '|' | ';' });
+      else tokens.push({ op: c });
     } else word += c;
   }
   flush();

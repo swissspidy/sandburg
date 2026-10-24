@@ -90,7 +90,7 @@ function timedSession(times: Record<string, { checks: number; active?: number }>
       options.onPhase?.('checks');
       await sleep(1);
       open--;
-      const { checks = 1, active = 1 } = times[project] ?? {};
+      const { checks, active = 1 } = times[project] ?? { checks: 1 };
       return {
         runId: `r-${project}`,
         status: 'passed',

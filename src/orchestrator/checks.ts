@@ -314,7 +314,7 @@ export function settlingExpect(
   // Members (poll, soft, …) come from an expect with the configured timeout.
   return new Proxy(base.configure({ timeout: timeoutMs }), {
     apply: (_target, _this, args: unknown[]) => chain(args, []),
-  }) as typeof expect;
+  });
 }
 
 const require = createRequire(import.meta.url);

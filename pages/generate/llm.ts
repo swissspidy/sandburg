@@ -138,11 +138,11 @@ async function anthropic(o: CallOptions): Promise<CallResult> {
       const block = content[e.index!];
       const d = e.delta;
       if (d.type === 'text_delta') {
-        block.text = String(block.text ?? '') + d.text;
+        block.text = String(block.text ?? '') + String(d.text);
         text += d.text as string;
         o.onText(d.text as string);
       } else if (d.type === 'thinking_delta') {
-        block.thinking = String(block.thinking ?? '') + d.thinking;
+        block.thinking = String(block.thinking ?? '') + String(d.thinking);
         o.onThinking?.(d.thinking as string);
       } else if (d.type === 'signature_delta') {
         block.signature = d.signature;

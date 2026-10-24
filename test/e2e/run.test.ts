@@ -47,8 +47,8 @@ test('milestone 1: the Vite + React fixture runs and its functional checks pass'
 
   // Schema stability: every run carries exactly the top-level fields of schema v1.
   const schema = JSON.parse(await readFile(new URL('../../src/result-schema.json', import.meta.url), 'utf8'));
-  assert.deepEqual(Object.keys(result).sort(), [...schema.required].sort());
-  assert.deepEqual(Object.keys(result.timings).sort(), [...schema.properties.timings.required].sort());
+  assert.deepEqual(Object.keys(result).sort(), ([...schema.required] as string[]).sort());
+  assert.deepEqual(Object.keys(result.timings).sort(), ([...schema.properties.timings.required] as string[]).sort());
 });
 
 test('a failing functional check is classified as an app bug', async () => {

@@ -170,7 +170,7 @@ function containsTopLevelAwait(node: Node): boolean {
       found = true;
       return;
     }
-    if (/Function/.test(node.type as string)) return;
+    if (/Function/.test(node.type)) return;
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'start' || key === 'end' || key === 'loc') continue;
       const v = node[key];

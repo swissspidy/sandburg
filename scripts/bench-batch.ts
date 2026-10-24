@@ -206,7 +206,7 @@ function measure(side: { dir: string; corpus: string }, parallel: number): Promi
       const ticks = cpuTicks();
       timeline.push(Math.round(((ticks.busy - last.busy) / (ticks.total - last.total || 1)) * 100));
       last = ticks;
-      for (const pid of tree(child.pid!)) {
+      for (const pid of tree(child.pid)) {
         const { kind: k, name } = kind(pid);
         const c = cpuOf(pid);
         if (c >= 0) used.set(pid, { name: pid === child.pid ? 'host' : name, s: c });

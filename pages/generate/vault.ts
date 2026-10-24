@@ -128,7 +128,7 @@ function main(): void {
   function renderProvider(): void {
     const p = prefs.provider;
     ui.provider.value = p;
-    const list = prefs.modelLists[p]?.length ? prefs.modelLists[p]! : MODELS[p];
+    const list = prefs.modelLists[p]?.length ? prefs.modelLists[p] : MODELS[p];
     ui.model.replaceChildren(...list.map((m) => new Option(m.label === m.id ? m.id : `${m.label} (${m.id})`, m.id)));
     const wanted = prefs.models[p] ?? MODELS[p][0].id;
     if (![...ui.model.options].some((o) => o.value === wanted)) ui.model.add(new Option(wanted, wanted));
@@ -168,6 +168,7 @@ function main(): void {
     if (!prefs.autofix) grant.fixes = 0;
     savePrefs();
   });
+  // oxlint-disable-next-line typescript/no-misused-promises -- its body catches what it throws
   ui.loadModels.addEventListener('click', async () => {
     const key = keys[prefs.provider];
     if (!key) return ui.apiKey.focus();

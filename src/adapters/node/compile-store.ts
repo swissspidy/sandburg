@@ -20,7 +20,7 @@ export const COMPILED_MAX = 1 << 30;
 const fileOf = (dir: string, key: string) => join(dir, key.slice(0, 2), `${key.slice(2)}.js`);
 
 /** The disk store. Its write resolves once the compile is written, and any sweep it started is done (for tests; the host does not wait). */
-export function diskCompileStore(dir: string, max = COMPILED_MAX): CompileStore & { write(key: string, out: string): Promise<void> } {
+export function diskCompileStore(dir: string, max = COMPILED_MAX): Pick<CompileStore, 'read'> & { write(key: string, out: string): Promise<void> } {
   let written = 0;
   let sweeping: Promise<void> | null = null;
   return {

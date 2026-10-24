@@ -52,7 +52,7 @@ function jsonSafe(v: unknown, depth = 0): boolean {
   if (Array.isArray(v)) return v.every((x) => jsonSafe(x, depth + 1));
   const proto = Object.getPrototypeOf(v);
   if (proto !== Object.prototype && proto !== null) return false;
-  return Object.values(v as object).every((x) => jsonSafe(x, depth + 1));
+  return Object.values(v).every((x) => jsonSafe(x, depth + 1));
 }
 
 /** Writes a message into the other side's inbox; returns its sequence number. */
@@ -234,8 +234,8 @@ export function installNodeMessagePorts(): void {
       const e = new EventEmitter();
       em = e;
       emitters.set(port, e);
-      port.addEventListener('message', (m) => e.emit('message', (m as MessageEvent).data));
-      port.addEventListener('messageerror', (m) => e.emit('messageerror', (m as MessageEvent).data));
+      port.addEventListener('message', (m) => e.emit('message', m.data));
+      port.addEventListener('messageerror', (m) => e.emit('messageerror', m.data));
     }
     return em;
   };

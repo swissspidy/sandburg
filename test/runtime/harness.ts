@@ -124,6 +124,7 @@ export class RuntimeHarness {
 
   async open(): Promise<void> {
     const js = await bundleNodeRuntime();
+    // oxlint-disable-next-line typescript/no-misused-promises -- a test server: a failed request fails its test
     this.server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://x');
       const body = this.installed(url.pathname);

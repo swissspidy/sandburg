@@ -54,6 +54,7 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   const ahead = new ReadAhead(require, cache, (picked) => parentPort!.postMessage({ picked }));
   /** Resolutions running (a small one runs beside another). */
   let active = 0;
+  // oxlint-disable-next-line typescript/no-misused-promises -- its body catches what it throws
   parentPort!.on('message', async ({ id, dir, force }: { id: number; dir: string; force: boolean }) => {
     try {
       ready ??= (async () => {

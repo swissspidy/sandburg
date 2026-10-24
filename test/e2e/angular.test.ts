@@ -55,7 +55,7 @@ test('a template error fails the compile as an app bug, with its location', asyn
   assert.equal(result.status, 'error');
   assert.equal(result.failure?.class, 'app-bug');
   assert.equal(result.failure?.phase, 'start');
-  assert.match(result.failure!.message, /src\/app\/tasks\/task-list\.html:\d+:\d+: TS2339: Property 'remainingCount' does not exist/);
+  assert.match(result.failure.message, /src\/app\/tasks\/task-list\.html:\d+:\d+: TS2339: Property 'remainingCount' does not exist/);
 });
 
 test('Tailwind CSS v4 via @tailwindcss/postcss is applied', async () => {

@@ -67,7 +67,7 @@ test('a backend that crashes at startup is an app bug', async () => {
   assert.equal(result.status, 'error');
   assert.equal(result.failure?.class, 'app-bug', failures(result));
   assert.equal(result.failure?.phase, 'start');
-  assert.match(result.failure!.message, /SqliteError: near "notes": syntax error/);
+  assert.match(result.failure.message, /SqliteError: near "notes": syntax error/);
 });
 
 test('a Vue template error fails the build as an app bug, with its location', async () => {
@@ -78,7 +78,7 @@ test('a Vue template error fails the build as an app bug, with its location', as
   const result = await session.run(broken, { outDir });
   assert.equal(result.status, 'error');
   assert.equal(result.failure?.class, 'app-bug', failures(result));
-  assert.match(result.failure!.message, /src\/App\.vue:\d+:\d+/);
+  assert.match(result.failure.message, /src\/App\.vue:\d+:\d+/);
 });
 
 test('an ESM backend with top-level await (setup before listen) runs', async () => {

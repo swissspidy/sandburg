@@ -320,7 +320,7 @@ export function createChildProcess(host: ChildProcessHost) {
     }
   }
 
-  const argsAndOptions = (a?: unknown, b?: unknown): [string[], SpawnOptions] => (Array.isArray(a) ? [a.map(String), (b ?? {}) as SpawnOptions] : [[], (a ?? {}) as SpawnOptions]);
+  const argsAndOptions = (a?: unknown, b?: unknown): [string[], SpawnOptions] => (Array.isArray(a) ? [a.map(String), (b ?? {})] : [[], (a ?? {})]);
 
   function spawn(file: string, a?: unknown, b?: unknown) {
     const [args, options] = argsAndOptions(a, b);

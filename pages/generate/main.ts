@@ -12,7 +12,7 @@
  * origin, created before any generated code runs. The vault calls the model and sends the answers here.
  */
 import type { HostApi } from '../../src/host/types.ts';
-import type { FileTree, PackageJson, Project } from '../../src/types.ts';
+import type { FileTree, PackageJson } from '../../src/types.ts';
 import { detectFramework } from '../../src/framework.ts';
 import { pageInstall } from '../../src/adapters/node/plan.ts';
 import { applyEdits, DATA_FILES, needsRestart, parseAnswer, type FileEdit } from './files.ts';
@@ -417,7 +417,7 @@ async function run(files: FileTree): Promise<boolean> {
     }
   }
   const framework = detectFramework(files, packageJson);
-  const project = { name: 'app', path: 'generated', files, packageJson, framework, snapshotId: '' } as Project;
+  const project = { name: 'app', path: 'generated', files, packageJson, framework, snapshotId: '' };
   print(`\n$ npm install && npm run dev   (${framework === 'static' ? 'static site' : framework})`, 'dim');
   status('Installing and starting', 'active');
   try {

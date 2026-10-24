@@ -25,6 +25,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json",
+    "lint": "oxlint --type-aware",
     "test": "node --test --test-reporter=spec test/unit/*.test.ts",
     "test:e2e": "node --test --test-reporter=spec --test-concurrency=1 test/e2e/*.test.ts",
     "spike": "node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts",
@@ -63,6 +64,8 @@
     "@changesets/cli": "^3.0.3",
     "@types/node": "^26.6.3",
     "@types/semver": "7.8.0",
+    "oxlint": "^1.89.0",
+    "oxlint-tsgolint": "^7.0.2005",
     "typescript": "^7.0.2"
   },
   "repository": {

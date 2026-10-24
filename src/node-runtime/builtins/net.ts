@@ -53,7 +53,7 @@ export class Socket extends Duplex {
   peer: Peer | null = null;
   private key: number | string | null = null;
   constructor(_opts?: unknown) {
-    super({ allowHalfOpen: true } as never);
+    super({ allowHalfOpen: true });
   }
   connect(...args: unknown[]) {
     const cb = typeof args.at(-1) === 'function' ? (args.pop() as () => void) : undefined;

@@ -194,18 +194,21 @@ async function preloadList(key: string): Promise<Map<string, true>> {
 
 function markDirty(key: string) {
   preloadDirty.add(key);
-  preloadFlush ??= setTimeout(async () => {
-    preloadFlush = null;
-    await mkdir(devCacheRoot(), { recursive: true });
-    for (const k of [...preloadDirty]) {
-      preloadDirty.delete(k);
-      const file = preloadListPath(k);
-      const tmp = `${file}.${tmpSuffix()}.tmp`;
-      await writeFile(tmp, JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])]))
-        .then(() => rename(tmp, file))
-        .catch(() => {});
-    }
-  }, 2000);
+  preloadFlush ??= setTimeout(() => void flushPreloadLists(), 2000);
+}
+
+/** Writes the preload lists recorded since the last write. Called from a timer: a failure only loses what the next run would have preloaded. */
+async function flushPreloadLists(): Promise<void> {
+  preloadFlush = null;
+  if (!(await mkdir(devCacheRoot(), { recursive: true }).then(() => true, () => false))) return;
+  for (const k of [...preloadDirty]) {
+    preloadDirty.delete(k);
+    const file = preloadListPath(k);
+    const tmp = `${file}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])]))
+      .then(() => rename(tmp, file))
+      .catch(() => {});
+  }
 }
 
 /** The package a path is in: its directory ("…/node_modules/@scope/name"), name and the path inside it. */
@@ -255,7 +258,9 @@ async function preloadEntries(key: string): Promise<string[]> {
   const byPackage = new Map<string, string[]>();
   for (const e of (await preloadList(PACKAGE_LIST)).keys()) {
     const [pkg, entry] = e.split('\0');
-    byPackage.get(pkg)?.push(entry) ?? byPackage.set(pkg, [entry]);
+    const entries = byPackage.get(pkg);
+    if (entries) entries.push(entry);
+    else byPackage.set(pkg, [entry]);
   }
   const recorded = new Set([...byPackage.keys()].map((p) => p.slice(0, p.lastIndexOf('@'))));
   const index = await installer.index(key);

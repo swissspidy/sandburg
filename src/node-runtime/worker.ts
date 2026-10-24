@@ -149,7 +149,7 @@ function patchBase64Url(): void {
   };
   B.from = function (v: unknown, enc?: unknown, len?: unknown) {
     return typeof v === 'string' && isUrl(enc) ? from.call(Buffer, toB64(v), 'base64') : from.call(Buffer, v, enc, len);
-  } as typeof B.from;
+  };
   B.isEncoding = (e: string) => isUrl(e) || isEncoding(e);
   B.byteLength = (v: unknown, enc?: string) => (typeof v === 'string' && isUrl(enc) ? byteLength(toB64(v), 'base64') : byteLength(v, enc));
 }
@@ -1218,7 +1218,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -1227,7 +1227,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     base: () => base,
     // A child process is a main thread of its own.
     self: child ? null : thread,
-    postToParent: (m, transfer) => realPostMessage(m as FromWorker, transfer ?? []),
+    postToParent: (m, transfer) => realPostMessage(m, transfer ?? []),
     relay: relayFromNested,
     // Up to this process's main thread, and from there to the page (or the parent process).
     crash: (message, stack) => post({ type: 'fatal', message, stack, trap: true }),
@@ -1306,7 +1306,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     process: proc as unknown as { dlopen(m: unknown, f: string): void },
     cwd: () => (proc.cwd as () => string)(),
     argv1: () => (proc.argv as string[])[1],
-  } as never);
+  });
 
   // `new AsyncFunction(…params, body)` with the body lowered like all other code (see interop.ts).
   const RealAsyncFunction = new Function('return (async function () {}).constructor')() as FunctionConstructor;
@@ -1725,7 +1725,7 @@ function bindRemote(socket: NetSocket, id: number, send: Send) {
   netConns.set(id, socket);
   socket.peer = {
     data: (chunk) => {
-      const buf = chunk.slice().buffer as ArrayBuffer;
+      const buf = chunk.slice().buffer;
       send({ type: 'net-data', id, data: buf }, [buf]);
     },
     end: () => send({ type: 'net-end', id }),
@@ -1809,7 +1809,7 @@ loopback.route = (target, method, url, headers, body, bridge) => {
   if (!worker && !thread) return false;
   const id = nextLoopbackId--;
   loopbackRequests.set(id, bridge);
-  const buf = body ? (body.slice().buffer as ArrayBuffer) : null;
+  const buf = body ? body.slice().buffer : null;
   const msg = { id, port: target, method, url, headers, body: buf };
   if (worker) worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
   else realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
@@ -1836,7 +1836,7 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
   const bridge = {
     start: (status: number, statusText: string, headers: [string, string][]) => reply({ type: 'lb-start', id, status, statusText, headers }),
     chunk: (data: Uint8Array) => {
-      const chunk = data.slice().buffer as ArrayBuffer;
+      const chunk = data.slice().buffer;
       reply({ type: 'lb-chunk', id, chunk }, [chunk]);
     },
     end: () => reply({ type: 'lb-end', id }),

@@ -79,7 +79,7 @@ export function browserInstall(project: Project): HostInstall {
   const part = (dir: string, p: Project) => ({
     dir,
     packageJson: { dependencies: p.packageJson?.dependencies, devDependencies: p.packageJson?.devDependencies, overrides: p.packageJson?.overrides as Record<string, unknown> | undefined },
-    lockfile: typeof p.files['package-lock.json'] === 'string' ? (p.files['package-lock.json'] as string) : null,
+    lockfile: typeof p.files['package-lock.json'] === 'string' ? p.files['package-lock.json'] : null,
     extra: dir ? {} : extraDependencies(p),
   });
   const parts = [part('', project)];

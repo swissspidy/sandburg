@@ -26,7 +26,7 @@ test('a failing assertion stops after the floor when the app is idle', async () 
   const e = settlingExpect(expect, 10_000, async () => true, opts);
   const { ms, error } = await timed(() => e(page.locator('h1')).toHaveText('fixed'));
   assert.ok(error, 'the assertion fails');
-  assert.match(error!.message, /Expected: "fixed"[\s\S]*Stopped waiting after [\d.]+ s of 10 s: the app was idle/);
+  assert.match(error.message, /Expected: "fixed"[\s\S]*Stopped waiting after [\d.]+ s of 10 s: the app was idle/);
   assert.ok(ms < 2_000, `stopped early (${Math.round(ms)} ms)`);
 });
 
@@ -134,7 +134,7 @@ test('a failing assertion fails as it would without the checks beside it: same m
   const plain = await timed(() => expect(page.locator('h1')).toHaveText('fixed', { timeout: 1_200 }));
   assert.ok(probed.error && plain.error);
   const strip = (m: string) => m.replace(/\u001b\[[0-9;]*m/g, '').replace(/\d+ × /g, 'N × ');
-  assert.equal(strip(probed.error!.message), strip(plain.error!.message));
+  assert.equal(strip(probed.error.message), strip(plain.error.message));
   assert.ok(probed.ms >= 1_150 && probed.ms < 1_700, `${Math.round(probed.ms)} ms`);
 });
 

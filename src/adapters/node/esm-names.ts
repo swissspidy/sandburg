@@ -38,6 +38,9 @@ export const ESM_DEFINE: Record<string, string> = {
 export function collidesWithWrapper(source: string, code: string): boolean {
   if (!DECLARES.test(source)) return false;
   try {
+    // The host's one Function constructor: it only parses (the function is never called), and the
+    // body cannot end the function early (a SyntaxError). See the no-new-func rule in .oxlintrc.json.
+    // oxlint-disable-next-line eslint/no-new-func, typescript/no-implied-eval
     new Function(...ESM_WRAPPER_PARAMS, code);
     return false;
   } catch (e) {
@@ -70,7 +73,7 @@ export function renameCommonJsNames(code: string): string {
   walk(ast, (node) => {
     if (node.type === 'VariableDeclarator') collect(node.id as Node);
     else if ((node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration' || node.type === 'FunctionExpression' || node.type === 'ClassExpression') && node.id) collect(node.id as Node);
-    else if (/Function/.test(node.type as string)) for (const p of node.params as Node[]) collect(p);
+    else if (/Function/.test(node.type)) for (const p of node.params as Node[]) collect(p);
     else if (node.type === 'ImportSpecifier' || node.type === 'ImportDefaultSpecifier' || node.type === 'ImportNamespaceSpecifier') collect(node.local as Node);
     else if (node.type === 'CatchClause') collect(node.param as Node);
   });

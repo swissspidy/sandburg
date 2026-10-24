@@ -30,7 +30,7 @@ export function createWasi(fs: unknown, write: (stream: 'stdout' | 'stderr', tex
 
     constructor(options: WasiOptions = {}) {
       const env = Object.fromEntries(Object.entries(options.env ?? {}).filter(([, v]) => v !== undefined)) as Record<string, string>;
-      this.impl = new (NapiWASI as unknown as new (o: object) => WASI['impl'])({
+      this.impl = new (NapiWASI as new (o: object) => WASI['impl'])({
         version: options.version ?? 'preview1',
         args: options.args ?? [],
         env,

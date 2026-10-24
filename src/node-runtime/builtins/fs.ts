@@ -503,7 +503,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   Object.setPrototypeOf(WriteStream, Writable);
   WriteStream.prototype._write = function (this: WriteStream, chunk: unknown, encoding: BufferEncoding, cb: (e?: Error | null) => void) {
     try {
-      const bytes = toBytes(chunk, encoding as Encoding);
+      const bytes = toBytes(chunk, encoding);
       vfs.write(this.path, bytes, true);
       this.bytesWritten += bytes.length;
       cb();
