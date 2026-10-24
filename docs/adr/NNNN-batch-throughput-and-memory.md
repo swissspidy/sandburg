@@ -28,16 +28,13 @@ apart), CPU seconds by process kind, the machine's CPU use over time, and the ho
   0.3-0.8 GB; a batch at 4 holds up to 8 open. Nothing checked whether the machine had the memory for
   the next one: a batch that runs out loses the browser, and every open app with it, to the
   out-of-memory killer.
-- **Idle runtimes in every Vite 8 run.** Reading each isolate's heap over the Chrome DevTools
-  Protocol (auto-attaching to the page's workers and theirs, unflattened, `Runtime.getHeapUsage`), a
-  warm `vite-react-counter` run in its checks had 24 isolates in a 453 MB renderer, 12 of them
-  runtimes that never ran (1 MB of heap each): ADR 0027's spares, booted by each of rolldown's
-  WebAssembly threads as well as by the program. Those threads (napi-rs' `wasi-worker.mjs`, which
-  instantiates the module with `childThread: true`) load `worker_threads` to talk to their parent
-  and ask it to start their threads. A warm `next-app-router` run's renderer (956 MB) is mostly its
-  program's runtime: 234 MB of JavaScript heap (336 MB reserved) and 199 MB of array buffers; the
-  host page holds 41 MB of heap and 36 MB of buffers, the service worker 26 MB of buffers, each idle
-  runtime ~1 MB.
+- **What a renderer holds.** Reading each isolate's heap over the Chrome DevTools Protocol
+  (auto-attaching to the page's workers and theirs, unflattened, `Runtime.getHeapUsage`): a warm
+  `next-app-router` run's renderer (956 MB) is mostly its program's runtime, 234 MB of JavaScript
+  heap (336 MB reserved) and 199 MB of array buffers; the host page holds 41 MB of heap and 36 MB of
+  buffers, the service worker 26 MB of buffers, each idle runtime ~1 MB of heap. A warm
+  `vite-react-counter` run (453 MB) had 24 isolates, 12 of them spare runtimes that rolldown's
+  WebAssembly threads boot and never use (see Not done).
 - **No growth across runs** in one session: 20 warm runs of `vite-react-counter`, then 36 runs of 12
   distinct corpus apps, with a GC after each: the host's heap stayed at 53-54 MB and 60-68 MB, its
   RSS at 273-313 MB and 235-425 MB (the four preload bundles kept, ADR 0029), Chromium's processes at
@@ -63,8 +60,6 @@ apart), CPU seconds by process kind, the machine's CPU use over time, and the ho
   `memoryReserve: 0` turns this off.
 - **The default `parallel` is one app per core, up to 8** (`defaultParallel()`), for `sandburg
   batch`, `compare` and `runBatch`.
-- **The threads of a napi-rs WebAssembly build boot no spare runtimes** (a thread whose entry is a
-  `wasi-worker.mjs` or `.js`); programs, child processes and other threads keep theirs.
 - **The host's compiles and lowered eval literals in memory are least-recently-used maps bounded by
   their size** (`StringLru`): 128 M characters of compiles (those that go out are still on disk,
   `.sandburg/compiled`, one read away), 64 M of literals.
@@ -104,7 +99,7 @@ apart), CPU seconds by process kind, the machine's CPU use over time, and the ho
   and the summary keep the order given; `longestFirst: false` keeps the order); `BatchRunSummary`
   has `checksMs`; a batch may open its next app later when memory is short, and logs "waiting for
   memory to open the next app"; `--parallel` defaults to the number of cores (at most 8) instead of
-  4 (the same here); a Vite 8 run's renderer holds ~12 fewer idle runtimes; a session keeps at most
+  4 (the same here); a session keeps at most
   ~128 M characters of compiles in memory (more come from `.sandburg/compiled`).
 - **Disk**: a benchmark worktree's `.sandburg/` held 2.5-3 GB after the warm-up batches of 24 corpus
   apps (installs, the package store, dev caches, compiles); this round's benchmarks filled the
@@ -122,9 +117,6 @@ between runs or projects.
   a batch.
 - The compile caches keep their keys (the digest of what was compiled); a bound only drops entries,
   which the disk store or a new compile answers the same. A run cannot raise the bounds.
-- Spares: a thread of a WebAssembly build that does start its own threads (none known: emnapi's
-  child threads ask their parent) would wait for its parent as any thread that boots none; other
-  threads keep their spares (a runtime test starts a thread from a blocked thread).
 
 ## What did not help
 
@@ -151,6 +143,13 @@ between runs or projects.
   (`/proc/<pid>/smaps`) are 904 of 945 MB unnamed anonymous memory.
 
 ## Not done
+
+- **Spare runtimes in napi-rs WebAssembly threads.** Rolldown's threads (napi-rs' `wasi-worker.mjs`,
+  which instantiates the module with `childThread: true` and asks its parent for threads) each boot
+  ADR 0027's spares because they load `worker_threads`: 12 idle runtimes in a warm Vite 8 run. Letting
+  those threads boot none took that run's renderer from 453 to 359 MB, a batch of the ten Vite 8
+  fixtures from 18.18 to 16.37 s and its peak renderers from 3,014 to 2,481 MB (n=3). The same change
+  is perf-wasm-tools' (its "No spare runtimes in napi-rs WebAssembly threads"), so it is not here.
 
 - **The resolver's heap** (ADR 0032: the host and npm peak at ~1.1-1.6 GB during cold installs, the
   worker keeping its largest parse until 30 s idle) is the cold-install work's; a batch of new apps
