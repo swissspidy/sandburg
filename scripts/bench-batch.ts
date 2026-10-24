@@ -53,17 +53,25 @@ const [wt, corpus, parallel] = process.argv.slice(2);
 process.chdir(wt);
 const { Session } = await import(join(wt, 'src/index.ts'));
 const { discoverProjects, runBatch } = await import(join(wt, 'src/orchestrator/batch.ts'));
+const { monitorEventLoopDelay, performance: perf } = await import('node:perf_hooks');
 const session = new Session();
+const delay = monitorEventLoopDelay({ resolution: 10 });
+delay.enable();
+const elu0 = perf.eventLoopUtilization();
 const t0 = performance.now();
+const epoch = Date.now();
 await session.open();
 const items = await discoverProjects(corpus);
 const { summary, results } = await runBatch(session, items, { parallel: Number(parallel) });
 const wall = performance.now() - t0;
+const elu = perf.eventLoopUtilization(elu0).utilization;
+delay.disable();
 const t1 = performance.now();
 await session.close();
 const close = performance.now() - t1;
-const runs = results.map((r, i) => ({ label: items[i].label, status: r.status, total: Math.round(r.timings.totalMs), phases: Object.fromEntries(r.phases.map((p) => [p.name, Math.round(p.durationMs)])) }));
-console.log('BENCH ' + JSON.stringify({ wall: Math.round(wall), batchWall: summary.wallMs, close: Math.round(close), runs }));
+const runs = results.map((r, i) => ({ label: items[i].label, status: r.status, total: Math.round(r.timings.totalMs), at: Date.parse(r.startedAt) - epoch, phases: Object.fromEntries(r.phases.map((p) => [p.name, Math.round(p.durationMs)])) }));
+const loop = { utilization: Math.round(elu * 100) / 100, p99: Math.round(delay.percentile(99) / 1e6), max: Math.round(delay.max / 1e6) };
+console.log('BENCH ' + JSON.stringify({ wall: Math.round(wall), batchWall: summary.wallMs, close: Math.round(close), loop, runs }));
 `;
 const runner = join(tmpdir(), `sandburg-bench-batch-${process.pid}.ts`);
 writeFileSync(runner, RUNNER);
@@ -120,13 +128,36 @@ function pss(pid: number): number {
   }
 }
 
-function kind(pid: number): 'renderer' | 'chromium' | 'host' {
+const kinds = new Map<number, { kind: 'renderer' | 'chromium' | 'host'; name: string }>();
+function kind(pid: number): { kind: 'renderer' | 'chromium' | 'host'; name: string } {
+  let k = kinds.get(pid);
+  if (k) return k;
   try {
-    const cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-    if (!/chrom/i.test(cmd.split('\0')[0])) return 'host';
-    return cmd.includes('--type=renderer') ? 'renderer' : 'chromium';
+    // Chromium's processes rewrite their command line as one string, the arguments joined by spaces.
+    const cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split(/[\0 ]/).filter(Boolean);
+    const type = cmd.find((a) => a.startsWith('--type='))?.slice(7);
+    const utility = cmd.find((a) => a.startsWith('--utility-sub-type='))?.slice(19);
+    if (/chrom/i.test(cmd[0])) k = { kind: type === 'renderer' ? 'renderer' : 'chromium', name: type ? (utility ?? type) : 'browser' };
+    else {
+      const script = cmd.slice(1).find((a) => /npm|esbuild/.test(a));
+      k = { kind: 'host', name: [cmd[0], script].filter(Boolean).map((a) => a!.split('/').pop()).join(' ') };
+    }
   } catch {
-    return 'host';
+    k = { kind: 'host', name: '?' };
+  }
+  // A renderer starts as a fork of Chromium's zygote, with its command line.
+  if (k.name !== 'zygote') kinds.set(pid, k);
+  return k;
+}
+
+/** CPU seconds a process has used (user + system). */
+function cpuOf(pid: number): number {
+  try {
+    const f = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const rest = f.slice(f.lastIndexOf(')') + 2).split(' ');
+    return (Number(rest[11]) + Number(rest[12])) / 100;
+  } catch {
+    return -1;
   }
 }
 
@@ -149,10 +180,13 @@ interface Batch {
   wall: number;
   batchWall: number;
   close: number;
-  runs: { label: string; status: string; total: number; phases: Record<string, number> }[];
+  /** The host's main thread: event loop utilization, and its delay's 99th percentile and maximum (ms). */
+  loop: { utilization: number; p99: number; max: number };
+  /** at: when the run started, in ms from the session's start. */
+  runs: { label: string; status: string; total: number; at: number; phases: Record<string, number> }[];
 }
 
-function measure(side: { dir: string; corpus: string }, parallel: number): Promise<{ batch: Batch; peak: Peak; cpu: number } | null> {
+function measure(side: { dir: string; corpus: string }, parallel: number): Promise<{ batch: Batch; peak: Peak; cpu: number; cpuBy: Record<string, number>; timeline: number[] } | null> {
   if (mode === 'cold') rmSync(join(side.dir, '.sandburg'), { recursive: true, force: true });
   return new Promise((done) => {
     const child = spawn(process.execPath, [runner, side.dir, side.corpus, String(parallel)], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -162,10 +196,20 @@ function measure(side: { dir: string; corpus: string }, parallel: number): Promi
     child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-8000)));
     const peak: Peak = { host: 0, renderers: 0, chromium: 0, all: 0, renderer: 0 };
     const cpu0 = cpuTicks();
+    // The last CPU time seen of each process (an ended one keeps it), by kind.
+    const used = new Map<number, { name: string; s: number }>();
+    // The machine's CPU use in each sample period.
+    const timeline: number[] = [];
+    let last = cpu0;
     const timer = setInterval(() => {
       const now = { host: 0, renderers: 0, chromium: 0, renderer: 0 };
+      const ticks = cpuTicks();
+      timeline.push(Math.round(((ticks.busy - last.busy) / (ticks.total - last.total || 1)) * 100));
+      last = ticks;
       for (const pid of tree(child.pid!)) {
-        const k = kind(pid);
+        const { kind: k, name } = kind(pid);
+        const c = cpuOf(pid);
+        if (c >= 0) used.set(pid, { name: pid === child.pid ? 'host' : name, s: c });
         const m = pss(pid);
         if (k === 'renderer') {
           now.renderers += m;
@@ -189,7 +233,9 @@ function measure(side: { dir: string; corpus: string }, parallel: number): Promi
         console.error(`  no result (exit ${code}${signal ? `, ${signal}` : ''})\n${stderr.split('\n').slice(-15).join('\n')}`);
         return done(null);
       }
-      done({ batch: JSON.parse(line.slice(6)), peak, cpu: (cpu1.busy - cpu0.busy) / (cpu1.total - cpu0.total) });
+      const cpuBy: Record<string, number> = {};
+      for (const { name, s } of used.values()) cpuBy[name] = Math.round(((cpuBy[name] ?? 0) + s) * 10) / 10;
+      done({ batch: JSON.parse(line.slice(6)), peak, cpu: (cpu1.busy - cpu0.busy) / (cpu1.total - cpu0.total), cpuBy, timeline });
     });
   });
 }
@@ -212,6 +258,11 @@ interface Sample {
   wall: number;
   close: number;
   cpu: number;
+  loop: Batch['loop'];
+  /** CPU seconds by process (host, browser, renderer, gpu-process, network, node npm-cli.js, …), as last sampled. */
+  cpuBy: Record<string, number>;
+  /** The machine's CPU use (%) every 500 ms, from the process's start. */
+  timeline: number[];
   peak: Peak;
   runs: Batch['runs'];
 }
@@ -223,12 +274,12 @@ for (let round = 1; round <= rounds; round++) {
     for (const variant of order) {
       const m = await measure(variants[variant], parallel);
       if (!m) continue;
-      const s: Sample = { variant, parallel, round, wall: m.batch.batchWall, close: m.batch.close, cpu: m.cpu, peak: m.peak, runs: m.batch.runs };
+      const s: Sample = { variant, parallel, round, wall: m.batch.batchWall, close: m.batch.close, cpu: m.cpu, loop: m.batch.loop, cpuBy: m.cpuBy, timeline: m.timeline, peak: m.peak, runs: m.batch.runs };
       samples.push(s);
       const passed = s.runs.filter((r) => r.status === 'passed').length;
       console.error(
         `  round ${round} ${variant} p${parallel}: ${(s.wall / 1000).toFixed(1)} s, ${passed}/${s.runs.length} passed, cpu ${Math.round(s.cpu * 100)}%, ` +
-          `peak host ${mb(s.peak.host)} renderers ${mb(s.peak.renderers)} chromium ${mb(s.peak.chromium)} all ${mb(s.peak.all)} (largest renderer ${mb(s.peak.renderer)})`,
+          `peak host ${mb(s.peak.host)} renderers ${mb(s.peak.renderers)} chromium ${mb(s.peak.chromium)} all ${mb(s.peak.all)} (largest renderer ${mb(s.peak.renderer)})\n    host loop ${JSON.stringify(s.loop)}, cpu s: ${JSON.stringify(s.cpuBy)}`,
       );
       if (args.json) appendFileSync(args.json, JSON.stringify(s) + '\n');
     }
@@ -255,6 +306,9 @@ for (const parallel of parallels) {
   row('passed', (x) => x.runs.filter((r) => r.status === 'passed').length, String);
   row('close', (x) => x.close, s);
   row('CPU (machine)', (x) => x.cpu, (x) => `${Math.round(x * 100)}%`);
+  row('host event loop busy', (x) => x.loop.utilization, (x) => `${Math.round(x * 100)}%`);
+  row('host event loop delay p99', (x) => x.loop.p99, (x) => `${x} ms`);
+  for (const name of ['host', 'renderer', 'browser', 'gpu-process']) row(`CPU s: ${name}`, (x) => x.cpuBy[name] ?? 0, (x) => x.toFixed(1));
   row('peak host', (x) => x.peak.host, mb);
   row('peak renderers', (x) => x.peak.renderers, mb);
   row('peak Chromium', (x) => x.peak.chromium, mb);
