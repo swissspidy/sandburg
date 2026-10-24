@@ -156,7 +156,7 @@ async function forward(request, url) {
     });
     port1.onmessage = (e) => {
       const m = e.data;
-      if (m.type === 'start') {
+      if (m.type === 'start' || m.type === 'full') {
         // Set-Cookie cannot be set from a service worker response; the page applies cookies itself.
         const h = new Headers();
         for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
@@ -166,6 +166,12 @@ async function forward(request, url) {
         // A redirect to one of the app's own paths (/login) stays where the deployment serves the app.
         if (hooks.sitePath && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
+        // A whole response (the runtime had it all in one task): no more messages for it.
+        if (m.type === 'full') {
+          port1.close();
+          if (body && m.body.byteLength) controller.enqueue(new Uint8Array(m.body));
+          controller.close();
+        }
         // App pages get the WebSocket shim (the host page relays their WebSockets to the runtime).
         if (body && request.mode === 'navigate' && /text\/html/i.test(h.get('content-type') ?? '')) {
           body = body.pipeThrough(injectShim());
