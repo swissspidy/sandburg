@@ -420,7 +420,8 @@ export class Resolver {
     } catch {
       return;
     }
-    void this.resolve(dir, () => {}, { small: true });
+    // A warm-up that fails (the worker does not start) is only a lost head start.
+    this.resolve(dir, () => {}, { small: true }).catch(() => {});
   }
 
   private start(): Worker {

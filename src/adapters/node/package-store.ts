@@ -337,7 +337,10 @@ function pump(): void {
       aheadWorkers.push(created);
       // A thread that fails leaves its job to the install (settled), and the others go on.
       const end = () => {
-        aheadWorkers.splice(aheadWorkers.indexOf(created), 1);
+        // A thread that throws emits error and then exit: end once.
+        const at = aheadWorkers.indexOf(created);
+        if (at < 0) return;
+        aheadWorkers.splice(at, 1);
         const i = idleWorkers.indexOf(created);
         if (i >= 0) idleWorkers.splice(i, 1);
         current.get(created)?.();
