@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 // In a checkout, Sandburg runs its TypeScript sources directly (Node >= 22.18 strips types).
 // Node does not strip types under node_modules, so an installed copy runs its build (dist/).
-import { sep } from 'node:path';
+import { enableCompileCache } from 'node:module';
+import { resolve, sep } from 'node:path';
+
+// V8's code cache for Sandburg's modules and its dependencies (Playwright's: ~0.1 s of every start),
+// kept with the rest of its state in .sandburg/ rather than in a temporary directory other users share.
+enableCompileCache?.(process.env.NODE_COMPILE_CACHE || resolve('.sandburg/node-compile-cache'));
 
 process.removeAllListeners('warning');
 process.on('warning', (w) => {
