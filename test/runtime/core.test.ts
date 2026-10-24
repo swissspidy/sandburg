@@ -1,5 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { RuntimeHarness } from './harness.ts';
 import { bundleNodeRuntime } from '../../src/node-runtime/bundle.ts';
 
@@ -780,6 +781,29 @@ test('Buffer: UTF-8 conversions of long strings (native) match Node', async () =
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   // The values real Node 22 gives.
   assert.deepEqual(JSON.parse(out.stdout), [380, 380, true, 'é', 300, 8, '😀😀', 20, '.....héllo wörld 😀 h.', true, 0xfeff]);
+});
+
+test('Buffer: UTF-8 of strings over 32 KB (encodeInto) matches Node', async () => {
+  // ASCII; text whose UTF-8 is longer than its length and an eighth (CJK); a surrogate pair where the
+  // first pass stops; lone surrogates; non-ASCII only at the end.
+  const strings = [
+    'a'.repeat(40_000),
+    '变量 = 函数(参数);\n'.repeat(4000),
+    'x'.repeat(36_863) + '😀'.repeat(3000),
+    'y'.repeat(40_000) + '\ud800' + 'z' + '\udc00',
+    'q'.repeat(50_000) + 'é',
+  ];
+  const digest = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
+  const program = `
+    const { createHash } = require('crypto');
+    const strings = ${JSON.stringify(strings)};
+    console.log(JSON.stringify(strings.map((s) => { const b = Buffer.from(s); return [b.length, Buffer.byteLength(s), createHash('sha256').update(b).digest('hex'), b.toString() === s.toWellFormed()]; })));`;
+  const r = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(r.fatal, null, r.fatal ?? r.stderr);
+  assert.deepEqual(
+    JSON.parse(r.stdout),
+    strings.map((s) => [Buffer.from(s).length, Buffer.byteLength(s), digest(Buffer.from(s)), true]),
+  );
 });
 
 test('Buffer: base64 and base64url of long buffers (native) match Node', async () => {
