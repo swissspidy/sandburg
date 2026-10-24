@@ -79,10 +79,15 @@ npm run lint`.
 | builtins.ts | 286 | buildBuiltins |
 | peers.ts | 226 | net connections and loopback requests between runtimes |
 
+`scripts/split-page-checks.ts` does the same for `src/page-checks/runtime.ts`: 887 → 233 lines,
+its locators to `locator.ts` (359) and its assertions to `expect.ts` (306).
+
 The modules that read worker.ts's state import it from worker.ts (live bindings); none assigns it
 (TypeScript refuses an assignment to an import, so a move that would need one fails to typecheck).
 The preload bundle stays in worker.ts, which init sets up. The runtime's script is still one esbuild
-bundle with the modules hoisted into one scope.
+bundle with the modules hoisted into one scope. Each split commit was checked line by line: every non-import line removed
+is in the new modules, and only their header comments are new. With the split, the node, run,
+websockets, fullstack, vite-frameworks, frameworks and page-checks e2e suites pass.
 
 ### Numbers
 
@@ -92,6 +97,7 @@ bundle with the modules hoisted into one scope.
 | `as` casts in src | 911 | 858 |
 | exports used only in their module | 44 | 0 (and 4 public types now exported by the package) |
 | worker.ts | 1,956 lines | 819 lines |
+| page-checks/runtime.ts | 887 lines | 233 lines |
 | runtime script (bundleNodeRuntime) | 886,558 bytes | 887,725 bytes (+0.13%: the split's per-module comments, +650; the typed relays and coerced stack, +560) |
 | static checks | `tsc` | `tsc`, `npm run lint` (3.4 s) |
 
