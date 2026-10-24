@@ -71,30 +71,47 @@ apart), CPU seconds by process kind, the machine's CPU use over time, and the ho
 
   | Measured | Base | Head | Change |
   |---|---|---|---|
-  | 24 corpus apps, `parallel` 3: wall | 47.24 s | 40.31 s | −15% |
-  | 24 corpus apps, `parallel` 4: wall | 44.52 s | 37.73 s | −15% |
-  | 24 corpus apps, `parallel` 4: per-app median | 7.64 s | 7.48 s | −2% |
-  | 24 corpus apps, `parallel` 4: machine CPU | 81% | 95% | |
-  | 24 corpus apps, `parallel` 4: peak renderers | 3,695 MB | 4,606 MB | +25% |
-  | 10 Vite 8 fixtures, `parallel` 4: wall | 18.46 s | 15.90 s | −14% |
-  | 10 Vite 8 fixtures, `parallel` 4: peak renderers | 2,609 MB | 2,511 MB | −4% |
-  | 10 Vite 8 fixtures, `parallel` 4: largest renderer | 813-836 MB | 662-709 MB | |
-  | 10 Vite 8 fixtures, `parallel` 4: renderer CPU | 47.6 s | 41.5 s | −13% |
-  | `vite-react-counter`, one warm run | 1.98 s | 1.79 s | −10% |
-  | `lit-vite`, one warm run | 1.34 s | 1.32 s | −1% |
-  | `next-app-router`, one warm run | 4.68 s | 4.66 s | −0% |
+  | 24 corpus apps, `parallel` 3: wall | 45.91 s | 39.52 s | −14% |
+  | 24 corpus apps, `parallel` 4: wall | 44.55 s | 37.37 s | −16% |
+  | 24 corpus apps, `parallel` 4: per-app median | 7.67 s | 8.08 s | +5% |
+  | 24 corpus apps, `parallel` 4: machine CPU | 80% | 94% | |
+  | 24 corpus apps, peak renderers (`parallel` 3 / 4) | 2,954 / 3,874 MB | 4,165 / 4,714 MB | +41% / +22% |
+  | 12 corpus apps, `parallel` 3 (ADR 0031's batch): wall | 23.82 s | 20.34 s | −15% |
+  | 10 Vite 8 fixtures, `parallel` 4: wall | 19.18 s | 18.24 s | −5% |
+  | 10 Vite 8 fixtures, `parallel` 4: peak renderers | 2,689 MB | 2,939 MB | +9% |
+  | `vite-react-counter`, one warm run (3 + 4 rounds) | 2.00 / 1.94 s | 2.08 / 2.08 s | +4% / +7% |
+  | `lit-vite`, one warm run | 1.49 s | 1.49 s | 0% |
+  | `next-app-router`, one warm run (3 + 4 rounds) | 4.81 / 4.87 s | 4.94 / 4.79 s | +3% / −2% |
 
-  The batches' head was faster in every round (16/24 and 10/10 passed in every run); each side's
-  `.sandburg/` carried over between rounds after one warm-up batch, so the head's batches had
-  summaries to order by. At `parallel` 3, the corpus' peak renderers went 2,945 → 3,869 MB (+31%).
+  The corpus batches were faster on the branch in every round, the Vite 8 batch in 2 of 3 (its first
+  round followed a warm-up that left little history for those apps); 16/24, 10/12 and 10/10 passed in
+  every run. Each side's `.sandburg/` carried over between rounds after one warm-up batch, so the
+  branch's batches had summaries to order by. Single runs do not go through the batch code; only the
+  compile cache's bound is on their path (its own A/B: `vite-react-counter` 1.92 → 1.99 s, n=5),
+  and an A/A of two revisions that differ in batch code only gave 2.28 → 2.14 s (n=5): one warm
+  run's noise here is ±6%.
 
   Each change's own A/B is in its commit message: the order by the earlier runs' time −12/−13% wall
   (24 apps, `parallel` 3 and 4) at +36-46% peak memory, then by the checks first: the same wall,
-  −16% peak renderers, then the longest runs after the long checks: −6% (n=5), +4% peak; the spares:
-  the Vite 8 batch −10% wall and −18% peak renderers, single warm runs −3 to −4%.
-- Starting the long apps first raises a batch's peak memory (their renderers are open together):
-  on the corpus, peak renderers +25% at `parallel` 4 and +31% at 3 (Vite 8 apps, with fewer idle
-  runtimes, −4%); the memory guard bounds it where memory is short.
+  −16% peak renderers, then the longest runs after the long checks: −6% (n=5), +4% peak.
+- **Against ADR 0031's "heaviest apps first"** (12% slower there): that order came from the
+  framework (meta-frameworks, then Vite, then the rest), and a light app with a long check became the
+  tail. Here the order comes from each project's earlier runs. On ADR 0031's own batch (12 corpus
+  apps, 3 tabs; 3 interleaved rounds, 10/12 passed in each): 23.82 s → 20.34 s (−15%), faster in
+  every round, peak renderers 2,700 → 3,312 MB. The branch started `005-vite-vanilla` (a light app
+  whose failing assertion waits 16 s) first, then `010-next-app` (a syntax error: no checks time),
+  then the other Next.js apps, Vite + React and plain Vite; the heuristic would have put
+  `005-vite-vanilla` last. The Next.js apps still run side by side (their per-app times are longer),
+  but the batch's wall is its tail, which is now the short apps.
+- **Starting the long apps first raises a batch's peak memory** (their renderers are open
+  together): on the corpus, peak renderers +41% at `parallel` 3 and +22% at 4, +9% on the Vite 8 batch. **The memory guard bounds it where memory is
+  short.** The 24-app batch at `parallel` 4 in a memory cgroup limited to 4.5 GB (a child of this
+  session's, so `availableMemory` reads the limit; the whole benchmark ran in it; 2 interleaved
+  rounds, 16/24 passed in each): peak renderers 3,788 MB on main and 3,629 MB on the branch (4,606 MB
+  without the limit), and the branch was still faster, 44.22 → 42.19 s (−5%). Main was not killed at
+  that limit either (the kernel reclaims page cache first), but it has no bound of its own: its
+  peak grows with `parallel`, while the branch opens no app with less than 1.5 GB left (apps already
+  open can still grow).
 - **Behaviour changes**: a batch starts its apps in another order once it has summaries (results
   and the summary keep the order given; `longestFirst: false` keeps the order); `BatchRunSummary`
   has `checksMs`; a batch may open its next app later when memory is short, and logs "waiting for
