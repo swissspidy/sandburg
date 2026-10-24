@@ -173,6 +173,68 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   return { checks: results, artifacts };
 }
 
+/** A web-first assertion not passed after this long is also checked once every PROBE_EVERY_MS (see settlingExpect). */
+const PROBE_AFTER_MS = 250;
+const PROBE_EVERY_MS = 100;
+/** The timeout of such a check: one try, and one retry at once (Playwright's first two polls). */
+const PROBE_TIMEOUT_MS = 1;
+
+/**
+ * Web-first assertions that only read the page (toBeVisible, toHaveText, toHaveURL …), on a locator
+ * or a page: those that can be checked once beside the assertion. Not toHaveScreenshot (it writes
+ * files), and not a function's (toPass runs it).
+ */
+function probeable(receiver: unknown, matcher: string | symbol): boolean {
+  return (
+    typeof matcher === 'string' &&
+    /^(toBe|toHave|toContain|toMatchAriaSnapshot$)/.test(matcher) &&
+    matcher !== 'toHaveScreenshot' &&
+    typeof receiver === 'object' &&
+    receiver !== null &&
+    typeof (receiver as { locator?: unknown }).locator === 'function' &&
+    typeof (receiver as { evaluate?: unknown }).evaluate === 'function'
+  );
+}
+
+/**
+ * `outcome`, or sooner: the first of `probe`'s tries, from `afterMs` and every `everyMs` while it is
+ * pending, that passes. A probe that fails changes nothing.
+ */
+function sooner<T>(outcome: Promise<T>, probe: () => Promise<T>, afterMs: number, everyMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = () => {
+      done = true;
+      clearTimeout(timer);
+    };
+    outcome.then(
+      (v) => {
+        if (!done) resolve(v);
+        finish();
+      },
+      (e) => {
+        if (!done) reject(e);
+        finish();
+      },
+    );
+    const tick = () => {
+      if (done) return;
+      probe().then(
+        (v) => {
+          if (done) return;
+          finish();
+          resolve(v);
+        },
+        () => {
+          if (!done) timer = setTimeout(tick, everyMs);
+        },
+      );
+    };
+    timer = setTimeout(tick, afterMs);
+  });
+}
+
 /** A failing assertion waits at least this long, whatever the app does. */
 export const SETTLE_FLOOR_MS = 5_000;
 /** After the floor, it retries in slices this long, and stops when the app is idle between two. */
@@ -189,12 +251,18 @@ const SETTLE_SLICE_MS = 1_000;
  * timer due within the remaining time and has not changed for a moment; see the session). An
  * assertion with its own `timeout` option, and every other expect() member (poll, soft, …), behave
  * as in Playwright, with the configured timeout.
+ *
+ * A web-first assertion on a locator or page that has not passed after PROBE_AFTER_MS is also
+ * checked once every PROBE_EVERY_MS beside it, and passes when such a check does. Playwright polls
+ * every 500 ms after its first ~300 ms: an assertion that waits for a server's answer (a form posted
+ * to a dev server compiling its action) saw it up to half a second late. Failures and their messages
+ * are the assertion's own.
  */
 export function settlingExpect(
   base: typeof expect,
   timeoutMs: number,
   idle: (remainingMs: number) => Promise<boolean>,
-  { floorMs = SETTLE_FLOOR_MS, sliceMs = SETTLE_SLICE_MS } = {},
+  { floorMs = SETTLE_FLOOR_MS, sliceMs = SETTLE_SLICE_MS, probeAfterMs = PROBE_AFTER_MS, probeEveryMs = PROBE_EVERY_MS } = {},
 ): typeof expect {
   type Chain = Record<string | symbol, unknown>;
   const matchers = (args: unknown[], path: (string | symbol)[], timeout: number): Chain =>
@@ -228,7 +296,15 @@ export function settlingExpect(
           const own = margs.some((a) => typeof a === 'object' && a !== null && 'timeout' in a);
           const call = (timeout: number) => (matchers(args, path, timeout)[prop] as (...a: unknown[]) => unknown)(...margs);
           const first = call(own ? timeoutMs : Math.min(floorMs, timeoutMs));
-          return own || typeof (first as { then?: unknown } | null)?.then !== 'function' ? first : settle(first as Promise<unknown>, call);
+          if (typeof (first as { then?: unknown } | null)?.then !== 'function') return first;
+          const outcome = own ? (first as Promise<unknown>) : settle(first as Promise<unknown>, call);
+          if (!probeable(args[0], prop)) return outcome;
+          // A one-shot check of the same assertion (its own timeout, if it has one, replaced).
+          const probe = () =>
+            (matchers(args, path, PROBE_TIMEOUT_MS)[prop] as (...a: unknown[]) => Promise<unknown>)(
+              ...margs.map((a) => (typeof a === 'object' && a !== null && 'timeout' in a ? { ...a, timeout: PROBE_TIMEOUT_MS } : a)),
+            );
+          return sooner(outcome, probe, probeAfterMs, probeEveryMs);
         };
       },
     });
