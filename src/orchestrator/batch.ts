@@ -30,6 +30,8 @@ export interface BatchRunSummary {
   failureClass: FailureClass | null;
   failureRule: string | null;
   totalMs: number;
+  /** The checks phase's time (an app that waits long on a failing assertion). */
+  checksMs?: number | null;
 }
 
 export interface BatchSummary {
@@ -65,9 +67,9 @@ export interface BatchOptions extends RunOptions {
   /** Progress lines (warming up). */
   log?: (line: string) => void;
   /**
-   * Start the projects that took longest in earlier batches first (the summaries in batchDir), and
-   * those without an earlier run before them (default: true). False: in the order given. Results
-   * are in the order given either way.
+   * Start the projects whose checks took longest in earlier batches first (the summaries in
+   * batchDir), and those without an earlier run before them (default: true). False: in the order
+   * given. Results are in the order given either way.
    */
   longestFirst?: boolean;
   /**
@@ -219,6 +221,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
       failureClass: r.failure?.class ?? null,
       failureRule: r.failure?.rule ?? null,
       totalMs: r.timings.totalMs,
+      checksMs: r.timings.checksMs,
     })),
   };
   const dir = resolve(options.batchDir ?? '.sandburg/batches', batchId);
@@ -228,11 +231,12 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
 }
 
 /**
- * The items' indexes, those whose project took longest in the latest batches first, and those with no
+ * The items' indexes, those whose checks took longest in the latest batches first, and those with no
  * earlier run (a new project, which may install first) before all of them; otherwise in the order
  * given. A batch's wall time is its last app's end: an app that waits long in its checks (a failing
- * assertion) or runs long, started last, keeps the batch open with the cores idle. Started first, it
- * overlaps the others. Only the order changes, never what a run does.
+ * assertion waits 5-15 s) started last keeps the batch open with the cores idle; started first, it
+ * waits while the others run. (Ordering by the whole run's time gained as much, but started the
+ * heavy apps side by side: 16% more peak memory.) Only the order changes, never what a run does.
  */
 async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<number[]> {
   const took = new Map<string, number>();
@@ -248,7 +252,7 @@ async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: 
     for (const run of Array.isArray(summary?.runs) ? summary.runs : []) {
       // Runs in the browser, or in an out-of-browser runtime (compare's reference), as this batch's.
       if (adapterNames.includes(run?.runtime) === outOfBrowser) continue;
-      if (typeof run?.project === 'string' && Number.isFinite(run.totalMs) && !took.has(run.project)) took.set(run.project, run.totalMs);
+      if (typeof run?.project === 'string' && Number.isFinite(run.checksMs) && !took.has(run.project)) took.set(run.project, run.checksMs!);
     }
   }
   const estimate = items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined) ?? Infinity);

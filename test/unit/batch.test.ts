@@ -97,13 +97,13 @@ function timedSession(ms: Record<string, number>, started: string[], onOpen?: (o
         project: { name: project, path: resolve(project), snapshotId: project },
         runtime: { name: 'node' },
         network: { cacheHits: 0, cacheMisses: 0, blocked: [] },
-        timings: { totalMs: ms[project] ?? 1 },
+        timings: { totalMs: ms[project] ?? 1, checksMs: ms[project] ?? 1 },
       } as unknown as RunResult;
     },
   } as unknown as Session;
 }
 
-test('a batch starts the projects that took longest in earlier batches first, new ones before them', async () => {
+test('a batch starts the projects whose checks took longest in earlier batches first, new ones before them', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
   try {
     const ms = { a: 5, b: 30, c: 15, d: 1 };
@@ -157,7 +157,7 @@ test("a batch in the browser does not order its starts by an out-of-browser runt
   try {
     // compare's reference batch (the Docker runtime) found "a" slow.
     await mkdir(join(dir, 'b-zzzzzzzz-000000'), { recursive: true });
-    const runs = [{ project: resolve('a'), runtime: 'docker', totalMs: 60_000 }];
+    const runs = [{ project: resolve('a'), runtime: 'docker', totalMs: 60_000, checksMs: 50_000 }];
     await writeFile(join(dir, 'b-zzzzzzzz-000000', 'summary.json'), JSON.stringify({ runs }));
     const started: string[] = [];
     await runBatch(timedSession({ a: 1, b: 20 }, started), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
@@ -165,6 +165,23 @@ test("a batch in the browser does not order its starts by an out-of-browser runt
     const again: string[] = [];
     await runBatch(timedSession({ a: 1, b: 20 }, again), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
     assert.deepEqual(again, ['b', 'a']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a batch orders its starts by the time earlier runs spent in their checks, not by their whole time', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    await mkdir(join(dir, 'b-zzzzzzzz-000000'), { recursive: true });
+    const runs = [
+      { project: resolve('heavy'), runtime: 'node', totalMs: 60_000, checksMs: 1_000 },
+      { project: resolve('waits'), runtime: 'node', totalMs: 20_000, checksMs: 15_000 },
+    ];
+    await writeFile(join(dir, 'b-zzzzzzzz-000000', 'summary.json'), JSON.stringify({ runs }));
+    const started: string[] = [];
+    await runBatch(timedSession({}, started), ['heavy', 'waits'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(started, ['waits', 'heavy']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
