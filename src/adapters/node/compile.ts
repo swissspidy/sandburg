@@ -23,11 +23,57 @@ export type CompileKind = 'esm' | 'cjs' | 'ts';
 const EVAL_LITERAL = /\beval\(("(?:[^"\\\n]|\\.)*")\)/g;
 const PLACEHOLDER = '__sandburg_eval_';
 const PLACEHOLDER_CALL = /\beval\("__sandburg_eval_(\d+)"\)/g;
-/** Lowered eval literals: the replacement literal, or null when it stays as it is. */
-const loweredEvals = new Map<string, string | null>();
+/**
+ * Strings by key, least recently used out first once the keys and values hold more than `max`
+ * characters: what the host keeps of its compiles. A count alone did not bound them: a compile of
+ * next dev's chunks is ~1 MB, and a session that runs many apps compiles new ones for each.
+ */
+export class StringLru<V extends string | null> {
+  private map = new Map<string, V>();
+  private chars = 0;
+  private readonly max: number;
+  constructor(max: number) {
+    this.max = max;
+  }
+  get size(): number {
+    return this.map.size;
+  }
+  /** Characters held (keys and values). */
+  get length(): number {
+    return this.chars;
+  }
+  get(key: string): V | undefined {
+    const value = this.map.get(key);
+    if (value !== undefined) {
+      this.map.delete(key);
+      this.map.set(key, value);
+    }
+    return value;
+  }
+  set(key: string, value: V): void {
+    const known = this.map.get(key);
+    if (known !== undefined) {
+      this.map.delete(key);
+      this.chars -= key.length + (known?.length ?? 0);
+    }
+    const size = key.length + (value?.length ?? 0);
+    if (size > this.max) return;
+    this.map.set(key, value);
+    this.chars += size;
+    for (const [k, v] of this.map) {
+      if (this.chars <= this.max) break;
+      this.map.delete(k);
+      this.chars -= k.length + (v?.length ?? 0);
+    }
+  }
+}
+
+/** Lowered eval literals: the replacement literal, or null when it stays as it is (keys are whole modules, with their source maps). */
+const loweredEvals = new StringLru<string | null>(64 << 20);
 
 const LOWER = { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false } as const;
-const cache = new Map<string, string>();
+/** Compiles by key (compileForRuntime); those that go out are still on disk (CompileStore). */
+const cache = new StringLru<string>(128 << 20);
 
 /** Whether any of the project's source files uses top-level await (TypeScript is stripped first). */
 export function projectHasTopLevelAwait(files: Record<string, string>): boolean {
@@ -108,7 +154,6 @@ function stored(key: string): string | undefined {
 }
 
 function remember(key: string, out: string): void {
-  if (cache.size > 5000) cache.clear();
   cache.set(key, out);
 }
 
@@ -243,7 +288,6 @@ function* lowerEvalSteps(code: string): Generator<TransformStep, string, string>
         const lowered: string | null = yield { code: inner, options: { loader: 'js', target: 'es2022', supported: LOWER, logLevel: 'silent' }, optional: true };
         if (lowered !== null) replacement = JSON.stringify(patchInterop(lowered) + sourceUrl);
       }
-      if (loweredEvals.size > 20_000) loweredEvals.clear();
       loweredEvals.set(m[1], replacement);
     }
     if (replacement === null) continue;
