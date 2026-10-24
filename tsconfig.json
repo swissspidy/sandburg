@@ -27,6 +27,7 @@
     "scripts/edit-loop.ts",
     "scripts/split-module.ts",
     "scripts/split-worker.ts",
+    "scripts/split-page-checks.ts",
     "pages/compile.ts",
     "pages/generate",
     "evals",
