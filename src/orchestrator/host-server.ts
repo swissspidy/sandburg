@@ -12,6 +12,7 @@ import * as esbuild from 'esbuild';
 import type { AdapterDescriptor } from '../types.ts';
 import { source } from '../sources.ts';
 import { PAGE_CHECKS_PATH, runtimeBundle } from '../page-checks/index.ts';
+import { CLASSIC_CHARSET, classicBody, type HostScript } from './code-cache.ts';
 import { acceptFileChannel, FILE_CHANNEL_PATH } from './host-socket.ts';
 
 const HOST_ENTRY = source('host/host.ts');
@@ -36,8 +37,13 @@ const HOST_HTML = `<!doctype html>
  * runAxe in checks.ts): a module script, which the browser compiles off the main thread.
  */
 export const AXE_PATH = '/__sandburg/axe.js';
+/** axe-core as a classic script in a charset Chromium does not stream, which a run loads with its compiled code (code-cache.ts). */
+export const AXE_CLASSIC_PATH = '/__sandburg/axe.classic.js';
 let axe: Promise<Buffer> | null = null;
 const axeSource = () => (axe ??= readFile(createRequire(import.meta.url).resolve('axe-core/axe.min.js')));
+let axeClassic: Promise<Buffer> | null = null;
+/** axe-core, for the code cache. */
+export const AXE_SCRIPT: HostScript = { name: 'axe', source: async () => (await axeSource()).toString('utf8') };
 
 const bundles = new Map<string, Promise<string>>();
 
@@ -164,6 +170,10 @@ export class HostServer {
     } else if (path === AXE_PATH) {
       const js = await axeSource();
       res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8' });
+      res.end(js);
+    } else if (path === AXE_CLASSIC_PATH) {
+      const js = await (axeClassic ??= AXE_SCRIPT.source().then(classicBody));
+      res.writeHead(200, { ...headers, 'content-type': `text/javascript; charset=${CLASSIC_CHARSET}` });
       res.end(js);
     } else if (path.startsWith('/__sandburg/') && adapter.serve) {
       const url = new URL(req.url ?? '/', 'http://x');

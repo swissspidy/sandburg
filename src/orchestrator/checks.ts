@@ -10,6 +10,7 @@ import { expect } from '@playwright/test';
 import type { Frame, Page } from 'playwright-core';
 import type { CheckKind, CheckResult, CheckStatus, ConsoleEntry, NetworkEntry, PageError } from '../types.ts';
 import { AXE_PATH } from './host-server.ts';
+import type { PageCode } from './code-cache.ts';
 import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, type PageChecks } from '../page-checks/index.ts';
 
 export interface CheckContext {
@@ -67,6 +68,8 @@ export interface ChecksInput {
   appSettled?: () => Promise<unknown>;
   /** The sandbox's origin, if the host server serves it: axe-core (AXE_PATH) and the page checks' runtime come from there. */
   hostOrigin?: string;
+  /** The page's copy of axe-core's compiled code (code-cache.ts), for axe-core from the host's origin. */
+  axeCode?: PageCode;
 }
 
 export interface ChecksOutput {
@@ -83,7 +86,8 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
 
   // Artifacts first, so they show the app as it first rendered. They only read the page, and so does
   // loading axe-core, which goes on meanwhile (its scan runs after them).
-  const axeLoaded = loadAxe(app, input.hostOrigin && !input.appDocument?.()?.csp ? input.hostOrigin + AXE_PATH : undefined);
+  const axeOrigin = input.hostOrigin && !input.appDocument?.()?.csp ? input.hostOrigin : undefined;
+  const axeLoaded = loadAxe(app, axeOrigin, input.axeCode);
   axeLoaded.catch(() => {}); // the axe check reports it
   // Checks that run in the page: their runtime loads meanwhile too.
   const pageChecksLoaded = isPageChecks(input.checks) ? loadPageChecksRuntime(page, input.hostOrigin && input.hostOrigin + PAGE_CHECKS_PATH) : undefined;
@@ -321,22 +325,30 @@ const require = createRequire(import.meta.url);
 let axeSource: Promise<string> | null = null;
 
 /**
- * Loads axe-core into the app's frame: imported from the app's origin where it serves it (the
- * browser streams and compiles the 650 KB script off the main thread, while the artifacts are
- * taken), else evaluated in the frame: when the app's document has a Content-Security-Policy (which
- * may refuse the import, and log that in the app's console), or the import fails.
+ * Loads axe-core into the app's frame: from the app's origin where it serves it (the host's origin),
+ * with its compiled code if the session has it (a classic script, which then compiles nothing), else
+ * imported (the browser streams and compiles the 650 KB script off the main thread, while the
+ * artifacts are taken); else evaluated in the frame: when the app's document has a
+ * Content-Security-Policy (which may refuse the script, and log that in the app's console), or the
+ * script fails to load.
  */
-async function loadAxe(app: Frame, url?: string): Promise<void> {
+async function loadAxe(app: Frame, origin?: string, code?: PageCode): Promise<void> {
+  const own = !!origin && URL.canParse(app.url()) && new URL(app.url()).origin === origin;
+  const csp = () => app.evaluate(() => !!document.querySelector('meta[http-equiv="content-security-policy" i]')).catch(() => true);
+  const defined = () => app.evaluate(() => typeof (window as unknown as { axe?: unknown }).axe === 'object').catch(() => false);
+  if (own && code && !(await csp())) {
+    const loaded = await code.load(app);
+    void code.close(); // the code is for this load only
+    if (loaded && (await defined())) return;
+  }
   const imported =
-    !!url &&
-    URL.canParse(app.url()) &&
-    new URL(app.url()).origin === new URL(url).origin &&
+    own &&
     (await app
       .evaluate(
         (u) =>
           !document.querySelector('meta[http-equiv="content-security-policy" i]') &&
           import(u).then(() => typeof (window as unknown as { axe?: unknown }).axe === 'object'),
-        url,
+        origin + AXE_PATH,
       )
       .catch(() => false));
   if (imported) return;
