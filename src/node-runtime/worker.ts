@@ -35,7 +35,7 @@ import * as misc from './builtins/misc.ts';
 import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import ShaHash from 'sha.js/hash.js';
-import { LIBS_KEY, type RuntimeLib } from './libs.ts';
+import { CRYPTO_EXPORTS, LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
@@ -975,9 +975,12 @@ function buildBuiltins() {
     urlToHttpOptions: (u: URL) => ({ protocol: u.protocol, hostname: u.hostname, hash: u.hash, search: u.search, pathname: u.pathname, path: u.pathname + u.search, href: u.href, port: u.port ? Number(u.port) : undefined }),
   };
 
-  // node:crypto: crypto-browserify (a runtime library: loaded when a program first requires it).
+  // node:crypto: crypto-browserify's API (runtime libraries, loaded when a program first requires
+  // it): hashes and random bytes from the small `hash` library; the rest of crypto-browserify
+  // (ciphers, signatures, key exchange) loads the first time a program reads one of them.
   const makeCrypto = () => {
-    const cryptoBrowserify = runtimeLib<Record<string, unknown>>('crypto');
+    type Hashing = { createHash: (alg: string) => { digest(enc?: string): Buffer | string }; createHmac: (alg: string, key: unknown) => { digest(enc?: string): Buffer | string }; randomBytes: unknown; randomFill: unknown; randomFillSync: unknown };
+    const hashing = runtimeLib<Hashing>('hash');
     // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
     const withBase64Url = <A extends unknown[]>(make: (...a: A) => { digest(enc?: string): Buffer | string }) => (...args: A) => {
       const h = make(...args);
@@ -985,9 +988,25 @@ function buildBuiltins() {
       h.digest = (enc?: string) => (enc === 'base64url' ? (digest() as Buffer).toString('base64url') : digest(enc));
       return h;
     };
-    const createHash = withBase64Url(cryptoBrowserify.createHash as never);
-    const createHmac = withBase64Url(cryptoBrowserify.createHmac as never);
-    const crypto = Object.assign(Object.create(null), cryptoBrowserify, {
+    const createHash = withBase64Url(hashing.createHash as never);
+    const createHmac = withBase64Url(hashing.createHmac as never);
+    const crypto = Object.create(null) as Record<string, unknown>;
+    const own = (k: string, value: unknown) => Object.defineProperty(crypto, k, { value, writable: true, enumerable: true, configurable: true });
+    for (const k of CRYPTO_EXPORTS) {
+      Object.defineProperty(crypto, k, {
+        get: () => (own(k, runtimeLib<Record<string, unknown>>('crypto')[k]), crypto[k]),
+        set: (v: unknown) => own(k, v),
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    const ours: Record<string, unknown> = {
+      randomBytes: hashing.randomBytes,
+      rng: hashing.randomBytes,
+      pseudoRandomBytes: hashing.randomBytes,
+      prng: hashing.randomBytes,
+      randomFill: hashing.randomFill,
+      randomFillSync: hashing.randomFillSync,
       createHash,
       createHmac,
       Hash: createHash,
@@ -1005,7 +1024,8 @@ function buildBuiltins() {
       getCiphers: () => [],
       constants: {},
       hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
-    });
+    };
+    for (const [k, v] of Object.entries(ours)) own(k, v);
     return crypto;
   };
 

@@ -878,9 +878,46 @@ test('crypto: SHA hashes of chunked input, as in Node', async () => {
   assert.deepEqual(JSON.parse(r.stdout), expected);
 });
 
+test('node:crypto loads crypto-browserify only for what its hash library lacks', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const loaded = () => Object.keys(globalThis[Symbol.for('sandburg.libs')] ?? {}).sort();
+        const crypto = require('node:crypto');
+        const { randomBytes, createHash } = crypto;
+        const steps = [createHash('sha256').update('abc').digest('base64url'), randomBytes(4).length, crypto.createHmac('md5', 'k').update('m').digest('hex'), crypto.hash('sha1', 'abc'), loaded()];
+        const key = crypto.pbkdf2Sync('pw', 'salt', 1, 16, 'sha256');
+        const c = crypto.createCipheriv('aes-128-cbc', key, Buffer.alloc(16));
+        const enc = Buffer.concat([c.update('secret'), c.final()]);
+        const d = crypto.createDecipheriv('aes-128-cbc', key, Buffer.alloc(16));
+        steps.push(Buffer.concat([d.update(enc), d.final()]).toString(), loaded());
+        crypto.createSign = 'replaced';
+        const all = { ...crypto };
+        steps.push(crypto.createSign, Object.keys(crypto).includes('publicEncrypt'), typeof all.createECDH, typeof all.createHash);
+        console.log(JSON.stringify(steps));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  const { createHash, createHmac } = await import('node:crypto');
+  assert.deepEqual(JSON.parse(out.stdout.split('\n')[0]), [
+    createHash('sha256').update('abc').digest('base64url'),
+    4,
+    createHmac('md5', 'k').update('m').digest('hex'),
+    createHash('sha1').update('abc').digest('hex'),
+    ['hash'],
+    'secret',
+    ['crypto', 'hash'],
+    'replaced',
+    true,
+    'function',
+    'function',
+  ]);
+});
+
 test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buffer and streams', async () => {
   const runtime = await bundleNodeRuntime();
-  assert.ok(!/node_modules\/(crypto-browserify|browserify-zlib|@napi-rs\/wasm-runtime)\//.test(runtime), 'the runtime script leaves them out');
+  assert.ok(!/node_modules\/(crypto-browserify|create-hash|browserify-zlib|@napi-rs\/wasm-runtime)\//.test(runtime), 'the runtime script leaves them out');
   const out = await h.run(
     {
       'main.js': `
@@ -903,7 +940,7 @@ test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buff
   );
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.deepEqual(JSON.parse(out.stdout.split('\n')[0]), {
-    before: [], after: ['crypto', 'wasi', 'zlib'], isBuffer: true, hex: 'a9993e364706816aba3e25717850c26c9cd0d89d',
+    before: [], after: ['hash', 'wasi', 'zlib'], isBuffer: true, hex: 'a9993e364706816aba3e25717850c26c9cd0d89d',
     hmac: 'tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew', stream: true, wasi: 'function', same: true, gz: 'z',
   });
 });
