@@ -20,7 +20,7 @@ import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } 
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
-import { installFromLockfile, installedPackages, sweepStore, unpackAhead, type InstalledPackage } from './package-store.ts';
+import { installFromLockfile, installedPackages, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 
 /** --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds. */
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
@@ -74,6 +74,7 @@ export class Installer {
     this.root = root;
     this.store = join(root, '..', 'store');
     this.resolver = new Resolver(root, ['--package-lock-only', ...INSTALL_FLAGS]);
+    this.resolver.onPicked = (integrity) => unpackHint(integrity, this.store);
     void this.sweep();
   }
 

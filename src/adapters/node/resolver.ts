@@ -50,7 +50,8 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   const sink = new Writable({ write: (_chunk, _encoding, done) => done() });
   let ready: Promise<{ flat: object; Arborist: new (o: object) => { reify(o: object): Promise<unknown> } }> | null = null;
   const cache = new PackumentCache(PACKUMENT_BYTES);
-  const ahead = new ReadAhead(require, cache);
+  // The packages npm picks, as it goes: the host unpacks them meanwhile (package-store.ts's unpackHint).
+  const ahead = new ReadAhead(require, cache, (integrity) => parentPort!.postMessage({ tarball: integrity }));
   /** Resolutions running (a small one runs beside another). */
   let active = 0;
   parentPort!.on('message', async ({ id, dir, force }: { id: number; dir: string; force: boolean }) => {
@@ -195,7 +196,10 @@ class ReadAhead {
   private queue: (() => Promise<void>)[] = [];
   private running = 0;
 
-  constructor(require: NodeJS.Require, cache: PackumentCache) {
+  private readonly picked: (integrity: string) => void;
+
+  constructor(require: NodeJS.Require, cache: PackumentCache, picked: (integrity: string) => void) {
+    this.picked = picked;
     this.npa = require('npm-package-arg') as Npa;
     this.pacote = require('pacote') as Pacote;
     this.cacache = require('cacache') as ReadAhead['cacache'];
@@ -236,6 +240,7 @@ class ReadAhead {
     const name = typeof manifest.name === 'string' ? manifest.name : '';
     this.manifests.set(name, manifest);
     const placed = this.placed.has(name);
+    if (placed && typeof manifest._integrity === 'string') this.picked(manifest._integrity);
     const optionalPeers = (manifest.peerDependenciesMeta ?? {}) as Record<string, { optional?: boolean } | undefined>;
     for (const field of placed ? ['dependencies', 'optionalDependencies', 'peerDependencies'] : ['peerDependencies']) {
       const deps = manifest[field];
@@ -318,6 +323,8 @@ export class Resolver {
 
   private readonly dir: string;
   private readonly flags: string[];
+  /** Gets the integrity of each package a resolution picks, as it goes (a guess: npm may pick another in the end). */
+  onPicked: ((integrity: string) => void) | null = null;
 
   /** `dir`: where its config directory goes (no .npmrc of its own, as an install directory). */
   constructor(dir: string, flags: string[]) {
@@ -372,7 +379,8 @@ export class Resolver {
     worker.unref();
     const mine = new Set<number>();
     this.owned.set(worker, mine);
-    worker.on('message', ({ id, error }: { id: number; error?: string }) => {
+    worker.on('message', ({ id, error, tarball }: { id: number; error?: string; tarball?: string }) => {
+      if (tarball) return this.onPicked?.(tarball);
       this.waiting.get(id)?.(error);
       this.waiting.delete(id);
       mine.delete(id);

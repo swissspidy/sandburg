@@ -120,7 +120,9 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
   jobs.sort((a, b) => size(b.job.tarball) - size(a.job.tarball));
   try {
     const placed = new Map<string, Placed>();
-    // Packages being unpacked ahead (unpackAhead) are linked once they are in the store.
+    // Packages being unpacked ahead (unpackAhead, unpackHint) are linked once they are in the store;
+    // those still waiting for a thread are unpacked here.
+    takeQueued();
     const ahead = jobs.filter((j) => unpacking.has(j.job.store));
     const now = jobs.filter((j) => !unpacking.has(j.job.store));
     // All settled before a failure is handled: npm then installs into node_modules, and a job still
@@ -263,7 +265,7 @@ function cachedIntegrity(cache: string, url: string): string | null {
   return null;
 }
 
-/** Store directories being unpacked ahead of an install (unpackAhead). */
+/** Store directories being unpacked ahead of an install (unpackAhead, unpackHint). */
 const unpacking = new Map<string, Promise<void>>();
 
 /**
@@ -286,23 +288,95 @@ export async function unpackAhead(dir: string, dependencies: Record<string, stri
     const integrity = cachedIntegrity(cache, `${registry}${name}/-/${name.split('/').pop()}-${spec}.tgz`);
     if (integrity && contentHash(integrity)) integrities.add(integrity);
   }
-  const jobs: Job[] = [];
-  for (const integrity of integrities) {
-    const store = storePath(storeRoot, integrity);
-    const tarball = contentPath(cache, integrity);
-    if (!unpacking.has(store) && !existsSync(store) && existsSync(tarball)) jobs.push({ tarball, integrity, store, dest: null });
+  await Promise.all([...integrities].map((integrity) => unpackOne(cache, storeRoot, integrity)));
+}
+
+/**
+ * Unpacks into the store a package npm's resolution has just picked (the resolver reports each one
+ * it places, see resolver.ts), if npm's cache has its tarball: unpacking goes on while npm resolves
+ * the rest. A guess, as unpackAhead's: npm may pick another version in the end.
+ */
+export function unpackHint(integrity: string, storeRoot: string): void {
+  if (!contentHash(integrity)) return;
+  void npmConfig().then(({ cache }) => unpackOne(cache, storeRoot, integrity));
+}
+
+/** Packages waiting for a thread to unpack them ahead, oldest first. */
+const queued: { job: Job; done: () => void }[] = [];
+/** Threads unpacking ahead (two: npm's resolution keeps a core), and those without a job. */
+const aheadWorkers: Worker[] = [];
+const idleWorkers: Worker[] = [];
+
+/** Unpacks one package ahead (settles when it is in the store, or not: the install then unpacks it). */
+function unpackOne(cache: string, storeRoot: string, integrity: string): Promise<void> {
+  const store = storePath(storeRoot, integrity);
+  const tarball = contentPath(cache, integrity);
+  const known = unpacking.get(store);
+  if (known) return known;
+  if (existsSync(store) || !existsSync(tarball)) return Promise.resolve();
+  let done!: () => void;
+  const settled = new Promise<void>((resolve) => (done = resolve));
+  unpacking.set(store, settled);
+  queued.push({
+    job: { tarball, integrity, store, dest: null },
+    done: () => {
+      if (unpacking.get(store) === settled) unpacking.delete(store);
+      done();
+    },
+  });
+  pump();
+  return settled;
+}
+
+function pump(): void {
+  while (queued.length && (idleWorkers.length || aheadWorkers.length < Math.min(2, availableParallelism()))) {
+    let worker = idleWorkers.pop();
+    if (!worker) {
+      const created = new Worker(new URL(import.meta.url), { workerData: { tag: WORKER_TAG } });
+      created.unref();
+      aheadWorkers.push(created);
+      // A thread that fails leaves its job to the install (settled), and the others go on.
+      const end = () => {
+        aheadWorkers.splice(aheadWorkers.indexOf(created), 1);
+        const i = idleWorkers.indexOf(created);
+        if (i >= 0) idleWorkers.splice(i, 1);
+        current.get(created)?.();
+        current.delete(created);
+        pump();
+      };
+      created.on('error', end);
+      created.on('exit', end);
+      created.on('message', () => {
+        current.get(created)?.();
+        current.delete(created);
+        const next = queued.shift();
+        if (next) return give(created, next);
+        idleWorkers.push(created);
+        // Ends once nothing is left to unpack ahead.
+        setTimeout(() => {
+          if (idleWorkers.includes(created) && !queued.length) void created.terminate();
+        }, 1000).unref();
+      });
+      worker = created;
+    }
+    give(worker, queued.shift()!);
   }
-  if (!jobs.length) return;
-  // Each job's promise settles when it is unpacked, or when the batch ends (it failed, or another
-  // failed first): an install then unpacks it itself.
-  const settle: (() => void)[] = [];
-  for (const job of jobs) unpacking.set(job.store, new Promise<void>((done) => settle.push(done)));
-  // Two threads: npm's resolution keeps a core.
-  await runJobs(jobs, (i) => settle[i](), 2).catch(() => {});
-  for (const [i, job] of jobs.entries()) {
-    settle[i]();
-    unpacking.delete(job.store);
-  }
+}
+
+/** The job each ahead thread is on: its settle. */
+const current = new Map<Worker, () => void>();
+
+function give(worker: Worker, { job, done }: { job: Job; done: () => void }): void {
+  current.set(worker, done);
+  worker.postMessage({ id: 0, job });
+}
+
+/**
+ * Packages an install needs that are still waiting to be unpacked ahead: the install takes them
+ * (on its own threads), and those it does not need are no longer unpacked.
+ */
+function takeQueued(): void {
+  for (const { done } of queued.splice(0)) done();
 }
 
 function npm(args: string[], cwd: string): Promise<void> {
