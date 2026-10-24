@@ -1,4 +1,4 @@
-# ADR NNNN: The checks phase, and what comes after it
+# ADR 0036: The checks phase, and what comes after it
 
 - Status: Accepted
 - Date: 2026-10-24
