@@ -410,14 +410,22 @@ export const liveRuntimes = new Set<globalThis.Worker>();
  * So once a program loads worker_threads, a few runtime workers start in advance; a new thread takes
  * one of them, which only needs its init message.
  *
- * A spare evaluates the runtime only when a thread takes it, on its own thread (SPARE_BANNER in
+ * A spare loads the runtime only when a thread takes it, on its own thread (SPARE_SCRIPT in
  * bundle.ts), or once it is woken: when a process loads node:wasi, which napi-rs WebAssembly builds
- * do before they start their threads, so that those find their runtimes ready.
+ * do before they start their threads, so that those find their runtimes ready (AWAKE_AHEAD of them).
+ *
+ * A parent's first messages to a new worker wait until the parent's thread has handled the worker's
+ * start: Chromium holds them until the parent runs a task after the worker's script has run. So a
+ * spare is no use to a parent that blocks or stays busy right after starting it; the page has the
+ * program's runtime start its spares before its init message (the 'spares' message), and a program
+ * that loads worker_threads starts them then.
  */
-const warm: globalThis.Worker[] = [];
+const warm: { worker: globalThis.Worker; woken: boolean }[] = [];
 let warmTarget = 0;
 let warmBase = '';
 let awake = false;
+/** How many woken spares a process keeps ready once it is awake (see wakeSpares). */
+const AWAKE_AHEAD = 2;
 
 /** The worker name that makes a runtime a spare, and the message that wakes one (bundle.ts). */
 const SPARE_NAME = 'sandburg-spare';
@@ -429,25 +437,53 @@ export function warmRuntimes(base: string, count: number): void {
   refill();
 }
 
-/** Wakes the spares, and those that replace them: they evaluate the runtime now. */
+/**
+ * Wakes spares: they evaluate the runtime now. Not all at once: each evaluation is ~150 ms of CPU,
+ * which the program's own start competes with; AWAKE_AHEAD are kept woken, the next one woken as
+ * one is taken.
+ */
 export function wakeSpares(): void {
   if (awake) return;
   awake = true;
-  for (const w of warm) w.postMessage({ type: SPARE_WAKE });
+  wakeAhead();
+}
+
+function wakeAhead(): void {
+  if (!awake) return;
+  let woken = warm.filter((s) => s.woken).length;
+  for (const s of warm) {
+    if (woken >= AWAKE_AHEAD) break;
+    if (s.woken) continue;
+    s.woken = true;
+    s.worker.postMessage({ type: SPARE_WAKE });
+    woken++;
+  }
 }
 
 function refill(): void {
   // A worker created earlier starts on its own, even if this thread is busy or blocked by then; it
   // takes its init message whenever it is ready.
   while (warm.length < warmTarget) {
-    const w = new globalThis.Worker(`${warmBase}/node-worker.js`, { name: SPARE_NAME });
-    if (awake) w.postMessage({ type: SPARE_WAKE });
-    warm.push(w);
+    const spare = { worker: new globalThis.Worker(`${warmBase}/node-spare.js`, { name: SPARE_NAME }), woken: false };
+    // One whose script failed to load is dropped: a thread gets a new runtime instead (startRuntime).
+    spare.worker.onerror = (e) => {
+      e.preventDefault?.();
+      const i = warm.indexOf(spare);
+      if (i >= 0) warm.splice(i, 1);
+    };
+    warm.push(spare);
   }
+  wakeAhead();
+}
+
+/** A spare for a new thread: a woken one first. */
+function takeSpare(): globalThis.Worker | undefined {
+  const i = warm.findIndex((s) => s.woken);
+  return warm.splice(i < 0 ? 0 : i, 1)[0]?.worker;
 }
 
 export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: { type: string; [k: string]: unknown }) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
-  const worker = warm.shift() ?? new globalThis.Worker(`${host.base()}/node-worker.js`);
+  const worker = takeSpare() ?? new globalThis.Worker(`${host.base()}/node-worker.js`);
   if (warmTarget) queueMicrotask(refill);
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data as { type: string; [k: string]: unknown };

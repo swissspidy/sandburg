@@ -76,11 +76,11 @@ test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare run
     const out = await h.runInstalled(main, { files, bundled: [] }, '/app/main.js');
     assert.equal(out.fatal, null);
     assert.equal(out.stdout, 'up\n');
-    return h.asked.filter((a) => a === 'http /__sandburg/node-worker.js').length;
+    return h.asked.filter((a) => a === 'http /__sandburg/node-spare.js').length;
   };
   const other = await spares('@demo/tool/worker.mjs');
   const wasi = await spares('@demo/tool-wasm32-wasi/wasi-worker.mjs');
-  // The program's runtime and its spares (and their replacements) are the same in both runs.
+  // The program's spares (and their replacements) are the same in both runs.
   const warm = await h.page.evaluate(() => Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4)));
-  assert.equal(other - wasi, warm, `runtimes loaded: ${other} with another thread, ${wasi} with a WebAssembly thread`);
+  assert.equal(other - wasi, warm, `spares started: ${other} with another thread, ${wasi} with a WebAssembly thread`);
 });

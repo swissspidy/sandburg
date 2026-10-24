@@ -4,7 +4,7 @@
  * HTTP server (ADR 0006).
  */
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
-import type { FileTree, InstallReport } from '../../types.ts';
+import type { FileTree, Framework, InstallReport } from '../../types.ts';
 import { connectServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort } from './process.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
@@ -142,6 +142,23 @@ async function sha256(file: string | { base64: string }): Promise<string> {
 }
 
 /**
+ * Dev servers that start WebAssembly threads (Vite 8's rolldown and oxc, Astro's compiler: napi-rs
+ * builds) as they start: their runtime starts its spare runtimes (threads.ts) while it waits for its
+ * init message, from the mount. A parent's first messages to a new worker wait until the parent's
+ * thread has handled the worker's start (Chromium holds them until the parent runs a task after the
+ * worker's script has run), and a runtime running its program is busy for hundreds of milliseconds
+ * at a time: spares it started then took their wake-up, and their first thread's init, 200-500 ms
+ * after they were sent. Started at the mount, they are ready when the program starts its threads.
+ * Not for other apps: four spares, however idle, made a warm node-express run 4% slower (n=8).
+ */
+const SPARES_AT_MOUNT = new Set<Framework>(['vite', 'astro', 'sveltekit', 'nuxt', 'solid-start', 'react-router', 'angular']);
+
+/** Whether the app's runtime starts its spares at the mount: those dev servers, and projects of several packages (a client and a server), which run them as child processes. */
+function startsThreads(tree: FileTree, framework: Framework): boolean {
+  return SPARES_AT_MOUNT.has(framework) || Object.keys(tree).some((path) => path !== 'package.json' && path.endsWith('/package.json') && !path.includes('node_modules/'));
+}
+
+/**
  * The runtime worker for the next process, started as the host page loads: it loads and evaluates
  * the runtime (~200 ms) while the run mounts the project and the host installs it, and waits for its
  * init message. One that failed to load is not used: the process starts its own and reports its error.
@@ -201,6 +218,7 @@ export function createAdapter(): RuntimeAdapter {
     name: 'node',
 
     async mount(tree: FileTree, ctx: AdapterContext) {
+      if (startsThreads(tree, ctx.framework)) prepared?.worker.postMessage({ type: 'spares' });
       files = { ...tree };
       if (ctx.framework === 'static') files[START] = STATIC_SERVER;
       else if (!ctx.packageJson) throw new AdapterError('APP', 'package.json is missing or invalid');

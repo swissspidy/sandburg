@@ -452,6 +452,49 @@ test('Request and Response keep Cookie, Referer and Set-Cookie headers, as in No
   assert.equal(body, 'body hi');
 });
 
+// A parent's first messages to a new worker wait until the parent's thread has handled the worker's
+// start, so spares a program starts as it runs are not ready while it blocks (they were not, 200-500 ms
+// into a Vite start). The page has the runtime start them as a run mounts, before its init message.
+const blockedAtOnce = {
+  'main.js': `
+    const { Worker } = require('worker_threads');
+    const shared = new Int32Array(new SharedArrayBuffer(8));
+    new Worker('const s = require("worker_threads").workerData; Atomics.store(s, 0, 42); Atomics.notify(s, 0);', { eval: true, workerData: shared });
+    const r = Atomics.wait(shared, 0, 0, 2000);
+    console.log(r === 'timed-out' ? 'timed out' : 'started', Atomics.load(shared, 0));
+    process.exit(0);`,
+};
+
+test('worker_threads: a thread started as the program starts, which then blocks, runs on a spare started before init', async () => {
+  const out = await h.run(blockedAtOnce, '/app/main.js', [], undefined, { spares: 500 });
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'started 42\n');
+});
+
+test('worker_threads: spares whose script does not load are not used; threads get new runtimes', async () => {
+  h.noSpareScript = true;
+  try {
+    const out = await h.run(
+      {
+        'main.js': `
+          const { Worker } = require('worker_threads');
+          setTimeout(() => {
+            const w = new Worker("require('worker_threads').parentPort.postMessage('hi')", { eval: true });
+            w.on('message', (m) => { console.log(m); process.exit(0); });
+          }, 500);`,
+      },
+      '/app/main.js',
+      [],
+      undefined,
+      { spares: 300 },
+    );
+    assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+    assert.equal(out.stdout, 'hi\n');
+  } finally {
+    h.noSpareScript = false;
+  }
+});
+
 test('worker_threads: a thread started while its parent is blocked runs (WebAssembly threads do this)', async () => {
   const out = await h.run(
     {

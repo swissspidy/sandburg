@@ -78,6 +78,8 @@ export type ToWorker =
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
   | { type: 'run'; main: string; argv?: string[]; preload?: string[] }
+  /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
+  | { type: 'spares' }
   /** The parent closed this child process's IPC channel. */
   | { type: 'disconnect' }
   /** A net connection between runtimes (see netMessage). */
@@ -1548,6 +1550,9 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
     init(msg);
   }
   else if (msg.type === 'run') run(msg);
+  else if (msg.type === 'spares') {
+    if (!proc) warmRuntimes(location.pathname.replace(/\/node-worker\.js$/, ''), WARM_RUNTIMES);
+  }
   else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) nestedPorts.get(msg.port)!.postMessage(msg, msg.body ? [msg.body] : []);
   else if (msg.type === 'request') request(msg);
   else if (msg.type === 'ws-open' && !servers.has(msg.port) && nestedPorts.has(msg.port)) {

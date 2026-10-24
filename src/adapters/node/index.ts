@@ -5,7 +5,7 @@
  * lazily; the app itself, Next.js included, runs in a Web Worker.
  */
 import { source } from '../../sources.ts';
-import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SQLITE_WASM } from '../../node-runtime/bundle.ts';
+import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SPARE_SCRIPT, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { RUNTIME_LIBS, type RuntimeLib } from '../../node-runtime/libs.ts';
 import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-wasm-bundle.ts';
 import { createHash, randomBytes } from 'node:crypto';
@@ -520,6 +520,10 @@ async function resolveBin(installDir: string, name: string): Promise<string | nu
 export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/node-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleNodeRuntime() };
+  }
+  // A spare runtime, which loads node-worker.js when it is used (threads.ts).
+  if (req.path === '/__sandburg/node-spare.js') {
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: SPARE_SCRIPT };
   }
   // The polyfills a runtime loads when a program first needs them (RUNTIME_LIBS).
   const lib = /^\/__sandburg\/node-([a-z]+)\.js$/.exec(req.path);
