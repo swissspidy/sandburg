@@ -1,4 +1,4 @@
-# ADR NNNN: npm's resolution, read ahead; unpacking and side installs as it goes
+# ADR 0035: npm's resolution, read ahead; unpacking and side installs as it goes
 
 - Status: Accepted
 - Date: 2026-10-24
