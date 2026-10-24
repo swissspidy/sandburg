@@ -11,6 +11,7 @@
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost, type ThreadInit } from './threads.ts';
+import type { ToWorker } from './worker.ts';
 import { timers } from './builtins/process.ts';
 import { runScript } from './shell.ts';
 
@@ -297,14 +298,14 @@ export function createChildProcess(host: ChildProcessHost) {
         else timers.setTimeout(() => this.emit('error', err), 0);
         return false;
       }
-      this.worker.postMessage({ type: 'message', data: message });
+      this.worker.postMessage({ type: 'message', data: message } satisfies ToWorker);
       if (cb) timers.setTimeout(() => cb(null), 0);
       return true;
     }
     disconnect() {
       if (!this.connected) return;
       this.connected = false;
-      this.worker?.postMessage({ type: 'disconnect' });
+      this.worker?.postMessage({ type: 'disconnect' } satisfies ToWorker);
       timers.setTimeout(() => this.emit('disconnect'), 0);
     }
     ref() {

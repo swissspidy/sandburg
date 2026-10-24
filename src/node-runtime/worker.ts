@@ -1219,7 +1219,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,

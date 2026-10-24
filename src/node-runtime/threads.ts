@@ -13,6 +13,7 @@ import { FsError, Vfs, norm, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
 import type { ToParent, VfsCall } from './messages.ts';
+import type { ToWorker } from './worker.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
 export interface ThreadInit {
@@ -379,7 +380,7 @@ export function serveVfsCall(vfs: Vfs, msg: VfsCall): void {
 export interface ThreadHost {
   vfs: () => Vfs;
   /** The init message for a child runtime (install key, base, cwd). */
-  childInit(thread: ThreadInit): Record<string, unknown>;
+  childInit(thread: ThreadInit): Extract<ToWorker, { type: 'init' }>;
   /** Output of a child thread (it goes to this thread's stdout/stderr, as in Node). */
   write(stream: 'stdout' | 'stderr', text: string): void;
   cwd(): string;
@@ -496,7 +497,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   const message = host.childInit({ ...init, snapshot: projectSnapshot(host.vfs(), host.root()) });
   // The child's own ports to the page's compiler and to the file channel, if there are (worker.ts);
   // last, after the ports of `transfer` (their mailboxes go by position).
-  const ports = [message.compilePort, (message.filesChannel as { port: MessagePort } | null | undefined)?.port].filter((p): p is MessagePort => !!p);
+  const ports = [message.compilePort, message.filesChannel?.port].filter((p): p is MessagePort => !!p);
   worker.postMessage(message, [...transfer, ...ports]);
   liveRuntimes.add(worker);
   const terminate = worker.terminate.bind(worker);
@@ -595,7 +596,7 @@ export function createWorkerThreads(host: ThreadHost) {
 
     postMessage(value: unknown, transferList?: Transferable[] | { transfer?: Transferable[] }) {
       const transfer = Array.isArray(transferList) ? transferList : (transferList?.transfer ?? []);
-      this.worker.postMessage({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) }, transfer);
+      this.worker.postMessage({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) } satisfies ToWorker, transfer);
     }
 
     terminate(): Promise<number> {
