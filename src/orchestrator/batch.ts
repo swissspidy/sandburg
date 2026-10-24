@@ -6,6 +6,7 @@ import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { FailureClass, Project, RunResult } from '../types.ts';
 import type { RunOptions, Session } from './session.ts';
+import { availableMemory } from './memory.ts';
 
 export interface BatchItem {
   /** Directory, JSON file tree, "snapshot:<id>", or an in-memory project. */
@@ -66,7 +67,22 @@ export interface BatchOptions extends RunOptions {
    * are in the order given either way.
    */
   longestFirst?: boolean;
+  /**
+   * Bytes of memory that must be available (availableMemory) to open another app while others are
+   * open (default: MEMORY_RESERVE); 0 turns this off. Short of it, the batch waits for an app to end,
+   * or for memory to free up, so that a batch with more tabs than the machine can hold does not run
+   * into the out-of-memory killer (which takes the browser and every open app with it).
+   */
+  memoryReserve?: number;
+  /** Bytes of memory available (default: availableMemory). For tests. */
+  availableMemory?: () => number;
 }
+
+/**
+ * The memory a batch keeps free before it opens another app: about one app's peak (a Next.js run's
+ * renderer peaks at ~1 GB, a Vite run's at ~0.5 GB) and the host's share of an install.
+ */
+export const MEMORY_RESERVE = 1.5 * 2 ** 30;
 
 /** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
 export async function discoverProjects(dir: string): Promise<BatchItem[]> {
@@ -106,8 +122,24 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const wake: (() => void)[] = [];
   const free = () => wake.splice(0).forEach((w) => w());
   const runs: Promise<void>[] = [];
+  const reserve = options.memoryReserve ?? MEMORY_RESERVE;
+  const memory = options.availableMemory ?? availableMemory;
+  // With an app open, the next opens only when there is memory for it; with none, it always opens.
+  const short = () => reserve > 0 && open > 0 && memory() < reserve;
+  let waitedForMemory = false;
   while (next < items.length) {
-    while (starting >= parallel || open >= 2 * parallel) await new Promise<void>((r) => wake.push(r));
+    for (;;) {
+      if (starting >= parallel || open >= 2 * parallel) await new Promise<void>((r) => wake.push(r));
+      else if (short()) {
+        if (!waitedForMemory) options.log?.(`waiting for memory to open the next app (${Math.round(memory() / 2 ** 20)} MB available, ${Math.round(reserve / 2 ** 20)} MB needed)`);
+        waitedForMemory = true;
+        // An app that ends frees its memory, but so may the others as they go on: look again in a while.
+        await new Promise<void>((r) => {
+          const timer = setTimeout(r, MEMORY_POLL_MS);
+          wake.push(() => (clearTimeout(timer), r()));
+        });
+      } else break;
+    }
     const index = order[next++];
     const item = items[index];
     starting++;
@@ -207,6 +239,9 @@ async function longestFirst(items: BatchItem[], batchDir: string, batches = HIST
   const estimate = items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined) ?? Infinity);
   return items.map((_, i) => i).sort((a, b) => estimate[b] - estimate[a] || a - b);
 }
+/** How often a batch short of memory looks again. */
+const MEMORY_POLL_MS = 500;
+
 /** How many of the latest batch summaries longestFirst reads. */
 const HISTORY_BATCHES = 20;
 

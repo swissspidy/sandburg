@@ -123,3 +123,31 @@ test('a batch starts the projects that took longest in earlier batches first, ne
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('a batch short of memory opens the next app only when one has ended, and never waits with none open', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    const started: string[] = [];
+    let maxOpen = 0;
+    const lines: string[] = [];
+    const { summary } = await runBatch(
+      timedSession({}, started, (open) => (maxOpen = Math.max(maxOpen, open))),
+      ['a', 'b', 'c', 'd'].map((p) => ({ project: p })),
+      // Never enough memory: one app at a time, though four could open.
+      { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => 0, log: (l) => lines.push(l) },
+    );
+    assert.equal(summary.totals.passed, 4);
+    assert.equal(maxOpen, 1);
+    assert.equal(lines.filter((l) => l.startsWith('waiting for memory')).length, 1);
+
+    maxOpen = 0;
+    await runBatch(
+      timedSession({}, [], (open) => (maxOpen = Math.max(maxOpen, open))),
+      ['a', 'b', 'c', 'd'].map((p) => ({ project: p })),
+      { parallel: 4, prewarm: false, batchDir: dir, availableMemory: () => 64 * 2 ** 30 },
+    );
+    assert.equal(maxOpen, 4, 'enough memory: as many as parallel allows');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
