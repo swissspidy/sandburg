@@ -4,6 +4,7 @@
 import { randomBytes } from 'node:crypto';
 import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { adapterNames } from '../adapters.ts';
 import type { FailureClass, Project, RunResult } from '../types.ts';
 import type { RunOptions, Session } from './session.ts';
 import { availableMemory } from './memory.ts';
@@ -108,7 +109,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const startedAt = new Date();
   const t0 = performance.now();
   const results: RunResult[] = new Array(items.length);
-  const order = options.longestFirst === false ? items.map((_, i) => i) : await longestFirst(items, options.batchDir ?? '.sandburg/batches');
+  const order = options.longestFirst === false ? items.map((_, i) => i) : await longestFirst(items, options.batchDir ?? '.sandburg/batches', !!options.nodeRuntime);
   let next = 0;
   // The first apps of a stack would otherwise each install and seed it, several tabs at once.
   if (options.prewarm !== false && !options.nodeRuntime) await session.prewarm({ runtime: options.runtime, log: options.log });
@@ -221,7 +222,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
  * assertion) or runs long, started last, keeps the batch open with the cores idle. Started first, it
  * overlaps the others. Only the order changes, never what a run does.
  */
-async function longestFirst(items: BatchItem[], batchDir: string, batches = HISTORY_BATCHES): Promise<number[]> {
+async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<number[]> {
   const took = new Map<string, number>();
   const dir = resolve(batchDir);
   // Batch ids start with their start time in base 36: the newest first.
@@ -233,6 +234,8 @@ async function longestFirst(items: BatchItem[], batchDir: string, batches = HIST
       () => null,
     );
     for (const run of Array.isArray(summary?.runs) ? summary.runs : []) {
+      // Runs in the browser, or in an out-of-browser runtime (compare's reference), as this batch's.
+      if (adapterNames.includes(run?.runtime) === outOfBrowser) continue;
       if (typeof run?.project === 'string' && Number.isFinite(run.totalMs) && !took.has(run.project)) took.set(run.project, run.totalMs);
     }
   }

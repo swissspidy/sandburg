@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runBatch, type BatchItem } from '../../src/orchestrator/batch.ts';
@@ -147,6 +147,24 @@ test('a batch short of memory opens the next app only when one has ended, and ne
       { parallel: 4, prewarm: false, batchDir: dir, availableMemory: () => 64 * 2 ** 30 },
     );
     assert.equal(maxOpen, 4, 'enough memory: as many as parallel allows');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a batch in the browser does not order its starts by an out-of-browser runtime's runs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    // compare's reference batch (the Docker runtime) found "a" slow.
+    await mkdir(join(dir, 'b-zzzzzzzz-000000'), { recursive: true });
+    const runs = [{ project: resolve('a'), runtime: 'docker', totalMs: 60_000 }];
+    await writeFile(join(dir, 'b-zzzzzzzz-000000', 'summary.json'), JSON.stringify({ runs }));
+    const started: string[] = [];
+    await runBatch(timedSession({ a: 1, b: 20 }, started), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(started, ['a', 'b'], 'no browser history: the order given');
+    const again: string[] = [];
+    await runBatch(timedSession({ a: 1, b: 20 }, again), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(again, ['b', 'a']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
