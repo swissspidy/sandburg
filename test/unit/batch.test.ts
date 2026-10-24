@@ -80,16 +80,17 @@ test('a run that rejects while the batch waits for a slot rejects the batch (no 
   }
 });
 
-/** A session whose runs take `ms[project]` and record the order they start in. */
-function timedSession(ms: Record<string, number>, started: string[], onOpen?: (open: number) => void) {
+/** A session whose runs report `times[project]` (ms in their checks, and before) and record the order they start in. */
+function timedSession(times: Record<string, { checks: number; active?: number }>, started: string[], onOpen?: (open: number) => void) {
   let open = 0;
   return {
     async run(project: string, options: RunOptions) {
       started.push(project);
       onOpen?.(++open);
       options.onPhase?.('checks');
-      await sleep(ms[project] ?? 1);
+      await sleep(1);
       open--;
+      const { checks = 1, active = 1 } = times[project] ?? {};
       return {
         runId: `r-${project}`,
         status: 'passed',
@@ -97,28 +98,30 @@ function timedSession(ms: Record<string, number>, started: string[], onOpen?: (o
         project: { name: project, path: resolve(project), snapshotId: project },
         runtime: { name: 'node' },
         network: { cacheHits: 0, cacheMisses: 0, blocked: [] },
-        timings: { totalMs: ms[project] ?? 1, checksMs: ms[project] ?? 1 },
+        timings: { totalMs: active + checks, checksMs: checks },
       } as unknown as RunResult;
     },
   } as unknown as Session;
 }
 
-test('a batch starts the projects whose checks took longest in earlier batches first, new ones before them', async () => {
+test('a batch starts the projects whose checks took longest in earlier batches first, new ones before them, then the longest runs', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
   try {
-    const ms = { a: 5, b: 30, c: 15, d: 1 };
+    // b and c wait in failing assertions; d and e pass (checks under LONG_CHECKS_MS), d runs longer.
+    const times = { a: { checks: 5_000 }, b: { checks: 30_000 }, c: { checks: 15_000 }, d: { checks: 900, active: 9_000 }, e: { checks: 1_200, active: 2_000 } };
+    const items = (names: string[]) => names.map((p) => ({ project: p }));
     const first: string[] = [];
-    await runBatch(timedSession(ms, first), ['a', 'b', 'c', 'd'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
-    assert.deepEqual(first, ['a', 'b', 'c', 'd'], 'no history: the order given');
+    await runBatch(timedSession(times, first), items(['e', 'a', 'b', 'c', 'd']), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(first, ['e', 'a', 'b', 'c', 'd'], 'no history: the order given');
 
     const second: string[] = [];
-    const { results } = await runBatch(timedSession(ms, second), ['a', 'new', 'b', 'c', 'd'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
-    assert.deepEqual(second, ['new', 'b', 'c', 'a', 'd']);
-    assert.deepEqual(results.map((r) => r.project.name), ['a', 'new', 'b', 'c', 'd'], 'results in the order given');
+    const { results } = await runBatch(timedSession(times, second), items(['e', 'a', 'new', 'b', 'c', 'd']), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(second, ['new', 'b', 'c', 'a', 'd', 'e']);
+    assert.deepEqual(results.map((r) => r.project.name), ['e', 'a', 'new', 'b', 'c', 'd'], 'results in the order given');
 
     const kept: string[] = [];
-    await runBatch(timedSession(ms, kept), ['a', 'b', 'c', 'd'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir, longestFirst: false });
-    assert.deepEqual(kept, ['a', 'b', 'c', 'd']);
+    await runBatch(timedSession(times, kept), items(['e', 'a', 'b', 'c', 'd']), { parallel: 1, prewarm: false, batchDir: dir, longestFirst: false });
+    assert.deepEqual(kept, ['e', 'a', 'b', 'c', 'd']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -160,28 +163,30 @@ test("a batch in the browser does not order its starts by an out-of-browser runt
     const runs = [{ project: resolve('a'), runtime: 'docker', totalMs: 60_000, checksMs: 50_000 }];
     await writeFile(join(dir, 'b-zzzzzzzz-000000', 'summary.json'), JSON.stringify({ runs }));
     const started: string[] = [];
-    await runBatch(timedSession({ a: 1, b: 20 }, started), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    const times = { a: { checks: 1 }, b: { checks: 20_000 } };
+    await runBatch(timedSession(times, started), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
     assert.deepEqual(started, ['a', 'b'], 'no browser history: the order given');
     const again: string[] = [];
-    await runBatch(timedSession({ a: 1, b: 20 }, again), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    await runBatch(timedSession(times, again), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
     assert.deepEqual(again, ['b', 'a']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test('a batch orders its starts by the time earlier runs spent in their checks, not by their whole time', async () => {
+test('a batch orders its starts by the time earlier runs spent in their checks before their whole time', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
   try {
     await mkdir(join(dir, 'b-zzzzzzzz-000000'), { recursive: true });
     const runs = [
       { project: resolve('heavy'), runtime: 'node', totalMs: 60_000, checksMs: 1_000 },
       { project: resolve('waits'), runtime: 'node', totalMs: 20_000, checksMs: 15_000 },
+      { project: resolve('light'), runtime: 'node', totalMs: 5_000, checksMs: 1_000 },
     ];
     await writeFile(join(dir, 'b-zzzzzzzz-000000', 'summary.json'), JSON.stringify({ runs }));
     const started: string[] = [];
-    await runBatch(timedSession({}, started), ['heavy', 'waits'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
-    assert.deepEqual(started, ['waits', 'heavy']);
+    await runBatch(timedSession({}, started), ['light', 'heavy', 'waits'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(started, ['waits', 'heavy', 'light']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

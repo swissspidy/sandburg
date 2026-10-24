@@ -67,9 +67,9 @@ export interface BatchOptions extends RunOptions {
   /** Progress lines (warming up). */
   log?: (line: string) => void;
   /**
-   * Start the projects whose checks took longest in earlier batches first (the summaries in
-   * batchDir), and those without an earlier run before them (default: true). False: in the order
-   * given. Results are in the order given either way.
+   * Start the projects whose checks took longest in earlier batches first, then those that ran
+   * longest (the summaries in batchDir), and those without an earlier run before them (default:
+   * true; see longestFirst). False: in the order given. Results are in the order given either way.
    */
   longestFirst?: boolean;
   /**
@@ -231,15 +231,17 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
 }
 
 /**
- * The items' indexes, those whose checks took longest in the latest batches first, and those with no
- * earlier run (a new project, which may install first) before all of them; otherwise in the order
- * given. A batch's wall time is its last app's end: an app that waits long in its checks (a failing
- * assertion waits 5-15 s) started last keeps the batch open with the cores idle; started first, it
- * waits while the others run. (Ordering by the whole run's time gained as much, but started the
+ * The items' indexes in the order to start them, from the latest batches' summaries: first those
+ * with no checks time there (a new project, which may install first; one that failed before its
+ * checks, which waits out a grace period), then those whose checks took LONG_CHECKS_MS or more,
+ * longest first, then the others by the time before their checks, longest first; ties in the order
+ * given. A batch's wall time is its last app's end: an app that waits in its checks (a failing
+ * assertion waits 5-15 s) or runs long, started last, keeps the batch open while the cores have
+ * nothing else to run. (Ordering by the whole run's time alone gained as much, but started the
  * heavy apps side by side: 16% more peak memory.) Only the order changes, never what a run does.
  */
 async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<number[]> {
-  const took = new Map<string, number>();
+  const took = new Map<string, { checks: number; active: number }>();
   const dir = resolve(batchDir);
   // Batch ids start with their start time in base 36: the newest first.
   const ids = (await readdir(dir).catch(() => [] as string[])).filter((id) => /^b-[0-9a-z]+-[0-9a-f]+$/.test(id));
@@ -252,12 +254,19 @@ async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: 
     for (const run of Array.isArray(summary?.runs) ? summary.runs : []) {
       // Runs in the browser, or in an out-of-browser runtime (compare's reference), as this batch's.
       if (adapterNames.includes(run?.runtime) === outOfBrowser) continue;
-      if (typeof run?.project === 'string' && Number.isFinite(run.checksMs) && !took.has(run.project)) took.set(run.project, run.checksMs!);
+      if (typeof run?.project === 'string' && Number.isFinite(run.checksMs) && Number.isFinite(run.totalMs) && !took.has(run.project))
+        took.set(run.project, { checks: run.checksMs!, active: run.totalMs - run.checksMs! });
     }
   }
-  const estimate = items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined) ?? Infinity);
-  return items.map((_, i) => i).sort((a, b) => estimate[b] - estimate[a] || a - b);
+  const known = items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined));
+  // Checks shorter than LONG_CHECKS_MS (a passing app's) count as none: then the longest run first.
+  const checks = known.map((k) => (k ? (k.checks >= LONG_CHECKS_MS ? k.checks : 0) : Infinity));
+  const active = known.map((k) => k?.active ?? 0);
+  return items.map((_, i) => i).sort((a, b) => checks[b] - checks[a] || active[b] - active[a] || a - b);
 }
+/** Checks that take longer wait on a failing assertion (settlingExpect waits 5 s first); a passing app's take 0.5-2 s. */
+const LONG_CHECKS_MS = 3000;
+
 /** How often a batch short of memory looks again. */
 const MEMORY_POLL_MS = 500;
 
