@@ -26,6 +26,8 @@ self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim(
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'sandburg-port' && event.ports[0]) {
     port = event.ports[0];
+    // The app is about to load: every app page loads the shim first thing (a script that blocks parsing).
+    if (!hooks.fetch) void runtimeScript(new Request(WS_SHIM), WS_SHIM);
     for (const resolve of waiting.splice(0)) resolve(port);
   }
 });
@@ -47,7 +49,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
   if (hooks.fetch && hooks.fetch(event, url)) return;
-  if (url.pathname === '/__sandburg/node-worker.js' || RUNTIME_LIB.test(url.pathname)) {
+  if (url.pathname === '/__sandburg/node-worker.js' || url.pathname === WS_SHIM || RUNTIME_LIB.test(url.pathname)) {
     event.respondWith(runtimeScript(event.request, url.pathname));
     return;
   }
@@ -56,6 +58,9 @@ self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
   event.respondWith(forward(event.request, url));
 });
+
+/** The WebSocket shim each app page loads (SHIM below): fetched as the app starts, then answered from memory. */
+const WS_SHIM = '/__sandburg/ws-shim.js';
 
 /** The polyfills a runtime loads when a program first needs them (RUNTIME_LIBS in node-runtime/libs.ts). */
 const RUNTIME_LIB = /^\/__sandburg\/node-[a-z]+\.js$/;
@@ -87,7 +92,7 @@ async function runtimeScript(request, path) {
 }
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
-const SHIM = (hooks.shim ?? '') + '<script src="/__sandburg/ws-shim.js"></script>';
+const SHIM = (hooks.shim ?? '') + `<script src="${WS_SHIM}"></script>`;
 
 /**
  * Inserts the WebSocket shim (ws-shim.js) into an HTML page, first thing in <head>, so it runs
