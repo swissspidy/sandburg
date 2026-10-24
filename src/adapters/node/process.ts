@@ -3,7 +3,7 @@
  * Worker, as the host page sees it. Used by the node adapter (the app is the
  * process) and by the esbuild adapter (the app's backend is the process).
  */
-import { AdapterError } from '../../host/types.ts';
+import { AdapterError, type Activity } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
 import type { FromWorker } from '../../node-runtime/messages.ts';
 import type { BridgedRequest } from '../sw-bridge.ts';
@@ -107,6 +107,9 @@ export class NodeProcess {
   private ready = false;
   private waiters = new Set<() => void>();
   private pending = new Map<number, MessagePort>();
+  /** When each pending request was sent (see activity()). */
+  private sent = new Map<number, number>();
+  private lastRequest = performance.now();
   private sockets = new Map<number, MessagePort>();
   private nextId = 1;
   private label: string;
@@ -225,7 +228,8 @@ export class NodeProcess {
     }
     const id = this.nextId++;
     this.pending.set(id, reply);
-    this.lastActivity = performance.now();
+    this.lastActivity = this.lastRequest = performance.now();
+    this.sent.set(id, this.lastRequest);
     // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
     const headers: [string, string][] = request.headers
       .filter(([k]) => !/^(cookie|accept-encoding|host)$/i.test(k))
@@ -285,8 +289,16 @@ export class NodeProcess {
    * runtime last said anything (a response, a log line). Checks stop waiting for an assertion that
    * keeps failing once the runtime is idle: nothing is still coming.
    */
-  activity(): { inflight: number; idleMs: number } {
-    return { inflight: this.pending.size, idleMs: Math.round(performance.now() - this.lastActivity) };
+  activity(): Activity {
+    const now = performance.now();
+    let newestMs = Infinity;
+    for (const t of this.sent.values()) newestMs = Math.min(newestMs, now - t);
+    return {
+      inflight: this.pending.size,
+      idleMs: Math.round(now - this.lastActivity),
+      sinceRequestMs: Math.round(now - this.lastRequest),
+      newestInflightMs: this.pending.size ? Math.round(newestMs) : null,
+    };
   }
 
   private onMessage(m: FromWorker, opts: NodeProcessOptions) {
@@ -369,10 +381,12 @@ export class NodeProcess {
         this.pending.get(m.id)?.postMessage({ type: 'end' });
         this.pending.get(m.id)?.close();
         this.pending.delete(m.id);
+        this.sent.delete(m.id);
         break;
       case 'response-error':
         this.pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
         this.pending.delete(m.id);
+        this.sent.delete(m.id);
         break;
     }
     for (const w of this.waiters) w();

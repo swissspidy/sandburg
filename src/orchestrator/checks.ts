@@ -59,6 +59,12 @@ export interface ChecksInput {
   network: () => { failed: NetworkEntry[]; blocked: NetworkEntry[] };
   /** The document the app frame shows (its last navigation), if it was seen. */
   appDocument?: () => { url: string; status: number; csp?: boolean } | null;
+  /**
+   * Resolves once the app has settled after it rendered (its servers had no request for a moment:
+   * the client's modules are in, and an app that hydrates has hydrated), or has given up waiting.
+   * The functional checks start then.
+   */
+  appSettled?: () => Promise<unknown>;
   /** The sandbox's origin, if the host server serves it: axe-core (AXE_PATH) and the page checks' runtime come from there. */
   hostOrigin?: string;
 }
@@ -82,6 +88,9 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   // Checks that run in the page: their runtime loads meanwhile too.
   const pageChecksLoaded = isPageChecks(input.checks) ? loadPageChecksRuntime(page, input.hostOrigin && input.hostOrigin + PAGE_CHECKS_PATH) : undefined;
   pageChecksLoaded?.catch(() => {}); // the checks report it
+  // An app that hydrates is waited for meanwhile: a click before it hydrates is lost, and a check
+  // that retries it (toPass) waits out its inner assertion's timeout first.
+  const settled = input.appSettled?.().catch(() => {});
   results.push(
     ...(await Promise.all([
       timed('screenshot', 'screenshot', 'Screenshot', false, async () => {
@@ -98,6 +107,8 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
     ])),
   );
   results.push(await timed('axe', 'axe', 'axe-core accessibility scan', false, () => runAxe(app, axeLoaded)));
+
+  await settled;
 
   if (isPageChecks(input.checks)) {
     const started = performance.now();
