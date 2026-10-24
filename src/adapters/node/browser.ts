@@ -339,12 +339,12 @@ export function createAdapter(): RuntimeAdapter {
         if (devCache.waitFor) {
           // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment).
           const size = (t: typeof tree) => (t ? Object.values(t).reduce((n, f) => n + (typeof f === 'string' ? f.length : f.base64.length), 0) : -1);
-          // The same files as well: webpack writes each pack under a temporary name, then renames it.
+          // The same files as well: webpack writes each pack under a temporary name (<name>_), then renames it.
           const same = (a: typeof tree, b: typeof tree) => size(a) === size(b) && Object.keys(a ?? {}).sort().join('\0') === Object.keys(b ?? {}).sort().join('\0');
-          for (let i = 0; i < 40; i++) {
-            await new Promise((r) => setTimeout(r, 1000));
+          for (let i = 0; i < 160; i++) {
+            await new Promise((r) => setTimeout(r, 250));
             const next = await read();
-            const ready = next && devCache.waitFor.every((f) => f in next);
+            const ready = next && devCache.waitFor.every((f) => f in next) && !Object.keys(next).some((f) => f.endsWith('_'));
             const stable = ready && same(next, tree);
             tree = next;
             if (stable) break;
@@ -361,7 +361,7 @@ export function createAdapter(): RuntimeAdapter {
             ? Object.keys(digests).length !== Object.keys(tree!).length ||
               (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
             : Object.keys(devCache.files).length !== Object.keys(tree!).length || Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
-        if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: JSON.stringify(tree) }).catch(() => {});
+        if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: new Blob([JSON.stringify(tree)]) }).catch(() => {});
       }
       proc?.terminate();
       proc = null;

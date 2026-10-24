@@ -8,6 +8,8 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdir, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Session } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
@@ -21,6 +23,38 @@ before(async () => {
   await session.open();
 });
 after(() => session?.close());
+
+/** The stored Next.js seeds (webpack caches; ADR 0016): file → its paths. */
+async function nextSeeds(): Promise<Map<string, string[]>> {
+  const dir = fileURLToPath(new URL('../../.sandburg/dev-cache', import.meta.url));
+  const seeds = new Map<string, string[]>();
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!/^[0-9a-f]{24}\.json$/.test(name)) continue;
+    const paths = Object.keys(JSON.parse(await readFile(join(dir, name), 'utf8')) as object);
+    if (paths.some((p) => p.startsWith('.next/'))) seeds.set(join(dir, name), paths);
+  }
+  return seeds;
+}
+
+// First: later tests start from the seed it stores.
+test('the first Next.js app starts a seed run beside it, which stores all of webpack\'s cache', async () => {
+  for (const file of (await nextSeeds()).keys()) await Promise.all([rm(file), rm(`${file}.bin`, { force: true })]);
+  const own = new Session();
+  await own.open();
+  try {
+    const dir = fixture('next-app-router');
+    const result = await own.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+  } finally {
+    // Waits for the seed run.
+    await own.close();
+  }
+  const seeds = [...(await nextSeeds()).values()];
+  assert.equal(seeds.length, 1);
+  for (const compiler of ['client', 'server']) assert.ok(seeds[0].includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), seeds[0].join('\n'));
+  // Not while webpack was still writing a pack (under <name>_).
+  assert.ok(!seeds[0].some((p) => p.endsWith('_')), seeds[0].join('\n'));
+});
 
 test('a Next.js 16 app (App Router, API route) runs on the node runtime', async () => {
   const dir = fixture('next-app-router');
