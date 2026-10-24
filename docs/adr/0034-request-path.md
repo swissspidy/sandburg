@@ -1,4 +1,4 @@
-# ADR NNNN: The app's requests through the service worker
+# ADR 0034: The app's requests through the service worker
 
 - Status: Accepted
 - Date: 2026-10-24
