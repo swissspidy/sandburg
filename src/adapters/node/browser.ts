@@ -313,7 +313,8 @@ export function createAdapter(): RuntimeAdapter {
         });
         return target ? { proc: p, port: target } : null;
       });
-      p.run(main, argv);
+      // A cache restored from an earlier run is stored again only if the run changed it (see dispose).
+      p.run(main, argv, devCache?.digests && !devCache.waitFor ? devCache.dirs : undefined);
       // A dev script may start several servers (an API and the page's dev server): the page's is the app.
       port = shell ? await p.pagePort() : await p.listening();
       p.appPort = port;
@@ -334,8 +335,11 @@ export function createAdapter(): RuntimeAdapter {
     async dispose() {
       // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
       if (proc && devCache && !proc.failure) {
-        const read = () => Promise.race([proc!.readTree(devCache!.dirs), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
-        let tree = await read();
+        const timeout = () => new Promise<null>((r) => setTimeout(() => r(null), 5000));
+        const read = () => Promise.race([proc!.readTree(devCache!.dirs), timeout()]);
+        // A cache restored from an earlier run, whose directories the runtime tracked (see start), is
+        // read only if the run changed a file there: null when it did not (nothing to store).
+        let tree = devCache.digests && !devCache.waitFor ? await Promise.race([proc.readTree(devCache.dirs, undefined, true), timeout()]) : await read();
         if (devCache.waitFor) {
           // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment).
           const size = (t: typeof tree) => (t ? Object.values(t).reduce((n, f) => n + (typeof f === 'string' ? f.length : f.base64.length), 0) : -1);

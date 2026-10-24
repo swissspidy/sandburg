@@ -72,6 +72,56 @@ test('http server with AsyncLocalStorage across awaits, concurrent requests', as
   assert.ok(out.responses.every((r) => r.chunks === 2), 'responses stream chunk by chunk');
 });
 
+test('http: a response that ends in the task that started it comes in one message; others stream', async () => {
+  const big = 'x'.repeat((1 << 20) + 10);
+  const out = await h.run(
+    {
+      'server.js': `
+        const http = require('http');
+        http.createServer((req, res) => {
+          if (req.url === '/whole') return res.end('all at once');
+          if (req.url === '/pieces') { res.write('a'); res.write('b'); return res.end('c'); }
+          if (req.url === '/empty') { res.statusCode = 204; return res.end(); }
+          if (req.url === '/big') return res.end(${JSON.stringify(big)});
+          if (req.url === '/later') { res.write('first,'); return setTimeout(() => res.end('then'), 20); }
+          res.writeHead(200, { 'content-type': 'text/plain' });
+          res.flushHeaders();
+          setTimeout(() => res.end('after headers'), 20);
+        }).listen(3000);`,
+    },
+    '/app/server.js',
+    [{ url: '/whole' }, { url: '/pieces' }, { url: '/empty' }, { url: '/big' }, { url: '/later' }, { url: '/headers-first' }, { url: '/whole', method: 'HEAD' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.deepEqual(out.responses.map((r) => [r.status, r.body.length > 100 ? r.body.length : r.body]), [
+    [200, 'all at once'],
+    [200, 'abc'],
+    [204, ''],
+    [200, big.length],
+    [200, 'first,then'],
+    [200, 'after headers'],
+    [200, ''],
+  ]);
+  // Whole: /whole, /pieces (three writes in one task), /empty and HEAD. A body over 1 MB, and responses
+  // still going at the end of the task, stream.
+  assert.deepEqual(out.whole.sort(), [0, 1, 2, 6]);
+  assert.equal(out.responses[4].chunks, 2);
+});
+
+test('http: whole responses of a server in a child process come up in one message too', async () => {
+  const out = await h.run(
+    {
+      'server.js': `require('http').createServer((req, res) => res.end('from the child: ' + req.url)).listen(3000);`,
+      'parent.js': `require('child_process').fork('/app/server.js');`,
+    },
+    '/app/parent.js',
+    [{ url: '/a' }, { url: '/b' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.deepEqual(out.responses.map((r) => r.body), ['from the child: /a', 'from the child: /b']);
+  assert.deepEqual(out.whole.sort(), [0, 1]);
+});
+
 test('http listen: port 0, a taken port and reusePort as in Node; BroadcastChannel ref/unref', async () => {
   const out = await h.run(
     {

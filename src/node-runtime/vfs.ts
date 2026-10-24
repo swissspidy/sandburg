@@ -56,6 +56,9 @@ export class Vfs {
   private inos = 1;
   private watchers = new Set<WatchListener>();
   private fetchRemote: (path: string) => Uint8Array;
+  /** Directories whose files are tracked (see track()), and whether one of them changed since. */
+  private tracked: string[] | null = null;
+  private trackedDirty = false;
 
   constructor(fetchRemote: (path: string) => Uint8Array) {
     this.fetchRemote = fetchRemote;
@@ -66,6 +69,26 @@ export class Vfs {
     this.ensureDir(parent(path));
     this.dirs.get(parent(path))!.add(base(path));
     this.files.set(path, { data: null, size, mtimeMs: 0, ino: this.inos++ });
+    this.touch(path);
+  }
+
+  /**
+   * From now on, notes whether a file under `dirs` changes: written with other bytes, added,
+   * removed or renamed. A file written again with the same bytes (SvelteKit rewrites Vite's
+   * _svelte_metadata.json each start) is no change.
+   */
+  track(dirs: string[]): void {
+    this.tracked = dirs.map(norm);
+    this.trackedDirty = false;
+  }
+
+  /** Whether a file under the tracked directories changed since track(); null if none are tracked. */
+  trackedChanged(): boolean | null {
+    return this.tracked ? this.trackedDirty : null;
+  }
+
+  private touch(path: string): void {
+    if (this.tracked && !this.trackedDirty && this.tracked.some((d) => path === d || path.startsWith(d + '/'))) this.trackedDirty = true;
   }
 
   watch(listener: WatchListener): () => void {
@@ -108,6 +131,7 @@ export class Vfs {
     const existing = this.files.get(path);
     const now = Date.now();
     if (append && existing) return this.writeAt(path, data, 'end');
+    if (this.tracked && !(existing?.data && sameBytes(existing.data, data))) this.touch(path);
     this.files.set(path, { data, size: data.length, mtimeMs: now, ino: existing?.ino ?? this.inos++ });
     if (!existing) {
       this.dirs.get(dir)!.add(base(path));
@@ -143,6 +167,7 @@ export class Vfs {
     existing.data = store.subarray(0, size);
     existing.size = size;
     existing.mtimeMs = Date.now();
+    this.touch(path);
     this.emit('change', path);
   }
 
@@ -175,6 +200,7 @@ export class Vfs {
     if (!this.files.has(path)) throw new FsError(this.dirs.has(path) ? 'EISDIR' : 'ENOENT', 'unlink', path);
     this.files.delete(path);
     this.dirs.get(parent(path))?.delete(base(path));
+    this.touch(path);
     this.emit('rename', path);
   }
 
@@ -206,6 +232,8 @@ export class Vfs {
       this.dirs.get(parent(from))?.delete(base(from));
       this.files.set(to, { ...f, mtimeMs: Date.now() });
       this.dirs.get(parent(to))!.add(base(to));
+      this.touch(from);
+      this.touch(to);
       this.emit('rename', from);
       this.emit('rename', to);
       return;
@@ -233,6 +261,12 @@ export class Vfs {
   private emit(event: 'rename' | 'change', path: string): void {
     for (const w of this.watchers) w(event, path);
   }
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /** An empty, "." or ".." segment, or a trailing slash: what makes a path not normal. */
