@@ -237,7 +237,7 @@ function sooner<T>(outcome: Promise<T>, probe: () => Promise<T>, afterMs: number
 }
 
 /** A failing assertion waits at least this long, whatever the app does. */
-export const SETTLE_FLOOR_MS = 5_000;
+const SETTLE_FLOOR_MS = 5_000;
 /** After the floor, it retries in slices this long, and stops when the app is idle between two. */
 const SETTLE_SLICE_MS = 1_000;
 

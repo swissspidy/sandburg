@@ -25,13 +25,13 @@ export interface SnapshotRecord extends SnapshotManifest {
   createdAt: string;
 }
 
-export const SNAPSHOT_ID = /^[0-9a-f]{64}$/;
+const SNAPSHOT_ID = /^[0-9a-f]{64}$/;
 
 export function contentBytes(content: FileContent): Buffer {
   return typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content.base64, 'base64');
 }
 
-export function blobHash(content: FileContent): string {
+function blobHash(content: FileContent): string {
   return createHash('sha256').update(contentBytes(content)).digest('hex');
 }
 

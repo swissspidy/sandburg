@@ -10,7 +10,7 @@ import type { CheckResult, Failure, PageError, PhaseName, PhaseRecord, ProbeVerd
 const NODE_BUILTINS = [...builtinModules.filter((m) => !m.startsWith('node:')), 'sqlite'];
 
 /** Error texts that point at a limitation of the in-browser runtime, not the app. */
-export const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
+const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
   { rule: 'signature:bare-specifier', pattern: /Failed to resolve module specifier|Relative references must start with/i },
   { rule: 'signature:native-addon', pattern: /\.node['"]? (?:is not|cannot)|native (?:module|addon)|node-gyp|NODE_MODULE_VERSION/i },
   { rule: 'signature:stubbed-builtin', pattern: /\b(net|tls|dgram|dns|cluster|worker_threads|child_process)\b.*not (?:supported|implemented)/i },
@@ -152,7 +152,7 @@ const ANSI = /\x1b\[[0-9;]*m/g;
  * "Pre-transform error"), then "Plugin: …" and "File: /app/<path>:<line>:<column>". Only files of
  * the project count (not dependencies).
  */
-export function devServerCompileError(lines: string[]): string | null {
+function devServerCompileError(lines: string[]): string | null {
   // Without the stream, and the prefix of a process that concurrently runs ("[client] ").
   const unprefixed = lines.map((l) => l.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, ''));
   const clean = unprefixed.map((l) => l.replace(/^\[[\w@:./-]{1,40}\]\s/, ''));

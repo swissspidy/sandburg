@@ -38,7 +38,7 @@ export interface Activity {
   newestInflightMs?: number | null;
 }
 
-export interface StartResult {
+interface StartResult {
   url: string;
   /** False when start() already loaded the app into the frame (default: true, the host navigates to url). */
   navigate?: boolean;
@@ -52,8 +52,6 @@ export class AdapterError extends Error {
     this.code = code;
   }
 }
-
-export type CreateAdapter = () => RuntimeAdapter;
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: SerializedError };
 

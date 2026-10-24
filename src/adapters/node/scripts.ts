@@ -29,7 +29,7 @@ export const DEV_ENV: Record<string, string> = {
   NO_UPDATE_NOTIFIER: '1',
 };
 
-export interface BackendCommand {
+interface BackendCommand {
   /** Package directory the command runs in ("" is the project root). */
   dir: string;
   /** The server entry, relative to `dir`. */

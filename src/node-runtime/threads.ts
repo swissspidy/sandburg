@@ -11,6 +11,7 @@
 import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
+import { SPARE_NAME, SPARE_WAKE } from './names.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
 export interface ThreadInit {
@@ -426,10 +427,6 @@ let warmBase = '';
 let awake = false;
 /** How many woken spares a process keeps ready once it is awake (see wakeSpares). */
 const AWAKE_AHEAD = 2;
-
-/** The worker name that makes a runtime a spare, and the message that wakes one (bundle.ts). */
-const SPARE_NAME = 'sandburg-spare';
-const SPARE_WAKE = 'sandburg-spare-wake';
 
 export function warmRuntimes(base: string, count: number): void {
   warmBase = base;

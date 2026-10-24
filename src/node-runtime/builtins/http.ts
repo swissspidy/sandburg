@@ -9,14 +9,14 @@ import { Buffer } from 'buffer';
 import { EventEmitter } from 'events';
 import { Duplex, Readable, Writable } from 'readable-stream';
 
-export const STATUS_CODES: Record<number, string> = {
+const STATUS_CODES: Record<number, string> = {
   100: 'Continue', 101: 'Switching Protocols', 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
   301: 'Moved Permanently', 302: 'Found', 303: 'See Other', 304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Request Timeout', 409: 'Conflict',
   410: 'Gone', 413: 'Payload Too Large', 415: 'Unsupported Media Type', 422: 'Unprocessable Entity', 429: 'Too Many Requests',
   500: 'Internal Server Error', 501: 'Not Implemented', 502: 'Bad Gateway', 503: 'Service Unavailable', 504: 'Gateway Timeout',
 };
-export const METHODS = ['ACL', 'CONNECT', 'COPY', 'DELETE', 'GET', 'HEAD', 'LINK', 'LOCK', 'MERGE', 'MKCOL', 'MOVE', 'OPTIONS', 'PATCH', 'POST', 'PROPFIND', 'PUT', 'PURGE', 'REPORT', 'SEARCH', 'TRACE', 'UNLINK', 'UNLOCK'];
+const METHODS = ['ACL', 'CONNECT', 'COPY', 'DELETE', 'GET', 'HEAD', 'LINK', 'LOCK', 'MERGE', 'MKCOL', 'MOVE', 'OPTIONS', 'PATCH', 'POST', 'PROPFIND', 'PUT', 'PURGE', 'REPORT', 'SEARCH', 'TRACE', 'UNLINK', 'UNLOCK'];
 
 export interface BridgeResponse {
   start(status: number, statusText: string, headers: [string, string][]): void;
@@ -364,13 +364,13 @@ export class Server extends EventEmitter {
   }
 }
 
-export function createServer(opts?: unknown, handler?: (req: IncomingMessage, res: ServerResponse) => void) {
+function createServer(opts?: unknown, handler?: (req: IncomingMessage, res: ServerResponse) => void) {
   return new Server(opts, handler);
 }
 
 // --- client -------------------------------------------------------------------------
 
-export class Agent extends EventEmitter {
+class Agent extends EventEmitter {
   options: Record<string, unknown>;
   maxSockets = Infinity;
   sockets = {};
@@ -382,7 +382,7 @@ export class Agent extends EventEmitter {
   }
   destroy() {}
 }
-export const globalAgent = new Agent();
+const globalAgent = new Agent();
 
 class ClientRequest extends Writable {
   private chunks: Uint8Array[] = [];
@@ -498,7 +498,7 @@ class ClientRequest extends Writable {
   }
 }
 
-export function makeClient(defaultProtocol: 'http:' | 'https:') {
+function makeClient(defaultProtocol: 'http:' | 'https:') {
   function request(input: string | URL | Record<string, unknown>, opts?: unknown, cb?: (res: IncomingMessage) => void) {
     let o: Record<string, unknown> = {};
     let url: string;

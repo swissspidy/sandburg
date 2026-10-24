@@ -12,8 +12,8 @@ import { timers } from './process.ts';
 import { servers as httpServers } from './http.ts';
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
-export const isIPv4 = (s: string) => IPV4.test(s);
-export const isIPv6 = (s: string) => {
+const isIPv4 = (s: string) => IPV4.test(s);
+const isIPv6 = (s: string) => {
   if (!/^[0-9a-fA-F:.]+$/.test(s) || !s.includes(':')) return false;
   try {
     new URL(`http://[${s}]/`);

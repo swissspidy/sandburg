@@ -14,12 +14,8 @@
 type Context = Map<object, unknown>;
 let current: Context = new Map();
 
-export function currentContext(): Context {
-  return current;
-}
-
 /** Runs fn with ctx as the current context. */
-export function runInContext<R>(ctx: Context, fn: () => R): R {
+function runInContext<R>(ctx: Context, fn: () => R): R {
   const prev = current;
   current = ctx;
   try {
@@ -65,7 +61,7 @@ export function installAsyncContext(): void {
 
 let asyncIds = 1;
 
-export class AsyncLocalStorage<T> {
+class AsyncLocalStorage<T> {
   static bind<F extends (...args: never[]) => unknown>(fn: F): F {
     return bindContext(fn);
   }

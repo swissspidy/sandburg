@@ -15,7 +15,7 @@ import { basename, dirname, join } from 'node:path';
 import type { CompileStore } from './compile.ts';
 import { tmpSuffix } from './install.ts';
 
-export const COMPILED_MAX = 1 << 30;
+const COMPILED_MAX = 1 << 30;
 
 const fileOf = (dir: string, key: string) => join(dir, key.slice(0, 2), `${key.slice(2)}.js`);
 

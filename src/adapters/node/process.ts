@@ -58,7 +58,7 @@ const GrowableSharedArrayBuffer = SharedArrayBuffer as unknown as new (length: n
  * failed) and length, then the bytes; the memory grows to the bundle's size (its maximum reserves
  * address space only). Null where there is no shared memory.
  */
-export function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | null {
+function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | null {
   if (!url || !globalThis.crossOriginIsolated) return null;
   let sab: Growable;
   try {

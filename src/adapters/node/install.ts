@@ -17,6 +17,7 @@ import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
+import { ESM_MARKER } from '../../node-runtime/names.ts';
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
@@ -369,7 +370,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   if (esm) source = source.replace(/^#!.*/, '');
   source = patchFunctionImport(patchAsyncFunction(source));
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
-  const mark = (code: string) => patchInterop(esm ? `/*sandburg:esm*/\n${code}` : code);
+  const mark = (code: string) => patchInterop(esm ? `${ESM_MARKER}\n${code}` : code);
   // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
   const convert = async (code: string) => {
     const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
@@ -391,7 +392,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   }
 }
 
-export const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.TransformOptions => ({
+const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.TransformOptions => ({
   loader: 'js',
   format: esm ? 'cjs' : undefined,
   sourcefile: esm ? esmSourcefile(path) : path,

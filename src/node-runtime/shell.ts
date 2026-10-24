@@ -23,7 +23,7 @@ export interface ShellHost {
 type Token = { op: '&&' | '||' | ';' | '&' | '|' | '>' } | { word: string; assign?: boolean };
 
 /** Splits a script into words and operators, expanding variables (not inside single quotes). */
-export function tokenize(script: string, env: Record<string, string>): Token[] {
+function tokenize(script: string, env: Record<string, string>): Token[] {
   const tokens: Token[] = [];
   let word = '';
   let has = false;

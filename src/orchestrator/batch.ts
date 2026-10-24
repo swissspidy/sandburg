@@ -97,7 +97,7 @@ export function defaultParallel(): number {
  * The memory a batch keeps free before it opens another app: about one app's peak (a Next.js run's
  * renderer peaks at ~1 GB, a Vite run's at ~0.5 GB) and the host's share of an install.
  */
-export const MEMORY_RESERVE = 1.5 * 2 ** 30;
+const MEMORY_RESERVE = 1.5 * 2 ** 30;
 
 /**
  * What an app that just opened is counted as using, though availableMemory does not show it yet: its
@@ -105,7 +105,7 @@ export const MEMORY_RESERVE = 1.5 * 2 ** 30;
  * largest), for START_WINDOW_MS after it opened or until it reaches its checks, whichever is first.
  * Without it, a batch opened its first `parallel` apps in one go, before any of them used memory.
  */
-export const START_ALLOWANCE = 2 ** 30;
+const START_ALLOWANCE = 2 ** 30;
 const START_WINDOW_MS = 10_000;
 
 /** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */

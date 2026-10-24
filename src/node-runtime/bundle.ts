@@ -4,12 +4,9 @@ import { createRequire } from 'node:module';
 import { dirname, join, relative, sep } from 'node:path';
 import { source } from '../sources.ts';
 import { LIBS_KEY, MODULES_KEY, RUNTIME_LIBS, type RuntimeLib } from './libs.ts';
+import { SPARE_NAME, SPARE_WAKE } from './names.ts';
 
 const here = (p: string) => source(`node-runtime/${p}`);
-
-/** The name of a runtime worker started as a spare for a later thread, and the message that wakes one (threads.ts). */
-export const SPARE_NAME = 'sandburg-spare';
-export const SPARE_WAKE = 'sandburg-spare-wake';
 
 /**
  * A spare evaluates the runtime only when it is woken or a thread takes it. Evaluating the bundle
