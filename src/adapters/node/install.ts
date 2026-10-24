@@ -69,12 +69,23 @@ export class Installer {
   private readonly store: string;
   /** npm's resolution, in a worker that keeps packuments between installs (resolver.ts). */
   private readonly resolver: Resolver;
+  /** Where WebAssembly side installs are kept, and how they are made. */
+  private readonly sides: Sides;
 
   constructor(root: string) {
     this.root = root;
     this.store = join(root, '..', 'store');
     this.resolver = new Resolver(root, ['--package-lock-only', ...INSTALL_FLAGS]);
-    this.resolver.onPicked = (integrity) => unpackHint(integrity, this.store);
+    this.sides = { root: join(root, '..', 'side-installs'), store: this.store, resolver: this.resolver };
+    // As npm's resolution picks each package: it is unpacked, and what wasiBindingsFor and
+    // wasmBuildsFor will ask about it (whether its napi-rs bindings have a WASI build, the
+    // WebAssembly build that replaces it) is under way. Guesses: npm may pick another version.
+    this.resolver.onPicked = ({ name, version, integrity, optionalDependencies }) => {
+      unpackHint(integrity, this.store);
+      for (const [binding, range] of Object.entries(wasiBindings(optionalDependencies).candidates)) void npmViewVersion(`${binding}@${range}`);
+      const build = WASM_BUILDS.find((b) => b.name === name && b.applies(version));
+      if (build) wasmBuild(this.sides, build, version, () => {}).catch(() => {});
+    };
     void this.sweep();
   }
 
@@ -160,7 +171,7 @@ export class Installer {
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
       const packages = installedPackages(JSON.parse(await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => '{}')));
-      const sides = { root: join(this.root, '..', 'side-installs'), store: this.store, resolver: this.resolver };
+      const sides = this.sides;
       const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
       if (!(await installFromLockfile(tmp, this.store, log))) await run('npm', ['install', ...flags], tmp, log);
@@ -578,6 +589,12 @@ function existsSyncSafe(path: string): boolean {
   }
 }
 
+/** The side install of a package's WebAssembly build (one per build and version: see sideInstall). */
+function wasmBuild(sides: Sides, build: (typeof WASM_BUILDS)[number], version: string, log: (line: string) => void): Promise<string> {
+  const dependencies = { [build.wasm]: build.wasmVersion ?? version };
+  return sideInstall(sides, { name: 'sandburg-wasm-build', private: true, dependencies }, ['--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+}
+
 async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPackage[], log: (line: string) => void): Promise<() => Promise<void>> {
   const at = new Set(packages.map((p) => p.location));
   const found: { dir: string; version: string; build: (typeof WASM_BUILDS)[number]; side: Promise<string> | null }[] = [];
@@ -592,8 +609,7 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
       const spec = `${build.wasm}@${build.wasmVersion ?? version}`;
       side = sides.get(spec) ?? null;
       if (!side) {
-        const dependencies = { [build.wasm]: build.wasmVersion ?? version };
-        side = sideInstall(sideRoot, { name: 'sandburg-wasm-build', private: true, dependencies }, ['--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+        side = wasmBuild(sideRoot, build, version, log);
         sides.set(spec, side);
       }
     }
