@@ -319,7 +319,7 @@ export class Installer {
     // Transforms are kept by content, not by install: every install with the same package version
     // shares them (a new app with next@16 does not transform Next.js again).
     const source = await readFile(abs, 'utf8');
-    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
+    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel, index)) === 'module');
     const hash = createHash('sha256').update(`${esm ? 'esm' : 'cjs'}\0${rel}\0`).update(source).digest('hex');
     const cached = join(this.root, '..', 'transforms', `v${TRANSFORM_VERSION}`, hash.slice(0, 2), `${hash.slice(2)}.js`);
     try {
@@ -420,24 +420,33 @@ export const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.Transform
   logLevel: 'silent',
 });
 
-const typeCache = new Map<string, 'module' | 'commonjs'>();
+/** By directory (absolute): the "type" of the nearest package.json, found or being found. */
+const typeCache = new Map<string, Promise<'module' | 'commonjs'>>();
 
-/** "type" of the nearest package.json, as Node decides a .js file's format. */
-async function packageType(installDir: string, rel: string): Promise<'module' | 'commonjs'> {
-  const parts = rel.split('/');
-  for (let i = parts.length - 1; i > 0; i--) {
-    const pj = join(installDir, ...parts.slice(0, i), 'package.json');
-    const hit = typeCache.get(pj);
-    if (hit) return hit;
-    try {
-      const type = (JSON.parse(await readFile(pj, 'utf8')) as { type?: string }).type === 'module' ? 'module' : 'commonjs';
-      typeCache.set(pj, type);
-      return type;
-    } catch {
-      // keep walking up
-    }
+/**
+ * "type" of the nearest package.json, as Node decides a .js file's format. Only the package.json
+ * files the install's index has are read (looking for absent ones was ~0.5 s of the host's 5.5 s
+ * in a cold next dev start), once per directory.
+ */
+function packageType(installDir: string, rel: string, index: FileIndex): Promise<'module' | 'commonjs'> {
+  const dir = rel.slice(0, Math.max(rel.lastIndexOf('/'), 0));
+  const id = `${installDir}\0${dir}`;
+  let type = typeCache.get(id);
+  if (!type) {
+    type = (async () => {
+      if (!dir) return 'commonjs';
+      if (`${dir}/package.json` in index) {
+        try {
+          return (JSON.parse(await readFile(join(installDir, dir, 'package.json'), 'utf8')) as { type?: string }).type === 'module' ? 'module' : 'commonjs';
+        } catch {
+          // unreadable: keep walking up, as before
+        }
+      }
+      return packageType(installDir, dir, index);
+    })();
+    typeCache.set(id, type);
   }
-  return 'commonjs';
+  return type;
 }
 
 /**
