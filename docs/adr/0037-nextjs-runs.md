@@ -1,4 +1,4 @@
-# ADR NNNN: Next.js runs: a seed per router, a shorter start, a shorter Session.close
+# ADR 0037: Next.js runs: a seed per router, a shorter start, a shorter Session.close
 
 - Status: Accepted
 - Date: 2026-10-24
