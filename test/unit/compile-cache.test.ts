@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CompileCache, MAX_CODE } from '../../src/adapters/node/compile-cache.ts';
@@ -38,4 +38,24 @@ test("a project's compiles are kept for its next run, in another process", async
     ['cjs', false, '/[eval]', 'module.exports = async function () { await 1; };', 'lowered 1'],
     ['esm', true, '/app/src/a.mjs', 'export const ü = "é";', 'lowered 2'],
   ]);
+});
+
+test('a stored file that is cut off or not a compile bundle counts as none, and is replaced', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-compile-cache-'));
+  const key = 'd'.repeat(24);
+  const first = new CompileCache(() => dir);
+  await first.record(key, 'cjs', false, '/app/a.js', 'module.exports = 1;', 'lowered a');
+  await first.flush();
+  const [name] = await readdir(dir);
+  const whole = await readFile(join(dir, name));
+  // Too short for its header length, its header cut off, its last output cut off, a header that is not a list.
+  const notJson = Buffer.concat([Buffer.from([4, 0, 0, 0]), Buffer.from('null')]);
+  for (const stored of [whole.subarray(0, 2), whole.subarray(0, 12), whole.subarray(0, whole.length - 3), notJson]) {
+    await writeFile(join(dir, name), stored);
+    const cache = new CompileCache(() => dir);
+    assert.equal(await cache.has(key), false);
+    assert.equal(await cache.bundle(key), null);
+    await cache.record(key, 'cjs', false, '/app/b.js', 'module.exports = 2;', 'lowered b');
+    assert.deepEqual(entries((await cache.bundle(key))!), [['cjs', false, '/app/b.js', 'module.exports = 2;', 'lowered b']]);
+  }
 });
