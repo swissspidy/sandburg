@@ -963,6 +963,30 @@ test('crypto: a 16 MB input hashes as in Node', async () => {
   assert.deepEqual(JSON.parse(r.stdout), ['sha1', 'sha256', 'md5'].map((a) => createHash(a).update(big).digest('hex')));
 });
 
+test('zlib: its library loads when a member it has is first used, not as zlib is required', async () => {
+  const r = await h.run(
+    {
+      'main.js': `
+        const loaded = () => Object.keys(globalThis[Symbol.for('sandburg.libs')] ?? {}).includes('zlib');
+        const zlib = require('zlib');
+        const { createGzip, constants, Z_SYNC_FLUSH } = zlib;
+        const keys = Object.keys(zlib);
+        const steps = [loaded(), typeof createGzip, constants.Z_SYNC_FLUSH, Z_SYNC_FLUSH, keys.includes('gzipSync') && keys.includes('Z_BEST_SPEED')];
+        zlib.gzip('abc', (e, gz) => {
+          steps.push(!e && gz[0] === 0x1f, loaded());
+          const sync = zlib.gunzipSync(gz).toString();
+          steps.push(sync, loaded(), typeof zlib.Gzip, Object.getOwnPropertyDescriptor(zlib, 'gunzipSync').value === zlib.gunzipSync);
+          zlib.inflateSync = () => 'mine';
+          steps.push(zlib.inflateSync());
+          console.log(JSON.stringify(steps));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(r.fatal, null, r.fatal ?? r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), [false, 'function', 2, 2, true, true, false, 'abc', true, 'function', true, 'mine']);
+});
+
 test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buffer and streams', async () => {
   const runtime = await bundleNodeRuntime();
   assert.ok(!/node_modules\/(crypto-browserify|browserify-zlib|@napi-rs\/wasm-runtime)\//.test(runtime), 'the runtime script leaves them out');
@@ -980,11 +1004,12 @@ test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buff
         const hashed = Object.keys(globalThis[Symbol.for('sandburg.libs')] ?? {}).includes('crypto');
         const pbkdf2 = crypto.pbkdf2Sync('p', 's', 1, 8, 'sha256').toString('hex');
         const wasi = new WASI({ version: 'preview1' });
+        const gz = Buffer.isBuffer(zlib.gzipSync('z')) && zlib.gunzipSync(zlib.gzipSync('z')).toString();
         console.log(JSON.stringify({
           before, hashed, pbkdf2, after: Object.keys(globalThis[Symbol.for('sandburg.libs')]).sort(),
           isBuffer: Buffer.isBuffer(digest) && Buffer.isBuffer(bytes), hex: digest.toString('hex'), hmac,
           stream: crypto.createHash('md5') instanceof stream.Transform, wasi: typeof wasi.wasiImport.fd_write,
-          same: require('crypto') === crypto, gz: Buffer.isBuffer(zlib.gzipSync('z')) && zlib.gunzipSync(zlib.gzipSync('z')).toString(),
+          same: require('crypto') === crypto, gz,
         }));`,
     },
     '/app/main.js',

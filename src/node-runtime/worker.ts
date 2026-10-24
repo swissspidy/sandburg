@@ -36,7 +36,7 @@ import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './bui
 import { createModuleSystem } from './loader.ts';
 import ShaHash from 'sha.js/hash.js';
 import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
-import { LIBS_KEY, type RuntimeLib } from './libs.ts';
+import { CRYPTO_LIB_KEYS, LIBS_KEY, ZLIB_CONSTANTS, ZLIB_LIB_KEYS, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
@@ -343,15 +343,25 @@ function hideWorkerGlobals(): void {
 }
 const post = (msg: FromWorker, transfer: Transferable[] = []) => realPostMessage(msg, transfer);
 
-/** A polyfill left out of the runtime's script (RUNTIME_LIBS in bundle.ts), loaded the first time it is needed. */
-/** crypto-browserify's exports (node:crypto takes what it does not have itself from there). */
-export const CRYPTO_LIB_KEYS = [
-  'prng', 'pseudoRandomBytes', 'rng', 'randomBytes', 'Hash', 'createHash', 'Hmac', 'createHmac', 'getHashes', 'pbkdf2', 'pbkdf2Sync', 'Cipher', 'createCipher', 'Cipheriv',
-  'createCipheriv', 'Decipher', 'createDecipher', 'Decipheriv', 'createDecipheriv', 'getCiphers', 'listCiphers', 'DiffieHellmanGroup', 'createDiffieHellmanGroup', 'getDiffieHellman',
-  'createDiffieHellman', 'DiffieHellman', 'createSign', 'Sign', 'createVerify', 'Verify', 'createECDH', 'publicEncrypt', 'privateEncrypt', 'publicDecrypt', 'privateDecrypt', 'randomFill',
-  'randomFillSync', 'createCredentials', 'constants',
-];
+/**
+ * A built-in's member that a runtime library has: an enumerable property that loads the library
+ * when first read, then holds the library's value (a program may assign another, as in Node).
+ */
+function lazyMember(target: Record<string, unknown>, key: string, lib: () => Record<string, unknown>): void {
+  const own = (value: unknown) => Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      const value = lib()[key];
+      own(value);
+      return value;
+    },
+    set: own,
+  });
+}
 
+/** A polyfill left out of the runtime's script (RUNTIME_LIBS in bundle.ts), loaded the first time it is needed. */
 function runtimeLib<T>(name: RuntimeLib): T {
   const libs = ((globalThis as Record<symbol, Record<string, unknown>>)[Symbol.for(LIBS_KEY)] ??= {});
   if (!(name in libs)) realImportScripts(`${base}/node-${name}.js`);
@@ -1052,18 +1062,7 @@ function buildBuiltins() {
     // crypto-browserify's other members, from the library when first used (its keys, in its order:
     // a test checks them against the library).
     const crypto = Object.create(null) as Record<string, unknown>;
-    for (const key of CRYPTO_LIB_KEYS) {
-      Object.defineProperty(crypto, key, {
-        configurable: true,
-        enumerable: true,
-        get: () => {
-          const value = lib()[key];
-          Object.defineProperty(crypto, key, { value, writable: true, configurable: true, enumerable: true });
-          return value;
-        },
-        set: (value: unknown) => Object.defineProperty(crypto, key, { value, writable: true, configurable: true, enumerable: true }),
-      });
-    }
+    for (const key of CRYPTO_LIB_KEYS) lazyMember(crypto, key, lib);
     Object.assign(crypto, {
       createHash,
       createHmac,
@@ -1092,14 +1091,19 @@ function buildBuiltins() {
     return crypto;
   };
 
-  // node:zlib: native streams over browserify-zlib (a runtime library: loaded when a program first requires it).
+  // node:zlib: native streams over browserify-zlib, a runtime library loaded the first time a program
+  // uses one of its members (its sync functions, classes, a stream that is flushed): Vite requires
+  // zlib as it starts and does not use it in dev.
   const makeZlib = () => {
-    const zlibBrowserify = runtimeLib<Record<string, unknown>>('zlib');
-    useZlibPort(zlibBrowserify as never);
+    const lib = () => runtimeLib<Record<string, unknown>>('zlib');
+    useZlibPort(lib as never);
     const zlibUnsupported = (name: string) => () => {
       throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
     };
-    const zlib = Object.assign(Object.create(null), zlibBrowserify, typeof CompressionStream === 'function' ? nativeZlib : {}, {
+    const zlib = Object.create(null) as Record<string, unknown>;
+    for (const key of ZLIB_LIB_KEYS) lazyMember(zlib, key, lib);
+    // zlib's Z_* constants on the module too, as browserify-zlib has them (and on `constants`).
+    Object.assign(zlib, ZLIB_CONSTANTS, typeof CompressionStream === 'function' ? nativeZlib : {}, {
       createBrotliCompress: zlibUnsupported('createBrotliCompress'),
       createBrotliDecompress: zlibUnsupported('createBrotliDecompress'),
       brotliCompressSync: zlibUnsupported('brotliCompressSync'),
@@ -1115,9 +1119,7 @@ function buildBuiltins() {
         return ~c >>> 0;
       },
     });
-    // browserify-zlib has its Z_* constants on the module, not on `constants`.
-    const zConstants = Object.fromEntries(Object.entries(zlibBrowserify).filter(([k, v]) => k.startsWith('Z_') && typeof v === 'number'));
-    zlib.constants = { ...zConstants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
+    zlib.constants = { ...ZLIB_CONSTANTS, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
     return zlib;
   };
 
