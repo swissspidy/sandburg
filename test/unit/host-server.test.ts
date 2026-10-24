@@ -21,11 +21,12 @@ function adapter(name: string): AdapterDescriptor {
     assets: {},
     egress: [],
     crossOriginIsolation: false,
+    probe: () => ({ verdict: 'supported' }),
     serve: async (req: HostRequest) => {
       served.push(`${name} ${req.method} ${req.path}`);
       return { status: 200, body: `${name} answers` };
     },
-  } as AdapterDescriptor;
+  };
 }
 
 let host: HostServer;
