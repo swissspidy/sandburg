@@ -1,4 +1,4 @@
-# ADR NNNN: The dev tools' WebAssembly threads
+# ADR 0038: The dev tools' WebAssembly threads
 
 - Status: Accepted
 - Date: 2026-10-24
