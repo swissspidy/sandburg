@@ -340,22 +340,30 @@ export function createAdapter(): RuntimeAdapter {
         // A cache restored from an earlier run, whose directories the runtime tracked (see start), is
         // read only if the run changed a file there: null when it did not (nothing to store).
         let tree = devCache.digests && !devCache.waitFor ? await Promise.race([proc.readTree(devCache.dirs, undefined, true), timeout()]) : await read();
+        /** For a cache that waits (waitFor): whether its tree settled (every file there, none mid-write, unchanged since the last look). */
+        let settled = false;
         if (devCache.waitFor) {
           // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment).
+          // At most 40 s, however long each read takes (a read gives up after 5 s).
+          const deadline = performance.now() + 40_000;
           const size = (t: typeof tree) => (t ? Object.values(t).reduce((n, f) => n + (typeof f === 'string' ? f.length : f.base64.length), 0) : -1);
           // The same files as well: webpack writes each pack under a temporary name (<name>_), then renames it.
           const same = (a: typeof tree, b: typeof tree) => size(a) === size(b) && Object.keys(a ?? {}).sort().join('\0') === Object.keys(b ?? {}).sort().join('\0');
-          for (let i = 0; i < 160; i++) {
+          while (performance.now() < deadline) {
             await new Promise((r) => setTimeout(r, 250));
             const next = await read();
             const ready = next && devCache.waitFor.every((f) => f in next) && !Object.keys(next).some((f) => f.endsWith('_'));
             const stable = ready && same(next, tree);
             tree = next;
-            if (stable) break;
+            if (stable) {
+              settled = true;
+              break;
+            }
           }
         }
         // Vite writes an optimized environment's _metadata.json last.
-        const complete = tree && (devCache.waitFor ? devCache.waitFor.every((f) => f in tree!) : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
+        // One that never settled is not stored: it may hold a pack webpack was still writing.
+        const complete = tree && (devCache.waitFor ? settled : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
         const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
         const digests = devCache.digests;
         const changed =
