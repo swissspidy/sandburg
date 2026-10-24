@@ -1,0 +1,15 @@
+{
+  "e2e/angular": 150,
+  "e2e/batch": 60,
+  "e2e/browser-install": 75,
+  "e2e/frameworks": 120,
+  "e2e/fullstack": 90,
+  "e2e/node": 240,
+  "e2e/page-checks": 45,
+  "e2e/reference": 200,
+  "e2e/run": 120,
+  "e2e/vite-frameworks": 210,
+  "e2e/websockets": 75,
+  "runtime/core": 60,
+  "unit/thread-vfs": 15
+}
