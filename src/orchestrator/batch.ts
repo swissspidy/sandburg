@@ -2,7 +2,7 @@
  * Batch runs: many projects, N tabs at a time, one browser, one cache.
  */
 import { randomBytes } from 'node:crypto';
-import { access, mkdir, readdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { FailureClass, Project, RunResult } from '../types.ts';
 import type { RunOptions, Session } from './session.ts';
@@ -60,6 +60,12 @@ export interface BatchOptions extends RunOptions {
   prewarm?: boolean;
   /** Progress lines (warming up). */
   log?: (line: string) => void;
+  /**
+   * Start the projects that took longest in earlier batches first (the summaries in batchDir), and
+   * those without an earlier run before them (default: true). False: in the order given. Results
+   * are in the order given either way.
+   */
+  longestFirst?: boolean;
 }
 
 /** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
@@ -86,6 +92,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const startedAt = new Date();
   const t0 = performance.now();
   const results: RunResult[] = new Array(items.length);
+  const order = options.longestFirst === false ? items.map((_, i) => i) : await longestFirst(items, options.batchDir ?? '.sandburg/batches');
   let next = 0;
   // The first apps of a stack would otherwise each install and seed it, several tabs at once.
   if (options.prewarm !== false && !options.nodeRuntime) await session.prewarm({ runtime: options.runtime, log: options.log });
@@ -101,7 +108,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const runs: Promise<void>[] = [];
   while (next < items.length) {
     while (starting >= parallel || open >= 2 * parallel) await new Promise<void>((r) => wake.push(r));
-    const index = next++;
+    const index = order[next++];
     const item = items[index];
     starting++;
     open++;
@@ -174,6 +181,34 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   await writeFile(join(dir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   return { summary, results };
 }
+
+/**
+ * The items' indexes, those whose project took longest in the latest batches first, and those with no
+ * earlier run (a new project, which may install first) before all of them; otherwise in the order
+ * given. A batch's wall time is its last app's end: an app that waits long in its checks (a failing
+ * assertion) or runs long, started last, keeps the batch open with the cores idle. Started first, it
+ * overlaps the others. Only the order changes, never what a run does.
+ */
+async function longestFirst(items: BatchItem[], batchDir: string, batches = HISTORY_BATCHES): Promise<number[]> {
+  const took = new Map<string, number>();
+  const dir = resolve(batchDir);
+  // Batch ids start with their start time in base 36: the newest first.
+  const ids = (await readdir(dir).catch(() => [] as string[])).filter((id) => /^b-[0-9a-z]+-[0-9a-f]+$/.test(id));
+  ids.sort((a, b) => parseInt(b.split('-')[1], 36) - parseInt(a.split('-')[1], 36));
+  for (const id of ids.slice(0, batches)) {
+    const summary = await readFile(join(dir, id, 'summary.json'), 'utf8').then(
+      (t) => JSON.parse(t) as Partial<BatchSummary>,
+      () => null,
+    );
+    for (const run of Array.isArray(summary?.runs) ? summary.runs : []) {
+      if (typeof run?.project === 'string' && Number.isFinite(run.totalMs) && !took.has(run.project)) took.set(run.project, run.totalMs);
+    }
+  }
+  const estimate = items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined) ?? Infinity);
+  return items.map((_, i) => i).sort((a, b) => estimate[b] - estimate[a] || a - b);
+}
+/** How many of the latest batch summaries longestFirst reads. */
+const HISTORY_BATCHES = 20;
 
 function sum(xs: number[]): number {
   return xs.reduce((a, b) => a + b, 0);

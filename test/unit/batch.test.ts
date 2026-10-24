@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runBatch, type BatchItem } from '../../src/orchestrator/batch.ts';
 import type { RunOptions, Session } from '../../src/orchestrator/session.ts';
@@ -76,6 +76,50 @@ test('a run that rejects while the batch waits for a slot rejects the batch (no 
     assert.deepEqual(unhandled, []);
   } finally {
     process.off('unhandledRejection', onUnhandled);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** A session whose runs take `ms[project]` and record the order they start in. */
+function timedSession(ms: Record<string, number>, started: string[], onOpen?: (open: number) => void) {
+  let open = 0;
+  return {
+    async run(project: string, options: RunOptions) {
+      started.push(project);
+      onOpen?.(++open);
+      options.onPhase?.('checks');
+      await sleep(ms[project] ?? 1);
+      open--;
+      return {
+        runId: `r-${project}`,
+        status: 'passed',
+        failure: null,
+        project: { name: project, path: resolve(project), snapshotId: project },
+        runtime: { name: 'node' },
+        network: { cacheHits: 0, cacheMisses: 0, blocked: [] },
+        timings: { totalMs: ms[project] ?? 1 },
+      } as unknown as RunResult;
+    },
+  } as unknown as Session;
+}
+
+test('a batch starts the projects that took longest in earlier batches first, new ones before them', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    const ms = { a: 5, b: 30, c: 15, d: 1 };
+    const first: string[] = [];
+    await runBatch(timedSession(ms, first), ['a', 'b', 'c', 'd'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(first, ['a', 'b', 'c', 'd'], 'no history: the order given');
+
+    const second: string[] = [];
+    const { results } = await runBatch(timedSession(ms, second), ['a', 'new', 'b', 'c', 'd'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(second, ['new', 'b', 'c', 'a', 'd']);
+    assert.deepEqual(results.map((r) => r.project.name), ['a', 'new', 'b', 'c', 'd'], 'results in the order given');
+
+    const kept: string[] = [];
+    await runBatch(timedSession(ms, kept), ['a', 'b', 'c', 'd'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir, longestFirst: false });
+    assert.deepEqual(kept, ['a', 'b', 'c', 'd']);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
