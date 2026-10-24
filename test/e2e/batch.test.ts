@@ -170,7 +170,7 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
       const control = await open.newPage();
       await control.goto(origin + '/');
       await control.evaluate(escapeAttempts(port));
-      await control.waitForTimeout(1500);
+      for (let waited = 0; connections() === 0 && waited < 5000; waited += 50) await control.waitForTimeout(50);
       assert.ok(connections() > 0, 'control run did not reach the canary; the test would prove nothing');
     } finally {
       await open.close();
