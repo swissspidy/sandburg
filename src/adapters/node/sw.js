@@ -26,11 +26,20 @@ self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim(
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'sandburg-port' && event.ports[0]) {
     port = event.ports[0];
+    // Replies to requests sent on any port the page gave, the current one or an earlier one.
+    port.onmessage = (e) => replies.get(e.data.id)?.(e.data);
     // The app is about to load: every app page loads the shim first thing (a script that blocks parsing).
     if (!hooks.fetch) void runtimeScript(new Request(WS_SHIM), WS_SHIM);
     for (const resolve of waiting.splice(0)) resolve(port);
   }
 });
+
+/**
+ * The handlers of the requests in flight, by id: requests and their replies share the port the page
+ * gave (one channel for all of them, not one per request).
+ */
+const replies = new Map();
+let nextRequestId = 1;
 
 async function getPort() {
   if (port) return port;
@@ -134,7 +143,7 @@ async function forward(request, url) {
     return new Response(String(e.message), { status: 503 });
   }
   const body = request.method === 'GET' || request.method === 'HEAD' ? null : await request.arrayBuffer();
-  const { port1, port2 } = new MessageChannel();
+  const id = nextRequestId++;
   const headers = [];
   request.headers.forEach((value, name) => headers.push([name, value]));
   // Forbidden headers are not in request.headers; servers read Referer (SolidStart's single-flight actions).
@@ -143,7 +152,7 @@ async function forward(request, url) {
     const referrer = new URL(request.referrer);
     headers.push(['referer', hooks.appPath && referrer.origin === self.location.origin ? referrer.origin + hooks.appPath(referrer) : request.referrer]);
   }
-  p.postMessage({ type: 'request', method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [port2, body] : [port2]);
+  p.postMessage({ type: 'request', id, method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [body] : []);
   return new Promise((resolve) => {
     let controller;
     const stream = new ReadableStream({
@@ -151,11 +160,10 @@ async function forward(request, url) {
         controller = c;
       },
       cancel() {
-        port1.close();
+        replies.delete(id);
       },
     });
-    port1.onmessage = (e) => {
-      const m = e.data;
+    replies.set(id, (m) => {
       if (m.type === 'start' || m.type === 'full') {
         // Set-Cookie cannot be set from a service worker response; the page applies cookies itself.
         const h = new Headers();
@@ -168,7 +176,7 @@ async function forward(request, url) {
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
         // A whole response (the runtime had it all in one task): no more messages for it.
         if (m.type === 'full') {
-          port1.close();
+          replies.delete(id);
           if (body && m.body.byteLength) controller.enqueue(new Uint8Array(m.body));
           controller.close();
         }
@@ -184,14 +192,14 @@ async function forward(request, url) {
         try {
           controller.close();
         } catch {}
-        port1.close();
+        replies.delete(id);
       } else if (m.type === 'error') {
         resolve(new Response(m.message, { status: 502, headers: { 'content-type': 'text/plain' } }));
         try {
           controller.error(new Error(m.message));
         } catch {}
-        port1.close();
+        replies.delete(id);
       }
-    };
+    });
   });
 }

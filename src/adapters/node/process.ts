@@ -6,7 +6,7 @@
 import { AdapterError } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
 import type { FromWorker } from '../../node-runtime/messages.ts';
-import type { BridgedRequest } from '../sw-bridge.ts';
+import type { BridgeReply, BridgedRequest } from '../sw-bridge.ts';
 
 export interface NodeProcessOptions {
   files: FileTree;
@@ -106,7 +106,7 @@ export class NodeProcess {
   private crashes = new BroadcastChannel('sandburg-wasm-thread-crash');
   private ready = false;
   private waiters = new Set<() => void>();
-  private pending = new Map<number, MessagePort>();
+  private pending = new Map<number, BridgeReply>();
   private sockets = new Map<number, MessagePort>();
   private nextId = 1;
   private label: string;
@@ -218,7 +218,7 @@ export class NodeProcess {
   }
 
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
-  request(port: number, request: BridgedRequest, reply: MessagePort): void {
+  request(port: number, request: BridgedRequest, reply: BridgeReply): void {
     if (this.failure && this.exitCode === null) {
       reply.postMessage({ type: 'error', message: `${this.label} crashed: ${this.failure.message.split('\n')[0]}` });
       return;
