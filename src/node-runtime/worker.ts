@@ -35,6 +35,7 @@ import * as misc from './builtins/misc.ts';
 import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import ShaHash from 'sha.js/hash.js';
+import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import type { FileTree } from '../types.ts';
@@ -343,6 +344,14 @@ function hideWorkerGlobals(): void {
 const post = (msg: FromWorker, transfer: Transferable[] = []) => realPostMessage(msg, transfer);
 
 /** A polyfill left out of the runtime's script (RUNTIME_LIBS in bundle.ts), loaded the first time it is needed. */
+/** crypto-browserify's exports (node:crypto takes what it does not have itself from there). */
+export const CRYPTO_LIB_KEYS = [
+  'prng', 'pseudoRandomBytes', 'rng', 'randomBytes', 'Hash', 'createHash', 'Hmac', 'createHmac', 'getHashes', 'pbkdf2', 'pbkdf2Sync', 'Cipher', 'createCipher', 'Cipheriv',
+  'createCipheriv', 'Decipher', 'createDecipher', 'Decipheriv', 'createDecipheriv', 'getCiphers', 'listCiphers', 'DiffieHellmanGroup', 'createDiffieHellmanGroup', 'getDiffieHellman',
+  'createDiffieHellman', 'DiffieHellman', 'createSign', 'Sign', 'createVerify', 'Verify', 'createECDH', 'publicEncrypt', 'privateEncrypt', 'publicDecrypt', 'privateDecrypt', 'randomFill',
+  'randomFillSync', 'createCredentials', 'constants',
+];
+
 function runtimeLib<T>(name: RuntimeLib): T {
   const libs = ((globalThis as Record<symbol, Record<string, unknown>>)[Symbol.for(LIBS_KEY)] ??= {});
   if (!(name in libs)) realImportScripts(`${base}/node-${name}.js`);
@@ -990,9 +999,10 @@ function buildBuiltins() {
     urlToHttpOptions: (u: URL) => ({ protocol: u.protocol, hostname: u.hostname, hash: u.hash, search: u.search, pathname: u.pathname, path: u.pathname + u.search, href: u.href, port: u.port ? Number(u.port) : undefined }),
   };
 
-  // node:crypto: crypto-browserify (a runtime library: loaded when a program first requires it).
+  // node:crypto: hashes, HMACs and random bytes here (builtins/hash.ts); the rest is crypto-browserify,
+  // a runtime library loaded the first time a program uses one of its members.
   const makeCrypto = () => {
-    const cryptoBrowserify = runtimeLib<Record<string, unknown>>('crypto');
+    const lib = () => runtimeLib<Record<string, unknown>>('crypto');
     // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
     const withBase64Url = <A extends unknown[]>(make: (...a: A) => { digest(enc?: string): Buffer | string }) => (...args: A) => {
       const h = make(...args);
@@ -1000,13 +1010,71 @@ function buildBuiltins() {
       h.digest = (enc?: string) => (enc === 'base64url' ? (digest() as Buffer).toString('base64url') : digest(enc));
       return h;
     };
-    const createHash = withBase64Url(cryptoBrowserify.createHash as never);
-    const createHmac = withBase64Url(cryptoBrowserify.createHmac as never);
-    const crypto = Object.assign(Object.create(null), cryptoBrowserify, {
+    const createHash = (alg: string, options?: unknown) => {
+      const name = hashAlgorithm(alg);
+      if (name) return new Hash(name);
+      try {
+        return withBase64Url(lib().createHash as (a: string, o?: unknown) => { digest(enc?: string): Buffer | string })(alg, options);
+      } catch {
+        throw new Error('Digest method not supported');
+      }
+    };
+    const createHmac = (alg: string, key: unknown, options?: unknown) => {
+      const name = hashAlgorithm(alg);
+      if (name) return new Hmac(name, key);
+      try {
+        return withBase64Url(lib().createHmac as (a: string, k: unknown, o?: unknown) => { digest(enc?: string): Buffer | string })(alg, key, options);
+      } catch {
+        throw Object.assign(new TypeError(`Invalid digest: ${alg}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
+      }
+    };
+    const randomFillSync = <T extends ArrayBufferView>(buf: T, offset = 0, size?: number): T => {
+      const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      const end = size === undefined ? bytes.length : offset + size;
+      if (!(offset >= 0 && end <= bytes.length && offset <= end)) throw Object.assign(new RangeError('The value of "offset" or "size" is out of range.'), { code: 'ERR_OUT_OF_RANGE' });
+      // getRandomValues fills at most 64 KiB at a time.
+      for (let at = offset; at < end; at += 65536) globalThis.crypto.getRandomValues(bytes.subarray(at, Math.min(end, at + 65536)) as Uint8Array<ArrayBuffer>);
+      return buf;
+    };
+    const randomBytes = (size: number, cb?: (err: Error | null, buf?: Buffer) => void) => {
+      if (typeof size !== 'number' || !(size >= 0 && size <= 2 ** 31 - 1) || !Number.isInteger(size)) {
+        throw Object.assign(new RangeError(`The value of "size" is out of range. It must be >= 0 && <= ${2 ** 31 - 1}. Received ${String(size)}`), { code: typeof size === 'number' ? 'ERR_OUT_OF_RANGE' : 'ERR_INVALID_ARG_TYPE' });
+      }
+      const buf = randomFillSync(Buffer.allocUnsafe(size));
+      if (typeof cb !== 'function') return buf;
+      queueMicrotask(() => cb(null, buf));
+    };
+    const randomFill = <T extends ArrayBufferView>(buf: T, ...rest: unknown[]) => {
+      const cb = rest.pop() as (err: Error | null, buf?: T) => void;
+      const filled = randomFillSync(buf, rest[0] as number | undefined, rest[1] as number | undefined);
+      queueMicrotask(() => cb(null, filled));
+    };
+    // crypto-browserify's other members, from the library when first used (its keys, in its order:
+    // a test checks them against the library).
+    const crypto = Object.create(null) as Record<string, unknown>;
+    for (const key of CRYPTO_LIB_KEYS) {
+      Object.defineProperty(crypto, key, {
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          const value = lib()[key];
+          Object.defineProperty(crypto, key, { value, writable: true, configurable: true, enumerable: true });
+          return value;
+        },
+        set: (value: unknown) => Object.defineProperty(crypto, key, { value, writable: true, configurable: true, enumerable: true }),
+      });
+    }
+    Object.assign(crypto, {
       createHash,
       createHmac,
       Hash: createHash,
       Hmac: createHmac,
+      randomBytes,
+      pseudoRandomBytes: randomBytes,
+      rng: randomBytes,
+      prng: randomBytes,
+      randomFillSync,
+      randomFill,
       webcrypto: globalThis.crypto,
       subtle: globalThis.crypto.subtle,
       getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
@@ -1016,7 +1084,7 @@ function buildBuiltins() {
         return min + Math.floor(Math.random() * (max - min));
       },
       timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
-      getHashes: () => ['md5', 'sha1', 'sha256', 'sha384', 'sha512'],
+      getHashes: () => ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'],
       getCiphers: () => [],
       constants: {},
       hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
