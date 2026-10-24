@@ -183,10 +183,10 @@ export class Prefetcher {
     let pkg = this.packages.get(pkgDir);
     if (!pkg) {
       this.raw.add(`${pkgDir}/package.json`);
-      pkg = this.installer.raw(this.key, `${pkgDir}/package.json`).then(
-        (f) => (f ? (JSON.parse(f.body.toString('utf8')) as PackageJson) : null),
-        () => null,
-      );
+      pkg = this.installer
+        .raw(this.key, `${pkgDir}/package.json`)
+        .then((f) => (f ? (JSON.parse(f.body.toString('utf8')) as PackageJson | null) : null))
+        .catch(() => null);
       this.packages.set(pkgDir, pkg);
     }
     return pkg;

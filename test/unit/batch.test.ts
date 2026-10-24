@@ -127,6 +127,22 @@ test('a batch starts the projects whose checks took longest in earlier batches f
   }
 });
 
+test('a batch whose earlier summaries are cut off or not batch summaries still runs, in the order given', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    // A batch ended while it wrote its summary (writeFile is not atomic), and one that is valid JSON of another shape.
+    for (const [id, text] of [['b-zz-00', '{"runs": [{"project": "a", "checks'], ['b-zy-00', '"runs"'], ['b-zx-00', 'null']]) {
+      await mkdir(join(dir, id), { recursive: true });
+      await writeFile(join(dir, id, 'summary.json'), text);
+    }
+    const started: string[] = [];
+    await runBatch(timedSession({}, started), ['a', 'b'].map((p) => ({ project: p })), { parallel: 1, prewarm: false, batchDir: dir });
+    assert.deepEqual(started, ['a', 'b']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('a batch short of memory opens the next app only when one has ended, and never waits with none open', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
   try {

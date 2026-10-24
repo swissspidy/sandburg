@@ -182,7 +182,10 @@ const packageVersions = new Map<string, Promise<string | null>>();
 async function preloadList(key: string): Promise<Map<string, true>> {
   let list = preloadLists.get(key);
   if (!list) {
-    const saved = await readFile(preloadListPath(key), 'utf8').then((t) => JSON.parse(t) as string[], () => [] as string[]);
+    const saved = await readFile(preloadListPath(key), 'utf8')
+      .then((t) => JSON.parse(t) as unknown)
+      .then((v) => (Array.isArray(v) ? v.filter((e): e is string => typeof e === 'string') : []))
+      .catch(() => [] as string[]);
     list = preloadLists.get(key) ?? new Map(saved.map((e) => [e, true] as const));
     preloadLists.set(key, list);
   }
@@ -219,10 +222,10 @@ function packageOf(rel: string): { dir: string; name: string; inner: string } | 
 function packageVersion(key: string, dir: string): Promise<string | null> {
   let v = packageVersions.get(`${key}\0${dir}`);
   if (!v) {
-    v = installer.raw(key, `${dir}/package.json`).then(
-      (f) => (f ? ((JSON.parse(f.body.toString('utf8')) as { version?: string }).version ?? null) : null),
-      () => null,
-    );
+    v = installer
+      .raw(key, `${dir}/package.json`)
+      .then((f) => (f ? ((JSON.parse(f.body.toString('utf8')) as { version?: string } | null)?.version ?? null) : null))
+      .catch(() => null);
     packageVersions.set(`${key}\0${dir}`, v);
   }
   return v;

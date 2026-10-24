@@ -268,10 +268,10 @@ async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: 
   const ids = (await readdir(dir).catch(() => [] as string[])).filter((id) => /^b-[0-9a-z]+-[0-9a-f]+$/.test(id));
   ids.sort((a, b) => parseInt(b.split('-')[1], 36) - parseInt(a.split('-')[1], 36));
   for (const id of ids.slice(0, batches)) {
-    const summary = await readFile(join(dir, id, 'summary.json'), 'utf8').then(
-      (t) => JSON.parse(t) as Partial<BatchSummary>,
-      () => null,
-    );
+    // A summary cut off (a batch that ended as it wrote it) counts as none: parsed inside the catch.
+    const summary = await readFile(join(dir, id, 'summary.json'), 'utf8')
+      .then((t) => JSON.parse(t) as Partial<BatchSummary> | null)
+      .catch(() => null);
     for (const run of Array.isArray(summary?.runs) ? summary.runs : []) {
       // Runs in the browser, or in an out-of-browser runtime (compare's reference), as this batch's.
       if (adapterNames.includes(run?.runtime) === outOfBrowser) continue;
