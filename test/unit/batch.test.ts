@@ -155,6 +155,34 @@ test('a batch short of memory opens the next app only when one has ended, and ne
   }
 });
 
+test('apps that just opened count against the memory reserve before their memory shows', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    let open = 0;
+    let maxOpen = 0;
+    let shown = 0;
+    const session = {
+      async run(project: string, options: RunOptions) {
+        maxOpen = Math.max(maxOpen, ++open);
+        // Starting: its memory does not show in availableMemory yet; in its checks it does (1 GiB).
+        await sleep(50);
+        shown++;
+        options.onPhase?.('checks');
+        await sleep(10);
+        shown--;
+        open--;
+        return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: resolve(project), snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 60, checksMs: 10 } } as unknown as RunResult;
+      },
+    } as unknown as Session;
+    // 3 GiB: one app (1 GiB) leaves the 1.5 GiB reserve, two do not.
+    const { summary } = await runBatch(session, ['a', 'b', 'c', 'd'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => (3 - shown) * 2 ** 30 });
+    assert.equal(summary.totals.passed, 4);
+    assert.equal(maxOpen, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a batch in the browser does not order its starts by an out-of-browser runtime's runs", async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
   try {

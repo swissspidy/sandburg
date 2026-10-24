@@ -99,6 +99,15 @@ export function defaultParallel(): number {
  */
 export const MEMORY_RESERVE = 1.5 * 2 ** 30;
 
+/**
+ * What an app that just opened is counted as using, though availableMemory does not show it yet: its
+ * renderer and runtimes allocate as it installs and starts. About a Next.js run's renderer peak (the
+ * largest), for START_WINDOW_MS after it opened or until it reaches its checks, whichever is first.
+ * Without it, a batch opened its first `parallel` apps in one go, before any of them used memory.
+ */
+export const START_ALLOWANCE = 2 ** 30;
+const START_WINDOW_MS = 10_000;
+
 /** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
 export async function discoverProjects(dir: string): Promise<BatchItem[]> {
   const root = resolve(dir);
@@ -139,14 +148,21 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const runs: Promise<void>[] = [];
   const reserve = options.memoryReserve ?? MEMORY_RESERVE;
   const memory = options.availableMemory ?? availableMemory;
+  // Apps that opened lately and have not reached their checks: their memory may not show yet.
+  const recent = new Set<number>();
+  const available = () => {
+    const now = performance.now();
+    for (const at of recent) if (now - at > START_WINDOW_MS) recent.delete(at);
+    return memory() - recent.size * START_ALLOWANCE;
+  };
   // With an app open, the next opens only when there is memory for it; with none, it always opens.
-  const short = () => reserve > 0 && open > 0 && memory() < reserve;
+  const short = () => reserve > 0 && open > 0 && available() < reserve;
   let waitedForMemory = false;
   while (next < items.length) {
     for (;;) {
       if (starting >= parallel || open >= 2 * parallel) await new Promise<void>((r) => wake.push(r));
       else if (short()) {
-        if (!waitedForMemory) options.log?.(`waiting for memory to open the next app (${Math.round(memory() / 2 ** 20)} MB available, ${Math.round(reserve / 2 ** 20)} MB needed)`);
+        if (!waitedForMemory) options.log?.(`waiting for memory to open the next app (${Math.round(available() / 2 ** 20)} MB available, ${Math.round(reserve / 2 ** 20)} MB needed)`);
         waitedForMemory = true;
         // An app that ends frees its memory, but so may the others as they go on: look again in a while.
         await new Promise<void>((r) => {
@@ -160,9 +176,14 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
     starting++;
     open++;
     let counted = true;
+    // Distinct from the others' (a set of times, as two apps may open in the same millisecond).
+    let openedAt = performance.now();
+    while (recent.has(openedAt)) openedAt += 1e-6;
+    recent.add(openedAt);
     const done = () => {
       if (counted) starting--;
       counted = false;
+      recent.delete(openedAt);
       free();
     };
     const run = session

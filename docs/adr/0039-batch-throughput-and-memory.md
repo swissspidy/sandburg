@@ -57,6 +57,9 @@ apart), CPU seconds by process kind, the machine's CPU use over time, and the ho
   process's memory cgroup (v1 or v2) has a lower limit, the limit minus what the cgroup uses besides
   its page cache; shared memory counts as used), it waits until an app ends or memory frees up
   (looking again every 500 ms) and says so once in its log. With none open the next always opens.
+  An app that opened in the last 10 s and has not reached its checks counts as 1 GiB used
+  (`START_ALLOWANCE`, about a Next.js renderer's peak), as its memory does not show yet: without
+  this, the first `parallel` apps all opened at once, before any of them used memory.
   `memoryReserve: 0` turns this off.
 - **The default `parallel` is one app per core, up to 8** (`defaultParallel()`), for `sandburg
   batch`, `compare` and `runBatch`.
