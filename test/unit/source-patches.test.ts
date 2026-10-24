@@ -33,3 +33,32 @@ test("Nitro's dev server checks for a ready worker every 50 ms, for as long as b
   const other = await transformForRuntime(NITRO_GET_WORKER, 'node_modules/other/dist/core/index.mjs', true);
   assert.match(other, /setTimeout\(resolve2, 600\)/);
 });
+
+// @solidjs/start 2.1's server functions plugin, as published (dist/directives/index.js).
+const SOLID_DEBOUNCER = `class Debouncer {
+    source;
+    promise;
+    timeout;
+    constructor(source) {
+        this.source = source;
+        this.promise = createDeferredPromise();
+        this.defer();
+    }
+    defer() {
+        if (this.timeout) {
+            clearTimeout(this.timeout);
+            this.timeout = undefined;
+        }
+        this.timeout = setTimeout(() => {
+            this.promise.resolve(this.source());
+        }, 1000);
+    }
+}
+export { Debouncer };
+`;
+
+test("SolidStart's server functions manifest waits 100 ms for more server functions, not 1 s", async () => {
+  const out = await transformForRuntime(SOLID_DEBOUNCER, 'node_modules/@solidjs/start/dist/directives/index.js', true);
+  assert.match(out, /\}, 100\);/);
+  assert.doesNotMatch(out, /1000/);
+});

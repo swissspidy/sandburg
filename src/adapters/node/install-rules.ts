@@ -318,6 +318,16 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     to: 'const maxRetries = (isTest || isCI ? 100 : 10) * 12; // sandburg: see SOURCE_PATCHES\n$1while (this.building || ++retry < maxRetries) {\n$2await new Promise((resolve2) => setTimeout(resolve2, 50));',
   },
   {
+    // SolidStart 2's server functions manifest (a virtual module the server entry and the client
+    // import) loads once no module with "use server" has been compiled for 1 s: every first page
+    // waited 1 s with nothing to do, on the server and again in the client. Here 100 ms. A module
+    // compiled later still registers its functions as it runs, and makes the plugin invalidate the
+    // manifest, as before; a call to a function no module registered is looked up by its file.
+    file: /(^|\/)node_modules\/@solidjs\/start\/dist\/directives\/index\.js$/,
+    from: /(this\.timeout = setTimeout\(\(\) => \{\n\s*this\.promise\.resolve\(this\.source\(\)\);\n\s*\}, )1000\);/,
+    to: '$1100); // sandburg: see SOURCE_PATCHES',
+  },
+  {
     file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
     from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
     to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
