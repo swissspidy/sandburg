@@ -6,7 +6,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { chromium, type Browser } from 'playwright-core';
 import { Session, launchOptions } from '../../src/orchestrator/session.ts';
 import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
 import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
@@ -120,8 +120,8 @@ document.body.dataset.attempted = 'yes';
 test('no connection escapes the browser through the egress gateway', async () => {
   const { server, port, connections } = await canary();
   const session = new Session();
-  await session.open();
   try {
+    await session.open();
     const project = variant('escape', {
       // A *.sandburg.localhost name on another port than the host server's is not a sandbox origin.
       'src/main.tsx': (counter.files['src/main.tsx'] as string) + escapeAttempts(port, [`http://escape.${SANDBOX_DOMAIN}:${port}`]),
@@ -151,9 +151,10 @@ test('no connection escapes the browser through the egress gateway', async () =>
 test('without the gateway, the dead-proxy backstop alone keeps every connection in', async () => {
   const { server, port, connections } = await canary();
   const host = new HostServer();
-  await host.listen();
-  const browser = await chromium.launch(launchOptions({}));
+  let browser: Browser | undefined;
   try {
+    await host.listen();
+    browser = await chromium.launch(launchOptions({}));
     const origin = host.register('backstop', getAdapter('node'));
     const page = await browser.newPage(); // no egress routing on this context
     await page.goto(origin + '/');
@@ -175,7 +176,7 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
       await open.close();
     }
   } finally {
-    await browser.close();
+    await browser?.close();
     await host.close();
     server.close();
   }
@@ -183,14 +184,15 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
 
 test('the gateway sees HTTPS from pages and workers; another sandbox refuses requests', async () => {
   const host = new HostServer();
-  await host.listen();
-  const browser = await chromium.launch(launchOptions({}));
   const cacheDir = await mkdtemp(join(tmpdir(), 'sandburg-egress-'));
   const stats = newEgressStats();
   const allow = ['https://allowed.sandburg.test'];
   const proxy = new EgressProxy(originMatcher(allow), stats, { noTunnels: true });
-  await proxy.listen();
+  let browser: Browser | undefined;
   try {
+    await host.listen();
+    await proxy.listen();
+    browser = await chromium.launch(launchOptions({}));
     const one = host.register('one', getAdapter('node'));
     const two = host.register('two', getAdapter('node'));
     // As a run's context (session.ts): only the host server's port bypasses the proxy, which opens no tunnels.
@@ -252,7 +254,7 @@ test('the gateway sees HTTPS from pages and workers; another sandbox refuses req
     await context.close();
   } finally {
     await proxy.close();
-    await browser.close();
+    await browser?.close();
     await host.close();
     await rm(cacheDir, { recursive: true, force: true });
   }
