@@ -1083,7 +1083,7 @@ function buildBuiltins() {
     child_process: () => childProcess,
     worker_threads: () => {
       // Threads may be spawned while this thread is blocked; have runtimes ready for them (see threads.ts).
-      if (keepsSpares()) warmRuntimes(base, WARM_RUNTIMES);
+      warmRuntimes(base, WARM_RUNTIMES);
       return threads.module;
     },
     cluster: () => misc.cluster,
@@ -1119,17 +1119,6 @@ function buildBuiltins() {
 }
 
 let moduleSystem: ReturnType<typeof createModuleSystem>;
-/**
- * Whether this runtime boots spare runtimes for its threads: all do but the threads of a napi-rs
- * WebAssembly build (its wasi-worker script, which instantiates the module with `childThread: true`).
- * Those load worker_threads to talk to their parent and ask it to start their threads; one booting
- * spares of its own for each of rolldown's threads held 12 runtimes that never ran in a Vite run.
- */
-function keepsSpares(): boolean {
-  return !thread || !!thread.process || !NAPI_WASI_WORKER.test(thread.main);
-}
-const NAPI_WASI_WORKER = /\/wasi-worker\.m?js$/;
-
 /** Runtime workers booted ahead of time for threads (see threads.ts). */
 const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
 
@@ -1194,7 +1183,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   if (!thread) vfs.mkdir('/tmp', true);
   // WebAssembly threads (napi-rs wasm32-wasi builds) may be spawned while this thread is blocked: have runtimes ready.
-  if (keepsSpares() && Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
+  if (Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
