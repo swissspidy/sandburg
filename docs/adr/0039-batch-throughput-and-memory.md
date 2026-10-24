@@ -1,4 +1,4 @@
-# ADR NNNN: Batch throughput and memory
+# ADR 0039: Batch throughput and memory
 
 - Status: Accepted
 - Date: 2026-10-24
