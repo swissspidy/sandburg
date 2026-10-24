@@ -21,4 +21,5 @@ export type FromWorker =
   | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
   /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
   | { type: 'process-exit'; command: string; code: number; stderr: string }
-  | { type: 'tree'; id: number; files: Record<string, string | { base64: string }> };
+  /** `unchanged`: read-tree's ifChanged, and nothing under the tracked directories changed (files is empty). */
+  | { type: 'tree'; id: number; files: Record<string, string | { base64: string }>; unchanged?: boolean };

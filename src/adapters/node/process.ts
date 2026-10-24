@@ -114,7 +114,7 @@ export class NodeProcess {
   private nextId = 1;
   private label: string;
   private partial = { stdout: '', stderr: '' };
-  private trees = new Map<number, (files: Record<string, CacheFile>) => void>();
+  private trees = new Map<number, (files: Record<string, CacheFile> | null) => void>();
   /** When the page last sent the runtime a request or heard from it (see activity()). */
   private lastActivity = performance.now();
 
@@ -144,8 +144,9 @@ export class NodeProcess {
     return this.until(() => this.ready);
   }
 
-  run(main: string, argv: string[] = []): void {
-    this.worker.postMessage({ type: 'run', main, argv });
+  /** `track`: project directories whose changes the runtime notes from now on (see readTree's ifChanged). */
+  run(main: string, argv: string[] = [], track?: string[]): void {
+    this.worker.postMessage({ type: 'run', main, argv, track });
   }
 
   /** Resolves with the first listening port (or `port`, once it listens). Rejects if the program crashes or exits first. */
@@ -271,11 +272,14 @@ export class NodeProcess {
    * The files under project directories, keyed by project-relative path; with match (a regular
    * expression's source), also the project's files whose path matches, as base64.
    */
-  readTree(dirs: string[], match?: string): Promise<Record<string, CacheFile>> {
+  readTree(dirs: string[], match?: string): Promise<Record<string, CacheFile>>;
+  /** With ifChanged: null when no file under the directories run() tracks changed since the program started. */
+  readTree(dirs: string[], match: undefined, ifChanged: true): Promise<Record<string, CacheFile> | null>;
+  readTree(dirs: string[], match?: string, ifChanged?: boolean): Promise<Record<string, CacheFile> | null> {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.trees.set(id, resolve);
-      this.worker.postMessage({ type: 'read-tree', id, dirs, match });
+      this.worker.postMessage({ type: 'read-tree', id, dirs, match, ifChanged });
     });
   }
 
@@ -336,7 +340,7 @@ export class NodeProcess {
         } else if (!this.ports.includes(m.port)) this.ports.push(m.port);
         break;
       case 'tree':
-        this.trees.get(m.id)?.(m.files);
+        this.trees.get(m.id)?.(m.unchanged ? null : m.files);
         this.trees.delete(m.id);
         break;
       case 'process-exit':
