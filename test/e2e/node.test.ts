@@ -37,23 +37,27 @@ async function nextSeeds(): Promise<Map<string, string[]>> {
 }
 
 // First: later tests start from the seed it stores.
-test('the first Next.js app starts a seed run beside it, which stores all of webpack\'s cache', async () => {
+test('the first Next.js app of each router starts a seed run beside it, which stores all of webpack\'s cache', async () => {
   for (const file of (await nextSeeds()).keys()) await Promise.all([rm(file), rm(`${file}.bin`, { force: true })]);
   const own = new Session();
   await own.open();
   try {
-    const dir = fixture('next-app-router');
-    const result = await own.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
-    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+    for (const dir of [fixture('next-app-router'), fixture('next-pages-router')]) {
+      const result = await own.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
+      assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+    }
   } finally {
-    // Waits for the seed run.
+    // Waits for the seed runs.
     await own.close();
   }
+  // One for the App Router, one for the Pages Router (webpack's names for modules differ between them).
   const seeds = [...(await nextSeeds()).values()];
-  assert.equal(seeds.length, 1);
-  for (const compiler of ['client', 'server']) assert.ok(seeds[0].includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), seeds[0].join('\n'));
-  // Not while webpack was still writing a pack (under <name>_).
-  assert.ok(!seeds[0].some((p) => p.endsWith('_')), seeds[0].join('\n'));
+  assert.equal(seeds.length, 2);
+  for (const seed of seeds) {
+    for (const compiler of ['client', 'server']) assert.ok(seed.includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), seed.join('\n'));
+    // Not while webpack was still writing a pack (under <name>_).
+    assert.ok(!seed.some((p) => p.endsWith('_')), seed.join('\n'));
+  }
 });
 
 test('a Next.js 16 app (App Router, API route) runs on the node runtime', async () => {
