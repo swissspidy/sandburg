@@ -18,12 +18,12 @@ What the suites took (all passing):
 | e2e/vite-frameworks | 154 s | | 100 s |
 | e2e/angular | 102 s | | 62 s |
 | e2e/browser-install | 74 s | | 34 s |
-| e2e/frameworks | 58 s | WARM_FRAMEWORKS | 56 s |
-| e2e/fullstack | 55 s | WARM_FULLSTACK | 41 s |
-| e2e/run | 46 s | WARM_RUN | 55 s |
-| e2e/batch | 26 s | WARM_BATCH | 25 s |
-| e2e/websockets | 20 s | WARM_WEBSOCKETS | 35 s |
-| e2e/page-checks | 9 s | WARM_PAGECHECKS | not run |
+| e2e/frameworks | 58 s | 38.7 s | 56 s |
+| e2e/fullstack | 55 s | 27.9 s | 41 s |
+| e2e/run | 46 s | 33.4 s | 55 s |
+| e2e/batch | 26 s | 22.7 s | 25 s |
+| e2e/websockets | 20 s | 11.9 s | 35 s |
+| e2e/page-checks | 9 s | 7.8 s | not run |
 | unit (25 files, in parallel) | 10.9 s | | ~10 s |
 
 CI runs each e2e file as a job of its own, so a CI run takes as long as its slowest job: ~3 minutes
