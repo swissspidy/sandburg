@@ -458,7 +458,8 @@ export class Session {
             const q = await app.evaluate((h) => (window as unknown as { __sandburgQuiet?: (h: number) => { quiet: boolean; sinceChangeMs: number } }).__sandburgQuiet?.(h) ?? null, remainingMs);
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin);
+          const appSettled = () => host('settled', SETTLE_QUIET_MS, SETTLE_LONG_MS, SETTLE_MAX_MS);
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin, appSettled);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         if (options.collectFiles && options.onAppFiles) {
@@ -528,6 +529,7 @@ async function runChecksPhase(
   options: RunOptions,
   appIdle?: (remainingMs: number) => Promise<boolean>,
   hostOrigin?: string,
+  appSettled?: () => Promise<unknown>,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -543,6 +545,7 @@ async function runChecksPhase(
       network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
       appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
       hostOrigin,
+      appSettled,
     }),
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
@@ -573,6 +576,17 @@ export const PAGE_QUIET_SCRIPT = `(() => {
     return { quiet: true, sinceChangeMs: now - changed };
   };
 })();`;
+
+/**
+ * Before the functional checks, the app settles (host/settle.ts): its framework says input is no
+ * longer lost, or else no request from the page for SETTLE_QUIET_MS and none in flight sent within
+ * SETTLE_LONG_MS (an event stream or a long poll stays open); at most SETTLE_MAX_MS, waited for beside
+ * the artifacts. SvelteKit and Nuxt went on loading client modules for 0.3-1.6 s after they rendered
+ * on the server, and a click before they hydrated did nothing.
+ */
+const SETTLE_QUIET_MS = 100;
+const SETTLE_LONG_MS = 1_000;
+const SETTLE_MAX_MS = 3_000;
 
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;

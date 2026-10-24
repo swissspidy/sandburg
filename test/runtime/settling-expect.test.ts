@@ -2,7 +2,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '@playwright/test';
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 import { settlingExpect } from '../../src/orchestrator/checks.ts';
 import { PAGE_QUIET_SCRIPT } from '../../src/orchestrator/session.ts';
 
@@ -83,4 +83,70 @@ test('with the page-quiet script, a page that updates itself from a timer is not
   const { ms, error } = await timed(() => e(p.locator('h1')).toHaveText('never'));
   assert.ok(error && /Stopped waiting/.test(error.message) && ms < 3_000, `${Math.round(ms)} ms`);
   await p.close();
+});
+
+test('an assertion that waits is checked more often than Playwright polls: it passes soon after the page changes', async () => {
+  // Playwright polls at ~0, 20, 70, 170, 270, 770, 1270 ms: a change at 900 ms is seen at ~1270 ms.
+  const change = '<h1>posting</h1><script>setTimeout(() => (document.querySelector("h1").textContent = "posted"), 900)</script>';
+  await page.setContent(change);
+  const plain = await timed(() => expect(page.locator('h1')).toHaveText('posted', { timeout: 5_000 }));
+  await page.setContent(change);
+  const e = settlingExpect(expect, 5_000, async () => false);
+  const probed = await timed(() => e(page.locator('h1')).toHaveText('posted'));
+  assert.equal(plain.error, null);
+  assert.equal(probed.error, null);
+  assert.ok(plain.ms > 1_200, `Playwright alone: ${Math.round(plain.ms)} ms`);
+  assert.ok(probed.ms < 1_150, `probed: ${Math.round(probed.ms)} ms`);
+  // An own timeout too, and .not.
+  await page.setContent(change);
+  const own = await timed(() => e(page.locator('h1')).toHaveText('posted', { timeout: 3_000 }));
+  assert.ok(own.error === null && own.ms < 1_150, `own timeout: ${Math.round(own.ms)} ms`);
+  await page.setContent(change);
+  const not = await timed(() => e(page.locator('h1')).not.toHaveText('posting'));
+  assert.ok(not.error === null && not.ms < 1_150, `.not: ${Math.round(not.ms)} ms`);
+});
+
+test('once a check beside it passes, the assertion starts no further attempts', async () => {
+  // A state the check beside it saw and the assertion then missed: the assertion keeps timing out,
+  // its one-shot checks (timeout 1 ms) pass.
+  let attempts = 0;
+  let idleCalls = 0;
+  const base = {
+    configure: ({ timeout }: { timeout: number }) => () => ({
+      toHaveText: () =>
+        timeout === 1
+          ? Promise.resolve()
+          : (attempts++, new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('timed out'), { matcherResult: { timeout } })), timeout))),
+    }),
+  } as unknown as typeof expect;
+  const e = settlingExpect(base, 3_000, async () => (idleCalls++, false), opts);
+  const { error } = await timed(() => e({ locator() {}, evaluate() {} } as unknown as Locator).toHaveText('posted'));
+  assert.equal(error, null);
+  // The assertion's own attempt ends at the floor (500 ms); after it, nothing more is tried.
+  await new Promise((r) => setTimeout(r, 1_500));
+  assert.deepEqual({ attempts, idleCalls }, { attempts: 1, idleCalls: 0 });
+});
+
+test('a failing assertion fails as it would without the checks beside it: same message, same time', async () => {
+  await page.setContent('<h1>broken</h1>');
+  const e = settlingExpect(expect, 1_500, async () => false, opts);
+  const probed = await timed(() => e(page.locator('h1')).toHaveText('fixed', { timeout: 1_200 }));
+  const plain = await timed(() => expect(page.locator('h1')).toHaveText('fixed', { timeout: 1_200 }));
+  assert.ok(probed.error && plain.error);
+  const strip = (m: string) => m.replace(/\u001b\[[0-9;]*m/g, '').replace(/\d+ × /g, 'N × ');
+  assert.equal(strip(probed.error!.message), strip(plain.error!.message));
+  assert.ok(probed.ms >= 1_150 && probed.ms < 1_700, `${Math.round(probed.ms)} ms`);
+});
+
+test("toPass and expect(value) are not checked beside the assertion: a callback runs only as Playwright runs it", async () => {
+  await page.setContent('<h1>x</h1>');
+  const e = settlingExpect(expect, 5_000, async () => false, opts);
+  let calls = 0;
+  const t = performance.now();
+  await e(async () => {
+    calls++;
+    if (performance.now() - t < 900) throw new Error('not yet');
+  }).toPass({ timeout: 3_000, intervals: [400] });
+  assert.ok(calls <= 4, `${calls} calls`);
+  await assert.rejects(e(Promise.resolve(1)).resolves.toBe(2));
 });

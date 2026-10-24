@@ -7,6 +7,7 @@
 import { createAdapter, prepare } from 'sandburg:adapter';
 import type { AdapterContext, HostApi, RpcResult, RuntimeAdapter } from './types.ts';
 import type { FileTree, Framework, PackageJson, SerializedError } from '../types.ts';
+import { inputSafe, quiet } from './settle.ts';
 
 let adapter: RuntimeAdapter | null = null;
 let packageJson: PackageJson | null = null;
@@ -45,6 +46,8 @@ function current(): RuntimeAdapter {
   if (!adapter) throw new Error('mount() has not run');
   return adapter;
 }
+
+const SETTLE_POLL_MS = 20;
 
 function appFrame(): HTMLIFrameElement {
   return document.getElementById('app') as HTMLIFrameElement;
@@ -91,6 +94,19 @@ const api: HostApi = {
       return (doc.body?.innerText ?? '').trim().length > 0;
     }),
   activity: () => call(async () => adapter?.activity?.() ?? null),
+  settled: (quietMs: number, longMs: number, maxMs: number) =>
+    call(async () => {
+      const deadline = performance.now() + maxMs;
+      for (;;) {
+        const a = adapter?.activity?.();
+        if (!a || a.sinceRequestMs === undefined) return null;
+        // The framework's word where it gives it, else the app's servers being quiet.
+        if (inputSafe(appFrame().contentWindow) ?? quiet(a, quietMs, longMs)) return true;
+        const left = deadline - performance.now();
+        if (left <= 0) return false;
+        await new Promise((r) => setTimeout(r, Math.min(left, SETTLE_POLL_MS)));
+      }
+    }),
   dispose: () =>
     call(async () => {
       controller.abort();

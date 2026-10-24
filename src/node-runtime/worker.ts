@@ -75,7 +75,8 @@ export type ToWorker =
     }
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
-  | { type: 'run'; main: string; argv?: string[]; preload?: string[] }
+  /** `track`: project directories whose files the runtime notes changes to from now on (see read-tree's ifChanged). */
+  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
   /** The parent closed this child process's IPC channel. */
   | { type: 'disconnect' }
   /** A net connection between runtimes (see netMessage). */
@@ -90,7 +91,7 @@ export type ToWorker =
    * The files under some directories (dev servers' caches, kept for the next run); with match, also
    * the project's files whose path matches it, outside node_modules and dot directories (an app's databases).
    */
-  | { type: 'read-tree'; id: number; dirs: string[]; match?: string }
+  | { type: 'read-tree'; id: number; dirs: string[]; match?: string; ifChanged?: boolean }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
   | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
   | { type: 'ws-close'; id: number; code?: number; reason?: string }
@@ -1462,6 +1463,7 @@ function exitWhenIdle() {
 }
 
 function run(msg: Extract<ToWorker, { type: 'run' }>) {
+  if (msg.track) vfs.track(msg.track.map((d) => `${projectRoot}/${d}`));
   if (!usesSqlite) return start(msg);
   // Work in progress: a child process that has not started its program yet is not idle (see
   // exitWhenIdle), however long SQLite's WebAssembly takes to load.
@@ -1613,6 +1615,8 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
+  // Nothing changed under the tracked directories since the program started: no need to read them.
+  else if (msg.type === 'read-tree' && msg.ifChanged && !msg.match && vfs.trackedChanged() === false) post({ type: 'tree', id: msg.id, files: {}, unchanged: true });
   else if (msg.type === 'read-tree') {
     const files: Record<string, string | { base64: string }> = {};
     const utf8 = new TextDecoder('utf-8', { fatal: true });
