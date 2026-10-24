@@ -310,6 +310,14 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     to: "// The default is turbopack when nothing is configured.\n$1if (bundlerFlags.size === 0 && process.env.NEXT_TEST_WASM) return 1; // sandburg: see SOURCE_PATCHES\n$1if (bundlerFlags.size === 0) {\n",
   },
   {
+    // Nitro's dev server (Nuxt) holds a request that comes before its worker is ready and checks
+    // again every 600 ms: the first page waited up to 0.6 s after the worker was ready. Checked every
+    // 50 ms instead, for as long as before (12 times the checks).
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /const maxRetries = isTest \|\| isCI \? 100 : 10;\n(\s*)while \(this\.building \|\| \+\+retry < maxRetries\) \{\n([^]*?)await new Promise\(\(resolve2\) => setTimeout\(resolve2, 600\)\);/,
+    to: 'const maxRetries = (isTest || isCI ? 100 : 10) * 12; // sandburg: see SOURCE_PATCHES\n$1while (this.building || ++retry < maxRetries) {\n$2await new Promise((resolve2) => setTimeout(resolve2, 50));',
+  },
+  {
     file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
     from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
     to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
