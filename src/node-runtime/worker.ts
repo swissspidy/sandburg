@@ -9,7 +9,7 @@ import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import type { FromWorker } from './messages.ts';
-import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, wakeSpares, warmRuntimes, type ThreadHost, type ThreadInit } from './threads.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createWasi } from './builtins/wasi.ts';
@@ -72,6 +72,8 @@ export type ToWorker =
       thread?: ThreadInit;
       /** A thread inherits these from its parent instead of scanning files it does not have. */
       inherit?: { asyncModules: boolean; usesSqlite: boolean };
+      /** Raised once anything but the install wrote in node_modules (see trackNodeModulesWrites); the main runtime's, for threads. */
+      nodeModulesWrites?: Int32Array;
     }
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: Parameters<typeof adoptMailboxes>[1] }
@@ -829,6 +831,7 @@ let tsRunner = false;
 let threads: ReturnType<typeof createWorkerThreads>;
 let childProcess: ReturnType<typeof createChildProcess>;
 let nodeModulesIndex: Record<string, number> | null = null;
+let nodeModulesWrites: Int32Array | undefined;
 
 function write(stream: 'stdout' | 'stderr', text: string) {
   post({ type: 'log', stream, text });
@@ -1156,8 +1159,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       return data;
     });
     for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) installed.addRemote(`${msg.cwd}/${rel}`, size);
-    vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd, thread.snapshot);
+    vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd, thread.snapshot, msg.nodeModulesWrites);
   }
+  // The main runtime's, before the project's files are written (some may be in node_modules).
+  nodeModulesWrites = thread ? msg.nodeModulesWrites : trackNodeModulesWrites(vfs, msg.cwd, msg.nodeModules);
   nodeModulesIndex = msg.nodeModules;
   for (const [path, content] of Object.entries(msg.files)) {
     const abs = `${msg.cwd}/${path}`;
@@ -1209,7 +1214,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite } }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,

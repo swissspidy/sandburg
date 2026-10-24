@@ -9,7 +9,7 @@
  * need. Shared memory needs a cross-origin isolated page.
  */
 import { EventEmitter } from 'events';
-import { FsError, Vfs, type VStat } from './vfs.ts';
+import { FsError, Vfs, norm, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
@@ -170,11 +170,13 @@ export class ThreadVfs extends RemoteVfs {
 
   private snapshot: Vfs | null;
   private root: string;
+  private nodeModulesWrites: Int32Array | null;
 
-  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>) {
+  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>, nodeModulesWrites?: Int32Array) {
     super(post);
     this.installed = installed;
     this.root = cwd;
+    this.nodeModulesWrites = nodeModulesWrites ?? null;
     this.snapshot = null;
     if (snapshot) {
       const v = new Vfs(() => {
@@ -226,21 +228,25 @@ export class ThreadVfs extends RemoteVfs {
     return above(path) || above(dir);
   }
 
+  /**
+   * Whether the install answers for `path`: the root's node_modules, and those of packages in it
+   * (client/, server/), the node_modules directories themselves included. Asked of a blocked parent,
+   * the snapshot (which leaves out node_modules) would say /app/node_modules does not exist, and
+   * module resolution would skip it (the Angular CLI's TypeScript thread: "Cannot find module
+   * '@angular/core'"). A path the install does not have is answered here too while nothing but the
+   * install has written in node_modules (see trackNodeModulesWrites): module resolution looks for
+   * many (`<package>/node_modules/<name>` for each package up the tree), and each was a round trip
+   * to a parent that is often busy or blocked (a rolldown thread starting up waited 130-170 ms for
+   * one).
+   */
   private local(path: string): boolean {
-    // The root's node_modules, and those of packages in it (client/, server/), the node_modules
-    // directories themselves included: asked of a blocked parent, the snapshot (which leaves out
-    // node_modules) would say /app/node_modules does not exist, and module resolution would skip it
-    // (the Angular CLI's TypeScript thread: "Cannot find module '@angular/core'").
-    return (
-      path.startsWith(this.root) &&
-      (path.includes('/node_modules/') || path.endsWith('/node_modules')) &&
-      !/\/node_modules\/\.(vite|cache|tmp|astro|svelte-kit)/.test(path) &&
-      this.installed.exists(path)
-    );
+    path = norm(path);
+    if (!path.startsWith(`${this.root}/`) || !IN_NODE_MODULES.test(path) || CACHE_IN_NODE_MODULES.test(path)) return false;
+    return this.installed.exists(path) || (!!this.nodeModulesWrites && Atomics.load(this.nodeModulesWrites, 0) === 0);
   }
 
   override exists(path: string): boolean {
-    return this.local(path) || super.exists(path);
+    return this.local(path) ? this.installed.exists(path) : super.exists(path);
   }
   override stat(path: string, syscall = 'stat'): VStat {
     return this.local(path) ? this.installed.stat(path, syscall) : super.stat(path, syscall);
@@ -254,6 +260,44 @@ export class ThreadVfs extends RemoteVfs {
   override readdir(path: string): string[] {
     return this.local(path) ? this.installed.readdir(path) : super.readdir(path);
   }
+}
+
+/** A path in or of a node_modules directory. */
+const IN_NODE_MODULES = /\/node_modules(?:\/|$)/;
+/** Caches dev servers keep in node_modules: threads always ask their parent about them. */
+const CACHE_IN_NODE_MODULES = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)/;
+
+/**
+ * A flag in shared memory that the main runtime raises once anything is written, made, renamed or
+ * removed in a node_modules directory, caches aside (CACHE_IN_NODE_MODULES), apart from making a
+ * directory the install has (a dev server's cache makes /app/node_modules before the install is
+ * known): until then node_modules is the install (`nodeModules`, paths under `root`), and a thread
+ * can tell that a path is not there without asking (ThreadVfs.local). Set up before the project's
+ * files are written. Threads and child processes share their parent's file system, so their writes
+ * land in the main runtime's and raise it too, before they return.
+ */
+export function trackNodeModulesWrites(vfs: Vfs, root: string, nodeModules: Record<string, number> | null): Int32Array {
+  const flag = new Int32Array(new SharedArrayBuffer(4));
+  let dirs: Set<string> | null = null;
+  const installedDir = (path: string) => {
+    if (!dirs) {
+      dirs = new Set();
+      for (const rel of Object.keys(nodeModules ?? {})) {
+        for (let i = rel.lastIndexOf('/'); i > 0; i = rel.lastIndexOf('/', i - 1)) {
+          const dir = `${root}/${rel.slice(0, i)}`;
+          if (dirs.has(dir)) break;
+          dirs.add(dir);
+        }
+      }
+    }
+    return dirs.has(path);
+  };
+  vfs.watch((_event, path) => {
+    if (Atomics.load(flag, 0) || !IN_NODE_MODULES.test(path) || CACHE_IN_NODE_MODULES.test(path)) return;
+    if (vfs.kind(path) === 'dir' && installedDir(path)) return;
+    Atomics.store(flag, 0, 1);
+  });
+  return flag;
 }
 
 /** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output, big files. */
