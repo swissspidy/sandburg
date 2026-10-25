@@ -28,6 +28,8 @@ const PACKUMENT_BYTES = 96 << 20;
 const IDLE_MS = 30_000;
 
 const WORKER_TAG = 'sandburg-npm-resolver';
+/** Marks a resolution refused because a dependency is not a registry package (carried in the worker's error message). */
+const NON_REGISTRY_MARK = 'sandburg-non-registry-dependency';
 /** Packuments read ahead at once (most of the wait is the registry's, for stale cache entries). */
 const READ_AHEAD = 4;
 /** The spec types pacote fetches from a registry's packuments. */
@@ -446,11 +448,32 @@ class ReadAhead {
     this.cache = cache;
     const original = this.pacote.manifest.bind(this.pacote);
     this.pacote.manifest = async (spec, opts) => {
+      // Before pacote fetches a manifest: a git, directory or remote-tarball dependency's manifest is
+      // the clone or the tarball itself, so refusing here means it is never fetched during resolution.
+      this.ensureRegistry(spec);
       const manifest = await original(spec, opts);
       // As build-ideal-tree's #fetchManifest asks (an old lockfile's inflation asks for less).
       if (opts.fullMetadata) this.read(manifest, opts);
       return manifest;
     };
+  }
+
+  /** Throws (marked) for a spec that is not a registry package, before pacote fetches it. */
+  private ensureRegistry(spec: unknown): void {
+    type Resolved = Spec & { subSpec?: Resolved; raw?: string };
+    let s: Resolved | null = null;
+    try {
+      s = (typeof spec === 'string' ? this.npa(spec) : spec) as Resolved;
+    } catch {
+      return; // not classifiable here; the lockfile checks catch it before extraction
+    }
+    const registry = (r: Resolved | null | undefined): boolean => {
+      if (!r || typeof r.type !== 'string') return true;
+      if (REGISTRY_SPECS.has(r.type)) return true;
+      if (r.type === 'alias') return registry(r.subSpec);
+      return false;
+    };
+    if (!registry(s)) throw new Error(`${NON_REGISTRY_MARK}: ${s?.raw ?? String(spec)} is not a registry package`);
   }
 
   /** A resolution of dir starts. What the last one learnt goes, unless another is still running (`alone`). */
@@ -592,6 +615,12 @@ export class Resolver {
     try {
       const { error } = await this.ask({ dir, force: !!options.force });
       if (error === undefined) return true;
+      // A non-registry dependency is refused outright: falling back to the CLI would only let it
+      // fetch what the worker would not. The caller reports it as unsupported.
+      if (error.includes(NON_REGISTRY_MARK)) {
+        const detail = error.slice(error.indexOf(NON_REGISTRY_MARK) + NON_REGISTRY_MARK.length + 2);
+        throw Object.assign(new Error(`only registry versions can be installed: ${detail}`), { code: 'UNSUPPORTED' });
+      }
       log(`npm (in process): ${error.split('\n')[0]}; npm resolves again`);
       return false;
     } finally {

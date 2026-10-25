@@ -180,9 +180,14 @@ export class Installer {
       const m = manifest as Manifest;
       const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
       if (!(await this.resolver.resolve(tmp, log))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+      // The resolved tree holds only registry packages: a transitive git, directory, or
+      // off-registry-host tarball dependency (a registry package may declare one) is refused before
+      // anything is unpacked or the full npm install fetches it.
+      const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
+      if (resolvedLock !== null) assertRegistryLockfile(resolvedLock);
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
-      const packages = installedPackages(JSON.parse(await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => '{}')));
+      const packages = installedPackages(JSON.parse(resolvedLock ?? '{}'));
       const sides = this.sides;
       const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
