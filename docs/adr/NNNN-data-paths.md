@@ -75,7 +75,20 @@ Three findings shaped what followed:
     renderers' peak 3.7 → 3.9 GB, within what rounds vary (3.9 and 4.1 GB in one round). Single runs,
     warm, n=5: next-app-router's install 0.52 → 0.41 s (−19%), total 5.42 → 5.40 s; vite-react-counter's
     data is under 16 KB (unchanged).
-- The branch against origin/quality-structure: TODO
+- The branch against origin/quality-structure (`scripts/bench.ts`, both sides as refs, interleaved,
+  warm, medians; origin/quality-structure's worktree had run before, the branch's was new, so its
+  first round includes the first runs of the install and of Next.js' seed):
+
+  | Fixture | Total | Install | Start | Ready |
+  |---|---|---|---|---|
+  | vite-react-counter (n=3) | 1.73 → 1.77 s (+2%) | 0.24 → 0.23 s | 0.74 → 0.75 s | 0.33 → 0.36 s |
+  | lit-vite (n=3) | 1.33 → 1.38 s (+4%) | 0.20 → 0.14 s | 0.60 → 0.51 s | 0.31 → 0.31 s |
+  | sveltekit-app (n=3) | 3.60 → 3.56 s (−1%) | 0.46 → 0.41 s | 1.41 → 1.42 s | 1.19 → 1.13 s |
+  | next-app-router (n=4, again) | 5.57 → 5.46 s (−2%) | 0.64 → 0.42 s | 1.19 → 1.19 s | 3.00 → 3.00 s |
+
+  In the first three-round run next-app-router read 5.65 → 6.02 s: its rounds were 5.7/5.6/5.6 and
+  9.9 (the new worktree's first)/5.6/6.0 s. Warm totals do not move beyond noise; what changes is the
+  host's thread in batches, the bytes per run, and a first run's dispose (above).
 - **Behaviour:** a cached text file that starts with a BOM keeps it (the runtime's decoder dropped
   it). A run's preload bundle may lack a file earlier runs loaded but never read; the runtime asks
   for it, and it is in the next bundle again. Nothing an app sees changes.
