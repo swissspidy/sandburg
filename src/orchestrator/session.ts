@@ -425,6 +425,8 @@ export class Session {
     let tab: Tab | null = null;
     let memory: RendererMemory | null = null;
     let sampler: NodeJS.Timeout | undefined;
+    let sampling = false;
+    let stopped = false;
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -472,14 +474,19 @@ export class Session {
       memory = this.rendererMemory(tab);
       if (memory) {
         const m = memory;
-        const sample = () => void m.locate().then((found) => found && m.used());
         // Looked for as the app starts: its renderer holds ~50 MB until then (the host page), and
-        // looking costs the page a little while it mounts and installs. Then its peak is kept.
+        // looking costs the page a little while it mounts and installs. Looked for again soon while
+        // other renderers fit too (tabs that opened together); then read for its peak.
+        const sample = async () => {
+          const found = await m.locate();
+          if (found) m.used();
+          if (!stopped) sampler = setTimeout(() => void sample(), found ? RENDERER_SAMPLE_MS : RENDERER_LOCATE_MS);
+        };
         run.onPhase = (phase) => {
           options.onPhase?.(phase);
-          if (phase !== 'start' || sampler) return;
-          sample();
-          sampler = setInterval(sample, RENDERER_SAMPLE_MS);
+          if (phase !== 'start' || sampling) return;
+          sampling = true;
+          void sample();
         };
       }
       const t = tab;
@@ -549,7 +556,8 @@ export class Session {
       run.skipRemaining();
       return await run.finish(outDir);
     } finally {
-      clearInterval(sampler);
+      stopped = true;
+      clearTimeout(sampler);
       memory?.stop();
       if (tab) await this.closeTab(tab);
       else {
@@ -669,8 +677,9 @@ const SETTLE_MAX_MS = 3_000;
 /** How long each of a run's isolates has to answer a garbage collection (a blocked worker answers nothing). */
 const GC_TIMEOUT_MS = 2_000;
 
-/** How often a run looks for its renderer until found, then reads its memory (for the peak). */
+/** How often a run reads its renderer's memory once found (for the peak), and looks for it until then. */
 const RENDERER_SAMPLE_MS = 1_000;
+const RENDERER_LOCATE_MS = 250;
 
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;

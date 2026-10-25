@@ -2,22 +2,33 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { RendererMemory, matchRenderer, processMemory } from '../../src/orchestrator/renderer-memory.ts';
 
-test("a page's renderer is the one renderer whose CPU time is the page's, within what it can have used since", () => {
-  const renderers = [
+test("a page's renderer is the one renderer whose CPU time, read before and after the page's, brackets it", () => {
+  const before = [
     { pid: 10, cpuSeconds: 0.05 },
-    { pid: 11, cpuSeconds: 3.31 },
-    { pid: 12, cpuSeconds: 3.6 },
+    { pid: 11, cpuSeconds: 3.3 },
+    { pid: 12, cpuSeconds: 3.5 },
   ];
-  assert.equal(matchRenderer(3.31, renderers, 0.001, 4), 11);
-  // Read one tick short, or a little later on.
-  assert.equal(matchRenderer(3.32, renderers, 0.001, 4), 11);
-  assert.equal(matchRenderer(3.3, renderers, 0.001, 4), 11);
-  // 0.1 s between the readings: 12 (0.29 s ahead) could be the page's renderer too, on 4 cores.
-  assert.equal(matchRenderer(3.31, renderers, 0.1, 4), null);
-  // None fits: a renderer cannot have gone back in time.
-  assert.equal(matchRenderer(5, renderers, 0.001, 4), null);
+  const after = [
+    { pid: 10, cpuSeconds: 0.05 },
+    { pid: 11, cpuSeconds: 3.32 },
+    { pid: 12, cpuSeconds: 3.9 },
+  ];
+  assert.equal(matchRenderer(3.31, before, after), 11);
+  // Read a tick apart.
+  assert.equal(matchRenderer(3.31, [{ pid: 11, cpuSeconds: 3.32 }], [{ pid: 11, cpuSeconds: 3.32 }]), 11);
+  // 12 was busy in between: it fits 3.6 s, and only it.
+  assert.equal(matchRenderer(3.6, before, after), 12);
+  // Both busy, both passing 3.45 s in between: either could be the page's.
+  assert.equal(matchRenderer(3.45, [{ pid: 11, cpuSeconds: 3.4 }, { pid: 12, cpuSeconds: 3.44 }], [{ pid: 11, cpuSeconds: 3.5 }, { pid: 12, cpuSeconds: 3.9 }]), null);
+  // None fits; one that started in between is not taken.
+  assert.equal(matchRenderer(5, before, after), null);
+  assert.equal(matchRenderer(0.2, before, [...after, { pid: 13, cpuSeconds: 0.2 }]), null);
   // Two tabs that loaded side by side.
-  assert.equal(matchRenderer(0.3, [{ pid: 1, cpuSeconds: 0.3 }, { pid: 2, cpuSeconds: 0.3 }], 0.001, 4), null);
+  const idle = [
+    { pid: 1, cpuSeconds: 0.3 },
+    { pid: 2, cpuSeconds: 0.3 },
+  ];
+  assert.equal(matchRenderer(0.3, idle, idle), null);
 });
 
 test('RendererMemory looks again until one renderer fits, then reads only that one, until the run is over', async () => {
@@ -35,7 +46,6 @@ test('RendererMemory looks again until one renderer fits, then reads only that o
       memory: (pid) => (read.push(pid), pid * 100),
       release: () => released++,
     },
-    4,
   );
   assert.equal(await memory.locate(), false, 'two renderers fit');
   assert.equal(memory.used(), null);
