@@ -96,7 +96,7 @@ test('read-ahead: only files of the install, and an answer fits the file channel
 test('push: a transform comes with the transformed modules it requires, each once per file channel', async () => {
   const { sharedInstaller } = await import('../../src/adapters/node/install.ts');
   const { Prefetcher } = await import('../../src/adapters/node/prefetch.ts');
-  const { pushAhead } = await import('../../src/adapters/node/read-ahead.ts');
+  const { pushAhead } = await import('../../src/adapters/node/index.ts');
   const app = 'e'.repeat(24);
   const tree: Record<string, string> = {
     'node_modules/tool/package.json': JSON.stringify({ name: 'tool', main: 'index.js' }),

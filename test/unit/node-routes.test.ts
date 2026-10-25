@@ -26,8 +26,7 @@ before(async () => {
   await writeFile(join(install, 'package.json'), '{"secret":"the project"}');
   await writeFile(join(root, 'host-secret.txt'), 'the host');
   await symlink(join(root, 'host-secret.txt'), join(install, 'node_modules', 'pkg', 'link.json'));
-  ({ serve } = await import('../../src/adapters/node/index.ts'));
-  ({ cacheEntries } = await import('../../src/adapters/node/dev-cache.ts'));
+  ({ serve, cacheEntries } = await import('../../src/adapters/node/index.ts'));
 });
 after(async () => {
   // The first test's served file is recorded in the install's preload list, written 2 s later:

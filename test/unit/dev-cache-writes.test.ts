@@ -11,11 +11,11 @@ import { join } from 'node:path';
 import type { HostRequest, HostResponse } from '../../src/types.ts';
 
 let root: string;
-let node: typeof import('../../src/adapters/node/index.ts') & typeof import('../../src/adapters/node/dev-cache.ts');
+let node: typeof import('../../src/adapters/node/index.ts');
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'sandburg-dev-cache-'));
   process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
-  node = { ...(await import('../../src/adapters/node/index.ts')), ...(await import('../../src/adapters/node/dev-cache.ts')) };
+  node = await import('../../src/adapters/node/index.ts');
 });
 after(() => rm(root, { recursive: true, force: true }));
 
