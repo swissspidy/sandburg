@@ -1,4 +1,4 @@
-# ADR NNNN: Compiled code across runs: axe-core's from V8, the host's own from disk
+# ADR 0042: Compiled code across runs: axe-core's from V8, the host's own from disk
 
 - Status: Accepted
 - Date: 2026-10-25

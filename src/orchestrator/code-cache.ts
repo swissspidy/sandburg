@@ -1,5 +1,5 @@
 /**
- * V8's compiled code for the host's own scripts, kept across runs (ADR NNNN).
+ * V8's compiled code for the host's own scripts, kept across runs (ADR 0042).
  *
  * Every run is its own browser context, an off-the-record profile with no code cache, so the 650 KB
  * of axe-core that the checks load into the app's frame was compiled anew in every run: its compile
