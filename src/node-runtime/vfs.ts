@@ -40,6 +40,8 @@ const ERRNO: Record<string, number> = { ENOENT: 2, EEXIST: 17, ENOTDIR: 20, EISD
 
 interface FileNode {
   data: Uint8Array | null; // null: not fetched yet (remote)
+  /** A large remote file's bytes, while someone holds them (see read). */
+  weak?: WeakRef<Uint8Array>;
   /** Memory this file owns, with room to grow; `data` is its first `size` bytes (see writeAt). */
   store?: Uint8Array;
   size: number;
@@ -48,6 +50,9 @@ interface FileNode {
 }
 
 export type WatchListener = (event: 'rename' | 'change', path: string) => void;
+
+/** Remote files this large are held weakly once read (see Vfs.read). */
+const KEEP_REMOTE_BELOW = 4 << 20;
 
 export class Vfs {
   private files = new Map<string, FileNode>();
@@ -119,8 +124,16 @@ export class Vfs {
     path = norm(path);
     const f = this.files.get(path);
     if (!f) throw new FsError(this.dirs.has(path) ? 'EISDIR' : 'ENOENT', 'open', path);
-    if (!f.data) f.data = this.fetchRemote(path);
-    return f.data;
+    if (f.data) return f.data;
+    // A remote file is an installed one, which the host serves the same each time: a large one
+    // (a WebAssembly binary, read once to compile it: swc's 29 MB, beside its compiled code) is
+    // fetched again if read once its reader let go of it, rather than kept for the run.
+    const kept = f.weak?.deref();
+    if (kept) return kept;
+    const data = this.fetchRemote(path);
+    if (data.length >= KEEP_REMOTE_BELOW) f.weak = new WeakRef(data);
+    else f.data = data;
+    return data;
   }
 
   write(path: string, data: Uint8Array, append = false): void {
