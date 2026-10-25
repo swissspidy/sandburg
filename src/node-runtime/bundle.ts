@@ -1,6 +1,10 @@
 /** Builds the runtime worker bundle (served by the host at /__sandburg/node-worker.js). */
 import * as esbuild from 'esbuild';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { cachedBuild } from './bundle-cache.ts';
 import { dirname, join, relative, sep } from 'node:path';
 import { source } from '../sources.ts';
 import { LIBS_KEY, MODULES_KEY, RUNTIME_LIBS, type RuntimeLib } from './libs.ts';
@@ -80,10 +84,17 @@ const REGISTER = `  var __commonJSUnshared = __commonJS, __sandburgModules = glo
 
 let cached: Promise<string> | null = null;
 
+/**
+ * What a build's output depends on besides the files it reads: this module (the builds' options,
+ * plugins and post-processing) and the libraries' table.
+ */
+const BUILD_SALT = [import.meta.url, here('libs.ts')].map((u) => readFileSync(u.startsWith('file:') ? fileURLToPath(u) : u, 'utf8')).join('\0');
+
 export function bundleNodeRuntime(): Promise<string> {
-  cached ??= esbuild
+  cached ??= cachedBuild('node-worker', BUILD_SALT, ROOT, () => esbuild
     .build({
       entryPoints: [here('worker.ts')],
+      metafile: true,
       absWorkingDir: ROOT,
       bundle: true,
       write: false,
@@ -106,9 +117,7 @@ export function bundleNodeRuntime(): Promise<string> {
         },
         aliases,
       ],
-    })
-    .then((r) => {
-      const text = r.outputFiles[0].text;
+    }), (text) => {
       const helper = COMMONJS_HELPER.exec(text);
       const end = helper ? text.indexOf('\n  };\n', helper.index) : -1;
       if (end < 0) throw new Error("bundleNodeRuntime: esbuild's __commonJS helper changed; update COMMONJS_HELPER");
@@ -143,7 +152,9 @@ export function bundleRuntimeLib(name: RuntimeLib): Promise<string> {
     lib = bundleNodeRuntime().then(async (runtime) => {
       const shared = new Set([...runtime.matchAll(COMMONJS_MODULE)].map((m) => m[1]));
       const key = (k: string) => `globalThis[Symbol.for(${JSON.stringify(k)})]`;
-      const r = await esbuild.build({
+      const salt = `${BUILD_SALT}\0${name}\0${createHash('sha256').update(runtime).digest('hex')}`;
+      return cachedBuild(`node-${name}`, salt, ROOT, () => esbuild.build({
+        metafile: true,
         stdin: { contents: LIB_ENTRY[name](key(LIBS_KEY)), resolveDir: libDir(name), sourcefile: `node-${name}.js` },
         absWorkingDir: ROOT,
         bundle: true,
@@ -171,8 +182,7 @@ export function bundleRuntimeLib(name: RuntimeLib): Promise<string> {
           },
           aliases,
         ],
-      });
-      return r.outputFiles[0].text;
+      }));
     });
     libs.set(name, lib);
     lib.catch(() => libs.delete(name));
