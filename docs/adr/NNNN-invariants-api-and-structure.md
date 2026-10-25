@@ -90,6 +90,19 @@ as infra, skipped phases in order). No `catch {}` in src is without a statement 
 (code-stats); the `.catch(() => {})` calls read in the host are best-effort work (caches, prefetch,
 cleanup, a promise awaited elsewhere) and stay.
 
+### What a result keeps of an app's strings (`src/orchestrator/limits.ts`)
+
+An error's message and stack (a phase's, an uncaught one in the page), a console line and a check's
+message are the app's: one could be 50 MB, and result.json, the batch summary and comparison report
+built from it, and the host's memory (up to 100 page errors and 500 console lines a run) took them
+whole. A run keeps the first 16,384 characters of each (2,000 of a console line and its URL, as
+before for the line; 200 of an error's name and code), as a string of its own (a slice would keep
+the whole string alive), and says how many more there were: `… (N more characters)`. They are
+capped where they are recorded (RunState's error serializer, the page's pageerror and console
+handlers) and once more over the whole result before it is written (the checks' messages and the
+Failure's message and evidence). test/unit/result-limits.test.ts: an app that throws, logs, fails a
+phase and a check with 50 MB strings leaves a result.json under 512 KB.
+
 ### Polyfills: each package once, and the url polyfill as Node's
 
 - **Duplicate packages** (`src/node-runtime/bundle-dedupe.ts`): npm nests a copy of a package
@@ -155,7 +168,7 @@ then
 | node:crypto's script (node-crypto.js) | 1,242,331 bytes | 691,598 bytes |
 | lint rules of the project's own | 0 | 3 (28 test cases) |
 | `npm run lint` | 2.3 s | 2.9 s |
-| unit tests | 196 | 233 |
+| unit tests | 196 | 235 |
 | runtime tests | 69 | 71 |
 
 On this branch (1f6cc37), from an empty `.sandburg`: the run (10), node (13), vite-frameworks (9),
@@ -201,7 +214,8 @@ is on those programs' first use, not on these fixtures' totals.
   host, or an in-place write in the install code; `npm test` fails an API change that is not in
   api/sandburg.api.md, and an export without a doc comment.
 - The host's largest module is 700 lines; the node adapter's capability tokens are in one module.
-- Behaviour changes: `url.parse(…, true).query` and `url.format({ query })` in the runtime now give
+- Behaviour changes: an error message, stack or check message over 16,384 characters (a console
+  line over 2,000) ends in `… (N more characters)` in results. `url.parse(…, true).query` and `url.format({ query })` in the runtime now give
   Node's results (before: qs's nesting and array limit). The package exports six more types.
   Nothing else an app or a user could notice.
 
@@ -223,8 +237,6 @@ is on those programs' first use, not on these fixtures' totals.
 - The remaining polyfill weight in the runtime's script: `assert` (72 KB) and `util`'s
   is-typed-array chain (get-intrinsic, call-bind and the like) are evaluated by every runtime;
   either could become a runtime library (RUNTIME_LIBS) loaded on first use.
-- A cap on the size of a phase error's message and stack and of a page error's (an app controls
-  them; result.json takes them whole).
 - axe-core is MPL-2.0 (file-level copyleft; we ship it unmodified) and querystring-es3 declares its
   MIT licence only in its License.md; the other 150 runtime dependencies are MIT, ISC, BSD,
   Apache-2.0 or 0BSD.
