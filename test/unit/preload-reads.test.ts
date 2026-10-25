@@ -12,7 +12,8 @@ import { dirname, join } from 'node:path';
 
 const root = mkdtempSync(join(tmpdir(), 'sandburg-reads-'));
 process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
-const { serve, preloadEntries, grantReads } = await import('../../src/adapters/node/index.ts');
+const { serve, grantReads } = await import('../../src/adapters/node/index.ts');
+const { preloadEntries } = await import('../../src/adapters/node/preload.ts');
 after(() => rmSync(root, { recursive: true, force: true }));
 
 const key = 'd'.repeat(24);

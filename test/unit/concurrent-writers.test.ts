@@ -52,11 +52,12 @@ test('egress cache: metadata is only trusted with the body it was written with',
 });
 
 test('preload lists: a process that writes a list keeps what another process recorded in it', async () => {
-  // Two copies of the node adapter, as two processes on one .sandburg/ (each keeps its lists in memory).
-  type Adapter = typeof import('../../src/adapters/node/index.ts');
-  const adapter = '../../src/adapters/node/index.ts';
-  const a = (await import(`${adapter}?process=a`)) as Adapter;
-  const b = (await import(`${adapter}?process=b`)) as Adapter;
+  // Two copies of the preload lists' module, as two processes on one .sandburg/ (each keeps its lists
+  // in memory; the module that holds them is preload.ts since the node adapter's split).
+  type Preload = typeof import('../../src/adapters/node/preload.ts');
+  const preload = '../../src/adapters/node/preload.ts';
+  const a = (await import(`${preload}?process=a`)) as Preload;
+  const b = (await import(`${preload}?process=b`)) as Preload;
   const key = 'f'.repeat(24);
   const files: Record<string, string> = {
     'node_modules/pkg/package.json': JSON.stringify({ name: 'pkg', version: '1.0.0' }),
@@ -67,14 +68,13 @@ test('preload lists: a process that writes a list keeps what another process rec
     mkdirSync(dirname(join(root, 'installs', key, path)), { recursive: true });
     writeFileSync(join(root, 'installs', key, path), content);
   }
-  const get = (adapter: typeof a, rel: string) => adapter.serve({ method: 'GET', path: `/__sandburg/nm/${key}/f/${rel}`, query: new URLSearchParams(), body: async () => Buffer.alloc(0) });
   const list = join(root, 'dev-cache', `preload-${key}.json`);
   const saved = () => (existsSync(list) ? (JSON.parse(readFileSync(list, 'utf8')) as string[]) : []);
   // Lists are written 2 s after a file is first recorded: b writes its list while a has its own in
   // memory (read before b wrote), and a writes later.
-  assert.equal((await get(b, 'node_modules/pkg/b.json'))?.status, 200);
+  await b.recordLoad(key, 'f', 'node_modules/pkg/b.json');
   await new Promise((r) => setTimeout(r, 1_000));
-  assert.equal((await get(a, 'node_modules/pkg/a.json'))?.status, 200);
+  await a.recordLoad(key, 'f', 'node_modules/pkg/a.json');
   await new Promise((r) => setTimeout(r, 1_500));
   assert.deepEqual(saved(), ['f:node_modules/pkg/b.json']);
   await new Promise((r) => setTimeout(r, 1_500));
