@@ -6,7 +6,7 @@
  * and the index of package binaries. The result is the files of node_modules, in memory.
  */
 import semver from 'semver';
-import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from '../../adapters/node/install-rules.ts';
+import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from '../../adapters/node/install-rules.ts';
 import type { Registry } from './registry.ts';
 import { resolveTree, type Placed, type RootPackage } from './resolve.ts';
 
@@ -46,7 +46,18 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 
 /** A package with its own dependencies inside it: a sub-tree resolved alone, placed under `at`. */
 async function isolated(registry: Registry, name: string, range: string, at: string): Promise<Placed[]> {
-  const tree = await resolveTree({ dependencies: { [name]: range } }, registry);
+  let tree = await resolveTree({ dependencies: { [name]: range } }, registry);
+  // A WebAssembly binding's runtime may need another emnapi than the binding pins (emnapiToAlign).
+  const emnapi = emnapiToAlign(
+    [...tree.values()]
+      .filter((p) => p.name === '@napi-rs/wasm-runtime')
+      .map((runtime) => {
+        const dir = runtime.path.slice(0, -'@napi-rs/wasm-runtime'.length);
+        const core = tree.get(`${dir}@emnapi/core`) ?? tree.get('node_modules/@emnapi/core');
+        return { peer: runtime.peerDependencies?.['@emnapi/core'], core: core?.version };
+      }),
+  );
+  if (emnapi) tree = await resolveTree({ dependencies: { [name]: range }, overrides: emnapiOverrides(emnapi) }, registry);
   const out: Placed[] = [];
   for (const p of tree.values()) {
     const rest = p.path.slice('node_modules/'.length);

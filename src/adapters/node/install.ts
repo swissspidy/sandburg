@@ -18,7 +18,7 @@ import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import type { Project } from '../../types.ts';
-import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
+import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 
@@ -478,6 +478,27 @@ function packageType(installDir: string, rel: string, index: FileIndex): Promise
  * (where its own on-demand download would extract it). Put the installed copy there.
  */
 /**
+ * npm overrides that give each binding of a side install the emnapi its runtime needs
+ * (emnapiToAlign, install-rules.ts), scoped to that binding: the bindings of one install pin
+ * different ones (rolldown 2.0.0-alpha.5, satteri 1.11.1). null: none needs one.
+ */
+export async function sideEmnapiOverrides(side: string, bindings: string[]): Promise<Record<string, Record<string, string>> | null> {
+  const nm = join(side, 'node_modules');
+  const manifest = (dir: string) => readFile(join(dir, 'package.json'), 'utf8').then((t) => JSON.parse(t) as { version?: string; peerDependencies?: Record<string, string> }, () => null);
+  // What a binding resolves: nested in it, else at the top.
+  const resolved = async (binding: string, name: string) => (await manifest(join(nm, binding, 'node_modules', name))) ?? (await manifest(join(nm, name)));
+  const overrides: Record<string, Record<string, string>> = {};
+  for (const binding of bindings) {
+    const runtime = await resolved(binding, '@napi-rs/wasm-runtime');
+    if (!runtime) continue;
+    const core = await resolved(binding, '@emnapi/core');
+    const emnapi = emnapiToAlign([{ peer: runtime.peerDependencies?.['@emnapi/core'], core: core?.version }]);
+    if (emnapi) overrides[binding] = emnapiOverrides(emnapi);
+  }
+  return Object.keys(overrides).length ? overrides : null;
+}
+
+/**
  * napi-rs packages (rolldown, the Astro compiler, oxc, …) list a `*-wasm32-wasi` build among their
  * optional dependencies; npm skips it on this platform (cpu: wasm32). The runtime loads those builds
  * through node:wasi, so they are installed here, with their own dependencies (@napi-rs/wasm-runtime,
@@ -497,8 +518,16 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
     Object.assign(candidates, found.candidates);
   }
   // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
-  const install = (bindings: [string, string][]) =>
-    sideInstall(sides, { name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings) }, ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+  const flags = ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'];
+  const manifest = (bindings: [string, string][], overrides?: Record<string, Record<string, string>>) => ({ name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings), ...(overrides && { overrides }) });
+  // The runtime napi-rs bindings load through may need another emnapi than they pin (emnapiToAlign).
+  const install = async (bindings: [string, string][]) => {
+    const side = await sideInstall(sides, manifest(bindings), flags, log);
+    const overrides = await sideEmnapiOverrides(side, bindings.map(([name]) => name));
+    if (!overrides) return side;
+    log(`WebAssembly builds: ${Object.entries(overrides).map(([binding, o]) => `${binding} with @emnapi/core ${o['@emnapi/core']}`).join(', ')}, as @napi-rs/wasm-runtime needs`);
+    return sideInstall(sides, manifest(bindings, overrides), flags, log);
+  };
   // The listed bindings are installed while npm view looks for the others. Most of those do not
   // exist; when one does, all are installed together, as one tree.
   const listed = Object.entries(wanted).filter(([name]) => !top.has(name));
@@ -692,7 +721,7 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
  * Writes a file as a new file: an install may share files with another through hard links (see
  * Installer.startFromClosest), and writing into one would change both.
  */
-async function replaceFile(path: string, content: string | Buffer): Promise<void> {
+export async function replaceFile(path: string, content: string | Buffer): Promise<void> {
   await rm(path, { force: true });
   await writeFile(path, content);
 }

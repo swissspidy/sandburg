@@ -106,7 +106,7 @@ function granted<T extends { key: string; sandbox: string | null }>(from: Map<st
 }
 
 /** The entries of a cache that are text files under `dirs`. */
-function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
+export function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
   const out: Record<string, string | { base64: string }> = {};
   if (!value || typeof value !== 'object') return out;
   for (const [path, content] of Object.entries(value)) {
