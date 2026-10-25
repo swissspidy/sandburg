@@ -13,7 +13,7 @@
  */
 import type { Vfs } from './vfs.ts';
 
-export interface TransformResult {
+interface TransformResult {
   code: string;
   map?: unknown;
 }

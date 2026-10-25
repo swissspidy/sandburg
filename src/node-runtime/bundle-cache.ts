@@ -15,7 +15,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { version as esbuildVersion, type Metafile } from 'esbuild';
 
 /** Where entries are kept (beside the installs, as the host's other caches). */
-export const bundleCacheDir = (): string => resolve(process.env.SANDBURG_INSTALL_DIR ?? '.sandburg/installs', '..', 'bundles');
+const bundleCacheDir = (): string => resolve(process.env.SANDBURG_INSTALL_DIR ?? '.sandburg/installs', '..', 'bundles');
 
 interface Entry {
   /** Digest of each file read, by its path relative to the build's working directory. */

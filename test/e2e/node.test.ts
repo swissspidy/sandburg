@@ -56,7 +56,7 @@ test('the first Next.js app of each router starts a seed run beside it, which st
   node.hostInstall = async (project, log, options) => {
     const host = (await hostInstall.call(node, project, log, options)) as { resolved: Record<string, string> };
     if (!options?.seed) resolved.set(project.name, host.resolved);
-    return host as never;
+    return host;
   };
   const statuses: number[] = [];
   const own = new Session();

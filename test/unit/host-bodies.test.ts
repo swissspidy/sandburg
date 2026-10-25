@@ -57,6 +57,7 @@ function post(path: string, { declared, send, headers = {} }: { declared?: numbe
     });
     sock.on('close', finish);
     sock.on('error', () => finish());
+    // oxlint-disable-next-line typescript/no-misused-promises -- a test client: a failed write fails its test
     sock.on('connect', async () => {
       sock.write(head);
       const chunk = Buffer.alloc(64 << 10, 0x61);
@@ -99,7 +100,7 @@ test('an oversized body to each route is refused with a 413, without the host re
   const ok = await new Promise<number>((resolve, reject) => {
     const sock = connect(host.port, '127.0.0.1', () => sock.write(`POST /__sandburg/dev-cache/${key} HTTP/1.1\r\nHost: s-a.sandburg.localhost:${host.port}\r\nx-sandburg-token: ${token}\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`));
     let answer = '';
-    sock.on('data', (d) => (answer += d));
+    sock.on('data', (d) => (answer += String(d)));
     sock.on('close', () => resolve(Number(answer.slice(9, 12))));
     sock.on('error', reject);
   });

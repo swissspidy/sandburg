@@ -40,7 +40,7 @@ export async function collectGarbage(session: DevtoolsSession, timeoutMs: number
   let isolates = 0;
   const visit = async (send: Send, listen: On, depth: number): Promise<void> => {
     const children: Attached[] = [];
-    listen('Target.attachedToTarget', ((e: Attached) => children.push(e)) as (p: never) => void);
+    listen('Target.attachedToTarget', ((e: Attached) => children.push(e)));
     const gc = within(send('HeapProfiler.collectGarbage'), timeoutMs).then((ok) => ok && isolates++);
     if (depth < MAX_DEPTH) {
       // Already running workers are reported as soon as auto-attach is set.
@@ -50,7 +50,7 @@ export async function collectGarbage(session: DevtoolsSession, timeoutMs: number
     await gc;
     await Promise.all(
       children.map((child) => {
-        if (seen.has(child.targetInfo.targetId)) return;
+        if (seen.has(child.targetInfo.targetId)) return Promise.resolve();
         seen.add(child.targetInfo.targetId);
         const [childSend, childOn] = relay(send, listen, child.sessionId, timeoutMs);
         return visit(childSend, childOn, depth + 1);
@@ -83,7 +83,7 @@ function relay(send: Send, listen: On, sessionId: string, timeoutMs: number): [S
       pending.get(m.id)?.(m.error ? Promise.reject(new Error(String((m.error as { message?: string }).message))) : m.result);
       pending.delete(m.id);
     } else if (m.method) for (const l of listeners.get(m.method) ?? []) l(m.params as never);
-  }) as (p: never) => void);
+  }));
   const childSend: Send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const i = ++id;

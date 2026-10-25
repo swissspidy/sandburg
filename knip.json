@@ -32,7 +32,6 @@
   "ignoreDependencies": [
     "assert",
     "buffer",
-    "crypto-browserify",
     "events",
     "string_decoder",
     "url",

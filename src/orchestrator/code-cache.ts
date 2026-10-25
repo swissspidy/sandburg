@@ -165,7 +165,7 @@ export class PageCode {
 
   /** Loads the script into a frame of the page with its code: true once it ran; false if the page has no code (yet) or it failed to load. */
   async load(frame: Frame): Promise<boolean> {
-    if (!(await Promise.race([this.ready, false]))) return false;
+    if (!(await Promise.race([this.ready, Promise.resolve(false)]))) return false;
     return frame.evaluate(loadClassic, this.url).catch(() => false);
   }
 

@@ -105,7 +105,7 @@ const MEMORY_RESERVE = 1.5 * 2 ** 30;
  * The memory an app is expected to reach when no earlier batch measured it: about a Next.js run's
  * renderer peak (the largest). See outstanding.
  */
-export const START_ALLOWANCE = 2 ** 30;
+const START_ALLOWANCE = 2 ** 30;
 
 /** An earlier run's peak, plus this much, is what the project is expected to reach again. */
 const PEAK_MARGIN = 1.1;
@@ -120,7 +120,7 @@ const PEAK_MARGIN = 1.1;
  * PEAK_MARGIN), else START_ALLOWANCE. Where the renderer's memory cannot be read (not Linux), the
  * whole expected peak until its checks.
  */
-export function outstanding(app: { expected: number | null; used: number | null; inChecks: boolean }): number {
+function outstanding(app: { expected: number | null; used: number | null; inChecks: boolean }): number {
   if (app.inChecks) return 0;
   return Math.max(0, (app.expected ?? START_ALLOWANCE) - (app.used ?? 0));
 }

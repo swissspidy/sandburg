@@ -101,7 +101,7 @@ test('entries on disk: by the script text, the browser and the salt; a damaged o
     assert.equal(stored.subarray(32).toString('base64'), first);
     // Read back by a new session's cache, without producing.
     let produced = 0;
-    const counting = { ...browser, newContext: () => (produced++, browser.newContext()), version: () => browser.version() } as unknown as Browser;
+    const counting = { ...browser, newContext: () => (produced++, browser.newContext()), version: () => browser.version() };
     assert.equal(await new CodeCache(counting, 'flags', dir).prepare(script()), first);
     assert.equal(produced, 0);
     // Another text, or other flags: another entry, which replaces the old one.

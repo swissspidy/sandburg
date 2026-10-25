@@ -30,9 +30,9 @@ export function useZlibPort(load: () => typeof zlibPort): void {
 type Callback = (e?: Error | null) => void;
 
 const ported: Record<Format, () => Transform> = {
-  gzip: () => loadPort().createGzip() as unknown as Transform,
-  deflate: () => loadPort().createDeflate() as unknown as Transform,
-  'deflate-raw': () => loadPort().createDeflateRaw() as unknown as Transform,
+  gzip: () => loadPort().createGzip(),
+  deflate: () => loadPort().createDeflate(),
+  'deflate-raw': () => loadPort().createDeflateRaw(),
 };
 
 /** A compressing stream: native, or the JavaScript port if it is flushed before 1 MB arrives. */

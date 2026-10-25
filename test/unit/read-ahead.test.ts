@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { HostRequest } from '../../src/types.ts';
 
 // The node adapter serves from the shared installer, rooted here (set before it is loaded).
 const root = mkdtempSync(join(tmpdir(), 'sandburg-ahead-'));
@@ -29,7 +28,7 @@ for (const [path, content] of Object.entries(files)) {
 }
 
 const get = (rel: string, query = '') =>
-  serve({ method: 'GET', path: `/__sandburg/nm/${key}/f/${rel}`, query: new URLSearchParams(query), body: async () => Buffer.alloc(0) } as HostRequest);
+  serve({ method: 'GET', path: `/__sandburg/nm/${key}/f/${rel}`, query: new URLSearchParams(query), body: async () => Buffer.alloc(0) });
 
 /** The files of a read-ahead answer (the preload bundle's format), as path → text. */
 function bundle(body: string | Uint8Array): [string, string][] {
@@ -48,7 +47,7 @@ function bundle(body: string | Uint8Array): [string, string][] {
 test('read-ahead: a raw file comes with the files after it in its directory, not large ones', async () => {
   const out = await get('node_modules/icons/esm/a.js', 'ahead=1');
   assert.equal(out?.status, 207);
-  assert.deepEqual(bundle(out!.body), [
+  assert.deepEqual(bundle(out.body), [
     ['node_modules/icons/esm/a.js', files['node_modules/icons/esm/a.js']],
     ['node_modules/icons/esm/a.js.map', files['node_modules/icons/esm/a.js.map']],
     ['node_modules/icons/esm/b.js', files['node_modules/icons/esm/b.js']],
@@ -86,11 +85,11 @@ test('read-ahead: only files of the install, and an answer fits the file channel
   mkdirSync(join(root, 'installs', big), { recursive: true });
   const { cpSync } = await import('node:fs');
   cpSync(join(root, 'installs', key, 'node_modules'), join(root, 'installs', big, 'node_modules'), { recursive: true });
-  const out = await serve({ method: 'GET', path: `/__sandburg/nm/${big}/f/node_modules/other/f000.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0) } as HostRequest);
+  const out = await serve({ method: 'GET', path: `/__sandburg/nm/${big}/f/node_modules/other/f000.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0) });
   assert.equal(out?.status, 207);
-  const sent = bundle(out!.body);
+  const sent = bundle(out.body);
   assert.ok(sent.length > 50 && sent.length < 400, `${sent.length} files`);
-  assert.ok(Buffer.from(out!.body as Uint8Array).length < MAX_BODY);
+  assert.ok(Buffer.from(out.body as Uint8Array).length < MAX_BODY);
   assert.deepEqual(sent[0], ['node_modules/other/f000.js', 'y'.repeat(4000)]);
 });
 
@@ -132,9 +131,9 @@ test('push: a transform comes with the transformed modules it requires, each onc
 
 test('push: only over a file channel, and only for an install with a prefetch (never run)', async () => {
   // No channel (HTTP): a plain answer.
-  const out = await serve({ method: 'GET', path: `/__sandburg/nm/${key}/t/node_modules/other/index.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0) } as HostRequest);
+  const out = await serve({ method: 'GET', path: `/__sandburg/nm/${key}/t/node_modules/other/index.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0) });
   assert.equal(out?.status, 200);
   // A channel, but no prefetcher for this install: a plain answer.
-  const viaChannel = await serve({ method: 'GET', path: `/__sandburg/nm/${key}/t/node_modules/other/index.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0), channel: {} } as HostRequest);
+  const viaChannel = await serve({ method: 'GET', path: `/__sandburg/nm/${key}/t/node_modules/other/index.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0), channel: {} });
   assert.equal(viaChannel?.status, 200);
 });

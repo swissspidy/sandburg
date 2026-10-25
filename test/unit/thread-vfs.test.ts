@@ -146,7 +146,7 @@ test('a thread answers reads of unchanged project files from its snapshot, as it
   const asked: string[] = [];
   const thread = new ThreadVfs(
     (m) => {
-      const msg = m as Parameters<typeof serveVfsCall>[1];
+      const msg = m;
       asked.push(`${msg.op} ${msg.args[0]}`);
       serveVfsCall(parent, msg);
     },
@@ -215,7 +215,7 @@ test('a thread asks its parent again once a file its snapshot covers changes, an
     const thread = (snapshot: ReturnType<typeof projectSnapshot>) =>
       new ThreadVfs(
         (m) => {
-          const msg = m as Parameters<typeof serveVfsCall>[1];
+          const msg = m;
           asked.push(`${msg.op} ${msg.args[0]}`);
           serveVfsCall(parent, msg);
         },
