@@ -12,7 +12,7 @@ const cache = await mkdtemp(join(tmpdir(), 'sandburg-npm-cache-'));
 process.env.npm_config_cache = cache;
 // unpackAhead's cache index keys name the configured registry; the tests write npmjs.org's.
 process.env.npm_config_registry = 'https://registry.npmjs.org/';
-const { installFromLockfile, installedPackages, normalizeBin, sweepStore, unpackAhead, unpackHint } = await import('../../src/adapters/node/package-store.ts');
+const { installFromLockfile, installedPackages, isInstallLocation, normalizeBin, sweepStore, unpackAhead, unpackHint } = await import('../../src/adapters/node/package-store.ts');
 
 /** A ustar archive with npm pack's top directory. */
 function tar(entries: Record<string, string>): Buffer {
@@ -115,6 +115,24 @@ test('the store hands what it does not handle back to npm', async () => {
   assert.match(lines.join('\n'), /integrity mismatch/);
 });
 
+test('a lockfile location outside the install\'s node_modules is refused: the store links nothing for it', async () => {
+  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const entry = await cached('escape', '1.0.0', { 'index.js': 'planted' });
+  // Beside the project's directory (dir/node_modules/../../<escaped>).
+  const escaped = `sandburg-escaped-${process.pid}-${Date.now()}`;
+  for (const location of [`node_modules/../../${escaped}`, `node_modules/a/../../../${escaped}`, 'node_modules/./a', 'node_modules//a', 'node_modules/a/', '/node_modules/a', `node_modules/a\\..\\..\\${escaped}`, `node_modules/C:/${escaped}`, 'node_modules/a/node_modules/..', 'node_modules/@s/..', 'node_modules/a/b']) {
+    const dir = await project({ 'node_modules/ok': entry, [location]: entry });
+    assert.equal(await installFromLockfile(dir, store, () => {}), false, location);
+    assert.equal(existsSync(join(dir, 'node_modules')), false, location);
+    assert.equal(existsSync(join(dir, '..', escaped)), false, location);
+  }
+});
+
+test('install locations are a package in node_modules, or nested in one, and nothing else', () => {
+  for (const location of ['node_modules/a', 'node_modules/@s/a', 'node_modules/a/node_modules/@s/b', 'node_modules/a.b-c_d', 'node_modules/..a', 'node_modules/@s/a/node_modules/b/node_modules/c']) assert.equal(isInstallLocation(location), true, location);
+  for (const location of ['', 'node_modules', 'node_modules/', 'node_modules/..', 'node_modules/.', 'node_modules/../x', 'node_modules/a/..', 'node_modules/@s/../x', 'node_modules/a/b', 'node_modules/a//node_modules/b', 'packages/a', '/abs/node_modules/a', 'node_modules/a\\b', 'node_modules/a\0', 'node_modules/C:x']) assert.equal(isInstallLocation(location), false, location);
+});
+
 test('packages are unpacked ahead from a lockfile and from pinned versions in npm\'s cache', async () => {
   const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
   const fromLock = await cached('locked', '1.0.0', { 'a.js': 'a' });
@@ -179,4 +197,21 @@ test('the store sweep removes old packages no install links, and unfinished unpa
   await writeFile(join(store, 'sha512-new', 'package.json'), '{}');
   await sweepStore(store);
   assert.deepEqual(readdirSync(store).sort(), ['install-copy.json', 'sha512-linked', 'sha512-new']);
+});
+
+// The install rules' shims (a WebAssembly build in place of a native binding) replace files of
+// packages that come from the store as hard links: written in place, they would change the store's
+// copy, and every install linked to it.
+test("an install rule's shim replaces a linked file without writing the store's copy", async () => {
+  const { replaceFile } = await import('../../src/adapters/node/install.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-replace-'));
+  const stored = join(dir, 'store-index.js');
+  const installed = join(dir, 'installed-index.js');
+  await writeFile(stored, 'module.exports = require("./binding.node");');
+  await link(stored, installed);
+  await replaceFile(installed, 'module.exports = require("binding-wasm32-wasi");');
+  assert.equal(readFileSync(stored, 'utf8'), 'module.exports = require("./binding.node");');
+  assert.equal(readFileSync(installed, 'utf8'), 'module.exports = require("binding-wasm32-wasi");');
+  assert.notEqual(statSync(stored).ino, statSync(installed).ino);
+  assert.equal(statSync(stored).nlink, 1);
 });
