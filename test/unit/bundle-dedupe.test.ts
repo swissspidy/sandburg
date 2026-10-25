@@ -50,3 +50,27 @@ test('a copy is not shared when its bytes or what its dependencies resolve to di
   const d = join(root, 'node_modules/d/node_modules/q/index.js');
   assert.equal(dedupedPath(d), d);
 });
+
+test("a copy is not shared when a dependency's own dependencies resolve differently, however deep", () => {
+  // a's p and b's p, byte for byte the same, both require foo@1.0.0; a's foo requires bar@1, b's bar@2.
+  const root = tree({
+    'node_modules/a/node_modules/p': ['1.0.0', { 'index.js': 'same' }, { foo: '1' }],
+    'node_modules/a/node_modules/foo': ['1.0.0', { 'index.js': 'foo' }, { bar: '*' }],
+    'node_modules/a/node_modules/bar': ['1.0.0', {}],
+    'node_modules/b/node_modules/p': ['1.0.0', { 'index.js': 'same' }, { foo: '1' }],
+    'node_modules/b/node_modules/foo': ['1.0.0', { 'index.js': 'foo' }, { bar: '*' }],
+    'node_modules/bar': ['2.0.0', {}],
+  });
+  const b = join(root, 'node_modules/b/node_modules/p/index.js');
+  assert.equal(dedupedPath(b), b);
+});
+
+test('a copy is shared when the closures are the same, a cycle included', () => {
+  const root = tree({
+    'node_modules/a/node_modules/p': ['1.0.0', { 'index.js': 'same' }, { foo: '1' }],
+    'node_modules/a/node_modules/foo': ['1.0.0', {}, { p: '1' }],
+    'node_modules/b/node_modules/p': ['1.0.0', { 'index.js': 'same' }, { foo: '1' }],
+    'node_modules/b/node_modules/foo': ['1.0.0', {}, { p: '1' }],
+  });
+  assert.equal(dedupedPath(join(root, 'node_modules/b/node_modules/p/index.js')), join(root, 'node_modules/a/node_modules/p/index.js'));
+});

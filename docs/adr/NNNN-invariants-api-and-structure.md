@@ -109,7 +109,8 @@ phase and a check with 50 MB strings leaves a result.json under 512 KB.
   wherever the one above does not satisfy the range, and esbuild bundled each. A file of a nested
   copy now resolves to the same file of the copy whose directory sorts first, when they are the same
   package: same version, the file's bytes the same, and every dependency the two would require
-  resolving (Node's walk up node_modules) at the same version. node:crypto's script
+  resolving (Node's walk up node_modules) to one directory or to the same package in turn, through
+  the whole resolved closure (cycles included). node:crypto's script
   (`node-crypto.js`): **1,242,331 → 691,598 bytes (-44%)**: five copies of bn.js 4.12.5, one of
   readable-stream 2.3.8, string_decoder 1.1.1, isarray, two of safe-buffer. The runtime's, zlib's
   and wasi's scripts are byte for byte as before. A runtime test checks what those packages do
@@ -168,7 +169,7 @@ then
 | node:crypto's script (node-crypto.js) | 1,242,331 bytes | 691,598 bytes |
 | lint rules of the project's own | 0 | 3 (28 test cases) |
 | `npm run lint` | 2.3 s | 2.9 s |
-| unit tests | 196 | 235 |
+| unit tests | 196 | 237 |
 | runtime tests | 69 | 71 |
 
 On this branch (1f6cc37), from an empty `.sandburg`: the run (10), node (13), vite-frameworks (9),

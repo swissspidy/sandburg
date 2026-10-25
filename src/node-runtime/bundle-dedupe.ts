@@ -6,9 +6,9 @@
  *
  * A file of a nested copy resolves to the same file of the copy whose directory sorts first, when
  * the two are the same package: same name and version, the file's bytes the same, and the
- * dependencies that both resolve (by Node's walk up the node_modules directories) at the same
- * versions. Then the code that runs is the same, and so is what it requires. This runs on the host,
- * at build time, over Sandburg's own dependencies: not over an app's.
+ * dependencies that both resolve (by Node's walk up the node_modules directories) the same packages,
+ * all the way down (samePackage). Then the code that runs is the same, and so is what it requires.
+ * This runs on the host, at build time, over Sandburg's own dependencies: not over an app's.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
@@ -58,21 +58,36 @@ function manifest(root: string) {
   return manifests.get(root)!;
 }
 
-/** The version of `name` that `require` resolves from a package at `root`, by Node's walk up, or null. */
-function resolvedVersion(root: string, name: string): string | null {
+/** The directory of the package `name` that `require` resolves from a package at `root`, by Node's walk up, or null. */
+function resolvedDir(root: string, name: string): string | null {
   for (let dir = root; ; dir = dirname(dir)) {
     const candidate = join(dir, 'node_modules', name);
-    if (existsSync(join(candidate, 'package.json'))) return manifest(candidate)?.version ?? null;
+    if (existsSync(join(candidate, 'package.json'))) return candidate;
     if (dirname(dir) === dir) return null;
   }
 }
 
-function samePackage(a: string, b: string): boolean {
+/**
+ * Whether the packages at `a` and `b` are the same, with all they require: the same version, and each
+ * dependency resolving, from both, to one directory or to packages that are the same in turn (the
+ * whole resolved closure). A pair already being compared counts as the same (a cycle of
+ * dependencies), so the walk ends; any difference below it still makes the outer pair differ.
+ */
+function samePackage(a: string, b: string, comparing = new Set<string>()): boolean {
+  if (a === b) return true;
+  const pair = `${a}\0${b}`;
+  if (comparing.has(pair)) return true;
   const ma = manifest(a);
   const mb = manifest(b);
   if (!ma?.version || ma.version !== mb?.version) return false;
-  const deps = Object.keys({ ...ma.dependencies, ...ma.optionalDependencies, ...ma.peerDependencies });
-  return deps.every((d) => resolvedVersion(a, d) === resolvedVersion(b, d));
+  const deps = new Set(Object.keys({ ...ma.dependencies, ...ma.optionalDependencies, ...ma.peerDependencies, ...mb.dependencies, ...mb.optionalDependencies, ...mb.peerDependencies }));
+  comparing.add(pair);
+  for (const d of deps) {
+    const da = resolvedDir(a, d);
+    const db = resolvedDir(b, d);
+    if (da === null || db === null ? da !== db : !samePackage(da, db, comparing)) return false;
+  }
+  return true;
 }
 
 function sameBytes(a: string, b: string): boolean {
