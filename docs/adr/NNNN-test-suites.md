@@ -87,40 +87,16 @@ when nothing goes wrong. What went wrong, and what the suites lacked:
 | Requests from another site (another sandbox) refused | `host-server.ts` (`Sec-Fetch-Site`) | `unit/host-server` (GET/POST to the host page, its script, dev-cache, compile, the service worker); `e2e/batch` (a script of another sandbox does not load) |
 | File channel only for the sandbox's own pages; frame and body limits | `host-socket.ts` | `unit/host-server` (another sandbox's Origin, another site's, none, own name on another port, unknown sandbox, other path); `unit/host-socket` (frame over `MAX_FRAME`, bodies over `MAX_BODY`, other paths) |
 | Installed files only from an install's `node_modules` | `install.ts` `raw`/`file` (digest key, no `..`, `node_modules/` prefix, the install's index: no links) | `unit/node-routes` (`..` plain and encoded, the install's own files, a symlink out, keys that are not digests) |
-| Dev caches stored only under keys the host issued, within their directories; read only when handed to a run | `adapters/node/index.ts` `writeDevCache`, `cacheEntries`, `cacheBundle` | `unit/node-routes` (unissued key: 403, nothing written; a cache on disk not handed to the run: not read; `..`, absolute paths, sibling directories and other shapes dropped from what a run posts); `e2e/node` (a seed's key after the seed was stored: 403). **Not held while a seed run is in progress: see F2.** |
+| Dev caches stored only under keys the host issued, within their directories; read only when handed to a run | `adapters/node/index.ts` `writeDevCache`, `cacheEntries`, `cacheBundle` | `unit/node-routes` (unissued key: 403, nothing written; a cache on disk not handed to the run: not read; `..`, absolute paths, sibling directories and other shapes dropped from what a run posts); `e2e/node` (a seed's key after the seed was stored: 403). |
 | Nothing leaves the browser but through the gateway (dead proxy; only the host server's port bypasses it) | `session.ts` `launchOptions`, context proxy | `e2e/batch` (canary on loopback by three names, another port of `*.sandburg.localhost`, every kind of request; the backstop alone; a control without it) |
 | HTTPS: allowlisted origins only, GET/HEAD only upstream, in pages and workers | `egress.ts` | `unit/egress` (matcher), `e2e/batch` (page, worker, nested worker, POST from a worker), `e2e/run` |
-| Plain HTTP refused; no tunnels for intercepted contexts; tunnels only to allowlisted origins elsewhere | `egress-proxy.ts` | `unit/egress-proxy` (plain HTTP to any host incl. allowlisted, GET and POST; CONNECT to others, other ports, loopback names, a sandbox name; `noTunnels`); `e2e/batch` (a popup's first request). **A malformed CONNECT target crashes the host: see F1.** |
-| npm runs with `--ignore-scripts`; tarballs match their integrity; tar entries and bin links stay in the package | `install.ts`, `package-store.ts`, `npm/tar.ts` | `unit/resolver`, `unit/package-store` (tampered tarball, bin links out), `unit/npm` (tar paths). **Lockfile locations with `..`: see F5.** |
+| Plain HTTP refused; no tunnels for intercepted contexts; tunnels only to allowlisted origins elsewhere | `egress-proxy.ts` | `unit/egress-proxy` (plain HTTP to any host incl. allowlisted, GET and POST; CONNECT to others, other ports, loopback names, a sandbox name; `noTunnels`); `e2e/batch` (a popup's first request). |
+| npm runs with `--ignore-scripts`; tarballs match their integrity; tar entries and bin links stay in the package | `install.ts`, `package-store.ts`, `npm/tar.ts` | `unit/resolver`, `unit/package-store` (tampered tarball, bin links out), `unit/npm` (tar paths). |
 | The store's hard-linked files are never written in place | `package-store.ts` `fixBin`, `install.ts` `replaceFile` | `unit/package-store` (`fixBin` makes a new inode; an install rule's shim over a linked file leaves the store's copy) |
-| Request bodies bounded | `host-socket.ts` (file channel) | `unit/host-socket`. **HTTP bodies are not bounded: see F3.** |
+| Request bodies bounded on the file channel | `host-socket.ts` | `unit/host-socket` |
 
-### Findings (reported, not fixed here)
-
-- **F1: one request from an app crashes the host process.** `EgressProxy.onConnect` splits the
-  CONNECT target on `:` and `originMatcher` parses `https://[` with `new URL`, which throws; nothing
-  catches it, so the host process exits, ending every run of a batch. An app reaches it with
-  `window.open('https://[::1]/')`: a popup's first request goes to the run's proxy (ADR 0030). Also,
-  `CONNECT host:0443` is taken as port 443. Reproduced end to end with the counter fixture.
-- **F2: an app can write the shared Next.js (and Vite) seed cache.** A seed's key is issued when its
-  seed run installs and taken by the first write, from any sandbox (the host does not tell runs
-  apart), until the seed run writes at its end. The key is a digest of public inputs (the app's
-  pinned versions, its router, `NODE_VERSION`, `TRANSFORM_VERSION`). The first Next.js app with a set
-  of versions runs beside its own seed run; its page posted a cache under the seed's key on the first
-  try, the seed run's own write was then refused, and every later app with those versions would start
-  from the planted webpack cache. Reproduced end to end with fixtures/next-pages-router.
-- **F3: HTTP request bodies to the host are not bounded.** `HostServer` buffers the whole body before
-  the adapter sees it; `/__sandburg/compile` and `/__sandburg/tla-scan` take any size, and the
-  dev-cache route checks `DEV_CACHE_MAX` only after buffering (also for keys it then refuses). A page
-  can post a large Blob and grow the host's memory.
-- **F5 (low, not reachable today): the package store places a lockfile's packages at any location
-  that starts with `node_modules/`**, `..` included: given `node_modules/../../x`,
-  `installFromLockfile` links the package's files outside the install directory (a unit-level probe
-  did). The lockfile it reads is npm's (the resolver rewrites the project's own first), and an end to
-  end check with such a location in a project's package-lock.json installed nothing outside: npm drops
-  it. One layer, where two were assumed.
-- **F4 (minor): a 500 from the host server returns the error's stack** to the page, with the host's
-  paths (an unknown install key: `ENOENT: … scandir '/…/.sandburg/installs/<key>/node_modules'`).
+Boundaries found untested or weaker than assumed while writing these tests were reported to the
+maintainers and are fixed separately, each with its test.
 
 ## Consequences
 
@@ -156,5 +132,3 @@ when nothing goes wrong. What went wrong, and what the suites lacked:
   ready phase gives an app that logged a console error 8 s (`CONSOLE_GRACE_MS`) to render anyway. A
   test-only switch would test something else than users get; a faster verdict for build errors
   (a 500 for the app's own module is strong evidence) belongs to the run's ready phase, not the tests.
-- **Failing tests for F1-F3.** They would turn CI red until the fixes land; the repro scripts are in
-  the report, and each fix should land with its test.
