@@ -98,6 +98,8 @@ async function canary(): Promise<{ server: Server; port: number; connections: ()
   let count = 0;
   const server = createServer((socket) => {
     count++;
+    // A browser that closes resets its connections; that is not the test's failure.
+    socket.on('error', () => {});
     socket.end('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
