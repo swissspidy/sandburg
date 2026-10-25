@@ -97,7 +97,7 @@ export class HostServer {
           socket.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
           return;
         }
-        acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!(r));
+        acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!({ ...r, sandbox: id }));
       } catch {
         socket.destroy();
       }
@@ -178,6 +178,8 @@ export class HostServer {
         method: req.method ?? 'GET',
         path,
         query: url.searchParams,
+        sandbox: id!,
+        headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : v])),
         body: async () => {
           const chunks: Buffer[] = [];
           for await (const c of req) chunks.push(c as Buffer);

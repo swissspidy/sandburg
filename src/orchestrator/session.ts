@@ -383,8 +383,12 @@ export class Session {
 
       // The host's half of the install (npm, on a cold machine) starts now, while the tab and the host
       // page load: the install phase waits for it.
+      // The sandbox the run's page is in, once its tab is taken: what the install issues to the run is bound to it.
+      let bindSandbox: (id: string) => void = () => {};
+      const sandbox = new Promise<string>((resolve) => (bindSandbox = resolve));
       const hostInstall = adapter?.hostInstall?.(project, (line) => run.runtimeLogs.push(line), {
         seed: options.seed,
+        sandbox,
         installIn: options.installIn,
         runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
       });
@@ -414,6 +418,7 @@ export class Session {
       const runtimeAllow = originMatcher(adapter!.egress);
       // The spare tab, with its host page loaded or loading; the next run's opens meanwhile.
       tab = await this.takeTab(adapter!, timeouts.load);
+      bindSandbox(tab.id);
       // Not for a seed run (it runs beside an app), nor a held one.
       if (!options.seed && !options.hold) this.prepareTab(adapter!);
       ({ context, proxy } = tab);
