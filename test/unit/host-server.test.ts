@@ -30,9 +30,28 @@ test('a request target that is not a URL path fails that connection only: the ho
     const upgrade = await raw(host.port, `GET //[ HTTP/1.1\r\nHost: ${hostHeader}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     assert.match(upgrade, /^HTTP\/1\.1 404 /);
     const plain = await raw(host.port, `GET //[ HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n\r\n`);
-    assert.match(plain, /^HTTP\/1\.1 [45]\d\d /);
+    assert.match(plain, /^HTTP\/1\.1 400 /);
     const ok = await raw(host.port, `GET /__sandburg/anything HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n\r\n`);
     assert.match(ok, /^HTTP\/1\.1 200 /);
+  } finally {
+    await host.close();
+  }
+});
+
+test('a request the host fails to answer gets a 500 without the error: its details are logged on the host', async () => {
+  const logged: [unknown, string][] = [];
+  const host = new HostServer({ onError: (err, path) => logged.push([err, path]) });
+  await host.listen();
+  const secret = new Error(`ENOENT: no such file, open '${process.cwd()}/.sandburg/installs/x/node_modules/a.js'`);
+  host.register('s-test', adapter(async () => {
+    throw secret;
+  }));
+  try {
+    const answer = await raw(host.port, `GET /__sandburg/nm/x?token=1 HTTP/1.1\r\nHost: s-test.sandburg.localhost:${host.port}\r\nConnection: close\r\n\r\n`);
+    assert.match(answer, /^HTTP\/1\.1 500 /);
+    assert.ok(answer.includes('internal error (logged by the host)'), answer);
+    for (const leak of [process.cwd(), 'ENOENT', 'at ', '.sandburg']) assert.ok(!answer.includes(leak), leak);
+    assert.deepEqual(logged, [[secret, '/__sandburg/nm/x']]);
   } finally {
     await host.close();
   }

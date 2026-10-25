@@ -103,13 +103,22 @@ export class HostServer {
   private sandboxes = new Map<string, AdapterDescriptor>();
   port = 0;
 
-  constructor() {
+  /**
+   * `onError` gets what failed while answering a request (logged on the host's stderr by default);
+   * the page gets a 500 without it: an error's message and stack name the host's paths.
+   */
+  constructor({ onError = (err: unknown, path: string) => console.error(`sandburg: the host server failed to answer ${path}:`, err) } = {}) {
     this.server = createServer((req, res) => {
       this.handle(req, res).catch((err) => {
+        try {
+          onError(err, (req.url ?? '').split('?')[0].slice(0, 300));
+        } catch {
+          // a failing logger does not end the process either
+        }
         // After the headers went out, the connection is all that is left to end.
         if (res.headersSent) return void res.destroy();
         res.writeHead(500, { 'content-type': 'text/plain' });
-        res.end(String(err?.stack ?? err));
+        res.end('internal error (logged by the host)');
       });
     });
     // The runtime's file requests over a WebSocket (host-socket.ts).
@@ -181,7 +190,13 @@ export class HostServer {
       headers['cross-origin-opener-policy'] = 'same-origin';
       headers['cross-origin-embedder-policy'] = adapter.crossOriginIsolation === 'credentialless' ? 'credentialless' : 'require-corp';
     }
-    const path = new URL(req.url ?? '/', 'http://x').pathname;
+    const url = URL.parse(req.url ?? '/', 'http://x');
+    if (!url) {
+      res.writeHead(400, { ...headers, 'content-type': 'text/plain' });
+      res.end('bad request target');
+      return;
+    }
+    const path = url.pathname;
     if (path === '/' || path === '/index.html' || path === '/__sandburg/') {
       res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8' });
       res.end(HOST_HTML);
@@ -198,7 +213,6 @@ export class HostServer {
       res.writeHead(200, { ...headers, 'content-type': 'text/javascript; charset=utf-8' });
       res.end(js);
     } else if (path.startsWith('/__sandburg/') && adapter.serve) {
-      const url = new URL(req.url ?? '/', 'http://x');
       let out;
       try {
         out = await adapter.serve({
