@@ -8,12 +8,14 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as esbuild from 'esbuild';
 import { createNativeTransform, NATIVE_MAX_BYTES, nativeOptions, nativeVersion } from '../../src/node-runtime/native-transform.ts';
 import { nativeTransform } from '../../src/adapters/node/native-transform.ts';
 import { HostServer } from '../../src/orchestrator/host-server.ts';
+import { WASM_BUILDS } from '../../src/adapters/node/install-rules.ts';
 import type { AdapterDescriptor, HostRequest } from '../../src/types.ts';
 
 const TSX = 'import { useState } from "react";\nexport function App(): JSX.Element { const [n, setN] = useState<number>(0); return <button onClick={() => setN(n + 1)}>{n}</button>; }\n';
@@ -199,4 +201,42 @@ test("only the sandbox's own pages reach the route", async () => {
   assert.equal(await post({ 'sec-fetch-site': 'same-origin' }, body), 200);
   // Another sandbox's page (same site: *.sandburg.localhost) and another site.
   for (const site of ['same-site', 'cross-site']) assert.equal(await post({ 'sec-fetch-site': site }, body), 403, site);
+});
+
+// --- the esbuild shim -------------------------------------------------------------------------
+
+test("the esbuild shim asks the runtime's hook first, and its own esbuild for anything the hook does not answer", async () => {
+  // An install's esbuild as the shim makes it: lib/main.js, with esbuild-wasm (the host's version) beside it.
+  const root = mkdtempSync(join(tmpdir(), 'sandburg-esbuild-shim-'));
+  const pkg = join(root, 'node_modules', 'esbuild');
+  mkdirSync(join(pkg, 'lib'), { recursive: true });
+  mkdirSync(join(pkg, 'node_modules'));
+  symlinkSync(dirname(createRequire(import.meta.url).resolve('esbuild-wasm/package.json')), join(pkg, 'node_modules', 'esbuild-wasm'));
+  writeFileSync(join(pkg, 'lib', 'main.js'), WASM_BUILDS.find((b) => b.name === 'esbuild')!.shim);
+  const asked: unknown[][] = [];
+  let answer: (input: string) => Promise<unknown> | null = () => null;
+  const hook = Symbol.for('sandburg.esbuildTransform');
+  Object.defineProperty(globalThis, hook, { configurable: true, value: (...args: unknown[]) => (asked.push(args), answer(args[1] as string)) });
+  try {
+    const shim = createRequire(import.meta.url)(join(pkg, 'lib', 'main.js')) as typeof esbuild;
+    answer = () => Promise.resolve({ code: 'from the host', map: '', warnings: [] });
+    assert.equal((await shim.transform('let a: number = 1', { loader: 'ts' })).code, 'from the host');
+    assert.deepEqual(asked[0], [esbuild.version, 'let a: number = 1', { loader: 'ts' }]);
+    // Not sent (null), or no answer (a null result): the shim's own esbuild transforms it.
+    for (const reply of [() => null, () => Promise.resolve(null)]) {
+      answer = reply;
+      assert.equal((await shim.transform('let b: number = 2', { loader: 'ts' })).code, 'let b = 2;\n');
+    }
+    // Its own errors, as its version reports them.
+    answer = () => Promise.resolve(null);
+    await assert.rejects(shim.transform('let = ;', { loader: 'ts' }), /Transform failed with 1 error/);
+    // Builds are its own.
+    const built = await shim.build({ stdin: { contents: 'export const n: number = 1', loader: 'ts' }, write: false });
+    assert.match(built.outputFiles[0].text, /const n = 1/);
+    assert.equal(asked.length, 4);
+    await shim.stop();
+  } finally {
+    Reflect.deleteProperty(globalThis, hook);
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -12,6 +12,7 @@ import { RUNTIME_LIBS, type RuntimeLib } from '../../src/node-runtime/libs.ts';
 import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
 import type { HostRequest } from '../../src/types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from '../../src/adapters/node/compile.ts';
+import { nativeTransform } from '../../src/adapters/node/native-transform.ts';
 
 const PAGE = `<!doctype html><script>
 // A bundle downloaded by the page into shared memory, as adapters/node/process.ts (prefetchBundle) does.
@@ -189,6 +190,14 @@ export class RuntimeHarness {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ topLevelAwait: projectHasTopLevelAwait(JSON.parse(Buffer.concat(chunks).toString())) }));
       }
+      if (url.pathname === '/__sandburg/esbuild-transform') {
+        this.asked.push(`http ${url.pathname}${url.search}`);
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const out = await nativeTransform({ method: req.method ?? 'GET', path: url.pathname, query: url.searchParams, sandbox: 'harness', body: async () => Buffer.concat(chunks) });
+        res.writeHead(out.status, out.headers);
+        return res.end(out.body);
+      }
       if (url.pathname === '/__sandburg/compile') {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
@@ -210,6 +219,7 @@ export class RuntimeHarness {
         const query = r.query.toString();
         this.asked.push(`ws ${r.path}${query ? `?${query}` : ''}`);
         if (r.query.get('used') === '1') return { status: 204, body: '' };
+        if (r.path === '/__sandburg/esbuild-transform') return nativeTransform({ ...r, sandbox: 'harness' });
         const body = this.installed(r.path);
         const ahead = body && r.query.get('ahead') === '1' ? (r.path.includes('/t/') ? this.pushed(r.path) : this.ahead(r.path, r.query.get('until'))) : null;
         return ahead ? { status: 207, body: ahead } : body ? { status: 200, body } : null;
