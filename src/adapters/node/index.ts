@@ -137,6 +137,34 @@ function cacheDigests(files: Record<string, string | { base64: string }>): Recor
   return out;
 }
 
+/**
+ * The digests of a stored cache's files (cacheDigests), and how many there are: kept beside the
+ * cache (`<key>.json.digests`) with the size and time of the cache file they were computed from, so
+ * that a run of a project whose cache has not changed does not parse it (a Next.js app's is ~36 MB
+ * of JSON, ~0.1 s of the host's main thread) to hash it again. A stale or unreadable record is
+ * computed again.
+ */
+export async function devCacheDigests(key: string, dirs: string[]): Promise<{ count: number; digests: Record<string, string> }> {
+  const json = join(devCacheRoot(), `${key}.json`);
+  const side = `${json}.digests`;
+  const st = await stat(json).catch(() => null);
+  if (!st) return { count: 0, digests: {} };
+  const from = `${st.size}:${st.mtimeMs}:${dirs.join('\0')}`;
+  const kept = (await readFile(side, 'utf8')
+    .then((t) => JSON.parse(t) as unknown)
+    .catch(() => null)) as { from?: unknown; digests?: unknown } | null;
+  if (kept && kept.from === from && kept.digests && typeof kept.digests === 'object' && Object.values(kept.digests).every((d) => typeof d === 'string')) {
+    const digests = kept.digests as Record<string, string>;
+    return { count: Object.keys(digests).length, digests };
+  }
+  const digests = cacheDigests(await readDevCache(key, dirs));
+  const tmp = `${side}.${tmpSuffix()}.tmp`;
+  await writeFile(tmp, JSON.stringify({ from, digests }))
+    .then(() => rename(tmp, side))
+    .catch(() => rm(tmp, { force: true }));
+  return { count: Object.keys(digests).length, digests };
+}
+
 /** What the host compiled for runs, by dev-cache key (see compile-cache.ts); keys issued to runs. */
 const compileCache = new CompileCache(devCacheRoot);
 const compileKeys = new Set<string>();
@@ -897,7 +925,9 @@ export const node: AdapterDescriptor = {
     let filesBundle: string | null = null;
     // The run's write of a cache: one, under one key, from its own sandbox.
     const write = (key: string, dirs: string[]) => issueCacheWrite(key, dirs, options?.sandbox);
-    let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
+    // The app's own cache from an earlier run: how many files, and their digests (devCacheDigests).
+    const own = await devCacheDigests(cacheKey, cacheDirs);
+    let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: {} };
     if (project.framework === 'next') {
       const seed = await nextSeedCache(info.resolved, nextRouter(project), options, log);
       if (seed && options?.seed) {
@@ -909,7 +939,7 @@ export const node: AdapterDescriptor = {
       }
     }
     // A Vite app without a cache of its own starts from the seed for its packages and config.
-    if (project.framework === 'vite' && parts.length === 1 && (options?.seed || !Object.keys(devCache.files).length)) {
+    if (project.framework === 'vite' && parts.length === 1 && (options?.seed || !own.count)) {
       const seed = await viteSeedCache(project, info.key, options, log);
       if (seed && options?.seed) {
         devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, token: write(seed.key, VITE_SEED_DIRS), waitFor: VITE_SEED_WAIT };
@@ -921,10 +951,13 @@ export const node: AdapterDescriptor = {
     // The app's own cache from an earlier run, as a bundle the runtime fetches: megabytes of base64 in
     // the install data took ~0.6 s to reach the runtime (SvelteKit's is 8 MB, the Angular CLI's 5 MB).
     // The page compares what the run leaves with the digests to tell whether to store it again.
-    if (!filesBundle && devCache.key === cacheKey && Object.keys(devCache.files).length) {
+    if (!filesBundle && devCache.key === cacheKey && own.count) {
       readableCaches.set(cacheKey, cacheDirs);
       filesBundle = `/__sandburg/dev-cache/${cacheKey}/bundle`;
-      devCache = { ...devCache, files: {}, digests: cacheDigests(devCache.files) };
+      devCache = { ...devCache, digests: own.digests };
+    } else if (devCache.key === cacheKey && own.count) {
+      // Beside a seed's bundle, the app's own cache goes in the install data, as it did.
+      devCache = { ...devCache, files: await readDevCache(cacheKey, cacheDirs) };
     }
     if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).

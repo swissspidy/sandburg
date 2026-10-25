@@ -103,3 +103,32 @@ test('compiles are recorded under a project\'s key only with its run\'s token, f
   }
   assert.deepEqual(paths, ['/own.js']);
 });
+
+test('a stored cache\'s digests are kept beside it, and computed again once the cache is written again', async () => {
+  const { createHash } = await import('node:crypto');
+  const { writeFile } = await import('node:fs/promises');
+  const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+  const key = 'd'.repeat(24);
+  const write = async (files: Record<string, string>) => {
+    const token = node.issueCacheWrite(key, DIRS, Promise.resolve('s-d'));
+    await new Promise((r) => setImmediate(r));
+    assert.equal((await post(key, 's-d', token, files))?.status, 200);
+  };
+  // Only files under the run's directories are stored (writeDevCache).
+  await write({ '.next/dev/cache/a': 'one', 'elsewhere/b': 'not kept' });
+  assert.deepEqual(await node.devCacheDigests(key, DIRS), { count: 1, digests: { '.next/dev/cache/a': sha('one') } });
+  const side = `${cacheFile(key)}.digests`;
+  const kept = JSON.parse(await readFile(side, 'utf8')) as { from: string; digests: Record<string, string> };
+  assert.deepEqual(kept.digests, { '.next/dev/cache/a': sha('one') });
+  // Read from beside the cache while the cache is the same file (a record marked to tell).
+  await writeFile(side, JSON.stringify({ ...kept, digests: { '.next/dev/cache/a': 'from the record' } }));
+  assert.deepEqual((await node.devCacheDigests(key, DIRS)).digests, { '.next/dev/cache/a': 'from the record' });
+  // Other directories, or a record that is not one: computed from the cache.
+  assert.deepEqual(await node.devCacheDigests(key, ['.next/dev/other']), { count: 0, digests: {} });
+  await writeFile(side, '{"from":1}');
+  assert.deepEqual((await node.devCacheDigests(key, DIRS)).digests, { '.next/dev/cache/a': sha('one') });
+  // The cache written again: computed again.
+  await write({ '.next/dev/cache/a': 'two', '.next/dev/cache/c': 'three' });
+  assert.deepEqual(await node.devCacheDigests(key, DIRS), { count: 2, digests: { '.next/dev/cache/a': sha('two'), '.next/dev/cache/c': sha('three') } });
+  assert.deepEqual(await node.devCacheDigests('e'.repeat(24), DIRS), { count: 0, digests: {} });
+});
