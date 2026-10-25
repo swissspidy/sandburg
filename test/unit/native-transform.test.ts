@@ -150,6 +150,7 @@ test("the runtime's hook asks only for eligible transforms and falls back on any
   assert.equal(hook(reply(200, ok))('0.24.2', 'x', {}), null);
   assert.equal(hook(reply(200, ok))(esbuild.version, new Uint8Array(1), {}), null);
   assert.equal(hook(reply(200, ok))(esbuild.version, 'x', { mangleProps: /x/ }), null);
+  assert.equal(hook(reply(200, ok))(esbuild.version, 'x', new Proxy({}, { getPrototypeOf() { throw new Error('no'); } })), null);
   assert.equal(asked.length, 0);
   assert.deepEqual(await hook(reply(200, ok))('0.25.12', 'x', { loader: 'ts' }), ok);
   assert.equal(asked[0], '/__sandburg/esbuild-transform?v=0.25.12');

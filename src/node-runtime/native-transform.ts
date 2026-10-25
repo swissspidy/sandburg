@@ -109,8 +109,14 @@ interface Transport {
  */
 export function createNativeTransform(t: Transport): (version: unknown, input: unknown, options: unknown) => Promise<TransformResult | null> | null {
   return (version, input, options) => {
-    if (typeof input !== 'string' || !nativeVersion(version, t.hostVersion) || !nativeOptions(options)) return null;
-    const body = JSON.stringify([defined(options), input]);
+    let body: string;
+    try {
+      if (typeof input !== 'string' || !nativeVersion(version, t.hostVersion) || !nativeOptions(options)) return null;
+      body = JSON.stringify([defined(options), input]);
+    } catch {
+      // Options no plain object would have (a proxy that throws): the app's own esbuild reads them.
+      return null;
+    }
     // Characters, a cheap first bound: the host checks the bytes.
     if (body.length > NATIVE_MAX_BYTES) return null;
     const url = `${t.base}${NATIVE_TRANSFORM_PATH}?v=${version as string}`;
