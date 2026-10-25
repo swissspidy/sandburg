@@ -24,6 +24,7 @@ export interface Placed {
   dist: Manifest['dist'];
   bin?: Manifest['bin'];
   optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
 }
 
 export interface RootPackage {
@@ -110,7 +111,7 @@ export async function resolveTree(
       const path = !placed.has(top) ? top : `${w.from}/node_modules/${w.as}`;
       if (w.peer && path !== top) return; // nowhere to share it from: left to its dependent's parent
       if (placed.has(path)) return; // the same dependent asked twice (dependency and peer)
-      placed.set(path, { path, name: manifest.name, version: manifest.version, dist: manifest.dist, bin: manifest.bin, optionalDependencies: manifest.optionalDependencies });
+      placed.set(path, { path, name: manifest.name, version: manifest.version, dist: manifest.dist, bin: manifest.bin, optionalDependencies: manifest.optionalDependencies, peerDependencies: manifest.peerDependencies });
       const bundled = new Set([manifest.bundleDependencies, manifest.bundledDependencies].flatMap((b) => (Array.isArray(b) ? b : b === true ? Object.keys(manifest.dependencies ?? {}) : [])));
       const peers = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => !manifest.peerDependenciesMeta?.[name]?.optional);
       const parentDir = path.includes('/node_modules/') ? path.slice(0, path.lastIndexOf('/node_modules/')) : '';
