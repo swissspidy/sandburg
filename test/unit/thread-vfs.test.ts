@@ -130,3 +130,111 @@ test('an empty node_modules directory the install does not have raises the flag'
   parent.mkdir('/app/src/node_modules', true);
   assert.equal(Atomics.load(flag, 0), 1);
 });
+
+// A thread answers reads of the project's files from its snapshot, without asking its parent, while
+// nothing the snapshot covers has changed there; its answers are the parent's (stats, listings, bytes,
+// errors). Once a covered path changes, it asks again.
+test('a thread answers reads of unchanged project files from its snapshot, as its parent would', async () => {
+  const { projectSnapshot } = await import('../../src/node-runtime/threads.ts');
+  const parent = new Vfs(() => new Uint8Array());
+  parent.mkdir('/app/src/lib', true);
+  parent.write('/app/package.json', new TextEncoder().encode('{"type":"module"}'));
+  parent.write('/app/src/main.ts', new TextEncoder().encode('export {};'));
+  parent.write('/app/src/big.bin', new Uint8Array((4 << 20) + 1));
+  parent.mkdir('/app/node_modules/.vite/deps', true);
+  parent.mkdir('/app/.svelte-kit/generated', true);
+  parent.mkdir('/tmp', true);
+  const asked: string[] = [];
+  const thread = new ThreadVfs(
+    (m) => {
+      const msg = m as Parameters<typeof serveVfsCall>[1];
+      asked.push(`${msg.op} ${msg.args[0]}`);
+      serveVfsCall(parent, msg);
+    },
+    new Vfs(() => new Uint8Array()),
+    '/app',
+    projectSnapshot(parent, '/app'),
+  );
+  const outcome = (vfs: Vfs, f: (v: Vfs) => unknown) => {
+    try {
+      const v = f(vfs);
+      return { value: v instanceof Uint8Array ? [...v] : v };
+    } catch (e) {
+      const err = e as { code?: string; syscall?: string; path?: string; message: string };
+      return { error: [err.code, err.syscall, err.path, err.message] };
+    }
+  };
+  const reads: ((v: Vfs) => unknown)[] = [];
+  for (const path of ['/', '/app', '/app/', '/app/src', '/app/src/../package.json', '/app/src/main.ts', '/app/src/lib', '/app/nope', '/app/src/main.ts/x', '/app/src/nope/deeper']) {
+    reads.push((v) => v.exists(path), (v) => v.stat(path), (v) => v.stat(path, 'lstat'), (v) => v.read(path), (v) => v.readdir(path), (v) => v.kind(path));
+  }
+  for (const read of reads) assert.deepEqual(outcome(thread, read), outcome(parent, read));
+  assert.deepEqual(asked, []);
+  // Paths it does not cover: caches, build output, outside the project, a file too big for it.
+  assert.equal(thread.exists('/app/node_modules/.vite/deps'), true);
+  assert.equal(thread.exists('/app/.svelte-kit/generated'), true);
+  assert.equal(thread.exists('/tmp'), true);
+  assert.equal(thread.stat('/app/src/big.bin').size, (4 << 20) + 1);
+  assert.equal(thread.read('/app/src/big.bin').length, (4 << 20) + 1);
+  // (The big read is asked twice: once more with room for its bytes.)
+  assert.deepEqual([...new Set(asked)], ['exists /app/node_modules/.vite/deps', 'exists /app/.svelte-kit/generated', 'exists /tmp', 'read /app/src/big.bin']);
+
+  // Writes in caches, build output and outside the project leave it exact.
+  parent.write('/app/node_modules/.vite/deps/_metadata.json', new Uint8Array());
+  parent.write('/app/.svelte-kit/generated/root.js', new Uint8Array());
+  parent.write('/tmp/x', new Uint8Array());
+  asked.length = 0;
+  assert.equal(thread.exists('/app/src/main.ts'), true);
+  assert.deepEqual(asked, []);
+  // A new directory in the project's root changes the root's listing.
+  parent.mkdir('/app/.astro');
+  assert.deepEqual(thread.readdir('/app'), parent.readdir('/app'));
+  assert.deepEqual(asked, ['readdir /app']);
+});
+
+test('a thread asks its parent again once a file its snapshot covers changes, and its threads get the same snapshot', async () => {
+  const { projectSnapshot } = await import('../../src/node-runtime/threads.ts');
+  for (const change of [
+    (p: Vfs) => p.write('/app/src/main.ts', new TextEncoder().encode('changed')),
+    (p: Vfs) => p.writeAt('/app/src/main.ts', new TextEncoder().encode('!'), 'end'),
+    (p: Vfs) => p.unlink('/app/src/main.ts'),
+    (p: Vfs) => p.rename('/app/src/main.ts', '/app/src/other.ts'),
+    (p: Vfs) => p.write('/app/src/new.ts', new Uint8Array()),
+    (p: Vfs) => p.mkdir('/app/src/new'),
+    (p: Vfs) => p.mkdir('/srv'),
+  ]) {
+    const parent = new Vfs(() => new Uint8Array());
+    parent.mkdir('/app/src', true);
+    parent.write('/app/src/main.ts', new TextEncoder().encode('export {};'));
+    parent.mkdir('/app/node_modules/.cache', true);
+    const first = projectSnapshot(parent, '/app');
+    // A write the snapshot does not cover rebuilds the next one, but the first stays exact.
+    parent.write('/app/node_modules/.cache/x', new Uint8Array());
+    const second = projectSnapshot(parent, '/app');
+    assert.notEqual(first, second);
+    const asked: string[] = [];
+    const thread = (snapshot: ReturnType<typeof projectSnapshot>) =>
+      new ThreadVfs(
+        (m) => {
+          const msg = m as Parameters<typeof serveVfsCall>[1];
+          asked.push(`${msg.op} ${msg.args[0]}`);
+          serveVfsCall(parent, msg);
+        },
+        new Vfs(() => new Uint8Array()),
+        '/app',
+        snapshot,
+      );
+    const a = thread(first);
+    const b = thread(second);
+    assert.equal(a.exists('/app/src/main.ts'), true);
+    assert.equal(projectSnapshot(a, '/app'), first); // a thread's threads
+    assert.deepEqual(asked, []);
+    change(parent);
+    for (const t of [a, b]) {
+      for (const path of ['/app/src/main.ts', '/app/src/other.ts', '/app/src/new.ts', '/app/src/new']) assert.equal(t.exists(path), parent.exists(path));
+      assert.deepEqual(t.readdir('/app/src'), parent.readdir('/app/src'));
+      assert.deepEqual(t.readdir('/'), parent.readdir('/'));
+    }
+    assert.ok(asked.length > 0);
+  }
+});
