@@ -719,7 +719,6 @@ const RENDERER_LOCATE_MS = 250;
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;
 
-/** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
 /**
  * Playwright's own advice for a missing browser (`npx playwright install`) runs the latest
  * Playwright, whose Chromium build may not be the one the Playwright installed with Sandburg drives.
@@ -741,6 +740,7 @@ function missingBrowser(err: unknown): Error | null {
  */
 const WASM_TIERING_BUDGET = 1_300_000_000;
 
+/** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
 export function launchOptions(options: SessionOptions): LaunchOptions {
   const ca = options.extraCaCerts === undefined ? (process.env.SANDBURG_EXTRA_CA_CERTS ?? process.env.NODE_EXTRA_CA_CERTS) : options.extraCaCerts;
   const spki = ca ? spkiHashes(ca) : [];
