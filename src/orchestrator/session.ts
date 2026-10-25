@@ -34,6 +34,7 @@ import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
 import { RendererMemory } from './renderer-memory.ts';
+import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 
 export interface SessionOptions {
   /** Directory for the HTTP cache. Default: .sandburg/cache */
@@ -147,11 +148,21 @@ export interface RunOptions {
   /** Called as each lifecycle phase of the run starts (a batch starts its next app when one reaches its checks). */
   onPhase?: (phase: PhaseName) => void;
   /**
-   * Called once the run has its tab, with a function that reads the memory its renderer uses now
-   * (bytes; null until the renderer is found, and where its memory cannot be read: not Linux). A
-   * batch's memory guard counts what an app has yet to allocate with it.
+   * Called once the run has its tab, with its renderer (see RunRenderer): what a batch's memory
+   * guard reads of each open app, and asks of those in their checks when memory is short.
    */
-  onRendererMemory?: (used: () => number | null) => void;
+  onRenderer?: (renderer: RunRenderer) => void;
+}
+
+/** A run's renderer, for a batch (RunOptions.onRenderer). */
+export interface RunRenderer {
+  /** Bytes it uses now; null until it is found, and where its memory cannot be read (not Linux). */
+  used(): number | null;
+  /**
+   * A full garbage collection in each of the run's isolates (collectGarbage), each given
+   * GC_TIMEOUT_MS; resolves when done (never rejects; a no-op once the run is over).
+   */
+  collectGarbage(): Promise<void>;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -471,7 +482,17 @@ export class Session {
           sampler = setInterval(sample, RENDERER_SAMPLE_MS);
         };
       }
-      options.onRendererMemory?.(() => memory?.used() ?? null);
+      const t = tab;
+      options.onRenderer?.({
+        used: () => memory?.used() ?? null,
+        collectGarbage: async () => {
+          if (t.page.isClosed()) return;
+          const cdp = await t.context.newCDPSession(t.page).catch(() => null);
+          if (!cdp) return;
+          await collectGarbage(cdp as unknown as DevtoolsSession, GC_TIMEOUT_MS).catch(() => {});
+          await cdp.detach().catch(() => {});
+        },
+      });
       run.memory = memory;
       run.network = tab.network;
       recordRequestFailures(context, run);
@@ -644,6 +665,9 @@ export const PAGE_QUIET_SCRIPT = `(() => {
 const SETTLE_QUIET_MS = 100;
 const SETTLE_LONG_MS = 1_000;
 const SETTLE_MAX_MS = 3_000;
+
+/** How long each of a run's isolates has to answer a garbage collection (a blocked worker answers nothing). */
+const GC_TIMEOUT_MS = 2_000;
 
 /** How often a run looks for its renderer until found, then reads its memory (for the peak). */
 const RENDERER_SAMPLE_MS = 1_000;

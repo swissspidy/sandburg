@@ -7,7 +7,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { Session } from '../../src/orchestrator/session.ts';
+import { Session, type RunRenderer } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
 import type { Project } from '../../src/types.ts';
 
@@ -47,8 +47,39 @@ test('milestone 1: the Vite + React fixture runs and its functional checks pass'
 
   // Schema stability: every run carries exactly the top-level fields of schema v1.
   const schema = JSON.parse(await readFile(new URL('../../src/result-schema.json', import.meta.url), 'utf8'));
-  assert.deepEqual(Object.keys(result).sort(), [...schema.required].sort());
+  // (and of its optional fields, only those it has: a run on Linux reports its renderer's memory)
+  const optional = Object.keys(schema.properties).filter((k) => !schema.required.includes(k));
+  assert.deepEqual(Object.keys(result).sort(), [...schema.required, ...optional.filter((k) => k in result)].sort());
+  if (process.platform === 'linux') assert.ok(result.memory!.rendererPeakBytes > 50 * 2 ** 20, JSON.stringify(result.memory));
   assert.deepEqual(Object.keys(result.timings).sort(), [...schema.properties.timings.required].sort());
+});
+
+test("a run's renderer is found, and collecting its garbage in its checks leaves the run passing", { skip: process.platform !== 'linux' }, async () => {
+  let renderer: RunRenderer | undefined;
+  let collected: Promise<{ before: number | null; after: number | null; ms: number }> | undefined;
+  const result = await session.run(counter, {
+    checks: `${fixtureDir}/checks.spec.ts`,
+    outDir,
+    onRenderer: (r) => (renderer = r),
+    onPhase: (phase) => {
+      if (phase !== 'checks' || !renderer) return;
+      const r = renderer;
+      collected = (async () => {
+        const before = r.used();
+        const started = performance.now();
+        await r.collectGarbage();
+        return { before, after: r.used(), ms: performance.now() - started };
+      })();
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks, null, 2));
+  const c = await collected!;
+  assert.ok(c.before !== null && c.before > 50 * 2 ** 20, JSON.stringify(c));
+  // Bounded: the blocked WebAssembly threads of Vite's bundler answer only at their timeout.
+  assert.ok(c.ms < 10_000, JSON.stringify(c));
+  // Over: nothing more is read (the pid may be reused), and collecting is a no-op.
+  assert.equal(renderer!.used(), null);
+  await renderer!.collectGarbage();
 });
 
 test('a failing functional check is classified as an app bug', async () => {

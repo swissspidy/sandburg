@@ -194,7 +194,7 @@ test("an app's memory that shows counts once: the reserve keeps only what it has
         maxOpen = Math.max(maxOpen, ++open);
         // Its renderer already holds 0.9 GiB of the 1 GiB an app without history is expected to reach.
         shown += 0.9;
-        options.onRendererMemory?.(() => 0.9 * 2 ** 30);
+        options.onRenderer?.({ used: () => 0.9 * 2 ** 30, collectGarbage: async () => {} });
         await sleep(50);
         options.onPhase?.('checks');
         await sleep(10);
@@ -214,7 +214,7 @@ test("an app's memory that shows counts once: the reserve keeps only what it has
   }
 });
 
-test('a project is expected to reach the peak its earlier run measured, in its checks too; a tampered peak is capped', async () => {
+test('a project is expected to reach the peak its earlier run measured until its checks; a tampered peak is capped', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
   try {
     await mkdir(join(dir, 'b-zzzzzzzz-000000'), { recursive: true });
@@ -226,29 +226,64 @@ test('a project is expected to reach the peak its earlier run measured, in its c
       { project: resolve('huge'), runtime: 'node', totalMs: 10, checksMs: 1, rendererPeakBytes: 1e30 },
     ];
     await writeFile(join(dir, 'b-zzzzzzzz-000000', 'summary.json'), JSON.stringify({ runs }));
-    const session = (log: string[]) => {
-      const open = new Set<string>();
-      return {
+    const session = (log: string[]) =>
+      ({
         async run(project: string, options: RunOptions) {
-          open.add(project);
-          log.push([...open].sort().join('+'));
-          options.onRendererMemory?.(() => 0);
+          log.push(`start ${project}`);
+          options.onRenderer?.({ used: () => 0, collectGarbage: async () => {} });
+          await sleep(40);
+          log.push(`checks ${project}`);
           options.onPhase?.('checks');
-          await sleep(30);
-          open.delete(project);
-          return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: resolve(project), snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 30, checksMs: 30 } } as unknown as RunResult;
+          await sleep(40);
+          return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: resolve(project), snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 80, checksMs: 40 } } as unknown as RunResult;
         },
-      } as unknown as Session;
-    };
-    // 3.5 GiB: "big" (2.2 GiB expected) leaves less than the 1.5 GiB reserve, in its checks too; the
-    // small ones (0.22 GiB, and nothing in their checks for one without a valid peak) open together.
+      }) as unknown as Session;
+    // 3.5 GiB: "big" (2.2 GiB expected) leaves less than the 1.5 GiB reserve until its checks; the
+    // small ones (0.22 GiB, and 1 GiB for one without a valid peak) open together then.
     const log: string[] = [];
     await runBatch(session(log), ['big', 'small', 'small2'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => 3.5 * GiB });
-    assert.deepEqual(log, ['big', 'small', 'small+small2']);
-    // A peak beyond reason (4 GiB at most) holds back no more than a 4.4 GiB app would.
+    assert.deepEqual(log.slice(0, 4), ['start big', 'checks big', 'start small', 'start small2']);
+    // A peak beyond reason counts as 4.4 GiB at most: 6 GiB leave the reserve for the next app.
     const huge: string[] = [];
     await runBatch(session(huge), ['huge', 'small'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => 6 * GiB });
-    assert.deepEqual(huge, ['huge', 'huge+small']);
+    assert.deepEqual(huge.slice(0, 3), ['start huge', 'start small', 'checks huge']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a batch short of memory has its apps in their checks collect garbage before it waits, at most every 10 s', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    const GiB = 2 ** 30;
+    let garbage = 0;
+    const collected: string[] = [];
+    const log: string[] = [];
+    const session = {
+      async run(project: string, options: RunOptions) {
+        log.push(`start ${project}`);
+        // Each app leaves 1 GiB of garbage once it has compiled; a collection frees it.
+        let mine = 0;
+        options.onRenderer?.({
+          used: () => 0,
+          collectGarbage: async () => {
+            collected.push(project);
+            garbage -= mine;
+            mine = 0;
+          },
+        });
+        garbage += mine = 1;
+        options.onPhase?.('checks');
+        await sleep(project === 'a' ? 1000 : 10);
+        garbage -= mine;
+        log.push(`end ${project}`);
+        return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: resolve(project), snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 10, checksMs: 10 } } as unknown as RunResult;
+      },
+    } as unknown as Session;
+    // 2 GiB less the garbage: "a" in its checks leaves 1 GiB, under the reserve, until it collects.
+    await runBatch(session, ['a', 'b'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => (2 - garbage) * GiB });
+    assert.deepEqual(log, ['start a', 'start b', 'end b', 'end a'], '"b" opened while "a" was in its checks');
+    assert.deepEqual(collected, ['a']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
