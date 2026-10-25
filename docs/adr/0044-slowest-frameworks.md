@@ -1,4 +1,4 @@
-# ADR NNNN: The slowest frameworks: waits that were timers, rolldown's builtin hooks, caches a project keeps
+# ADR 0044: The slowest frameworks: waits that were timers, rolldown's builtin hooks, caches a project keeps
 
 - Status: Accepted
 - Date: 2026-10-25
