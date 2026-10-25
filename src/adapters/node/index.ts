@@ -227,13 +227,24 @@ const PACKAGE_LIST = '_packages';
 /** Package versions by install and package directory. */
 const packageVersions = new Map<string, Promise<string | null>>();
 
+/** When each list's file was last read or written by this process (its mtime), to tell another process's writes. */
+const preloadSeen = new Map<string, number>();
+
+async function savedPreloadList(key: string): Promise<string[]> {
+  const file = preloadListPath(key);
+  const mtime = (await stat(file).catch(() => null))?.mtimeMs;
+  if (mtime === undefined) return [];
+  preloadSeen.set(key, mtime);
+  return readFile(file, 'utf8')
+    .then((t) => JSON.parse(t) as unknown)
+    .then((v) => (Array.isArray(v) ? v.filter((e): e is string => typeof e === 'string') : []))
+    .catch(() => [] as string[]);
+}
+
 async function preloadList(key: string): Promise<Map<string, true>> {
   let list = preloadLists.get(key);
   if (!list) {
-    const saved = await readFile(preloadListPath(key), 'utf8')
-      .then((t) => JSON.parse(t) as unknown)
-      .then((v) => (Array.isArray(v) ? v.filter((e): e is string => typeof e === 'string') : []))
-      .catch(() => [] as string[]);
+    const saved = await savedPreloadList(key);
     list = preloadLists.get(key) ?? new Map(saved.map((e) => [e, true] as const));
     preloadLists.set(key, list);
   }
@@ -252,9 +263,16 @@ async function flushPreloadLists(): Promise<void> {
   for (const k of [...preloadDirty]) {
     preloadDirty.delete(k);
     const file = preloadListPath(k);
+    const list = preloadLists.get(k);
+    if (!list) continue;
+    // Another process on the same .sandburg/ may have written the list since: its entries are
+    // kept (after this process's), not overwritten.
+    if ((await stat(file).catch(() => null))?.mtimeMs !== preloadSeen.get(k)) for (const e of await savedPreloadList(k)) list.set(e, true);
     const tmp = `${file}.${tmpSuffix()}.tmp`;
-    await writeFile(tmp, JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])]))
+    await writeFile(tmp, JSON.stringify([...list.keys()]))
       .then(() => rename(tmp, file))
+      .then(() => stat(file))
+      .then((st) => preloadSeen.set(k, st.mtimeMs))
       .catch(() => {});
   }
 }

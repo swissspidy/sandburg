@@ -157,7 +157,7 @@ export class Installer {
     const done = join(dir, '.sandburg-complete');
     const exists = await access(done).then(() => true, () => false);
     if (!exists) {
-      const tmp = `${dir}.tmp-${process.pid}-${Date.now()}`;
+      const tmp = `${dir}.tmp-${tmpSuffix()}`;
       await mkdir(tmp, { recursive: true });
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
@@ -185,8 +185,7 @@ export class Installer {
       await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
       await writeBinIndex(tmp);
       await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
-      await rm(dir, { recursive: true, force: true });
-      await rename(tmp, dir);
+      await settle(tmp, dir, done);
     }
     const resolved: Record<string, string> = {};
     for (const name of Object.keys((manifest as { dependencies: object }).dependencies)) {
@@ -716,6 +715,27 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
       log(`${build.name} ${version}: using ${build.wasm}`);
     }
   };
+}
+
+/**
+ * Puts a finished install (`tmp`, with its `.sandburg-complete`) in place at `dir`. Another process
+ * on the same .sandburg/ (or another Installer) may have finished the same install first: its
+ * directory stays, as runs may be reading from it, and this one goes. Replacing it (as an earlier
+ * version did, removing it first) pulled the files from under those runs. Only a directory without
+ * the record (left by an older version) is replaced.
+ */
+async function settle(tmp: string, dir: string, done: string): Promise<void> {
+  const complete = () => access(done).then(() => true, () => false);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(tmp, dir);
+      return;
+    } catch (err) {
+      if (await complete()) return void (await rm(tmp, { recursive: true, force: true }));
+      if (attempt) throw err;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
 }
 
 /**
