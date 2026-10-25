@@ -9,7 +9,7 @@
  * lowered so AsyncLocalStorage works; see src/node-runtime/async-context.ts).
  */
 import { spawn } from 'node:child_process';
-import { lstatSync, readdirSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
@@ -19,15 +19,15 @@ import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-name
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
 import type { Project } from '../../types.ts';
-import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
+import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
-import { installFromLockfile, installedPackages, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
+import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 
 /** --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds. */
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 14;
+export const TRANSFORM_VERSION = 22;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 16;
 
@@ -83,7 +83,7 @@ export class Installer {
     // WebAssembly build that replaces it) is under way. Guesses: npm may pick another version.
     this.resolver.onPicked = ({ name, version, integrity, optionalDependencies }) => {
       unpackHint(integrity, this.store);
-      for (const [binding, range] of Object.entries(wasiBindings(optionalDependencies).candidates)) void npmViewVersion(`${binding}@${range}`);
+      for (const [binding, range] of Object.entries(wasiBindings(optionalDependencies).candidates)) void npmViewVersion(`${binding}@${range}`, this.resolver);
       const build = WASM_BUILDS.find((b) => b.name === name && b.applies(version));
       if (build) wasmBuild(this.sides, build, version, () => {}).catch(() => {});
     };
@@ -282,7 +282,27 @@ export class Installer {
     if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
     const index = await this.index(key);
     if (!(rel in index)) return null;
-    return { body: await readFile(join(this.root, key, rel)), type: 'application/octet-stream' };
+    // Small files synchronously, as in file(); large ones (WebAssembly binaries) without blocking.
+    const abs = join(this.root, key, rel);
+    return { body: index[rel] <= SYNC_READ_MAX ? readFileSync(abs) : await readFile(abs), type: 'application/octet-stream' };
+  }
+
+  /**
+   * A small file's original bytes, read synchronously (a few hundred of them for a read-ahead
+   * answer: ~10 ms, where awaiting each read took ~60 ms), or null; only for paths in `index`, the
+   * install's (as `raw` checks).
+   */
+  rawSync(combinedKey: string, combinedRel: string, index: FileIndex): Buffer | null {
+    if (!(combinedRel in index)) return null;
+    const at = this.locate(combinedKey, combinedRel);
+    if (!at) return null;
+    const { key, rel } = at;
+    if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
+    try {
+      return readFileSync(join(this.root, key, rel));
+    } catch {
+      return null;
+    }
   }
 
   /** A file for the browser: JavaScript is compiled for the runtime (and cached); everything else is raw. */
@@ -301,30 +321,49 @@ export class Installer {
     if (!/\.(c|m)?js$/.test(rel) && /\.[^/.]+$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
     // Transforms are kept by content, not by install: every install with the same package version
     // shares them (a new app with next@16 does not transform Next.js again).
-    const source = await readFile(abs, 'utf8');
-    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel)) === 'module');
+    // Read synchronously, as the transform's cache entry below: installed files and transforms are
+    // small and just written (in the page cache), and a promise-based read (open, stat, read, close)
+    // cost the host's main thread ~0.15 ms each, ~0.4 s of a cold Astro start.
+    const source = readFileSync(abs, 'utf8');
+    const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel, index)) === 'module');
     const hash = createHash('sha256').update(`${esm ? 'esm' : 'cjs'}\0${rel}\0`).update(source).digest('hex');
     const cached = join(this.root, '..', 'transforms', `v${TRANSFORM_VERSION}`, hash.slice(0, 2), `${hash.slice(2)}.js`);
-    try {
-      return { body: this.remember(`${key}\0${rel}`, await readFile(cached))!, type: 'text/javascript' };
-    } catch {
-      // not transformed yet
-    }
     // A transform in progress (the prefetcher's, see prefetch.ts, or another runtime's) is waited for.
     let pending = this.transforming.get(hash);
     if (!pending) {
-      pending = (async () => {
-        const body = Buffer.from(await transformForRuntime(source, rel, esm));
-        await mkdir(join(cached, '..'), { recursive: true });
-        const tmp = `${cached}.${tmpSuffix()}.tmp`;
-        await writeFile(tmp, body);
-        await rename(tmp, cached);
-        return body;
-      })();
+      try {
+        return { body: this.remember(`${key}\0${rel}`, readFileSync(cached))!, type: 'text/javascript' };
+      } catch {
+        // not transformed yet
+      }
+      pending = (async () => Buffer.from(await transformForRuntime(source, rel, esm)))();
       this.transforming.set(hash, pending);
-      void pending.catch(() => {}).finally(() => this.transforming.delete(hash));
+      // Answered once transformed; it stays in progress (for other requests) until it is on disk.
+      void pending
+        .then((body) => this.persist(cached, body))
+        .catch(() => {})
+        .finally(() => this.transforming.delete(hash));
     }
     return { body: this.remember(`${key}\0${rel}`, await pending)!, type: 'text/javascript' };
+  }
+
+  /** A transform of an install's file this process has in memory (see remember), or undefined. */
+  remembered(key: string, rel: string): Buffer | undefined {
+    return this.combined.has(key) ? undefined : this.memory.get(`${key}\0${rel}`);
+  }
+
+  /** Transform cache directories made by this process. */
+  private made = new Set<string>();
+
+  private async persist(file: string, body: Buffer): Promise<void> {
+    const dir = join(file, '..');
+    if (!this.made.has(dir)) {
+      await mkdir(dir, { recursive: true });
+      this.made.add(dir);
+    }
+    const tmp = `${file}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, body);
+    await rename(tmp, file);
   }
 
   /**
@@ -356,6 +395,9 @@ export class Installer {
   }
 }
 
+/** Installed files up to this size are read synchronously (see Installer.file). */
+const SYNC_READ_MAX = 1 << 20;
+
 /** Bytes of transforms kept in memory (Installer.remember). */
 const MEMORY_MAX = 256 << 20;
 
@@ -374,7 +416,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
   const convert = async (code: string) => {
     const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
-    return esm && collidesWithWrapper(code, out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+    return esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
   };
   try {
     return mark(await convert(source));
@@ -403,30 +445,60 @@ const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.TransformOptions
   logLevel: 'silent',
 });
 
-const typeCache = new Map<string, 'module' | 'commonjs'>();
+/** By directory (absolute): the "type" of the nearest package.json, found or being found. */
+const typeCache = new Map<string, Promise<'module' | 'commonjs'>>();
 
-/** "type" of the nearest package.json, as Node decides a .js file's format. */
-async function packageType(installDir: string, rel: string): Promise<'module' | 'commonjs'> {
-  const parts = rel.split('/');
-  for (let i = parts.length - 1; i > 0; i--) {
-    const pj = join(installDir, ...parts.slice(0, i), 'package.json');
-    const hit = typeCache.get(pj);
-    if (hit) return hit;
-    try {
-      const type = (JSON.parse(await readFile(pj, 'utf8')) as { type?: string }).type === 'module' ? 'module' : 'commonjs';
-      typeCache.set(pj, type);
-      return type;
-    } catch {
-      // keep walking up
-    }
+/**
+ * "type" of the nearest package.json, as Node decides a .js file's format. Only the package.json
+ * files the install's index has are read (looking for absent ones was ~0.5 s of the host's 5.5 s
+ * in a cold next dev start), once per directory.
+ */
+function packageType(installDir: string, rel: string, index: FileIndex): Promise<'module' | 'commonjs'> {
+  const dir = rel.slice(0, Math.max(rel.lastIndexOf('/'), 0));
+  const id = `${installDir}\0${dir}`;
+  let type = typeCache.get(id);
+  if (!type) {
+    type = (async () => {
+      if (!dir) return 'commonjs';
+      if (`${dir}/package.json` in index) {
+        try {
+          return (JSON.parse(await readFile(join(installDir, dir, 'package.json'), 'utf8')) as { type?: string }).type === 'module' ? 'module' : 'commonjs';
+        } catch {
+          // unreadable: keep walking up, as before
+        }
+      }
+      return packageType(installDir, dir, index);
+    })();
+    typeCache.set(id, type);
   }
-  return 'commonjs';
+  return type;
 }
 
 /**
  * Next.js looks for its SWC WebAssembly build in next/wasm/@next/swc-wasm-nodejs
  * (where its own on-demand download would extract it). Put the installed copy there.
  */
+/**
+ * npm overrides that give each binding of a side install the emnapi its runtime needs
+ * (emnapiToAlign, install-rules.ts), scoped to that binding: the bindings of one install pin
+ * different ones (rolldown 2.0.0-alpha.5, satteri 1.11.1). null: none needs one.
+ */
+export async function sideEmnapiOverrides(side: string, bindings: string[]): Promise<Record<string, Record<string, string>> | null> {
+  const nm = join(side, 'node_modules');
+  const manifest = (dir: string) => readFile(join(dir, 'package.json'), 'utf8').then((t) => JSON.parse(t) as { version?: string; peerDependencies?: Record<string, string> }, () => null);
+  // What a binding resolves: nested in it, else at the top.
+  const resolved = async (binding: string, name: string) => (await manifest(join(nm, binding, 'node_modules', name))) ?? (await manifest(join(nm, name)));
+  const overrides: Record<string, Record<string, string>> = {};
+  for (const binding of bindings) {
+    const runtime = await resolved(binding, '@napi-rs/wasm-runtime');
+    if (!runtime) continue;
+    const core = await resolved(binding, '@emnapi/core');
+    const emnapi = emnapiToAlign([{ peer: runtime.peerDependencies?.['@emnapi/core'], core: core?.version }]);
+    if (emnapi) overrides[binding] = emnapiOverrides(emnapi);
+  }
+  return Object.keys(overrides).length ? overrides : null;
+}
+
 /**
  * napi-rs packages (rolldown, the Astro compiler, oxc, …) list a `*-wasm32-wasi` build among their
  * optional dependencies; npm skips it on this platform (cpu: wasm32). The runtime loads those builds
@@ -447,8 +519,16 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
     Object.assign(candidates, found.candidates);
   }
   // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
-  const install = (bindings: [string, string][]) =>
-    sideInstall(sides, { name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings) }, ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+  const flags = ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'];
+  const manifest = (bindings: [string, string][], overrides?: Record<string, Record<string, string>>) => ({ name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings), ...(overrides && { overrides }) });
+  // The runtime napi-rs bindings load through may need another emnapi than they pin (emnapiToAlign).
+  const install = async (bindings: [string, string][]) => {
+    const side = await sideInstall(sides, manifest(bindings), flags, log);
+    const overrides = await sideEmnapiOverrides(side, bindings.map(([name]) => name));
+    if (!overrides) return side;
+    log(`WebAssembly builds: ${Object.entries(overrides).map(([binding, o]) => `${binding} with @emnapi/core ${o['@emnapi/core']}`).join(', ')}, as @napi-rs/wasm-runtime needs`);
+    return sideInstall(sides, manifest(bindings, overrides), flags, log);
+  };
   // The listed bindings are installed while npm view looks for the others. Most of those do not
   // exist; when one does, all are installed together, as one tree.
   const listed = Object.entries(wanted).filter(([name]) => !top.has(name));
@@ -457,7 +537,7 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
   const checks = await Promise.all(
     Object.entries(candidates)
       .filter(([name]) => !(name in wanted))
-      .map(async ([name, range]) => ((await npmViewVersion(`${name}@${range}`)) ? ([name, range] as const) : null)),
+      .map(async ([name, range]) => ((await npmViewVersion(`${name}@${range}`, sides.resolver)) ? ([name, range] as const) : null)),
   );
   const hits = checks.filter((hit) => hit !== null);
   for (const hit of hits) wanted[hit[0]] = hit[1];
@@ -479,11 +559,11 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
     for (const [binding] of missing) {
       if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
       await rm(join(nm, binding), { recursive: true, force: true });
-      await cp(join(sideNm, binding), join(nm, binding), { recursive: true });
+      await place(join(sideNm, binding), join(nm, binding));
       for (const dep of sidePackages) {
         if (dep in wanted) continue;
         const to = join(nm, binding, 'node_modules', dep);
-        if (!existsSyncSafe(join(to, 'package.json'))) await cp(join(sideNm, dep), to, { recursive: true });
+        if (!existsSyncSafe(join(to, 'package.json'))) await place(join(sideNm, dep), to);
       }
     }
     log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
@@ -562,10 +642,10 @@ interface Sides {
  * Whether a package version exists on the registry (npm view). Asked once per process: a Next.js app
  * and its seed both ask for @next/swc-wasm32-wasi (which does not exist), ~0.5 s each.
  */
-function npmViewVersion(spec: string): Promise<string | null> {
+function npmViewVersion(spec: string, resolver: Resolver): Promise<string | null> {
   let version = viewed.get(spec);
   if (!version) {
-    version = npmView(spec);
+    version = resolver.view(spec).then((v) => (v === undefined ? npmView(spec) : v));
     viewed.set(spec, version);
   }
   return version;
@@ -623,12 +703,12 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
       const target = join(pkgDir, 'node_modules', build.wasm);
       if (side && !existsSyncSafe(join(target, 'package.json'))) {
         const sideNm = join(await side, 'node_modules');
-        await cp(join(sideNm, build.wasm), target, { recursive: true });
+        await place(join(sideNm, build.wasm), target);
         // Its own dependencies (lightningcss-wasm's napi-wasm) go inside it.
         for (const entry of await readdir(sideNm, { withFileTypes: true })) {
           if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
           const names = entry.name.startsWith('@') ? (await readdir(join(sideNm, entry.name))).map((n) => `${entry.name}/${n}`) : [entry.name];
-          for (const dep of names) if (dep !== build.wasm) await cp(join(sideNm, dep), join(target, 'node_modules', dep), { recursive: true });
+          for (const dep of names) if (dep !== build.wasm) await place(join(sideNm, dep), join(target, 'node_modules', dep));
         }
       }
       await replaceFile(join(pkgDir, build.file), build.shim);
@@ -642,7 +722,7 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
  * Writes a file as a new file: an install may share files with another through hard links (see
  * Installer.startFromClosest), and writing into one would change both.
  */
-async function replaceFile(path: string, content: string | Buffer): Promise<void> {
+export async function replaceFile(path: string, content: string | Buffer): Promise<void> {
   await rm(path, { force: true });
   await writeFile(path, content);
 }
@@ -671,7 +751,21 @@ async function placeNextSwcWasm(dir: string): Promise<void> {
   if (!(await access(from).then(() => true, () => false)) || !(await access(next).then(() => true, () => false))) return;
   const to = join(dir, NEXT_SWC_WASM.to);
   await rm(to, { recursive: true, force: true });
-  await cp(from, to, { recursive: true });
+  await place(from, to);
+}
+
+/**
+ * A package directory of a side install (or of this install) put in place: its files hard-linked,
+ * as the store links them (a copy each was ~0.5 s of an Astro app's install), or copied where that
+ * fails. Installs replace their files, never write them in place (replaceFile), so links are safe.
+ */
+async function place(from: string, to: string): Promise<void> {
+  try {
+    linkTree(from, to);
+  } catch {
+    await rm(to, { recursive: true, force: true });
+    await cp(from, to, { recursive: true });
+  }
 }
 
 async function buildIndex(dir: string): Promise<FileIndex> {

@@ -92,3 +92,17 @@ test('an ESM backend with top-level await (setup before listen) runs', async () 
   const result = await session.run(project, { checks: `${dir}/checks.spec.ts`, outDir });
   assert.equal(result.status, 'passed', failures(result));
 });
+
+test('a compound dev script whose server sends HTML without a Content-Type is found at once, not after 60 s', async () => {
+  const files = {
+    'package.json': JSON.stringify({ name: 'no-content-type', private: true, scripts: { dev: 'node prep.js && node server.js' } }),
+    'prep.js': "console.log('prepared');",
+    'server.js': "require('http').createServer((req, res) => { res.end('<!doctype html><html><body><div id=\"app\"><h1>Hello</h1></div></body></html>'); }).listen(3000);",
+  };
+  const result = await session.run(projectFromFiles(files, { name: 'no-content-type', path: fixture('node-express') }), {
+    outDir,
+    checks: { 'the page renders': async ({ app, expect }) => void (await expect(app.getByRole('heading', { name: 'Hello' })).toBeVisible()) },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+  assert.ok(result.timings.startMs! < 10_000, `start took ${result.timings.startMs} ms`);
+});

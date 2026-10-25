@@ -6,7 +6,7 @@ import { before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { chromium, type Browser } from 'playwright-core';
 import { Session, launchOptions } from '../../src/orchestrator/session.ts';
 import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
 import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
@@ -73,6 +73,12 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
     assert.equal(summary.totals.passed, 10, JSON.stringify(results.filter((r) => r.status !== 'passed').map((r) => [r.failure, r.checks.filter((c) => c.status !== 'passed')]), null, 2));
     assert.equal(summary.runs.length, 10);
     assert.equal(new Set(summary.runs.map((r) => r.snapshotId)).size, 10);
+    // Each run found its own renderer (one per sandbox) and read its memory: an app's peak is a few
+    // hundred MB, never the browser's whole.
+    if (process.platform === 'linux') {
+      for (const r of summary.runs) assert.ok(r.rendererPeakBytes! > 50 * 2 ** 20 && r.rendererPeakBytes! < 2 * 2 ** 30, `${r.label}: ${r.rendererPeakBytes}`);
+      assert.equal(new Set(results.map((r) => r.memory?.rendererPeakBytes)).size > 1, true, 'each its own renderer');
+    }
     // One install on the host serves all ten (they share their dependencies): the runs that start
     // after it finished take it from the cache. How long the install itself takes depends on npm's
     // cache, so its time is not checked.
@@ -92,6 +98,8 @@ async function canary(): Promise<{ server: Server; port: number; connections: ()
   let count = 0;
   const server = createServer((socket) => {
     count++;
+    // A browser that closes resets its connections; that is not the test's failure.
+    socket.on('error', () => {});
     socket.end('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -120,8 +128,8 @@ document.body.dataset.attempted = 'yes';
 test('no connection escapes the browser through the egress gateway', async () => {
   const { server, port, connections } = await canary();
   const session = new Session();
-  await session.open();
   try {
+    await session.open();
     const project = variant('escape', {
       // A *.sandburg.localhost name on another port than the host server's is not a sandbox origin.
       'src/main.tsx': (counter.files['src/main.tsx'] as string) + escapeAttempts(port, [`http://escape.${SANDBOX_DOMAIN}:${port}`]),
@@ -151,9 +159,10 @@ test('no connection escapes the browser through the egress gateway', async () =>
 test('without the gateway, the dead-proxy backstop alone keeps every connection in', async () => {
   const { server, port, connections } = await canary();
   const host = new HostServer();
-  await host.listen();
-  const browser = await chromium.launch(launchOptions({}));
+  let browser: Browser | undefined;
   try {
+    await host.listen();
+    browser = await chromium.launch(launchOptions({}));
     const origin = host.register('backstop', getAdapter('node'));
     const page = await browser.newPage(); // no egress routing on this context
     await page.goto(origin + '/');
@@ -169,13 +178,13 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
       const control = await open.newPage();
       await control.goto(origin + '/');
       await control.evaluate(escapeAttempts(port));
-      await control.waitForTimeout(1500);
+      for (let waited = 0; connections() === 0 && waited < 5000; waited += 50) await control.waitForTimeout(50);
       assert.ok(connections() > 0, 'control run did not reach the canary; the test would prove nothing');
     } finally {
       await open.close();
     }
   } finally {
-    await browser.close();
+    await browser?.close();
     await host.close();
     server.close();
   }
@@ -183,14 +192,15 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
 
 test('the gateway sees HTTPS from pages and workers; another sandbox refuses requests', async () => {
   const host = new HostServer();
-  await host.listen();
-  const browser = await chromium.launch(launchOptions({}));
   const cacheDir = await mkdtemp(join(tmpdir(), 'sandburg-egress-'));
   const stats = newEgressStats();
   const allow = ['https://allowed.sandburg.test'];
   const proxy = new EgressProxy(originMatcher(allow), stats, { noTunnels: true });
-  await proxy.listen();
+  let browser: Browser | undefined;
   try {
+    await host.listen();
+    await proxy.listen();
+    browser = await chromium.launch(launchOptions({}));
     const one = host.register('one', getAdapter('node'));
     const two = host.register('two', getAdapter('node'));
     // As a run's context (session.ts): only the host server's port bypasses the proxy, which opens no tunnels.
@@ -252,7 +262,7 @@ test('the gateway sees HTTPS from pages and workers; another sandbox refuses req
     await context.close();
   } finally {
     await proxy.close();
-    await browser.close();
+    await browser?.close();
     await host.close();
     await rm(cacheDir, { recursive: true, force: true });
   }

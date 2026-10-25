@@ -16,9 +16,9 @@ import { projectFromFiles } from '../../project.ts';
 import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticInstall, subProject } from './plan.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
-import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, type CompileKind } from './compile.ts';
+import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
 import { CompileCache } from './compile-cache.ts';
-import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
+import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix, type FileIndex } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
 import { diskCompileStore, sweepCompiles } from './compile-store.ts';
 import type { HostInstall } from './browser.ts';
@@ -40,11 +40,13 @@ const WS_SHIM = source('adapters/node/ws-shim.js');
  * vite-plugin-svelte's _svelte_metadata.json, SvelteKit re-optimized on every start), where Vite
  * (node_modules/.vite), Nuxt (node_modules/.cache/vite) and the Angular CLI (.angular/cache) put it.
  * Vite checks that a cache matches the lockfile and its config before it uses one, so a stale cache
- * costs a re-optimization, not a wrong result. A run writes its cache from the page, which runs the
+ * costs a re-optimization, not a wrong result. Also jiti's (node_modules/.cache/jiti: the config
+ * files it compiled, nuxt.config.ts, under a hash of their source), which spares a warm run loading
+ * jiti's Babel, and the runtime's transform cache (node_modules/.vite/sandburg-transforms). A run writes its cache from the page, which runs the
  * project's code, so a cache is only ever used by runs of the same project (its installed packages
  * and every file): one project cannot plant pre-bundled code in another's run.
  */
-const DEV_CACHE_DIRS = ['node_modules/.vite', 'node_modules/.cache/vite', '.angular/cache'];
+const DEV_CACHE_DIRS = ['node_modules/.vite', 'node_modules/.cache/vite', 'node_modules/.cache/jiti', '.angular/cache'];
 const devCacheRoot = () => join(installer.root, '..', 'dev-cache');
 
 function devCacheKey(project: Project, installKey: string): string {
@@ -57,15 +59,56 @@ function devCacheKey(project: Project, installKey: string): string {
 }
 
 /**
- * Cache keys issued to runs, with the directories their caches may hold. A run can only store a
- * cache under a key it was given, and only files under those directories (the page can reach the
- * endpoint, so what it sends is untrusted).
+ * Write capabilities issued to runs, by token: a random token handed to one run's page with its
+ * install data, for one cache key and the sandbox (origin) that run is in. A cache key is a digest of
+ * what a run installs and runs, which another run can know (a seed's key is a digest of public
+ * versions, and later runs learn it from their bundle URL), so the key alone never grants a write:
+ * a store needs the token, from the run's own sandbox, once. What the page sends is untrusted, and is
+ * kept only under the key's directories.
  */
-const issuedCaches = new Map<string, string[]>();
-const DEV_CACHE_MAX = 256 << 20;
+interface CacheWrite {
+  key: string;
+  dirs: string[];
+  /** The sandbox of the run the token was issued to, once its tab is known (HostInstallOptions.sandbox). */
+  sandbox: string | null;
+}
+const cacheWrites = new Map<string, CacheWrite>();
+/** Compile-cache capabilities (see compile-cache.ts), by token: many records per run, from its sandbox only. */
+const compileWrites = new Map<string, { key: string; sandbox: string | null }>();
+/** Tokens are dropped after this long unused (the longest run's deadlines are well under it). */
+const TOKEN_TTL_MS = 6 * 60 * 60_000;
+export const DEV_CACHE_MAX = 256 << 20;
+/** The largest code the runtime sends to compile, or sources to scan (next dev's largest chunks are ~8 MB). */
+export const SOURCE_BODY_MAX = 32 << 20;
+
+/** A new capability token for the run whose page will be in `sandbox` (bound once its tab is known). */
+function issue<T extends { sandbox: string | null }>(into: Map<string, T>, grant: T, sandbox: Promise<string> | undefined): string {
+  const token = randomBytes(32).toString('base64url');
+  into.set(token, grant);
+  void sandbox?.then((id) => (grant.sandbox = id), () => {});
+  setTimeout(() => into.delete(token), TOKEN_TTL_MS).unref();
+  return token;
+}
+
+/** A capability to store a cache under `key` (files under `dirs`), once, for the run whose page will be in `sandbox`. */
+export function issueCacheWrite(key: string, dirs: string[], sandbox: Promise<string> | undefined): string {
+  return issue(cacheWrites, { key, dirs, sandbox: null }, sandbox);
+}
+
+/** A capability to record compiles under the dev-cache `key`, for the run whose page will be in `sandbox`. */
+export function issueCompileWrite(key: string, sandbox: Promise<string> | undefined): string {
+  compileKeys.add(key);
+  return issue(compileWrites, { key, sandbox: null }, sandbox);
+}
+
+/** The grant for a request's token, if it was issued for `key` to the requesting sandbox. */
+function granted<T extends { key: string; sandbox: string | null }>(from: Map<string, T>, token: string | null | undefined, key: string, sandbox: string | undefined): T | null {
+  const grant = token ? from.get(token) : undefined;
+  return grant && grant.key === key && grant.sandbox !== null && grant.sandbox === sandbox ? grant : null;
+}
 
 /** The entries of a cache that are text files under `dirs`. */
-function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
+export function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
   const out: Record<string, string | { base64: string }> = {};
   if (!value || typeof value !== 'object') return out;
   for (const [path, content] of Object.entries(value)) {
@@ -131,19 +174,27 @@ async function cacheBundle(key: string): Promise<Buffer | null> {
 }
 
 /**
- * Seed keys (Next.js and Vite seeds) issued to a seed run and not yet written. A seed's key is shared:
- * later runs learn it (their filesBundle URL), and the host cannot tell runs apart. So a seed key
- * takes one write, the seed run's own, and is withdrawn before it (restored if the write fails).
+ * Whether the request may store a cache under `key`: its token was issued for that key to the
+ * requesting sandbox (see cacheWrites). The token is withdrawn here, before the body is read (restored
+ * if the write fails), so it takes one write.
  */
-const pendingSeeds = new Set<string>();
+function takeCacheWrite(key: string, token: string | null | undefined, sandbox: string | undefined): (CacheWrite & { token: string }) | null {
+  const grant = granted(cacheWrites, token, key, sandbox);
+  if (!grant) return null;
+  cacheWrites.delete(token!);
+  return { ...grant, token: token! };
+}
 
-async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
-  const dirs = issuedCaches.get(key);
-  if (!dirs || body.length > DEV_CACHE_MAX) return false;
-  const seed = pendingSeeds.delete(key);
-  if (seed) issuedCaches.delete(key);
+async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: number) => Promise<Buffer>): Promise<boolean> {
+  const { key, dirs } = grant;
+  const restore = () => cacheWrites.set(grant.token, { key, dirs, sandbox: grant.sandbox });
+  // A body over the limit is answered by the host server (a 413).
+  const text = await body(DEV_CACHE_MAX).catch((err: unknown) => {
+    restore();
+    throw err;
+  });
   try {
-    const files = cacheEntries(JSON.parse(body.toString('utf8')), dirs);
+    const files = cacheEntries(JSON.parse(text.toString('utf8')), dirs);
     await mkdir(devCacheRoot(), { recursive: true });
     const file = join(devCacheRoot(), `${key}.json`);
     const tmp = `${file}.${tmpSuffix()}.tmp`;
@@ -151,10 +202,7 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
     await rename(tmp, file);
     return true;
   } catch {
-    if (seed) {
-      pendingSeeds.add(key);
-      issuedCaches.set(key, dirs);
-    }
+    restore();
     return false;
   }
 }
@@ -418,6 +466,126 @@ async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | n
 }
 
 /**
+ * Read-ahead of raw installed files: a runtime that reads a raw file missing from its preload bundle
+ * asks for it with `?ahead=1`, and gets a bundle (status 207, the preload format) of that file and the
+ * files after it in its directory, by name: a dev server's first pre-bundle reads a package's files in
+ * turn (Vite's esbuild read lucide-react's icons and their source maps, 3,100 requests). Files this
+ * install's runs loaded before are left out (they are in its preload bundle), as are large ones;
+ * the answer stays under the file channel's MAX_BODY. The runtime tells which ones it read
+ * (`?used=1`), and only those are recorded as loaded.
+ */
+const AHEAD_BUDGET = 512 << 10;
+const AHEAD_FILE_MAX = 64 << 10;
+const AHEAD_FILES = 512;
+/** File names by directory, sorted, per install. */
+const directories = new Map<string, Promise<Map<string, string[]>>>();
+
+function directoriesOf(key: string): Promise<Map<string, string[]>> {
+  let dirs = directories.get(key);
+  if (!dirs) {
+    dirs = installer.index(key).then((index) => {
+      const out = new Map<string, string[]>();
+      for (const rel of Object.keys(index)) {
+        const at = rel.lastIndexOf('/');
+        const list = out.get(rel.slice(0, at));
+        if (list) list.push(rel.slice(at + 1));
+        else out.set(rel.slice(0, at), [rel.slice(at + 1)]);
+      }
+      for (const list of out.values()) list.sort();
+      return out;
+    });
+    directories.set(key, dirs);
+    for (const old of directories.keys()) if (directories.size > BUNDLES_KEPT) directories.delete(old);
+  }
+  return dirs;
+}
+
+/**
+ * The read-ahead answer for raw `rel` (its bytes `first`): the files after it, up to the name
+ * `until` (the runtime has the files from there), or null when nothing comes with it.
+ */
+async function readAhead(key: string, rel: string, first: Buffer, until: string | null): Promise<Buffer | null> {
+  if (first.length >= AHEAD_BUDGET) return null;
+  const at = rel.lastIndexOf('/');
+  const names = (await directoriesOf(key)).get(rel.slice(0, at)) ?? [];
+  const index = await installer.index(key);
+  const loaded = await preloadList(key);
+  const header: [string, string, number][] = [['f', rel, first.length]];
+  const bodies: Buffer[] = [first];
+  let bytes = first.length;
+  for (let i = names.indexOf(rel.slice(at + 1)) + 1; i > 0 && i < names.length && header.length < AHEAD_FILES; i++) {
+    if (until !== null && names[i] >= until) break;
+    const next = `${rel.slice(0, at)}/${names[i]}`;
+    const size = index[next] ?? 0;
+    if (size > AHEAD_FILE_MAX || loaded.has(`f:${next}`)) continue;
+    if (bytes + size > AHEAD_BUDGET) break;
+    const body = installer.rawSync(key, next, index);
+    if (!body) continue;
+    header.push(['f', next, body.length]);
+    bodies.push(body);
+    bytes += body.length;
+  }
+  if (header.length === 1) return null;
+  const json = Buffer.from(JSON.stringify(header));
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(json.length);
+  return Buffer.concat([length, json, ...bodies]);
+}
+
+/**
+ * Transforms pushed ahead, for an install never run (its prefetcher, prefetch.ts, knows what each
+ * module requires): a runtime asks for a transformed file with `?ahead=1` over its file channel,
+ * and gets it with the modules it requires, and theirs, breadth first, whose transforms are done (in
+ * memory), and each one's nearest package.json, up to AHEAD_BUDGET; each is sent once per channel.
+ * A cold start loaded its first modules one request each (astro dev ~600, waiting for the host), and
+ * the predicted bundle comes seconds later. What the runtime reads from them it tells as read-ahead
+ * files (?used=1); the rest is dropped.
+ */
+const pushed = new WeakMap<object, Set<string>>();
+
+export function pushAhead(key: string, rel: string, first: Buffer, prefetcher: Prefetcher, channel: object): Buffer | null {
+  if (first.length >= AHEAD_BUDGET) return null;
+  let sent = pushed.get(channel);
+  if (!sent) pushed.set(channel, (sent = new Set()));
+  sent.add(`t:${rel}`);
+  const header: [string, string, number][] = [['t', rel, first.length]];
+  const bodies: Buffer[] = [first];
+  let bytes = first.length;
+  const add = (mode: string, path: string, body: Buffer) => {
+    sent.add(`${mode}:${path}`);
+    header.push([mode, path, body.length]);
+    bodies.push(body);
+    bytes += body.length;
+  };
+  const queue = [...(prefetcher.requires.get(rel) ?? [])];
+  for (let i = 0; i < queue.length && header.length < AHEAD_FILES; i++) {
+    const dep = queue[i];
+    if (sent.has(`t:${dep}`)) continue;
+    const body = installer.remembered(key, dep);
+    if (!body) continue;
+    if (bytes + body.length > AHEAD_BUDGET) break;
+    add('t', dep, body);
+    const pkg = nearestPackageJson(prefetcher.index, dep);
+    const raw = pkg && !sent.has(`f:${pkg}`) ? installer.rawSync(key, pkg, prefetcher.index) : null;
+    if (raw && bytes + raw.length <= AHEAD_BUDGET) add('f', pkg!, raw);
+    queue.push(...(prefetcher.requires.get(dep) ?? []));
+  }
+  if (header.length === 1) return null;
+  const json = Buffer.from(JSON.stringify(header));
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(json.length);
+  return Buffer.concat([length, json, ...bodies]);
+}
+
+/** The package.json Node reads for a module's "type": the nearest one up its directories. */
+function nearestPackageJson(index: FileIndex, rel: string): string | null {
+  for (let dir = rel.slice(0, rel.lastIndexOf('/')); dir.includes('/'); dir = dir.slice(0, dir.lastIndexOf('/'))) {
+    if (`${dir}/package.json` in index) return `${dir}/package.json`;
+  }
+  return null;
+}
+
+/**
  * Next.js' webpack cache, seeded per version (ADR 0014). In an app's first compile, almost every
  * module is the framework's (React, Next.js' client and server runtimes), the same in every app with
  * the same versions. For each set of versions, the session runs Sandburg's own seed app once; the
@@ -545,7 +713,7 @@ async function resolveBin(installDir: string, name: string): Promise<string | nu
   return null;
 }
 
-async function serve(req: HostRequest): Promise<HostResponse | null> {
+export async function serve(req: HostRequest): Promise<HostResponse | null> {
   if (req.path === '/__sandburg/node-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleNodeRuntime() };
   }
@@ -575,7 +743,7 @@ async function serve(req: HostRequest): Promise<HostResponse | null> {
     return { status: 200, headers: { 'content-type': 'application/wasm', 'cache-control': 'max-age=31536000, immutable' }, body: await readFile(SQLITE_WASM) };
   }
   if (req.path === '/__sandburg/tla-scan' && req.method === 'POST') {
-    const files = JSON.parse((await req.body()).toString('utf8')) as Record<string, string>;
+    const files = JSON.parse((await req.body(SOURCE_BODY_MAX)).toString('utf8')) as Record<string, string>;
     return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topLevelAwait: projectHasTopLevelAwait(files) }) };
   }
   // Code the runtime asks for by digest before it sends it (worker.ts): what was compiled before.
@@ -586,10 +754,11 @@ async function serve(req: HostRequest): Promise<HostResponse | null> {
   }
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;
+    const code = (await req.body(SOURCE_BODY_MAX)).toString('utf8');
     try {
-      const [code, path, async, key] = [(await req.body()).toString('utf8'), req.query.get('path') ?? '/unknown.js', req.query.get('async') === '1', req.query.get('cache')];
+      const [path, async, key] = [req.query.get('path') ?? '/unknown.js', req.query.get('async') === '1', req.query.get('cache')];
       const out = compileForRuntime(code, path, kind, { asyncModules: async });
-      if (key && compileKeys.has(key)) void compileCache.record(key, kind, async, path, code, out);
+      if (key && granted(compileWrites, req.headers?.['x-sandburg-token'], key, req.sandbox)) void compileCache.record(key, kind, async, path, code, out);
       return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: out };
     } catch (e) {
       return { status: 400, headers: { 'content-type': 'text/plain' }, body: String((e as Error).message) };
@@ -609,7 +778,8 @@ async function serve(req: HostRequest): Promise<HostResponse | null> {
   }
   const cache = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})$/.exec(req.path);
   if (cache && req.method === 'POST') {
-    const saved = await writeDevCache(cache[1], await req.body());
+    const grant = takeCacheWrite(cache[1], req.headers?.['x-sandburg-token'], req.sandbox);
+    const saved = !!grant && (await writeDevCache(grant, req.body));
     return saved ? { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' } : { status: 403, headers: { 'content-type': 'text/plain' }, body: 'not a cache of this run' };
   }
   const pre = /^\/__sandburg\/preload\/([0-9a-f]{24})\/([0-9a-f]{16})$/.exec(req.path);
@@ -620,7 +790,28 @@ async function serve(req: HostRequest): Promise<HostResponse | null> {
   const m = /^\/__sandburg\/nm\/([0-9a-f]{24})\/(f|t)\/(.+)$/.exec(req.path);
   if (m) {
     const [, key, mode, rel] = m;
+    // A file the runtime read from a read-ahead answer: recorded as loaded, as if it had been asked for.
+    if (req.query.get('used') === '1') {
+      if (decodeURIComponent(rel) in (await installer.index(key))) void recordLoad(key, mode, decodeURIComponent(rel));
+      return { status: 204, headers: {}, body: '' };
+    }
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
+    if (file && mode === 'f' && req.query.get('ahead') === '1') {
+      const body = await readAhead(key, decodeURIComponent(rel), file.body, req.query.get('until'));
+      if (body) {
+        void recordLoad(key, mode, decodeURIComponent(rel));
+        return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
+      }
+    }
+    if (file && mode === 't' && req.channel && req.query.get('ahead') === '1') {
+      const prefetcher = await prefetchers.get(key);
+      const body = prefetcher ? pushAhead(key, decodeURIComponent(rel), file.body, prefetcher, req.channel) : null;
+      if (body) {
+        void recordLoad(key, mode, decodeURIComponent(rel));
+        void prefetcher!.loaded(decodeURIComponent(rel), file.body.toString('utf8'));
+        return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
+      }
+    }
     if (file) void recordLoad(key, mode, decodeURIComponent(rel));
     if (file && mode === 't') void prefetchers.get(key)?.then((p) => p.loaded(decodeURIComponent(rel), file.body.toString('utf8')));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
@@ -680,18 +871,20 @@ export const node: AdapterDescriptor = {
     const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
     const cacheKey = devCacheKey(project, key);
     const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
-    issuedCaches.set(cacheKey, cacheDirs);
-    compileKeys.add(cacheKey);
-    const compiles = { key: cacheKey, bundle: (await compileCache.has(cacheKey)) ? `/__sandburg/compile-cache/${cacheKey}` : null };
+    const compiles = {
+      key: cacheKey,
+      bundle: (await compileCache.has(cacheKey)) ? `/__sandburg/compile-cache/${cacheKey}` : null,
+      token: issueCompileWrite(cacheKey, options?.sandbox),
+    };
     let filesBundle: string | null = null;
+    // The run's write of a cache: one, under one key, from its own sandbox.
+    const write = (key: string, dirs: string[]) => issueCacheWrite(key, dirs, options?.sandbox);
     let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
     if (project.framework === 'next') {
       const seed = await nextSeedCache(info.resolved, nextRouter(project), options, log);
       if (seed && options?.seed) {
         // The seed run keeps its webpack cache under the shared key.
-        issuedCaches.set(seed.key, seed.dirs);
-        pendingSeeds.add(seed.key);
-        devCache = { key: seed.key, dirs: seed.dirs, files: {}, waitFor: [`${seed.dirs[0]}/webpack/client-development/index.pack.gz`, `${seed.dirs[0]}/webpack/server-development/index.pack.gz`] };
+        devCache = { key: seed.key, dirs: seed.dirs, files: {}, token: write(seed.key, seed.dirs), waitFor: [`${seed.dirs[0]}/webpack/client-development/index.pack.gz`, `${seed.dirs[0]}/webpack/server-development/index.pack.gz`] };
       } else if (seed?.ready) {
         readableCaches.set(seed.key, seed.dirs);
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
@@ -701,9 +894,7 @@ export const node: AdapterDescriptor = {
     if (project.framework === 'vite' && parts.length === 1 && (options?.seed || !Object.keys(devCache.files).length)) {
       const seed = await viteSeedCache(project, info.key, options, log);
       if (seed && options?.seed) {
-        issuedCaches.set(seed.key, VITE_SEED_DIRS);
-        pendingSeeds.add(seed.key);
-        devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, waitFor: VITE_SEED_WAIT };
+        devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, token: write(seed.key, VITE_SEED_DIRS), waitFor: VITE_SEED_WAIT };
       } else if (seed?.ready) {
         readableCaches.set(seed.key, VITE_SEED_DIRS);
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
@@ -717,6 +908,7 @@ export const node: AdapterDescriptor = {
       filesBundle = `/__sandburg/dev-cache/${cacheKey}/bundle`;
       devCache = { ...devCache, files: {}, digests: cacheDigests(devCache.files) };
     }
+    if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
     return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, compileCache: compiles, preload: await preloadUrl(key, entry) };
@@ -724,5 +916,8 @@ export const node: AdapterDescriptor = {
   serve,
   warmups,
   isWarm: (project) => installer.installed(project, extraDependencies(project)),
-  prepare: () => installer.prepare(),
+  prepare: () => {
+    installer.prepare();
+    warmCompiler();
+  },
 };

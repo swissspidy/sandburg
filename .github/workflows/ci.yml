@@ -28,7 +28,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      # npm test, with each file's time in the job summary (scripts/test-times.ts).
+      - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/unit/*.test.ts
 
   runtime:
     name: Runtime tests (Chromium)
@@ -43,8 +44,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:runtime
+      # The runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
+      # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror.
+      - run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)
+      - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/runtime/*.test.ts
 
   pack:
     name: Package (packed and installed)
@@ -59,8 +62,11 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:pack
+      # The runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
+      # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror.
+      - run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)
+      # npm run test:pack, with each file's time in the job summary.
+      - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/pack/*.test.ts
 
   e2e:
     name: E2E (${{ matrix.suite }})
@@ -70,7 +76,7 @@ jobs:
       fail-fast: false
       matrix:
         # One job per file: each installs its fixtures cold, and the slow ones run side by side.
-        suite: [angular, batch, browser-install, frameworks, fullstack, node, reference, run, vite-frameworks, websockets]
+        suite: [angular, batch, browser-install, frameworks, fullstack, node, page-checks, reference, run, vite-frameworks, websockets]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,8 +86,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: node --test --test-reporter=spec --test-concurrency=1 "test/e2e/${MATRIX_SUITE}.test.ts"
+      # The runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
+      # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror.
+      - run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)
+      - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout --test-concurrency=1 "test/e2e/${MATRIX_SUITE}.test.ts"
         env:
           MATRIX_SUITE: ${{ matrix.suite }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

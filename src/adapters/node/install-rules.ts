@@ -290,6 +290,49 @@ module.exports = {
 
 
 /**
+ * Rolldown's builtin plugins that Vite runs from JavaScript (makeBuiltinPluginCallable) get every hook
+ * the binding has, and Vite calls each of them for every module: a call into the WebAssembly binding
+ * that copies the module's code into it, ~1 ms of the runtime's thread each, for hooks the plugin does
+ * not have (rolldown's register_hook_usage) or for modules it leaves alone. Here each known plugin
+ * keeps only its own hooks, with Vite's hook filters for the ids or code it can act on, as its Rust
+ * source decides (rolldown 1.2): vite-json transforms *.json (is_json_ext); oxc-runtime resolves
+ * `@oxc-project/runtime/helpers/…` (and `./…` from one of them: a guard on the importer, which
+ * Vite's filters cannot test) and loads what it resolved to; replace transforms only code with one
+ * of its keys in it (its matcher's keys, unless objectGuards adds typeof forms); vite-resolve
+ * resolves, watches, and loads only its own virtual modules (browser externals, optional peer
+ * dependencies, external builtins' facades); the React refresh wrapper has resolveId and transform.
+ * A filter is no narrower than the plugin's own test: the plugin decides.
+ */
+const ROLLDOWN_BUILTIN_HOOKS = `
+	// sandburg: see SOURCE_PATCHES
+	const sandburgReplace = plugin.name === "builtin:replace" && plugin._options && !plugin._options.objectGuards && plugin._options.values ? Object.keys(plugin._options.values) : null;
+	const sandburgHooks = {
+		"builtin:vite-json": { transform: { id: /\\.json(?:$|\\?)/ } },
+		"builtin:oxc-runtime": { resolveId: (id, importer) => id.startsWith("@oxc-project/runtime/helpers/") || (id.startsWith("./") && typeof importer === "string" && importer.startsWith("\\0@oxc-project+runtime@")), load: { id: /^\\0@oxc-project\\+runtime@/ } },
+		"builtin:replace": { transform: sandburgReplace && sandburgReplace.length ? { code: sandburgReplace } : true },
+		"builtin:vite-resolve": { resolveId: true, load: { id: /^(?:\\0vite:esm-external-builtin-require:|__vite-browser-external|__vite-optional-peer-dep)/ }, watchChange: true },
+		"builtin:vite-react-refresh-wrapper": { resolveId: true, transform: true }
+	}[plugin.name];
+	if (sandburgHooks) for (const key of ["resolveId", "load", "transform", "watchChange"]) {
+		if (!(key in wrappedPlugin)) continue;
+		const use = sandburgHooks[key];
+		if (!use) delete wrappedPlugin[key];
+		else if (typeof use === "function") {
+			const hook = wrappedPlugin[key];
+			const handler = typeof hook === "object" ? hook.handler : hook;
+			const guarded = function(...args) {
+				return use(...args) ? handler.apply(this, args) : null;
+			};
+			wrappedPlugin[key] = typeof hook === "object" ? { ...hook, handler: guarded } : guarded;
+		} else if (use !== true) {
+			const hook = wrappedPlugin[key];
+			wrappedPlugin[key] = typeof hook === "object" ? { ...hook, filter: use } : { handler: hook, filter: use };
+		}
+	}
+	return wrappedPlugin;
+}`;
+
+/**
  * Changes to package sources for what the browser cannot do, or does slowly. piscina's workers wait for tasks with
  * Atomics.wait and take them with receiveMessageOnPort, which needs a synchronous look into a
  * MessagePort (browsers have none): they use its message-event mode instead, as under WebContainers.
@@ -310,6 +353,97 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     to: "// The default is turbopack when nothing is configured.\n$1if (bundlerFlags.size === 0 && process.env.NEXT_TEST_WASM) return 1; // sandburg: see SOURCE_PATCHES\n$1if (bundlerFlags.size === 0) {\n",
   },
   {
+    // Nitro's dev server (Nuxt) holds a request that comes before its worker is ready and checks
+    // again every 600 ms: the first page waited up to 0.6 s after the worker was ready. Checked every
+    // 50 ms instead, for as long as before (12 times the checks).
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /const maxRetries = isTest \|\| isCI \? 100 : 10;\n(\s*)while \(this\.building \|\| \+\+retry < maxRetries\) \{\n([^]*?)await new Promise\(\(resolve2\) => setTimeout\(resolve2, 600\)\);/,
+    to: 'const maxRetries = (isTest || isCI ? 100 : 10) * 12; // sandburg: see SOURCE_PATCHES\n$1while (this.building || ++retry < maxRetries) {\n$2await new Promise((resolve2) => setTimeout(resolve2, 50));',
+  },
+  {
+    // rollup's watch mode starts from the cache it is given (it kept one between rebuilds only).
+    file: /(^|\/)node_modules\/rollup\/dist\/(es\/)?shared\/watch\.js$/,
+    from: /(class Task \{\n\s*constructor\(watcher, options\) \{\n\s*)this\.cache = \{ modules: \[\] \};/,
+    to: "$1this.cache = options.cache && typeof options.cache === 'object' && Array.isArray(options.cache.modules) ? options.cache : { modules: [] }; // sandburg: see SOURCE_PATCHES",
+  },
+  {
+    // Nitro's dev server (Nuxt) builds its server with rollup in watch mode on every start (~0.7 s of
+    // a warm run's thread: resolving, loading, transforming and parsing ~100 modules, then parsing them
+    // all again for rollup's cache). It starts from the cache of the project's last run, which rollup
+    // checks module by module (the loaded code must equal the cached original), kept in the runtime's
+    // transform cache (node-runtime/transform-cache.ts) and written again only when a module changed.
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /function startRollupWatcher\(nitro, rollupConfig\) \{\n(\s*)const watcher = rollup\.watch\(\n(\s*)defu\$1\(rollupConfig, \{/,
+    to:
+      'function startRollupWatcher(nitro, rollupConfig) {\n' +
+      "$1const sandburgStore = globalThis[Symbol.for('sandburg.transformCache')]; // sandburg: see SOURCE_PATCHES\n" +
+      '$1let sandburgCache;\n' +
+      "$1try { sandburgCache = JSON.parse(sandburgStore?.getFile('nitro-rollup', 'cache.json') ?? 'null') ?? undefined; } catch {}\n" +
+      '$1const sandburgSave = (cache) => {\n' +
+      "$1  if (!sandburgStore || !cache || !Array.isArray(cache.modules)) return;\n" +
+      '$1  const before = new Map((sandburgCache?.modules ?? []).map((m) => [m.id, m.code]));\n' +
+      '$1  if (before.size === cache.modules.length && cache.modules.every((m) => before.get(m.id) === m.code)) return;\n' +
+      "$1  try { sandburgStore.setFile('nitro-rollup', 'cache.json', JSON.stringify(cache)); sandburgCache = cache; } catch {}\n" +
+      '$1};\n' +
+      '$1const watcher = rollup.watch(\n' +
+      '$2defu$$1(sandburgCache ? { ...rollupConfig, cache: sandburgCache } : rollupConfig, {',
+  },
+  {
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /(case "BUNDLE_END": \{\n)(\s*)(nitro\.hooks\.callHook\("compiled", nitro\);)/,
+    to: '$1$2sandburgSave(event.result?.cache); // sandburg: see SOURCE_PATCHES\n$2$3',
+  },
+  {
+    // A build that failed (the app's error, or a cache that no longer fits) leaves no cache for the next run.
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /(case "ERROR": \{\n)(\s*)(nitro\.logger\.error\(formatRollupError\(event\.error\)\);\n\s*nitro\.hooks\.callHook\("dev:error", event\.error\);)/,
+    to: "$1$2if (sandburgCache) { sandburgCache = undefined; sandburgStore?.setFile('nitro-rollup', 'cache.json', 'null'); } // sandburg: see SOURCE_PATCHES\n$2$3",
+  },
+  {
+    // SolidStart 2's server functions manifest (a virtual module the server entry and the client
+    // import) loads once no module with "use server" has been compiled for 1 s: every first page
+    // waited 1 s with nothing to do, on the server and again in the client. Here 100 ms. A module
+    // compiled later still registers its functions as it runs, and makes the plugin invalidate the
+    // manifest, as before; a call to a function no module registered is looked up by its file.
+    file: /(^|\/)node_modules\/@solidjs\/start\/dist\/directives\/index\.js$/,
+    from: /(this\.timeout = setTimeout\(\(\) => \{\n\s*this\.promise\.resolve\(this\.source\(\)\);\n\s*\}, )1000\);/,
+    to: '$1100); // sandburg: see SOURCE_PATCHES',
+  },
+  {
+    file: /(^|\/)node_modules\/rolldown\/dist\/shared\/normalize-string-or-regex-[\w-]+\.mjs$/,
+    from: /(const order = callablePlugin\.getOrder\(key\);\n\s*if \(order == void 0\) wrappedPlugin\[key\] = wrappedHook;\n\s*else wrappedPlugin\[key\] = \{\n\s*handler: wrappedHook,\n\s*order\n\s*\};\n\s*\}\n)\treturn wrappedPlugin;\n\}/,
+    to: `$1${ROLLDOWN_BUILTIN_HOOKS}`,
+  },
+  {
+    // SolidStart's file-system router lists the routes when its routes module first loads, and told
+    // the dev server each route had just been added: in the client, 200 ms later, a hot update of the
+    // routes module (and of app.tsx) re-rendered the page. A page that had connected to the dev server
+    // by then lost what the checks had typed (1 run in ~20 once runs got faster). The first listing
+    // tells no one; later changes to routes do, as before.
+    file: /(^|\/)node_modules\/@solidjs\/start\/dist\/config\/fs-routes\/router\.js$/,
+    from: /async buildRoutes\(\) \{\n(\s*)for \(var src of glob\(this\.glob\(\)\)\) \{\n\s*await this\.addRoute\(src\);\n\s*\}\n/,
+    to: 'async buildRoutes() {\n$1this.sandburgListing = true; // sandburg: see SOURCE_PATCHES\n$1try {\n$1    for (var src of glob(this.glob())) {\n$1        await this.addRoute(src);\n$1    }\n$1} finally {\n$1    this.sandburgListing = false;\n$1}\n',
+  },
+  {
+    file: /(^|\/)node_modules\/@solidjs\/start\/dist\/config\/fs-routes\/router\.js$/,
+    from: /reload\(route, type\) \{\n(\s*)this\.dispatchEvent\(/,
+    to: 'reload(route, type) {\n$1if (this.sandburgListing) return; // sandburg: see SOURCE_PATCHES\n$1this.dispatchEvent(',
+  },
+  {
+    // vite-plugin-solid compiles every .jsx/.tsx module with Babel, for the server and again for the
+    // client (~1.2 s of a warm SolidStart run's thread, its own dev toolbar's modules included): it
+    // looks the compile up in the project's transform cache first (node-runtime/transform-cache.ts),
+    // unless the app passes Babel options of its own.
+    file: /(^|\/)node_modules\/vite-plugin-solid\/dist\/(esm\/index\.mjs|cjs\/index\.cjs)$/,
+    from: /(const babelOptions = (?:mergeAnything\.)?mergeAndConcat\(babelUserOptions, opts\);\n)(\s*)(const \{\n\s*code,\n\s*map\n\s*\} = await (babel|babel__namespace)\.transformAsync\(source, babelOptions\);\n)/,
+    to:
+      "$1$2const sandburgCache = options.babel ? undefined : globalThis[Symbol.for('sandburg.transformCache')]; // sandburg: see SOURCE_PATCHES\n" +
+      "$2const sandburgHit = sandburgCache?.get('vite-plugin-solid', id, isSsr, source);\n" +
+      '$2if (sandburgHit) return sandburgHit;\n' +
+      '$2$3' +
+      "$2sandburgCache?.set('vite-plugin-solid', id, isSsr, source, { code, map });\n",
+  },
+  {
     file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
     from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
     to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
@@ -322,3 +456,33 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
   },
 ];
 
+/**
+ * The emnapi a tree of WebAssembly bindings is to be resolved again with, given each
+ * @napi-rs/wasm-runtime in it (its peer range for @emnapi/core) and the @emnapi/core it resolves.
+ * Since 1.2.6 the runtime bundles emnapi plugins that use @emnapi/core's private fields, and takes
+ * only the exact 2.x prerelease they were built against (its peer range: "^1.7.1 || 2.0.0-beta.2").
+ * Bindings pin the emnapi they were built with (rolldown 1.2.15: 2.0.0-alpha.5) and take the
+ * runtime by range, so a new runtime arrives beside an emnapi it does not load with ("Cannot set
+ * properties of undefined (setting 'initWorker')"). The bindings' WebAssembly works with the newer
+ * emnapi (rolldown's parses and bundles), so @emnapi/core and @emnapi/runtime are overridden to it.
+ * null: nothing to align (no runtime, no exact version, an emnapi 1.x, or runtimes that want
+ * different ones).
+ */
+export function emnapiToAlign(runtimes: { peer?: string; core?: string }[]): string | null {
+  const needed = new Set<string>();
+  let mismatch = false;
+  for (const { peer, core } of runtimes) {
+    const exact = (peer ?? '')
+      .split('||')
+      .map((alt) => alt.trim())
+      .find((alt) => /^2\.\d+\.\d+-[\w.]+$/.test(alt));
+    if (!exact) continue;
+    needed.add(exact);
+    // emnapi 1.x ignores the plugins, and loads with any runtime (satteri's binding pins 1.11.1).
+    if (core !== exact && core?.startsWith('2.')) mismatch = true;
+  }
+  return mismatch && needed.size === 1 ? [...needed][0] : null;
+}
+
+/** npm overrides that give a tree of WebAssembly bindings the emnapi its runtime needs (emnapiToAlign). */
+export const emnapiOverrides = (version: string) => ({ '@emnapi/core': version, '@emnapi/runtime': version });

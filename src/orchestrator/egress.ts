@@ -51,6 +51,26 @@ const FORWARDED = ['user-agent', 'accept'];
 /** Playwright's abort codes as the Fetch domain names them. */
 const ERROR_REASONS = { blockedbyclient: 'BlockedByClient', internetdisconnected: 'InternetDisconnected', failed: 'Failed' } as const;
 
+/** Entries a run's blocked or failed list keeps: a page can make requests without end, each with a URL of megabytes. */
+export const MAX_ENTRIES = 200;
+/** A recorded URL's length at most. */
+export const MAX_URL = 2048;
+
+/** Records a blocked or failed request, within MAX_ENTRIES and MAX_URL. */
+export function record(list: NetworkEntry[], entry: NetworkEntry): void {
+  if (list.length >= MAX_ENTRIES) return;
+  list.push({ ...entry, url: cut(entry.url), reason: cut(entry.reason) });
+}
+
+/**
+ * The first MAX_URL code units of `s`, as a string of their own: V8 keeps a slice of a long string
+ * as a view of it, so 200 cut entries of 1 MB URLs held 200 MB. UTF-16 both ways keeps the code
+ * units as they are (lone surrogates too).
+ */
+function cut(s: string): string {
+  return s.length > MAX_URL ? Buffer.from(s.slice(0, MAX_URL), 'utf16le').toString('utf16le') : s;
+}
+
 export function newEgressStats(): EgressStats {
   return { requests: 0, cacheHits: 0, cacheMisses: 0, tunneled: 0, failed: [], blocked: [] };
 }
@@ -97,7 +117,9 @@ export function originMatcher(allow: string[]): OriginMatcher {
     if (exact.has(origin)) return true;
     // Opaque origins ("null": data:, blob:, about:) never match.
     if (!/^https?:\/\//.test(origin)) return false;
-    const url = new URL(origin);
+    // Callers pass what a page asked for: an origin that is not a URL matches nothing.
+    const url = URL.parse(origin);
+    if (!url) return false;
     return suffixes.some((s) => url.protocol === `${s.scheme}:` && url.hostname.endsWith(s.suffix) && url.port === '');
   };
 }
@@ -139,10 +161,15 @@ export class EgressGateway {
       await context.route('**/*', async (route) => {
         const req = route.request();
         stats.requests++;
-        if (new URL(req.url()).origin === localOrigin) return route.continue();
-        const answer = await this.answer(req.method(), req.url(), await req.allHeaders(), allowed, stats);
-        if ('abort' in answer) return route.abort(answer.abort).catch(() => {});
-        return await route.fulfill({ status: answer.response.status, headers: answer.response.headers, body: answer.response.body });
+        try {
+          if (new URL(req.url()).origin === localOrigin) return await route.continue();
+          const answer = await this.answer(req.method(), req.url(), await req.allHeaders(), allowed, stats);
+          if ('abort' in answer) return await route.abort(answer.abort);
+          return await route.fulfill({ status: answer.response.status, headers: answer.response.headers, body: answer.response.body });
+        } catch {
+          // the request is gone, or could not be answered: it fails, and nothing else does
+          await route.abort('failed').catch(() => {});
+        }
       });
     } else {
       context.on('request', () => stats.requests++);
@@ -170,7 +197,7 @@ export class EgressGateway {
     const localHost = new URL(localOrigin).host;
     await context.routeWebSocket((url) => url.host !== localHost, (ws) => {
       stats.requests++;
-      stats.blocked.push({ url: ws.url(), method: 'WEBSOCKET', reason: 'WebSockets may only reach the sandbox origin' });
+      record(stats.blocked, { url: ws.url(), method: 'WEBSOCKET', reason: 'WebSockets may only reach the sandbox origin' });
       ws.close({ code: 1008, reason: 'blocked by sandburg' }).catch(() => {});
     });
     return stats;
@@ -188,12 +215,13 @@ export class EgressGateway {
     allowed: OriginMatcher,
     stats: EgressStats,
   ): Promise<{ abort: 'blockedbyclient' | 'internetdisconnected' | 'failed' } | { response: CachedResponse }> {
-    if (!allowed(new URL(url).origin)) {
-      stats.blocked.push({ url, method, reason: 'origin not allowlisted' });
+    const origin = URL.parse(url)?.origin;
+    if (!origin || !allowed(origin)) {
+      record(stats.blocked, { url, method, reason: 'origin not allowlisted' });
       return { abort: 'blockedbyclient' };
     }
     if (method !== 'GET' && method !== 'HEAD') {
-      stats.blocked.push({ url, method, reason: 'only GET/HEAD reach allowlisted origins' });
+      record(stats.blocked, { url, method, reason: 'only GET/HEAD reach allowlisted origins' });
       return { abort: 'blockedbyclient' };
     }
     try {
@@ -202,7 +230,7 @@ export class EgressGateway {
       else stats.cacheMisses++;
       return { response };
     } catch (err) {
-      stats.failed.push({ url, method, reason: err instanceof Error ? err.message : String(err) });
+      record(stats.failed, { url, method, reason: err instanceof Error ? err.message : String(err) });
       return { abort: err instanceof OfflineMissError ? 'internetdisconnected' : 'failed' };
     }
   }

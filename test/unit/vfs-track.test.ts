@@ -57,3 +57,28 @@ test('a file not read yet (remote) written over counts as a change', () => {
   vfs.write('/app/node_modules/.vite/deps/react.js', enc('export {}'));
   assert.equal(vfs.trackedChanged(), true);
 });
+
+test('a file written over and back again is no change; written over and left is', () => {
+  const vfs = cached();
+  // The Angular CLI writes its .tsbuildinfo twice per start, ending with the bytes it had.
+  vfs.write('/app/node_modules/.vite/deps/react.js', enc('export { other }'));
+  vfs.write('/app/node_modules/.vite/deps/react.js', enc('export {}'));
+  assert.equal(vfs.trackedChanged(), false);
+  vfs.writeAt('/app/node_modules/.vite/deps/react.js', enc('E'), 0);
+  assert.equal(vfs.trackedChanged(), true);
+  vfs.writeAt('/app/node_modules/.vite/deps/react.js', enc('e'), 0);
+  assert.equal(vfs.trackedChanged(), false);
+  vfs.write('/app/node_modules/.vite/deps/react.js', enc('export { changed }'));
+  assert.equal(vfs.trackedChanged(), true);
+});
+
+test('a new file is a change even if written twice; a file added and removed is a change', () => {
+  const vfs = cached();
+  vfs.write('/app/node_modules/.vite/deps/vue.js', enc('a'));
+  vfs.write('/app/node_modules/.vite/deps/vue.js', enc('a'));
+  assert.equal(vfs.trackedChanged(), true);
+  const other = cached();
+  other.write('/app/node_modules/.vite/deps/vue.js', enc('a'));
+  other.unlink('/app/node_modules/.vite/deps/vue.js');
+  assert.equal(other.trackedChanged(), true);
+});

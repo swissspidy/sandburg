@@ -40,6 +40,8 @@ const ERRNO: Record<string, number> = { ENOENT: 2, EEXIST: 17, ENOTDIR: 20, EISD
 
 interface FileNode {
   data: Uint8Array | null; // null: not fetched yet (remote)
+  /** A large remote file's bytes, while someone holds them (see read). */
+  weak?: WeakRef<Uint8Array>;
   /** Memory this file owns, with room to grow; `data` is its first `size` bytes (see writeAt). */
   store?: Uint8Array;
   size: number;
@@ -48,6 +50,9 @@ interface FileNode {
 }
 
 export type WatchListener = (event: 'rename' | 'change', path: string) => void;
+
+/** Remote files this large are held weakly once read (see Vfs.read). */
+const KEEP_REMOTE_BELOW = 4 << 20;
 
 export class Vfs {
   private files = new Map<string, FileNode>();
@@ -59,6 +64,11 @@ export class Vfs {
   /** Directories whose files are tracked (see track()), and whether one of them changed since. */
   private tracked: string[] | null = null;
   private trackedDirty = false;
+  /**
+   * The bytes a tracked file had before its first write since track() (null: it did not exist), so a
+   * file written over and back again (the Angular CLI's .tsbuildinfo, twice per start) is no change.
+   */
+  private trackedBefore = new Map<string, Uint8Array | null>();
 
   constructor(fetchRemote: (path: string) => Uint8Array) {
     this.fetchRemote = fetchRemote;
@@ -80,15 +90,35 @@ export class Vfs {
   track(dirs: string[]): void {
     this.tracked = dirs.map(norm);
     this.trackedDirty = false;
+    this.trackedBefore.clear();
   }
 
-  /** Whether a file under the tracked directories changed since track(); null if none are tracked. */
+  /**
+   * Whether a file under the tracked directories changed since track(); null if none are tracked.
+   * A file whose bytes were written over is a change only if they differ from what it had then.
+   */
   trackedChanged(): boolean | null {
-    return this.tracked ? this.trackedDirty : null;
+    if (!this.tracked) return null;
+    if (this.trackedDirty) return true;
+    for (const [path, before] of this.trackedBefore) {
+      const now = this.files.get(path)?.data;
+      if (before === null ? now !== undefined : !now || !sameBytes(now, before)) return true;
+    }
+    return false;
+  }
+
+  private isTracked(path: string): boolean {
+    return !!this.tracked && this.tracked.some((d) => path === d || path.startsWith(d + '/'));
   }
 
   private touch(path: string): void {
-    if (this.tracked && !this.trackedDirty && this.tracked.some((d) => path === d || path.startsWith(d + '/'))) this.trackedDirty = true;
+    if (!this.trackedDirty && this.isTracked(path)) this.trackedDirty = true;
+  }
+
+  /** A tracked file's bytes are about to be written over: what it had before, the first time. */
+  private noteBytes(path: string, before: Uint8Array | null): void {
+    if (this.trackedDirty || this.trackedBefore.has(path) || !this.isTracked(path)) return;
+    this.trackedBefore.set(path, before);
   }
 
   watch(listener: WatchListener): () => void {
@@ -119,8 +149,16 @@ export class Vfs {
     path = norm(path);
     const f = this.files.get(path);
     if (!f) throw new FsError(this.dirs.has(path) ? 'EISDIR' : 'ENOENT', 'open', path);
-    if (!f.data) f.data = this.fetchRemote(path);
-    return f.data;
+    if (f.data) return f.data;
+    // A remote file is an installed one, which the host serves the same each time: a large one
+    // (a WebAssembly binary, read once to compile it: swc's 29 MB, beside its compiled code) is
+    // fetched again if read once its reader let go of it, rather than kept for the run.
+    const kept = f.weak?.deref();
+    if (kept) return kept;
+    const data = this.fetchRemote(path);
+    if (data.length >= KEEP_REMOTE_BELOW) f.weak = new WeakRef(data);
+    else f.data = data;
+    return data;
   }
 
   write(path: string, data: Uint8Array, append = false): void {
@@ -131,7 +169,13 @@ export class Vfs {
     const existing = this.files.get(path);
     const now = Date.now();
     if (append && existing) return this.writeAt(path, data, 'end');
-    if (this.tracked && !(existing?.data && sameBytes(existing.data, data))) this.touch(path);
+    // The old bytes are replaced, not changed in place: kept as they are (writeAt copies them). A
+    // large remote file read is held weakly: its bytes, while they are still held, count too.
+    const before = existing?.data ?? existing?.weak?.deref() ?? null;
+    if (this.tracked && !(before && sameBytes(before, data))) {
+      if (existing && !before) this.touch(path);
+      else this.noteBytes(path, before);
+    }
     this.files.set(path, { data, size: data.length, mtimeMs: now, ino: existing?.ino ?? this.inos++ });
     if (!existing) {
       this.dirs.get(dir)!.add(base(path));
@@ -162,12 +206,13 @@ export class Vfs {
       grown.set(prev);
       store = grown;
     }
+    // Written in place: what it had is copied first, the first time (see trackedChanged).
+    if (this.tracked && !this.trackedDirty && !this.trackedBefore.has(path) && this.isTracked(path)) this.noteBytes(path, prev.slice());
     store.set(data, at);
     existing.store = store;
     existing.data = store.subarray(0, size);
     existing.size = size;
     existing.mtimeMs = Date.now();
-    this.touch(path);
     this.emit('change', path);
   }
 

@@ -1,5 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { RuntimeHarness } from './harness.ts';
 import { bundleNodeRuntime } from '../../src/node-runtime/bundle.ts';
 
@@ -782,6 +783,29 @@ test('Buffer: UTF-8 conversions of long strings (native) match Node', async () =
   assert.deepEqual(JSON.parse(out.stdout), [380, 380, true, 'é', 300, 8, '😀😀', 20, '.....héllo wörld 😀 h.', true, 0xfeff]);
 });
 
+test('Buffer: UTF-8 of strings over 32 KB (encodeInto) matches Node', async () => {
+  // ASCII; text whose UTF-8 is longer than its length and an eighth (CJK); a surrogate pair where the
+  // first pass stops; lone surrogates; non-ASCII only at the end.
+  const strings = [
+    'a'.repeat(40_000),
+    '变量 = 函数(参数);\n'.repeat(4000),
+    'x'.repeat(36_863) + '😀'.repeat(3000),
+    'y'.repeat(40_000) + '\ud800' + 'z' + '\udc00',
+    'q'.repeat(50_000) + 'é',
+  ];
+  const digest = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
+  const program = `
+    const { createHash } = require('crypto');
+    const strings = ${JSON.stringify(strings)};
+    console.log(JSON.stringify(strings.map((s) => { const b = Buffer.from(s); return [b.length, Buffer.byteLength(s), createHash('sha256').update(b).digest('hex'), b.toString() === s.toWellFormed()]; })));`;
+  const r = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(r.fatal, null, r.fatal ?? r.stderr);
+  assert.deepEqual(
+    JSON.parse(r.stdout),
+    strings.map((s) => [Buffer.from(s).length, Buffer.byteLength(s), digest(Buffer.from(s)), true]),
+  );
+});
+
 test('Buffer: base64 and base64url of long buffers (native) match Node', async () => {
   const bytes = Buffer.from(Array.from({ length: 1001 }, (_, i) => (i * 37) & 255));
   const out = await h.run(
@@ -878,6 +902,91 @@ test('crypto: SHA hashes of chunked input, as in Node', async () => {
   assert.deepEqual(JSON.parse(r.stdout), expected);
 });
 
+test('crypto: the runtime’s own hashes and HMACs give what Node gives', async () => {
+  // Each algorithm and alias, around block and padding boundaries, chunked, copied, as a stream, as
+  // HMACs with short and long keys, in each output encoding; the errors and names Node gives.
+  const scenario = `
+    const algs = ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512', 'SHA256', 'RSA-SHA1', 'sha-512'];
+    const data = Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 31 + (i >> 8)) & 255));
+    const out = [];
+    for (const alg of algs) {
+      for (const n of [0, 1, 55, 56, 63, 64, 111, 112, 119, 127, 128, 129, 1000, 3000]) out.push(crypto.createHash(alg).update(data.subarray(0, n)).digest('hex'));
+      const h = crypto.createHash(alg).update(data.subarray(0, 100));
+      const c = h.copy();
+      out.push(h.update('tail').digest('base64'), c.digest('base64url'));
+      for (const key of ['', 'k', 'x'.repeat(64), 'y'.repeat(129), Buffer.from([1, 2, 3]), new Uint8Array([4, 5, 6]).buffer, new DataView(new Uint8Array([7, 8]).buffer)]) out.push(crypto.createHmac(alg, key).update(data.subarray(0, 200)).update('é', 'utf8').digest('hex'));
+      out.push(crypto.createHash(alg).update('😀 '.repeat(50)).digest('latin1'), crypto.createHash(alg).update('616263', 'hex').digest('nope').length);
+      out.push(crypto.hash ? crypto.hash(alg, 'abc') : null);
+    }
+    const errors = [];
+    const h = crypto.createHash('sha1'); h.digest();
+    for (const f of [() => h.digest(), () => h.update('a'), () => h.copy(), () => crypto.createHash('sha1').update(5), () => crypto.createHash('nope')]) {
+      try { f(); errors.push(null); } catch (e) { errors.push([e.code ?? null, e.message]); }
+    }
+    const m = crypto.createHmac('sha256', 'k'); m.update('x');
+    errors.push(m.digest('hex').length, JSON.stringify(m.digest('hex')));
+    try { m.update('y'); } catch (e) { errors.push(e.code); }
+    out.push(errors);`;
+  const r = await h.run(
+    {
+      'main.js': `
+        const crypto = require('crypto');
+        ${scenario}
+        const stream = crypto.createHash('sha256');
+        stream.setEncoding('hex');
+        let piped = '';
+        stream.on('data', (d) => (piped += d));
+        stream.on('end', () => console.log(JSON.stringify([out, piped])));
+        require('stream').Readable.from([Buffer.from('ab'), Buffer.from('c')]).pipe(stream);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(r.fatal, null, r.fatal ?? r.stderr);
+  const crypto = await import('node:crypto');
+  const out: unknown[] = [];
+  new Function('crypto', 'Buffer', 'out', scenario.replace('const out = [];', ''))(crypto, Buffer, out);
+  assert.deepEqual(JSON.parse(r.stdout), [out, crypto.createHash('sha256').update('abc').digest('hex')]);
+});
+
+test('crypto: a 16 MB input hashes as in Node', async () => {
+  const r = await h.run(
+    {
+      'main.js': `
+        const crypto = require('crypto');
+        const big = Buffer.alloc(16 << 20, 7);
+        console.log(JSON.stringify(['sha1', 'sha256', 'md5'].map((a) => crypto.createHash(a).update(big).digest('hex'))));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(r.fatal, null, r.fatal ?? r.stderr);
+  const big = Buffer.alloc(16 << 20, 7);
+  assert.deepEqual(JSON.parse(r.stdout), ['sha1', 'sha256', 'md5'].map((a) => createHash(a).update(big).digest('hex')));
+});
+
+test('zlib: its library loads when a member it has is first used, not as zlib is required', async () => {
+  const r = await h.run(
+    {
+      'main.js': `
+        const loaded = () => Object.keys(globalThis[Symbol.for('sandburg.libs')] ?? {}).includes('zlib');
+        const zlib = require('zlib');
+        const { createGzip, constants, Z_SYNC_FLUSH } = zlib;
+        const keys = Object.keys(zlib);
+        const steps = [loaded(), typeof createGzip, constants.Z_SYNC_FLUSH, Z_SYNC_FLUSH, keys.includes('gzipSync') && keys.includes('Z_BEST_SPEED')];
+        zlib.gzip('abc', (e, gz) => {
+          steps.push(!e && gz[0] === 0x1f, loaded());
+          const sync = zlib.gunzipSync(gz).toString();
+          steps.push(sync, loaded(), typeof zlib.Gzip, Object.getOwnPropertyDescriptor(zlib, 'gunzipSync').value === zlib.gunzipSync);
+          zlib.inflateSync = () => 'mine';
+          steps.push(zlib.inflateSync());
+          console.log(JSON.stringify(steps));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(r.fatal, null, r.fatal ?? r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), [false, 'function', 2, 2, true, true, false, 'abc', true, 'function', true, 'mine']);
+});
+
 test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buffer and streams', async () => {
   const runtime = await bundleNodeRuntime();
   assert.ok(!/node_modules\/(crypto-browserify|browserify-zlib|@napi-rs\/wasm-runtime)\//.test(runtime), 'the runtime script leaves them out');
@@ -891,19 +1000,23 @@ test('crypto, zlib and wasi load as their own scripts, with the runtime’s Buff
         const digest = hash.update('abc').digest();
         const hmac = crypto.createHmac('sha256', 'k').update('m').digest('base64url');
         const bytes = crypto.randomBytes(8);
+        // Hashes, HMACs and random bytes are the runtime's own: crypto-browserify loads with its other members.
+        const hashed = Object.keys(globalThis[Symbol.for('sandburg.libs')] ?? {}).includes('crypto');
+        const pbkdf2 = crypto.pbkdf2Sync('p', 's', 1, 8, 'sha256').toString('hex');
         const wasi = new WASI({ version: 'preview1' });
+        const gz = Buffer.isBuffer(zlib.gzipSync('z')) && zlib.gunzipSync(zlib.gzipSync('z')).toString();
         console.log(JSON.stringify({
-          before, after: Object.keys(globalThis[Symbol.for('sandburg.libs')]).sort(),
+          before, hashed, pbkdf2, after: Object.keys(globalThis[Symbol.for('sandburg.libs')]).sort(),
           isBuffer: Buffer.isBuffer(digest) && Buffer.isBuffer(bytes), hex: digest.toString('hex'), hmac,
           stream: crypto.createHash('md5') instanceof stream.Transform, wasi: typeof wasi.wasiImport.fd_write,
-          same: require('crypto') === crypto, gz: Buffer.isBuffer(zlib.gzipSync('z')) && zlib.gunzipSync(zlib.gzipSync('z')).toString(),
+          same: require('crypto') === crypto, gz,
         }));`,
     },
     '/app/main.js',
   );
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.deepEqual(JSON.parse(out.stdout.split('\n')[0]), {
-    before: [], after: ['crypto', 'wasi', 'zlib'], isBuffer: true, hex: 'a9993e364706816aba3e25717850c26c9cd0d89d',
+    before: [], hashed: false, pbkdf2: '372cc9815244c4a2', after: ['crypto', 'wasi', 'zlib'], isBuffer: true, hex: 'a9993e364706816aba3e25717850c26c9cd0d89d',
     hmac: 'tgCQ4wUil661oICInOL8S8qVfnVvrrTffTGADKHncew', stream: true, wasi: 'function', same: true, gz: 'z',
   });
 });

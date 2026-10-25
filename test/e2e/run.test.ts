@@ -5,9 +5,9 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { Session } from '../../src/orchestrator/session.ts';
+import { Session, type RunRenderer } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
 import type { Project } from '../../src/types.ts';
 
@@ -47,8 +47,39 @@ test('milestone 1: the Vite + React fixture runs and its functional checks pass'
 
   // Schema stability: every run carries exactly the top-level fields of schema v1.
   const schema = JSON.parse(await readFile(new URL('../../src/result-schema.json', import.meta.url), 'utf8'));
-  assert.deepEqual(Object.keys(result).sort(), ([...schema.required] as string[]).sort());
+  // (and of its optional fields, only those it has: a run on Linux reports its renderer's memory)
+  const optional = Object.keys(schema.properties).filter((k) => !schema.required.includes(k));
+  assert.deepEqual(Object.keys(result).sort(), ([...schema.required, ...optional.filter((k) => k in result)] as string[]).sort());
+  if (process.platform === 'linux') assert.ok(result.memory!.rendererPeakBytes > 50 * 2 ** 20, JSON.stringify(result.memory));
   assert.deepEqual(Object.keys(result.timings).sort(), ([...schema.properties.timings.required] as string[]).sort());
+});
+
+test("a run's renderer is found, and collecting its garbage in its checks leaves the run passing", { skip: process.platform !== 'linux' }, async () => {
+  let renderer: RunRenderer | undefined;
+  let collected: Promise<{ before: number | null; after: number | null; ms: number }> | undefined;
+  const result = await session.run(counter, {
+    checks: `${fixtureDir}/checks.spec.ts`,
+    outDir,
+    onRenderer: (r) => (renderer = r),
+    onPhase: (phase) => {
+      if (phase !== 'checks' || !renderer) return;
+      const r = renderer;
+      collected = (async () => {
+        const before = r.used();
+        const started = performance.now();
+        await r.collectGarbage();
+        return { before, after: r.used(), ms: performance.now() - started };
+      })();
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks, null, 2));
+  const c = await collected!;
+  assert.ok(c.before !== null && c.before > 50 * 2 ** 20, JSON.stringify(c));
+  // Bounded: the blocked WebAssembly threads of Vite's bundler answer only at their timeout.
+  assert.ok(c.ms < 10_000, JSON.stringify(c));
+  // Over: nothing more is read (the pid may be reused), and collecting is a no-op.
+  assert.equal(renderer!.used(), null);
+  await renderer!.collectGarbage();
 });
 
 test('a failing functional check is classified as an app bug', async () => {
@@ -83,6 +114,48 @@ test('requests outside the allowlist are blocked and recorded', async () => {
   const networkCheck = result.checks.find((c) => c.kind === 'network');
   assert.equal(networkCheck?.status, 'failed');
   assert.equal(networkCheck?.blocking, false);
+});
+
+test('a popup to an IPv6 literal is refused, and the session goes on running apps', async () => {
+  // A popup's first request reaches the run's egress proxy (ADR 0030) as `CONNECT [::1]:443`: parsing
+  // it threw, and the host process exited.
+  const result = await session.run(counter, {
+    outDir,
+    checks: {
+      'opens popups the gateway does not see': async ({ app }) => {
+        await app.evaluate(() => {
+          for (const url of ['https://[::1]/', 'https://[::1]:8443/x', 'https://[0:0:0:0:0:ffff:7f00:1]/']) window.open(url);
+        });
+        await new Promise((r) => setTimeout(r, 2000));
+      },
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks, null, 2));
+  const blocked = result.network.blocked.map((b) => b.url);
+  assert.ok(blocked.includes('https://[::1]'), JSON.stringify(result.network));
+  assert.ok(blocked.includes('https://[::1]:8443'), JSON.stringify(result.network));
+  const again = await session.run(counter, { checks: `${fixtureDir}/checks.spec.ts`, outDir });
+  assert.equal(again.status, 'passed', JSON.stringify(again.failure ?? again.checks, null, 2));
+});
+
+test('a run stores its own dev-server cache and compiles, with the capability its install issued', async () => {
+  const dir = fileURLToPath(new URL('../../.sandburg/dev-cache', import.meta.url));
+  const before = new Set(await readdir(dir).catch(() => [] as string[]));
+  // A project of its own (a new dev-cache key), whose run has no cache to start from.
+  const project = variant(`own-cache-${Date.now()}`, { 'src/marker.ts': `export const marker = ${Date.now()};\n` });
+  const result = await session.run(project, { checks: `${fixtureDir}/checks.spec.ts`, outDir });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks, null, 2));
+  let added: string[] = [];
+  // The page stores the cache as the run ends; compiles are written 2 s after they were recorded.
+  for (let i = 0; i < 40; i++) {
+    added = (await readdir(dir)).filter((f) => !before.has(f));
+    if (added.some((f) => /^[0-9a-f]{24}\.json$/.test(f) && added.some((c) => c.startsWith('compiled-') && c.endsWith(`-${f.slice(0, 24)}.bin`)))) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  // The app's cache, beside its compiles (a Vite seed run may have stored the seed of its packages too).
+  const cache = added.find((f) => /^[0-9a-f]{24}\.json$/.test(f) && added.some((c) => c.startsWith('compiled-') && c.endsWith(`-${f.slice(0, 24)}.bin`)));
+  assert.ok(cache, added.join('\n'));
+  assert.ok(Object.keys(JSON.parse(await readFile(`${dir}/${cache}`, 'utf8'))).includes('node_modules/.vite/deps/_metadata.json'));
 });
 
 test('importing an undeclared package is an app bug, not a runtime limitation', async () => {

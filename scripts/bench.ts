@@ -6,6 +6,7 @@
  *   node scripts/bench.ts [--base origin/main] [--head .] [--fixtures vite-react-counter,lit-vite,next-app-router]
  *                         [--modes cold,warm] [--rounds 3] [--json out.jsonl] [--summary out.md] [--fail-above 0.3]
  *
+ * - A fixture is a name in fixtures/, or a directory of the checkout (corpus/012-vite-react).
  * - A revision is a git ref, checked out in a worktree under the temporary directory (its
  *   node_modules is this checkout's when the lockfiles match, else npm ci), or `.` for this
  *   checkout as it is (cold runs remove its .sandburg/).
@@ -49,7 +50,8 @@ import { join } from 'node:path';
 const [wt, fixture, mode] = process.argv.slice(2);
 process.chdir(wt);
 const { Session } = await import(join(wt, 'src/index.ts'));
-const dir = join(wt, 'fixtures', fixture);
+// A name with a slash is a directory of the checkout (corpus/012-vite-react), others are fixtures.
+const dir = fixture.includes('/') ? join(wt, fixture) : join(wt, 'fixtures', fixture);
 const opts = { checks: join(dir, 'checks.spec.ts') };
 const session = new Session();
 await session.open();

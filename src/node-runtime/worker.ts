@@ -35,8 +35,10 @@ import * as misc from './builtins/misc.ts';
 import { net, netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import ShaHash from 'sha.js/hash.js';
-import { LIBS_KEY, type RuntimeLib } from './libs.ts';
+import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
+import { CRYPTO_LIB_KEYS, LIBS_KEY, ZLIB_CONSTANTS, ZLIB_LIB_KEYS, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
+import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
 import type { FileTree } from '../types.ts';
 
 export type ToWorker =
@@ -51,7 +53,7 @@ export type ToWorker =
       /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
       filesBundle?: string | null;
       /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
-      compileCache?: { key: string; bundle: string | null } | null;
+      compileCache?: { key: string; bundle: string | null; token?: string } | null;
       /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
       prefetched?: Record<string, SharedArrayBuffer>;
       nodeModules: Record<string, number> | null;
@@ -175,10 +177,25 @@ function patchUtf8(): void {
   const SHORT = 64;
   B.from = function (v: unknown, enc?: unknown, len?: unknown) {
     if (typeof v === 'string' && v.length > SHORT && isUtf8(enc)) {
-      const bytes = encoder.encode(v);
+      const bytes = v.length >= LARGE ? encodeLarge(v) : encoder.encode(v);
       return from.call(B, bytes.buffer, bytes.byteOffset, bytes.byteLength);
     }
     return from.call(B, v, enc, len);
+  };
+  // encode() of a long string is ~3x slower than encodeInto() into memory of the right size (it
+  // encodes into memory of its own, then copies: 1 MB of ASCII 3.3 ms against 1.2 ms). Dev servers
+  // encode every response they end with a string, and source maps before base64. Mostly ASCII text
+  // fits in its length and an eighth; what is left over is encoded on its own.
+  const LARGE = 32 * 1024;
+  const encodeLarge = (v: string): Uint8Array => {
+    const out = new Uint8Array(v.length + (v.length >>> 3));
+    const { read, written } = encoder.encodeInto(v, out);
+    if (read === v.length) return out.subarray(0, written);
+    const rest = encoder.encode(v.slice(read));
+    const whole = new Uint8Array(written + rest.length);
+    whole.set(out.subarray(0, written));
+    whole.set(rest, written);
+    return whole;
   };
   const slice = (buf: Uint8Array, start?: unknown, end?: unknown) => {
     const s = typeof start === 'number' && start > 0 ? Math.floor(start) : 0;
@@ -215,9 +232,16 @@ function patchUtf8(): void {
   };
   // UTF-16: the polyfill builds an array of the string's bytes first. es-module-lexer (Vite) writes
   // each module's source this way (55 ms of a warm Vite run). Whole code units only, as Node writes them.
+  const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
   const isUtf16 = (enc: unknown) => typeof enc === 'string' && /^(ucs-?2|utf-?16le)$/i.test(enc);
   const utf16Into = (buf: Uint8Array, str: string, offset: number, length: number) => {
     const units = Math.min(str.length, Math.floor(length / 2));
+    // Where the bytes are aligned, a code unit per store (little-endian, as every browser's memory is): 1.5x faster.
+    if (((buf.byteOffset + offset) & 1) === 0 && LITTLE_ENDIAN) {
+      const view = new Uint16Array(buf.buffer, buf.byteOffset + offset, units);
+      for (let i = 0; i < units; i++) view[i] = str.charCodeAt(i);
+      return units * 2;
+    }
     for (let i = 0, at = offset; i < units; i++, at += 2) {
       const c = str.charCodeAt(i);
       buf[at] = c & 0xff;
@@ -327,6 +351,24 @@ function hideWorkerGlobals(): void {
   }
 }
 const post = (msg: FromWorker, transfer: Transferable[] = []) => realPostMessage(msg, transfer);
+
+/**
+ * A built-in's member that a runtime library has: an enumerable property that loads the library
+ * when first read, then holds the library's value (a program may assign another, as in Node).
+ */
+function lazyMember(target: Record<string, unknown>, key: string, lib: () => Record<string, unknown>): void {
+  const own = (value: unknown) => Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      const value = lib()[key];
+      own(value);
+      return value;
+    },
+    set: own,
+  });
+}
 
 /** A polyfill left out of the runtime's script (RUNTIME_LIBS in bundle.ts), loaded the first time it is needed. */
 function runtimeLib<T>(name: RuntimeLib): T {
@@ -518,15 +560,85 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
     if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
     const side = downloadedOnSide(key);
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
+    const early = sentAhead(key, url);
+    if (early) return { status: 200, body: binary ? early : new TextDecoder().decode(early) };
+    const res = key.startsWith('f/') ? readAhead(url, key.slice(2)) : key.startsWith('t/') ? withPushed(url) : null;
+    if (res) return { status: res.status, body: binary ? res.body : new TextDecoder().decode(res.body) };
   }
   return requestSync(url, binary);
+}
+
+/**
+ * Installed files the host sent ahead with another (see readAhead in src/adapters/node/index.ts),
+ * by "mode/path", until they are read; at most AHEAD_MAX bytes. `covered` holds, by directory, the
+ * ranges of file names (first, last) that answers covered, sorted: a name in one is not asked for
+ * ahead again (the host left it out), and an answer stops at the next range.
+ */
+const ahead = new Map<string, Uint8Array>();
+const covered = new Map<string, [string, string][]>();
+let aheadBytes = 0;
+const AHEAD_MAX = 64 << 20;
+
+/**
+ * A raw installed file that is not in the preload bundle, asked for with the files after it in its
+ * directory: a dev server's first pre-bundle reads a package's files one after another (esbuild read
+ * lucide-react's 1,550 icons and their source maps, ~2 ms a request, 7 s of a cold run). Over the
+ * file channel only (the host's answer is then a bundle, status 207); null to ask over HTTP.
+ */
+function readAhead(url: string, rel: string): { status: number; body: Uint8Array } | null {
+  const at = rel.lastIndexOf('/');
+  const dir = rel.slice(0, at);
+  const name = rel.slice(at + 1);
+  const ranges = covered.get(dir) ?? [];
+  if (aheadBytes >= AHEAD_MAX || ranges.some(([first, last]) => first <= name && name <= last)) return viaChannel(url);
+  const until = ranges.find(([first]) => first > name)?.[0];
+  const res = viaChannel(`${url}?ahead=1${until === undefined ? '' : `&until=${encodeURIComponent(until)}`}`);
+  if (!res || res.status !== 207) return res;
+  const files = bundleFiles(res.body);
+  for (const [path, bytes, mode] of files.slice(1)) keepAhead(`${mode}/${path}`, bytes);
+  const last = files[files.length - 1][0];
+  covered.set(dir, [...ranges, [name, last.slice(last.lastIndexOf('/') + 1)] as [string, string]].sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+  return { status: 200, body: files[0][1] };
+}
+
+/**
+ * A transformed installed file, with the modules it requires that the host has transformed already
+ * (an install never run: see pushAhead in src/adapters/node/index.ts). Over the file channel only;
+ * null to ask over HTTP.
+ */
+function withPushed(url: string): { status: number; body: Uint8Array } | null {
+  if (aheadBytes >= AHEAD_MAX) return viaChannel(url);
+  const res = viaChannel(`${url}?ahead=1`);
+  if (!res || res.status !== 207) return res;
+  const files = bundleFiles(res.body);
+  for (const [path, bytes, mode] of files.slice(1)) keepAhead(`${mode}/${path}`, bytes);
+  return { status: 200, body: files[0][1] };
+}
+
+function keepAhead(key: string, bytes: Uint8Array): void {
+  if (ahead.has(key)) return;
+  ahead.set(key, bytes);
+  aheadBytes += bytes.length;
+}
+
+/**
+ * A file the host sent ahead, or null. Its use is told to the host, which records it as loaded (as if
+ * it had been asked for), so the install's later runs preload it; files never read are not recorded.
+ */
+function sentAhead(key: string, url: string): Uint8Array | null {
+  const bytes = ahead.get(key);
+  if (!bytes) return null;
+  ahead.delete(key);
+  aheadBytes -= bytes.length;
+  channel?.post({ note: `${url}?used=1` });
+  return bytes;
 }
 
 /**
  * What the host compiled for earlier runs of the project (Vite's SSR modules, the project's own
  * files): fetched at the first compile, and looked up before asking the host.
  */
-let compileCache: { key: string; bundle: string | null } | null = null;
+let compileCache: { key: string; bundle: string | null; token?: string } | null = null;
 let compilesLoaded = false;
 
 function loadCompiles(into: Map<string, string>, asyncModules: boolean): void {
@@ -600,6 +712,7 @@ function open(url, ready) {
 const handle = async ({ data }) => {
   if (data.channel) return open(data.channel, new Int32Array(data.ready));
   if (data.port) return void (data.port.onmessage = handle);
+  if (data.note) return void (socket && socket.readyState === 1 && socket.send('0 ' + data.note));
   if (data.get) {
     if (!socket || socket.readyState !== 1) return settle(data.shared, 0, null);
     const id = ++ids;
@@ -836,6 +949,7 @@ let threads: ReturnType<typeof createWorkerThreads>;
 let childProcess: ReturnType<typeof createChildProcess>;
 let nodeModulesIndex: Record<string, number> | null = null;
 let nodeModulesWrites: Int32Array | undefined;
+let transformCache: TransformCache | null = null;
 
 function write(stream: 'stdout' | 'stderr', text: string) {
   post({ type: 'log', stream, text });
@@ -977,9 +1091,10 @@ function buildBuiltins() {
     urlToHttpOptions: (u: URL) => ({ protocol: u.protocol, hostname: u.hostname, hash: u.hash, search: u.search, pathname: u.pathname, path: u.pathname + u.search, href: u.href, port: u.port ? Number(u.port) : undefined }),
   };
 
-  // node:crypto: crypto-browserify (a runtime library: loaded when a program first requires it).
+  // node:crypto: hashes, HMACs and random bytes here (builtins/hash.ts); the rest is crypto-browserify,
+  // a runtime library loaded the first time a program uses one of its members.
   const makeCrypto = () => {
-    const cryptoBrowserify = runtimeLib<Record<string, unknown>>('crypto');
+    const lib = () => runtimeLib<Record<string, unknown>>('crypto');
     // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
     const withBase64Url = <A extends unknown[]>(make: (...a: A) => { digest(enc?: string): Buffer | string }) => (...args: A) => {
       const h = make(...args);
@@ -987,13 +1102,60 @@ function buildBuiltins() {
       h.digest = (enc?: string) => (enc === 'base64url' ? (digest() as Buffer).toString('base64url') : digest(enc));
       return h;
     };
-    const createHash = withBase64Url(cryptoBrowserify.createHash as never);
-    const createHmac = withBase64Url(cryptoBrowserify.createHmac as never);
-    const crypto = Object.assign(Object.create(null), cryptoBrowserify, {
+    const createHash = (alg: string, options?: unknown) => {
+      const name = hashAlgorithm(alg);
+      if (name) return new Hash(name);
+      try {
+        return withBase64Url(lib().createHash as (a: string, o?: unknown) => { digest(enc?: string): Buffer | string })(alg, options);
+      } catch {
+        throw new Error('Digest method not supported');
+      }
+    };
+    const createHmac = (alg: string, key: unknown, options?: unknown) => {
+      const name = hashAlgorithm(alg);
+      if (name) return new Hmac(name, key);
+      try {
+        return withBase64Url(lib().createHmac as (a: string, k: unknown, o?: unknown) => { digest(enc?: string): Buffer | string })(alg, key, options);
+      } catch {
+        throw Object.assign(new TypeError(`Invalid digest: ${alg}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
+      }
+    };
+    const randomFillSync = <T extends ArrayBufferView>(buf: T, offset = 0, size?: number): T => {
+      const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      const end = size === undefined ? bytes.length : offset + size;
+      if (!(offset >= 0 && end <= bytes.length && offset <= end)) throw Object.assign(new RangeError('The value of "offset" or "size" is out of range.'), { code: 'ERR_OUT_OF_RANGE' });
+      // getRandomValues fills at most 64 KiB at a time.
+      for (let at = offset; at < end; at += 65536) globalThis.crypto.getRandomValues(bytes.subarray(at, Math.min(end, at + 65536)) as Uint8Array<ArrayBuffer>);
+      return buf;
+    };
+    const randomBytes = (size: number, cb?: (err: Error | null, buf?: Buffer) => void) => {
+      if (typeof size !== 'number' || !(size >= 0 && size <= 2 ** 31 - 1) || !Number.isInteger(size)) {
+        throw Object.assign(new RangeError(`The value of "size" is out of range. It must be >= 0 && <= ${2 ** 31 - 1}. Received ${String(size)}`), { code: typeof size === 'number' ? 'ERR_OUT_OF_RANGE' : 'ERR_INVALID_ARG_TYPE' });
+      }
+      const buf = randomFillSync(Buffer.allocUnsafe(size));
+      if (typeof cb !== 'function') return buf;
+      queueMicrotask(() => cb(null, buf));
+    };
+    const randomFill = <T extends ArrayBufferView>(buf: T, ...rest: unknown[]) => {
+      const cb = rest.pop() as (err: Error | null, buf?: T) => void;
+      const filled = randomFillSync(buf, rest[0] as number | undefined, rest[1] as number | undefined);
+      queueMicrotask(() => cb(null, filled));
+    };
+    // crypto-browserify's other members, from the library when first used (its keys, in its order:
+    // a test checks them against the library).
+    const crypto = Object.create(null) as Record<string, unknown>;
+    for (const key of CRYPTO_LIB_KEYS) lazyMember(crypto, key, lib);
+    Object.assign(crypto, {
       createHash,
       createHmac,
       Hash: createHash,
       Hmac: createHmac,
+      randomBytes,
+      pseudoRandomBytes: randomBytes,
+      rng: randomBytes,
+      prng: randomBytes,
+      randomFillSync,
+      randomFill,
       webcrypto: globalThis.crypto,
       subtle: globalThis.crypto.subtle,
       getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
@@ -1003,7 +1165,7 @@ function buildBuiltins() {
         return min + Math.floor(Math.random() * (max - min));
       },
       timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
-      getHashes: () => ['md5', 'sha1', 'sha256', 'sha384', 'sha512'],
+      getHashes: () => ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'],
       getCiphers: () => [],
       constants: {},
       hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
@@ -1011,14 +1173,19 @@ function buildBuiltins() {
     return crypto;
   };
 
-  // node:zlib: native streams over browserify-zlib (a runtime library: loaded when a program first requires it).
+  // node:zlib: native streams over browserify-zlib, a runtime library loaded the first time a program
+  // uses one of its members (its sync functions, classes, a stream that is flushed): Vite requires
+  // zlib as it starts and does not use it in dev.
   const makeZlib = () => {
-    const zlibBrowserify = runtimeLib<Record<string, unknown>>('zlib');
-    useZlibPort(zlibBrowserify as never);
+    const lib = () => runtimeLib<Record<string, unknown>>('zlib');
+    useZlibPort(lib as never);
     const zlibUnsupported = (name: string) => () => {
       throw Object.assign(new Error(`zlib.${name} (brotli/zstd) is not available in the browser runtime`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
     };
-    const zlib = Object.assign(Object.create(null), zlibBrowserify, typeof CompressionStream === 'function' ? nativeZlib : {}, {
+    const zlib = Object.create(null) as Record<string, unknown>;
+    for (const key of ZLIB_LIB_KEYS) lazyMember(zlib, key, lib);
+    // zlib's Z_* constants on the module too, as browserify-zlib has them (and on `constants`).
+    Object.assign(zlib, ZLIB_CONSTANTS, typeof CompressionStream === 'function' ? nativeZlib : {}, {
       createBrotliCompress: zlibUnsupported('createBrotliCompress'),
       createBrotliDecompress: zlibUnsupported('createBrotliDecompress'),
       brotliCompressSync: zlibUnsupported('brotliCompressSync'),
@@ -1034,9 +1201,7 @@ function buildBuiltins() {
         return ~c >>> 0;
       },
     });
-    // browserify-zlib has its Z_* constants on the module, not on `constants`.
-    const zConstants = Object.fromEntries(Object.entries(zlibBrowserify).filter(([k, v]) => k.startsWith('Z_') && typeof v === 'number'));
-    zlib.constants = { ...zConstants, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
+    zlib.constants = { ...ZLIB_CONSTANTS, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_MODE: 0, BROTLI_MODE_TEXT: 1, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_PROCESS: 0 };
     return zlib;
   };
 
@@ -1270,6 +1435,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       } else {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}${compileCache ? `&cache=${compileCache.key}` : ''}`, false);
+        // The run's capability to record compiles under its key (a header: recorded demos key requests by their URL).
+        if (compileCache?.token) xhr.setRequestHeader('x-sandburg-token', compileCache.token);
         // As a Blob: a string body was slower to reach the host (the 8 MB chunk: ~0.85 s -> ~0.5 s).
         xhr.send(new Blob([code]));
         if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
@@ -1401,6 +1568,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     setImmediate: timers.setImmediate,
     clearImmediate: timers.clearImmediate,
   });
+  // Dev server plugins look their compiles up here (see transform-cache.ts); not enumerable.
+  transformCache = createTransformCache(vfs, () => (proc.cwd as () => string)());
+  Object.defineProperty(g, TRANSFORM_CACHE, { value: transformCache });
 
   // Uncaught errors and rejections go through process events, as in Node.
   self.addEventListener('error', (e) => {
@@ -1640,52 +1810,56 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
-  // Nothing changed under the tracked directories since the program started: no need to read them.
-  else if (msg.type === 'read-tree' && msg.ifChanged && !msg.match && vfs.trackedChanged() === false) post({ type: 'tree', id: msg.id, files: {}, unchanged: true });
   else if (msg.type === 'read-tree') {
-    const files: Record<string, string | { base64: string }> = {};
-    const utf8 = new TextDecoder('utf-8', { fatal: true });
-    const walk = (dir: string) => {
-      for (const name of vfs.readdir(dir)) {
-        const path = `${dir}/${name}`;
-        const st = vfs.stat(path);
-        if (st.kind === 'dir') walk(path);
-        else if (st.size < 64 << 20) {
-          const bytes = vfs.read(path);
-          let text: string | null = null;
-          try {
-            text = utf8.decode(bytes);
-          } catch {
-            // binary (webpack's cache packs)
-          }
-          files[path.slice(projectRoot.length + 1)] = text ?? { base64: Buffer.from(bytes).toString('base64') };
-        }
-      }
-    };
-    for (const dir of msg.dirs) {
-      try {
-        walk(`${projectRoot}/${dir}`);
-      } catch {
-        // not there
-      }
-    }
-    if (msg.match) {
-      const pattern = new RegExp(msg.match);
-      const find = (dir: string) => {
+    // Before the caches are read to be kept: compiles this run did not use go (see transform-cache.ts).
+    transformCache?.prune();
+    // Nothing changed under the tracked directories since the program started: no need to read them.
+    if (msg.ifChanged && !msg.match && vfs.trackedChanged() === false) post({ type: 'tree', id: msg.id, files: {}, unchanged: true });
+    else {
+      const files: Record<string, string | { base64: string }> = {};
+      const utf8 = new TextDecoder('utf-8', { fatal: true });
+      const walk = (dir: string) => {
         for (const name of vfs.readdir(dir)) {
           const path = `${dir}/${name}`;
           const st = vfs.stat(path);
-          if (st.kind === 'dir') {
-            if (name !== 'node_modules' && !name.startsWith('.')) find(path);
-          } else if (pattern.test(path.slice(projectRoot.length + 1))) {
-            // Whole, whatever the size: a database without its journal would lose committed data.
-            files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
+          if (st.kind === 'dir') walk(path);
+          else if (st.size < 64 << 20) {
+            const bytes = vfs.read(path);
+            let text: string | null = null;
+            try {
+              text = utf8.decode(bytes);
+            } catch {
+              // binary (webpack's cache packs)
+            }
+            files[path.slice(projectRoot.length + 1)] = text ?? { base64: Buffer.from(bytes).toString('base64') };
           }
         }
       };
-      find(projectRoot);
+      for (const dir of msg.dirs) {
+        try {
+          walk(`${projectRoot}/${dir}`);
+        } catch {
+          // not there
+        }
+      }
+      if (msg.match) {
+        const pattern = new RegExp(msg.match);
+        const find = (dir: string) => {
+          for (const name of vfs.readdir(dir)) {
+            const path = `${dir}/${name}`;
+            const st = vfs.stat(path);
+            if (st.kind === 'dir') {
+              if (name !== 'node_modules' && !name.startsWith('.')) find(path);
+            } else if (pattern.test(path.slice(projectRoot.length + 1))) {
+              // Whole, whatever the size: a database without its journal would lose committed data.
+              files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
+            }
+          }
+        };
+        find(projectRoot);
+      }
+      post({ type: 'tree', id: msg.id, files });
     }
-    post({ type: 'tree', id: msg.id, files });
   }
     else if (msg.type === 'write-file') {
     const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;

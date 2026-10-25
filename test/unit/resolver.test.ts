@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PackumentCache, revalidates } from '../../src/adapters/node/resolver.ts';
+import { PackumentCache, revalidates, trimPackument } from '../../src/adapters/node/resolver.ts';
 
 test('the resolver keeps packuments by their size, least recently used out first', () => {
   const cache = new PackumentCache(100);
@@ -51,7 +51,8 @@ async function registry(): Promise<{ url: string; asked: string[]; close(): Prom
   const { createHash } = await import('node:crypto');
   const pkgs: Record<string, Record<string, object>> = {
     app: { '1.0.0': { dependencies: { lib: '^1.0.0' }, peerDependencies: { tool: '*', extra: '*' }, peerDependenciesMeta: { extra: { optional: true } } } },
-    lib: { '1.0.0': {}, '1.2.0': { dependencies: { leaf: '~2.0.0' } }, '2.0.0': {} },
+    // Large enough to be trimmed (TRIM_MIN), mostly in fields npm's resolution does not read.
+    lib: { '1.0.0': { licenseText: 'L'.repeat(40_000) }, '1.2.0': { dependencies: { leaf: '~2.0.0' }, licenseText: 'L'.repeat(40_000), exports: { '.': './index.js' } }, '2.0.0': {} },
     leaf: { '2.0.1': {}, '2.1.0': {} },
     tool: { '3.0.0': { peerDependencies: { app: '^1.0.0' } } },
     // Only an optional peer: npm reads its peers, never its dependencies.
@@ -127,6 +128,120 @@ test('the resolver writes the lockfile npm does, and reads ahead only what npm r
     assert.equal(await readFile(join(dirs.again, 'package-lock.json'), 'utf8'), expected);
     // Kept in the resolver: read once.
     assert.deepEqual(reg.asked, []);
+  } finally {
+    Object.assign(process.env, env);
+    for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
+    await reg.close();
+  }
+});
+
+test('a trimmed packument keeps what npm resolves and writes in lockfiles', () => {
+  const version = {
+    name: 'p', version: '1.0.0', license: 'MIT', dependencies: { a: '1' }, optionalDependencies: { b: '1' }, peerDependencies: { c: '1' }, peerDependenciesMeta: { c: { optional: true } },
+    bundleDependencies: ['a'], engines: { node: '>=18' }, os: ['linux'], cpu: ['x64'], libc: ['glibc'], bin: { p: 'bin.js' }, funding: 'https://example.com', deprecated: 'old', scripts: { install: 'node-gyp rebuild' },
+    _hasShrinkwrap: false, hasInstallScript: true, gypfile: true, _id: 'p@1.0.0',
+    dist: { tarball: 'https://r/p.tgz', integrity: 'sha512-x', shasum: 'abc', signatures: [{ sig: 's' }], 'npm-signature': 'pgp', attestations: { url: 'u' }, fileCount: 3, unpackedSize: 9 },
+    licenseText: 'L'.repeat(1000), readme: 'R', exports: { '.': './i.js' }, devDependencies: { d: '1' }, maintainers: [{ name: 'm' }], _npmUser: { name: 'u' }, gitHead: 'g',
+  };
+  const trimmed = trimPackument({ name: 'p', 'dist-tags': { latest: '1.0.0' }, time: { '1.0.0': 't' }, readme: 'R', users: { u: true }, versions: { '1.0.0': version } })!;
+  assert.deepEqual(Object.keys(trimmed).sort(), ['dist-tags', 'name', 'time', 'versions']);
+  const kept = (trimmed.versions as Record<string, Record<string, unknown>>)['1.0.0'];
+  assert.deepEqual(kept.dist, { tarball: 'https://r/p.tgz', integrity: 'sha512-x', shasum: 'abc' });
+  for (const field of ['licenseText', 'readme', 'exports', 'devDependencies', 'maintainers', '_npmUser', 'gitHead']) assert.ok(!(field in kept), field);
+  const { dist: _d, licenseText: _l, readme: _r, exports: _e, devDependencies: _dd, maintainers: _m, _npmUser: _u, gitHead: _g, ...rest } = version;
+  assert.deepEqual({ ...kept, dist: undefined }, { ...rest, dist: undefined });
+  assert.equal(trimPackument({ name: 'x' }), null);
+  assert.equal(trimPackument([1]), null);
+});
+
+test('packuments are trimmed into npm\'s cache; a later resolution reads them, and a changed one is refused', async () => {
+  const { mkdir, mkdtemp, writeFile, readFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join, dirname } = await import('node:path');
+  const { execFile, execFileSync } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { createRequire } = await import('node:module');
+  const { realpathSync } = await import('node:fs');
+  const { Resolver } = await import('../../src/adapters/node/resolver.ts');
+  const cacache = createRequire(join(dirname(dirname(realpathSync(execFileSync('sh', ['-c', 'command -v npm'], { encoding: 'utf8' }).trim()))), 'package.json'))('cacache') as {
+    ls(cache: string): Promise<Record<string, { integrity: string; metadata?: { source?: string } }>>;
+    put(cache: string, key: string, data: string, o: object): Promise<unknown>;
+    get(cache: string, key: string): Promise<{ data: Buffer; metadata: { source: string } }>;
+  };
+  const reg = await registry();
+  const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
+  try {
+    const root = await mkdtemp(join(tmpdir(), 'sandburg-trim-'));
+    process.env.npm_config_registry = reg.url;
+    process.env.npm_config_cache = join(root, 'npm-cache');
+    const cache = join(root, 'npm-cache', '_cacache');
+    const flags = ['--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
+    const manifest = JSON.stringify({ name: 'sandburg-install', private: true, dependencies: { app: '^1.0.0', tool: '^3.0.0' }, devDependencies: { lib: '1' } });
+    const dir = async (name: string) => {
+      await mkdir(join(root, name), { recursive: true });
+      await writeFile(join(root, name, 'package.json'), manifest);
+      return join(root, name);
+    };
+    const resolve = async (name: string) => {
+      // A new worker each time: nothing kept in memory between resolutions.
+      const d = await dir(name);
+      assert.equal(await new Resolver(join(root, `resolver-${name}`), flags).resolve(d, () => {}), true);
+      return readFile(join(d, 'package-lock.json'), 'utf8');
+    };
+    const cli = await dir('cli');
+    await promisify(execFile)('npm', ['install', ...flags, '--no-update-notifier'], { cwd: cli, env: process.env });
+    const expected = await readFile(join(cli, 'package-lock.json'), 'utf8');
+    const key = `sandburg:packument-trim:1:make-fetch-happen:request-cache:${reg.url}lib`;
+    // The first resolution reads the full packument (the CLI cached it) and trims it on the side.
+    assert.equal(await resolve('first'), expected);
+    for (let i = 0; i < 100 && !(key in (await cacache.ls(cache))); i++) await new Promise((r) => setTimeout(r, 50));
+    const stored = await cacache.get(cache, key);
+    const trimmed = JSON.parse(stored.data.toString()) as { versions: Record<string, Record<string, unknown>> };
+    assert.ok(!('licenseText' in trimmed.versions['1.2.0']) && !('exports' in trimmed.versions['1.2.0']));
+    assert.equal(stored.metadata.source, (await cacache.ls(cache))[`make-fetch-happen:request-cache:${reg.url}lib`].integrity);
+    // Read again: the same lockfile from the trimmed packument.
+    assert.equal(await resolve('again'), expected);
+    // It is what npm reads: one without lib@1.2.0, stored for the same source, picks 1.0.0.
+    const without = { ...trimmed, versions: { '1.0.0': trimmed.versions['1.0.0'], '2.0.0': trimmed.versions['2.0.0'] } };
+    await cacache.put(cache, key, JSON.stringify(without), { metadata: { source: stored.metadata.source } });
+    assert.match(await resolve('planted'), /"node_modules\/lib": \{\s*"version": "1\.0\.0"/);
+    // Stored for another source (the packument changed since): not read.
+    await cacache.put(cache, key, JSON.stringify(without), { metadata: { source: 'sha512-other' } });
+    assert.equal(await resolve('stale'), expected);
+    // ... and trimmed again from what was read.
+    for (let i = 0; i < 100 && (await cacache.ls(cache))[key].metadata?.source !== stored.metadata.source; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await cacache.ls(cache))[key].metadata?.source, stored.metadata.source);
+    // Bytes that changed on disk (that npm would resolve to lib@1.0.0): cacache's integrity check
+    // refuses them, and the full packument is read.
+    await cacache.put(cache, key, JSON.stringify(trimmed), { metadata: { source: stored.metadata.source } });
+    const { integrity } = (await cacache.ls(cache))[key];
+    const hex = Buffer.from(integrity.slice('sha512-'.length), 'base64').toString('hex');
+    await writeFile(join(cache, 'content-v2', 'sha512', hex.slice(0, 2), hex.slice(2, 4), hex.slice(4)), JSON.stringify(without));
+    assert.equal(await resolve('tampered'), expected);
+  } finally {
+    Object.assign(process.env, env);
+    for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
+    await reg.close();
+  }
+});
+
+test('the resolver answers whether a version matches, as npm view does', async () => {
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Resolver } = await import('../../src/adapters/node/resolver.ts');
+  const reg = await registry();
+  const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
+  try {
+    const root = await mkdtemp(join(tmpdir(), 'sandburg-view-'));
+    process.env.npm_config_registry = reg.url;
+    process.env.npm_config_cache = join(root, 'npm-cache');
+    const resolver = new Resolver(join(root, 'resolver'), ['--package-lock-only', '--ignore-scripts', '--loglevel=error']);
+    assert.equal(await resolver.view('lib@^1.0.0'), '1.2.0');
+    assert.equal(await resolver.view('leaf@~2.0.0'), '2.0.1');
+    // No such version, no such package: as npm view prints nothing.
+    assert.equal(await resolver.view('lib@^9.0.0'), null);
+    assert.equal(await resolver.view('lightningcss-wasm32-wasi@^1.0.0'), null);
   } finally {
     Object.assign(process.env, env);
     for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];

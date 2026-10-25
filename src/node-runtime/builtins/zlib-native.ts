@@ -20,18 +20,19 @@ import type zlibPort from 'browserify-zlib';
 type Format = 'gzip' | 'deflate' | 'deflate-raw';
 
 const HOLD = 1024 * 1024;
-/** The JavaScript port: a runtime library (libs.ts), which the runtime loads with node:zlib (useZlibPort). */
-let zlibBrowserify: typeof zlibPort;
-export function useZlibPort(port: typeof zlibPort): void {
-  zlibBrowserify = port;
+const Z_FULL_FLUSH = 3;
+/** The JavaScript port: a runtime library (libs.ts), which the runtime loads when it is first needed (useZlibPort). */
+let loadPort: () => typeof zlibPort;
+export function useZlibPort(load: () => typeof zlibPort): void {
+  loadPort = load;
 }
 
 type Callback = (e?: Error | null) => void;
 
 const ported: Record<Format, () => Transform> = {
-  gzip: () => zlibBrowserify.createGzip(),
-  deflate: () => zlibBrowserify.createDeflate(),
-  'deflate-raw': () => zlibBrowserify.createDeflateRaw(),
+  gzip: () => loadPort().createGzip() as unknown as Transform,
+  deflate: () => loadPort().createDeflate() as unknown as Transform,
+  'deflate-raw': () => loadPort().createDeflateRaw() as unknown as Transform,
 };
 
 /** A compressing stream: native, or the JavaScript port if it is flushed before 1 MB arrives. */
@@ -69,7 +70,7 @@ function compressor(format: Format): Transform {
       t.write(Buffer.alloc(0), () => {
         if (!inner) choose(ported[format]());
         const flush = (inner as unknown as { flush(kind: number | undefined, cb: () => void): void }).flush;
-        flush.call(inner, typeof kind === 'number' ? kind : (zlibBrowserify as unknown as { Z_FULL_FLUSH: number }).Z_FULL_FLUSH, () => done && done());
+        flush.call(inner, typeof kind === 'number' ? kind : Z_FULL_FLUSH, () => done && done());
       });
     },
     close: (cb?: () => void) => {

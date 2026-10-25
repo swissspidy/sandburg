@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
-import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Frame, type LaunchOptions, type Page } from 'playwright-core';
 import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
 import type { AdapterDescriptor } from '../types.ts';
 import { classify } from '../classify.ts';
@@ -28,17 +28,22 @@ import type {
 import type { HostApi, RpcResult } from '../host/types.ts';
 import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.ts';
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
-import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
+import { EgressGateway, newEgressStats, originMatcher, record, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
-import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
+import { AXE_CLASSIC_PATH, AXE_SCRIPT, HostServer, SANDBOX_DOMAIN } from './host-server.ts';
+import { CodeCache, type PageCode } from './code-cache.ts';
 import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
+import { RendererMemory } from './renderer-memory.ts';
+import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 
 export interface SessionOptions {
   /** Directory for the HTTP cache. Default: .sandburg/cache */
   cacheDir?: string;
   /** Directory of the snapshot store. Default: .sandburg/store */
   storeDir?: string;
+  /** Directory for V8's compiled code of the host's own scripts (code-cache.ts), or null for none on disk. Default: .sandburg/code-cache */
+  codeCacheDir?: string | null;
   /** Fail on cache misses instead of fetching upstream. */
   offline?: boolean;
   headless?: boolean;
@@ -78,6 +83,8 @@ interface Tab {
   loaded: Promise<void>;
   /** The tab crashed or failed to load before a run took it. */
   broken: boolean;
+  /** axe-core's compiled code, given to the page once its host page has loaded (code-cache.ts). */
+  code?: PageCode;
 }
 
 /**
@@ -145,6 +152,22 @@ export interface RunOptions {
   onAppFiles?: (files: FileTree) => void;
   /** Called as each lifecycle phase of the run starts (a batch starts its next app when one reaches its checks). */
   onPhase?: (phase: PhaseName) => void;
+  /**
+   * Called once the run has its tab, with its renderer (see RunRenderer): what a batch's memory
+   * guard reads of each open app, and asks of those in their checks when memory is short.
+   */
+  onRenderer?: (renderer: RunRenderer) => void;
+}
+
+/** A run's renderer, for a batch (RunOptions.onRenderer). */
+export interface RunRenderer {
+  /** Bytes it uses now; null until it is found, and where its memory cannot be read (not Linux). */
+  used(): number | null;
+  /**
+   * A full garbage collection in each of the run's isolates (collectGarbage), each given
+   * GC_TIMEOUT_MS; resolves when done (never rejects; a no-op once the run is over).
+   */
+  collectGarbage(): Promise<void>;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -186,7 +209,10 @@ export class Session {
   private browser: Browser | null = null;
   private host = new HostServer();
   private egress: EgressGateway;
+  private codeCache: CodeCache | null = null;
   readonly store: SnapshotStore;
+  /** The browser's own DevTools session (the renderers' pids and CPU times; see rendererMemory). */
+  private browserCdp: Promise<CDPSession> | null = null;
 
   constructor(options: SessionOptions = {}) {
     this.options = options;
@@ -202,11 +228,16 @@ export class Session {
     getAdapter(DEFAULT_RUNTIME).prepare?.();
     await this.host.listen();
     try {
-      this.browser = await chromium.launch(launchOptions(this.options));
+      const launch = launchOptions(this.options);
+      this.browser = await chromium.launch(launch);
+      const dir = this.options.codeCacheDir === undefined ? '.sandburg/code-cache' : this.options.codeCacheDir;
+      this.codeCache = new CodeCache(this.browser, (launch.args ?? []).join(' '), dir === null ? null : resolve(dir));
     } catch (err) {
       await this.host.close();
       throw missingBrowser(err) ?? err;
     }
+    // axe-core's compiled code, for the checks of every run (read from disk, or produced in a context of its own).
+    void this.codeCache.prepare(AXE_SCRIPT);
     // The first run's tab opens while the run loads its project and the host installs it.
     this.prepareTab(getAdapter(DEFAULT_RUNTIME));
   }
@@ -268,6 +299,8 @@ export class Session {
       loaded.catch(() => {}); // the load phase reports it
       const tab: Tab = { id, origin, adapter, context, page, proxy, network, loaded, broken: false };
       page.on('crash', () => (tab.broken = true));
+      const codeCache = this.codeCache;
+      if (codeCache) loaded.then(() => (tab.code = codeCache.attach(page, AXE_SCRIPT, origin + AXE_CLASSIC_PATH)), () => {});
       return tab;
     } catch (err) {
       await context?.close().catch(() => {});
@@ -275,6 +308,34 @@ export class Session {
       this.host.unregister(id);
       throw err;
     }
+  }
+
+  /**
+   * The memory of a tab's renderer (see RendererMemory), read from /proc: Linux only. The page's
+   * DevTools session is the tab's own and ends with its context.
+   */
+  private rendererMemory(tab: Tab): RendererMemory | null {
+    const browser = this.browser;
+    if (process.platform !== 'linux' || !browser) return null;
+    let page: Promise<CDPSession> | null = null;
+    return new RendererMemory({
+      pageCpu: async () => {
+        page ??= tab.context.newCDPSession(tab.page).then(async (s) => (await s.send('Performance.enable'), s));
+        const { metrics } = await (await page).send('Performance.getMetrics');
+        const cpu = metrics.find((m) => m.name === 'ProcessTime')?.value;
+        if (cpu === undefined) throw new Error('no ProcessTime');
+        return cpu;
+      },
+      renderers: async () => {
+        this.browserCdp ??= browser.newBrowserCDPSession();
+        const { processInfo } = (await (await this.browserCdp).send('SystemInfo.getProcessInfo')) as { processInfo: { type: string; id: number; cpuTime: number }[] };
+        return processInfo.filter((p) => p.type === 'renderer').map((p) => ({ pid: p.id, cpuSeconds: p.cpuTime }));
+      },
+      release: () => {
+        void page?.then((s) => s.detach()).catch(() => {});
+        page = null;
+      },
+    });
   }
 
   private async closeTab(tab: Tab): Promise<void> {
@@ -292,6 +353,7 @@ export class Session {
     const spare = await this.spare?.catch(() => null);
     this.spare = null;
     if (spare) await this.closeTab(spare);
+    this.browserCdp = null;
     await this.browser?.close();
     await this.host.close();
     await this.egress.close();
@@ -374,6 +436,10 @@ export class Session {
     let context: BrowserContext | null = null;
     let proxy: EgressProxy | null = null;
     let tab: Tab | null = null;
+    let memory: RendererMemory | null = null;
+    let sampler: NodeJS.Timeout | undefined;
+    let sampling = false;
+    let stopped = false;
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -383,8 +449,12 @@ export class Session {
 
       // The host's half of the install (npm, on a cold machine) starts now, while the tab and the host
       // page load: the install phase waits for it.
+      // The sandbox the run's page is in, once its tab is taken: what the install issues to the run is bound to it.
+      let bindSandbox: (id: string) => void = () => {};
+      const sandbox = new Promise<string>((resolve) => (bindSandbox = resolve));
       const hostInstall = adapter?.hostInstall?.(project, (line) => run.runtimeLogs.push(line), {
         seed: options.seed,
+        sandbox,
         installIn: options.installIn,
         runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
       });
@@ -414,10 +484,41 @@ export class Session {
       const runtimeAllow = originMatcher(adapter!.egress);
       // The spare tab, with its host page loaded or loading; the next run's opens meanwhile.
       tab = await this.takeTab(adapter!, timeouts.load);
+      bindSandbox(tab.id);
       // Not for a seed run (it runs beside an app), nor a held one.
       if (!options.seed && !options.hold) this.prepareTab(adapter!);
       ({ context, proxy } = tab);
       const { page, origin } = tab;
+      memory = this.rendererMemory(tab);
+      if (memory) {
+        const m = memory;
+        // Looked for as the app starts: its renderer holds ~50 MB until then (the host page), and
+        // looking costs the page a little while it mounts and installs. Looked for again soon while
+        // other renderers fit too (tabs that opened together); then read for its peak.
+        const sample = async () => {
+          const found = await m.locate();
+          if (found) m.used();
+          if (!stopped) sampler = setTimeout(() => void sample(), found ? RENDERER_SAMPLE_MS : RENDERER_LOCATE_MS);
+        };
+        run.onPhase = (phase) => {
+          options.onPhase?.(phase);
+          if (phase !== 'start' || sampling) return;
+          sampling = true;
+          void sample();
+        };
+      }
+      const t = tab;
+      options.onRenderer?.({
+        used: () => memory?.used() ?? null,
+        collectGarbage: async () => {
+          if (t.page.isClosed()) return;
+          const cdp = await t.context.newCDPSession(t.page).catch(() => null);
+          if (!cdp) return;
+          await collectGarbage(cdp as unknown as DevtoolsSession, GC_TIMEOUT_MS).catch(() => {});
+          await cdp.detach().catch(() => {});
+        },
+      });
+      run.memory = memory;
       run.network = tab.network;
       recordRequestFailures(context, run);
       recordDocuments(context, run);
@@ -459,7 +560,7 @@ export class Session {
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
           const appSettled = () => host('settled', SETTLE_QUIET_MS, SETTLE_LONG_MS, SETTLE_MAX_MS);
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin, appSettled);
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin, appSettled, tab?.code);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         if (options.collectFiles && options.onAppFiles) {
@@ -473,6 +574,9 @@ export class Session {
       run.skipRemaining();
       return await run.finish(outDir);
     } finally {
+      stopped = true;
+      clearTimeout(sampler);
+      memory?.stop();
       if (tab) await this.closeTab(tab);
       else {
         await context?.close().catch(() => {});
@@ -530,6 +634,7 @@ async function runChecksPhase(
   appIdle?: (remainingMs: number) => Promise<boolean>,
   hostOrigin?: string,
   appSettled?: () => Promise<unknown>,
+  axeCode?: PageCode,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -546,6 +651,7 @@ async function runChecksPhase(
       appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
       hostOrigin,
       appSettled,
+      axeCode,
     }),
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
@@ -587,6 +693,13 @@ export const PAGE_QUIET_SCRIPT = `(() => {
 const SETTLE_QUIET_MS = 100;
 const SETTLE_LONG_MS = 1_000;
 const SETTLE_MAX_MS = 3_000;
+
+/** How long each of a run's isolates has to answer a garbage collection (a blocked worker answers nothing). */
+const GC_TIMEOUT_MS = 2_000;
+
+/** How often a run reads its renderer's memory once found (for the peak), and looks for it until then. */
+const RENDERER_SAMPLE_MS = 1_000;
+const RENDERER_LOCATE_MS = 250;
 
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;
@@ -670,7 +783,7 @@ function recordRequestFailures(context: BrowserContext, run: RunState): void {
   context.on('requestfailed', (req) => {
     const reason = req.failure()?.errorText ?? 'failed';
     if (/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(reason) || !run.network || run.network.failed.length >= 100) return;
-    run.network.failed.push({ url: req.url(), method: req.method(), reason: `browser: ${reason}` });
+    record(run.network.failed, { url: req.url(), method: req.method(), reason: `browser: ${reason}` });
   });
 }
 
@@ -714,6 +827,8 @@ class RunState {
   infraError: { phase: PhaseName; message: string } | null = null;
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];
+  /** The run's renderer, once it has a tab (RunResult.memory). */
+  memory: RendererMemory | null = null;
   private startedAt = new Date();
   private t0 = performance.now();
   private runId: string;
@@ -847,6 +962,8 @@ class RunState {
       network: this.network ?? { requests: 0, cacheHits: 0, cacheMisses: 0, failed: [], blocked: [] },
       artifacts: this.checksOutput?.artifacts ?? {},
     };
+    this.memory?.used(); // a last look, for the peak
+    if (this.memory?.peak) result.memory = { rendererPeakBytes: this.memory.peak };
     if (this.runtimeLogs.length) {
       result.artifacts.runtimeLog = join(outDir, 'runtime.log');
       await writeFile(result.artifacts.runtimeLog, this.runtimeLogs.join('\n') + '\n');

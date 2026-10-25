@@ -7,7 +7,7 @@ import { availableParallelism } from 'node:os';
 import { join, resolve } from 'node:path';
 import { adapterNames } from '../adapters.ts';
 import type { FailureClass, Project, RunResult } from '../types.ts';
-import type { RunOptions, Session } from './session.ts';
+import type { RunOptions, RunRenderer, Session } from './session.ts';
 import { availableMemory } from './memory.ts';
 
 export interface BatchItem {
@@ -32,6 +32,8 @@ export interface BatchRunSummary {
   totalMs: number;
   /** The checks phase's time (an app that waits long on a failing assertion). */
   checksMs?: number | null;
+  /** The most memory the run's renderer held (RunResult.memory); a later batch expects as much. */
+  rendererPeakBytes?: number | null;
 }
 
 export interface BatchSummary {
@@ -100,13 +102,28 @@ export function defaultParallel(): number {
 const MEMORY_RESERVE = 1.5 * 2 ** 30;
 
 /**
- * What an app that just opened is counted as using, though availableMemory does not show it yet: its
- * renderer and runtimes allocate as it installs and starts. About a Next.js run's renderer peak (the
- * largest), for START_WINDOW_MS after it opened or until it reaches its checks, whichever is first.
- * Without it, a batch opened its first `parallel` apps in one go, before any of them used memory.
+ * The memory an app is expected to reach when no earlier batch measured it: about a Next.js run's
+ * renderer peak (the largest). See outstanding.
  */
-const START_ALLOWANCE = 2 ** 30;
-const START_WINDOW_MS = 10_000;
+export const START_ALLOWANCE = 2 ** 30;
+
+/** An earlier run's peak, plus this much, is what the project is expected to reach again. */
+const PEAK_MARGIN = 1.1;
+
+/**
+ * What an open app has yet to allocate, which availableMemory does not show yet: until its checks,
+ * its expected peak less what its renderer uses now; in its checks, nothing more (what it adds then,
+ * 5-10% of its peak, the reserve covers). An app's renderer holds ~50 MB from when it opens through
+ * its install (14-21 s on a cold Next.js app) and grows from its start on, to most of its peak by its
+ * checks (warm `next-app-router`: 150 MB at start, 925 MB at checks; `vite-react-counter`: 109 and
+ * 331 MB, peak 364 MB). Expected peak: the project's measured in the latest batches (plus
+ * PEAK_MARGIN), else START_ALLOWANCE. Where the renderer's memory cannot be read (not Linux), the
+ * whole expected peak until its checks.
+ */
+export function outstanding(app: { expected: number | null; used: number | null; inChecks: boolean }): number {
+  if (app.inChecks) return 0;
+  return Math.max(0, (app.expected ?? START_ALLOWANCE) - (app.used ?? 0));
+}
 
 /** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
 export async function discoverProjects(dir: string): Promise<BatchItem[]> {
@@ -132,7 +149,8 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const startedAt = new Date();
   const t0 = performance.now();
   const results: RunResult[] = new Array(items.length);
-  const order = options.longestFirst === false ? items.map((_, i) => i) : await longestFirst(items, options.batchDir ?? '.sandburg/batches', !!options.nodeRuntime);
+  const earlier = await history(items, options.batchDir ?? '.sandburg/batches', !!options.nodeRuntime);
+  const order = options.longestFirst === false ? items.map((_, i) => i) : longestFirst(earlier);
   let next = 0;
   // The first apps of a stack would otherwise each install and seed it, several tabs at once.
   if (options.prewarm !== false && !options.nodeRuntime) await session.prewarm({ runtime: options.runtime, log: options.log });
@@ -148,12 +166,12 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const runs: Promise<void>[] = [];
   const reserve = options.memoryReserve ?? MEMORY_RESERVE;
   const memory = options.availableMemory ?? availableMemory;
-  // Apps that opened lately and have not reached their checks: their memory may not show yet.
-  const recent = new Set<number>();
+  // The open apps, each with what it has yet to allocate (see outstanding).
+  const apps = new Set<OpenApp>();
   const available = () => {
-    const now = performance.now();
-    for (const at of recent) if (now - at > START_WINDOW_MS) recent.delete(at);
-    return memory() - recent.size * START_ALLOWANCE;
+    let free = memory();
+    for (const app of apps) free -= outstanding({ ...app, used: app.used() });
+    return free;
   };
   // With an app open, the next opens only when there is memory for it; with none, it always opens.
   const short = () => reserve > 0 && open > 0 && available() < reserve;
@@ -162,6 +180,16 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
     for (;;) {
       if (starting >= parallel || open >= 2 * parallel) await new Promise<void>((r) => wake.push(r));
       else if (short()) {
+        // The apps in their checks are done compiling: what their runtimes no longer reach is freed
+        // now rather than whenever V8 gets to it (a warm Next.js app's renderer: 968 -> 633 MB).
+        const now = performance.now();
+        const collect = [...apps].filter((a) => a.inChecks && a.renderer && now - a.collectedAt >= COLLECT_EVERY_MS);
+        // Not waited for: a WebAssembly thread blocked in Atomics.wait answers only at its timeout;
+        // the others' memory shows as it frees.
+        for (const a of collect) {
+          a.collectedAt = now;
+          void a.renderer!.collectGarbage();
+        }
         if (!waitedForMemory) options.log?.(`waiting for memory to open the next app (${Math.round(available() / 2 ** 20)} MB available, ${Math.round(reserve / 2 ** 20)} MB needed)`);
         waitedForMemory = true;
         // An app that ends frees its memory, but so may the others as they go on: look again in a while.
@@ -176,14 +204,13 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
     starting++;
     open++;
     let counted = true;
-    // Distinct from the others' (a set of times, as two apps may open in the same millisecond).
-    let openedAt = performance.now();
-    while (recent.has(openedAt)) openedAt += 1e-6;
-    recent.add(openedAt);
+    const peak = earlier[index]?.peak;
+    const app: OpenApp = { expected: peak ? peak * PEAK_MARGIN : null, used: () => app.renderer?.used() ?? null, inChecks: false, renderer: null, collectedAt: -Infinity };
+    apps.add(app);
     const done = () => {
       if (counted) starting--;
       counted = false;
-      recent.delete(openedAt);
+      app.inChecks = true;
       free();
     };
     const run = session
@@ -195,6 +222,10 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
           options.onPhase?.(phase);
           if (phase === 'checks') done();
         },
+        onRenderer: (renderer) => {
+          options.onRenderer?.(renderer);
+          app.renderer = renderer;
+        },
       })
       .then((result) => {
         results[index] = result;
@@ -202,6 +233,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
       })
       .finally(() => {
         open--;
+        apps.delete(app);
         done();
       });
     // Handled now, while the loop may wait for a slot: Promise.all(runs) below rejects with it.
@@ -243,6 +275,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
       failureRule: r.failure?.rule ?? null,
       totalMs: r.timings.totalMs,
       checksMs: r.timings.checksMs,
+      rendererPeakBytes: r.memory?.rendererPeakBytes ?? null,
     })),
   };
   const dir = resolve(options.batchDir ?? '.sandburg/batches', batchId);
@@ -251,18 +284,19 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   return { summary, results };
 }
 
+/** What the latest batches measured of a project's run: its checks, the time before them, its renderer's peak. */
+interface Earlier {
+  checks: number;
+  active: number;
+  peak: number | null;
+}
+
 /**
- * The items' indexes in the order to start them, from the latest batches' summaries: first those
- * with no checks time there (a new project, which may install first; one that failed before its
- * checks, which waits out a grace period), then those whose checks took LONG_CHECKS_MS or more,
- * longest first, then the others by the time before their checks, longest first; ties in the order
- * given. A batch's wall time is its last app's end: an app that waits in its checks (a failing
- * assertion waits 5-15 s) or runs long, started last, keeps the batch open while the cores have
- * nothing else to run. (Ordering by the whole run's time alone gained as much, but started the
- * heavy apps side by side: 16% more peak memory.) Only the order changes, never what a run does.
+ * Each item's latest run in the latest HISTORY_BATCHES batches' summaries (runs in the browser, or
+ * out of it, as this batch's), or undefined.
  */
-async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<number[]> {
-  const took = new Map<string, { checks: number; active: number }>();
+async function history(items: BatchItem[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<(Earlier | undefined)[]> {
+  const took = new Map<string, Earlier>();
   const dir = resolve(batchDir);
   // Batch ids start with their start time in base 36: the newest first.
   const ids = (await readdir(dir).catch(() => [] as string[])).filter((id) => /^b-[0-9a-z]+-[0-9a-f]+$/.test(id));
@@ -275,18 +309,51 @@ async function longestFirst(items: BatchItem[], batchDir: string, outOfBrowser: 
     for (const run of Array.isArray(summary?.runs) ? summary.runs : []) {
       // Runs in the browser, or in an out-of-browser runtime (compare's reference), as this batch's.
       if (adapterNames.includes(run?.runtime) === outOfBrowser) continue;
-      if (typeof run?.project === 'string' && Number.isFinite(run.checksMs) && Number.isFinite(run.totalMs) && !took.has(run.project))
-        took.set(run.project, { checks: run.checksMs!, active: run.totalMs - run.checksMs! });
+      if (typeof run?.project === 'string' && Number.isFinite(run.checksMs) && Number.isFinite(run.totalMs) && !took.has(run.project)) {
+        const peak = run.rendererPeakBytes;
+        // A peak beyond any machine's (a tampered summary) would only hold the batch back: capped.
+        took.set(run.project, { checks: run.checksMs!, active: run.totalMs - run.checksMs!, peak: Number.isFinite(peak) && peak! > 0 ? Math.min(peak!, MAX_EXPECTED_PEAK) : null });
+      }
     }
   }
-  const known = items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined));
+  return items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined));
+}
+
+/** The largest peak a batch expects of an app from its history (a renderer's memory is bounded well below this). */
+const MAX_EXPECTED_PEAK = 4 * 2 ** 30;
+
+/**
+ * The items' indexes in the order to start them, from what the latest batches measured (history):
+ * first those with no checks time there (a new project, which may install first; one that failed
+ * before its checks, which waits out a grace period), then those whose checks took LONG_CHECKS_MS
+ * or more, longest first, then the others by the time before their checks, longest first; ties in
+ * the order given. A batch's wall time is its last app's end: an app that waits in its checks (a
+ * failing assertion waits 5-15 s) or runs long, started last, keeps the batch open while the cores
+ * have nothing else to run. (Ordering by the whole run's time alone gained as much, but started the
+ * heavy apps side by side: 16% more peak memory.) Only the order changes, never what a run does.
+ */
+function longestFirst(known: (Earlier | undefined)[]): number[] {
   // Checks shorter than LONG_CHECKS_MS (a passing app's) count as none: then the longest run first.
   const checks = known.map((k) => (k ? (k.checks >= LONG_CHECKS_MS ? k.checks : 0) : Infinity));
   const active = known.map((k) => k?.active ?? 0);
-  return items.map((_, i) => i).sort((a, b) => checks[b] - checks[a] || active[b] - active[a] || a - b);
+  return known.map((_, i) => i).sort((a, b) => checks[b] - checks[a] || active[b] - active[a] || a - b);
 }
 /** Checks that take longer wait on a failing assertion (settlingExpect waits 5 s first); a passing app's take 0.5-2 s. */
 const LONG_CHECKS_MS = 3000;
+
+/** An open app, as the memory guard sees it. */
+interface OpenApp {
+  /** The peak it is expected to reach (from history), or null. */
+  expected: number | null;
+  used(): number | null;
+  inChecks: boolean;
+  renderer: RunRenderer | null;
+  /** When the guard last had its isolates collect garbage. */
+  collectedAt: number;
+}
+
+/** How often, at most, a batch short of memory has an app in its checks collect garbage. */
+const COLLECT_EVERY_MS = 10_000;
 
 /** How often a batch short of memory looks again. */
 const MEMORY_POLL_MS = 500;

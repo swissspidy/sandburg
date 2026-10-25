@@ -32,11 +32,15 @@ export const ESM_DEFINE: Record<string, string> = {
 };
 
 /**
- * Whether converted code (`source` before, `code` after) would not parse in its wrapper: it declares
- * one of the wrapper's names where esbuild did not rename it. Parsed, never run.
+ * Whether converted code would not parse in its wrapper: it declares one of the wrapper's
+ * parameters where esbuild did not rename it. Only a lexical declaration (let, const, class) of a
+ * parameter's name clashes with it (var and function may redeclare one), and only in the converted
+ * code (esbuild renames what it uses itself, and imports become vars), so only code that has one is
+ * parsed (V8's parser, never run): the source's `function (module, exports)` and `import`s sent ~15%
+ * of an Astro install's ES modules to the parser before, for one that clashed.
  */
-export function collidesWithWrapper(source: string, code: string): boolean {
-  if (!DECLARES.test(source)) return false;
+export function collidesWithWrapper(code: string): boolean {
+  if (!LEXICAL.test(code)) return false;
   try {
     // The host's one Function constructor: it only parses (the function is never called), and the
     // body cannot end the function early (a SyntaxError). See the no-new-func rule in .oxlintrc.json.
@@ -47,6 +51,7 @@ export function collidesWithWrapper(source: string, code: string): boolean {
     return e instanceof SyntaxError;
   }
 }
+const LEXICAL = new RegExp(`\\b(?:const|let|class)\\s*\\{?[^;=]*?\\b(?:${ESM_WRAPPER_PARAMS.join('|')})\\b`);
 const DECLARES = new RegExp(`\\b(?:const|let|var|function|class|as|import)\\s*\\{?[^;=]*?\\b(?:${RESERVED.join('|')})\\b`);
 
 type Node = acorn.Node & Record<string, unknown>;
