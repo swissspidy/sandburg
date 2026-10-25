@@ -52,12 +52,15 @@ const PARENT_BLOCKED_MS = 5000;
 /** A thread's VFS: every operation runs on the parent's VFS. */
 export class RemoteVfs extends Vfs {
   private post: (msg: unknown) => void;
+  /** PARENT_BLOCKED_MS, unless given (tests). */
+  private blockedMs: number;
 
-  constructor(post: (msg: unknown) => void) {
+  constructor(post: (msg: unknown) => void, blockedMs = PARENT_BLOCKED_MS) {
     super(() => {
       throw new Error('RemoteVfs does not fetch remote files itself');
     });
     this.post = post;
+    this.blockedMs = blockedMs;
   }
 
   /**
@@ -75,7 +78,7 @@ export class RemoteVfs extends Vfs {
 
   protected call(op: VfsOp, args: unknown[]): unknown {
     if (this.stalled && Atomics.load(this.stalled, 0) === 0 && READ_OPS.has(op)) {
-      const answer = this.fallback(op, args, performance.now() - this.stalledSince >= PARENT_BLOCKED_MS);
+      const answer = this.fallback(op, args, performance.now() - this.stalledSince >= this.blockedMs);
       if (answer) {
         if (answer.value instanceof Error) throw answer.value;
         return answer.value;
@@ -91,7 +94,7 @@ export class RemoteVfs extends Vfs {
         this.stalled = header;
         let answer = READ_OPS.has(op) ? this.fallback(op, args, false) : undefined;
         if (!answer && READ_OPS.has(op)) {
-          const left = PARENT_BLOCKED_MS - (performance.now() - this.stalledSince);
+          const left = this.blockedMs - (performance.now() - this.stalledSince);
           if (left <= 0 || Atomics.wait(header, 0, 0, left) === 'timed-out') answer = this.fallback(op, args, true);
         }
         if (answer) {
@@ -174,8 +177,8 @@ export class ThreadVfs extends RemoteVfs {
   private root: string;
   private nodeModulesWrites: Int32Array | null;
 
-  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: ProjectSnapshot | Record<string, Uint8Array>, nodeModulesWrites?: Int32Array) {
-    super(post);
+  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: ProjectSnapshot | Record<string, Uint8Array>, nodeModulesWrites?: Int32Array, blockedMs?: number) {
+    super(post, blockedMs);
     this.installed = installed;
     this.root = cwd;
     this.nodeModulesWrites = nodeModulesWrites ?? null;

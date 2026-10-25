@@ -34,9 +34,11 @@ export interface HostInstall {
     digests?: Record<string, string>;
     /** Files to wait for before the cache is saved (a seed run: webpack stores its cache when idle). */
     waitFor?: string[];
+    /** The run's capability to store the cache under `key`, once (see cacheWrites in index.ts). */
+    token?: string;
   };
   /** Where the runtime records what the host compiles for it, and a bundle of what earlier runs of the project had compiled (see compile-cache.ts). */
-  compileCache?: { key: string; bundle: string | null } | null;
+  compileCache?: { key: string; bundle: string | null; token?: string } | null;
   /** Vite's server.proxy rules: WebSockets they send to a backend go to it directly. */
   proxy?: ProxyRule[];
   start?: ({ main: string; argv: string[] } | { bin: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
@@ -391,7 +393,7 @@ export function createAdapter(): RuntimeAdapter {
             ? Object.keys(digests).length !== Object.keys(tree!).length ||
               (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
             : Object.keys(devCache.files).length !== Object.keys(tree!).length || Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
-        if (changed) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', body: new Blob([JSON.stringify(tree)]) }).catch(() => {});
+        if (changed && devCache.token) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', headers: { 'x-sandburg-token': devCache.token }, body: new Blob([JSON.stringify(tree)]) }).catch(() => {});
       }
       proc?.terminate();
       proc = null;
