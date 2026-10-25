@@ -62,6 +62,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(runtimeScript(event.request, url.pathname));
     return;
   }
+  if (RUNTIME_MODULE.test(url.pathname)) {
+    event.respondWith(runtimeModule(event.request, url.pathname));
+    return;
+  }
   if (url.pathname.startsWith('/__sandburg/') || url.pathname === '/__sw__.js') return;
   // Top-level navigations are the host page; the app navigates inside its frame.
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
@@ -96,6 +100,36 @@ async function runtimeScript(request, path) {
     return new Response(body, { headers });
   } catch (e) {
     runtime.delete(path);
+    return new Response(String(e?.message ?? e), { status: 502 });
+  }
+}
+
+/**
+ * The runtime's module (node-runtime/runtime-module.ts), by the digest of its text: answered from
+ * Cache Storage, the one place Chromium keeps V8's code for a worker's script in this browser
+ * context. The first runtime of the run compiles it; the code is kept beside the entry, and the
+ * run's other runtimes (spares, threads, child processes) start from it.
+ */
+const RUNTIME_MODULE = /^\/__sandburg\/runtime\/[0-9a-f]{64}\.mjs$/;
+const RUNTIME_CACHE = 'sandburg-runtime';
+const modules = new Map();
+async function runtimeModule(request, path) {
+  try {
+    const cache = await caches.open(RUNTIME_CACHE);
+    const hit = await cache.match(path);
+    if (hit) return hit;
+    let stored = modules.get(path);
+    if (!stored) {
+      stored = fetch(request).then(async (res) => {
+        if (!res.ok) throw new Error(`${path}: ${res.status}`);
+        await cache.put(path, res);
+      });
+      modules.set(path, stored);
+    }
+    await stored;
+    return (await cache.match(path)) ?? new Response(`${path}: not cached`, { status: 502 });
+  } catch (e) {
+    modules.delete(path);
     return new Response(String(e?.message ?? e), { status: 502 });
   }
 }

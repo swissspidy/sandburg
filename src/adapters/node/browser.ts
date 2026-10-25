@@ -5,7 +5,7 @@
  */
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, Framework, InstallReport } from '../../types.ts';
-import { connectServiceWorker } from '../sw-bridge.ts';
+import { connectServiceWorker, controlledByServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort } from './process.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
@@ -167,17 +167,33 @@ function startsThreads(tree: FileTree, framework: Framework): boolean {
  */
 let prepared: { worker: Worker; failed: boolean } | null = null;
 
+/**
+ * Started once the service worker controls the page: a runtime is its client from its start, and
+ * imports the runtime's module through it, from Cache Storage, where V8's code for the module is
+ * kept for the run's other runtimes (node-runtime/runtime-module.ts). Without a service worker, as
+ * before.
+ */
+let preparing = false;
+
 export function prepare(): void {
-  if (prepared) return;
-  const p = { worker: new Worker(`${hostBase()}/node-worker.js`), failed: false };
-  p.worker.onerror = (e) => {
-    e.preventDefault();
-    p.failed = true;
+  if (prepared || preparing) return;
+  preparing = true;
+  const start = () => {
+    // Taken (as none) before the service worker was ready: the process started its own.
+    if (!preparing) return;
+    preparing = false;
+    const p = { worker: new Worker(`${hostBase()}/node-worker.js`), failed: false };
+    p.worker.onerror = (e) => {
+      e.preventDefault();
+      p.failed = true;
+    };
+    prepared = p;
   };
-  prepared = p;
+  controlledByServiceWorker().then(start, start);
 }
 
 function preparedWorker(): Worker | undefined {
+  preparing = false;
   const p = prepared;
   prepared = null;
   if (p?.failed) p.worker.terminate();
