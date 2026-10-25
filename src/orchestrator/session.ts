@@ -556,7 +556,7 @@ export class Session {
           const appIdle = async (remainingMs: number) => {
             const a = (await host('activity')) as { inflight: number; idleMs: number } | null;
             if (!a || a.inflight > 0 || a.idleMs < APP_IDLE_MS) return false;
-            const q = await app.evaluate((h) => (window as unknown as { __sandburgQuiet?: (h: number) => { quiet: boolean; sinceChangeMs: number } }).__sandburgQuiet?.(h) ?? null, remainingMs);
+            const q = await app.evaluate((h) => window.__sandburgQuiet?.(h) ?? null, remainingMs);
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
           const appSettled = () => host('settled', SETTLE_QUIET_MS, SETTLE_LONG_MS, SETTLE_MAX_MS);
@@ -565,7 +565,7 @@ export class Session {
         await steps().catch(() => {}); // failures are recorded per phase
         if (options.collectFiles && options.onAppFiles) {
           const files = await page
-            .evaluate((match) => (window as unknown as { __sandburgReadFiles?: (m: string) => Promise<FileTree> }).__sandburgReadFiles?.(match) ?? null, options.collectFiles)
+            .evaluate((match) => window.__sandburgReadFiles?.(match) ?? null, options.collectFiles)
             .catch(() => null);
           if (files) options.onAppFiles(files);
         }

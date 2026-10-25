@@ -4,7 +4,7 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "lib": [
-      "es2023",
+      "es2024",
       "dom",
       "dom.iterable"
     ],

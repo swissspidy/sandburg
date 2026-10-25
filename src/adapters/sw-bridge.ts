@@ -28,7 +28,7 @@ let listening = false;
 export async function connectServiceWorker(onRequest: (r: BridgedRequest, reply: BridgeReply) => void): Promise<void> {
   handler = onRequest;
   // A page may name its own service worker (the static demos register theirs under their path).
-  const sw = (globalThis as { __sandburgServiceWorker?: { url: string; scope: string } }).__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
+  const sw = globalThis.__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
   const registration = await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
   await navigator.serviceWorker.ready;
   if (!navigator.serviceWorker.controller) {

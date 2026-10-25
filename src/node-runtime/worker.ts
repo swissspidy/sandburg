@@ -433,8 +433,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       Promise.resolve().then(() => {
         const spec = String(specifier).startsWith('file:') ? decodeURIComponent(new URL(String(specifier)).pathname) : String(specifier);
         // An import(), so resolved with import conditions (as from an ES module).
-        type Mod = { filename: string; paths: string[]; esm: boolean };
-        const M = moduleSystem.Module as unknown as { new (id: string, parent: null): Mod; _nodeModulePaths(d: string): string[]; _load(r: string, p: Mod, main: boolean): unknown };
+        const M = moduleSystem.Module;
         const cwd = (proc.cwd as () => string)();
         const parent = new M(`${cwd}/[import]`, null);
         parent.filename = `${cwd}/[import]`;
@@ -593,8 +592,8 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
   if (!thread) exitWhenIdle();
   try {
     // --require / --import (loaded in order, before the entry).
-    for (const p of msg.preload ?? []) (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(p, null, false);
-    const exports = (moduleSystem.Module as unknown as { _load(r: string, p: null, m: boolean): unknown })._load(msg.main, null, true);
+    for (const p of msg.preload ?? []) moduleSystem.Module._load(p, null, false);
+    const exports = moduleSystem.Module._load(msg.main, null, true);
     // An async main module (top-level await): a rejection ends the process like an uncaught exception.
     const tla = (exports as Record<string, unknown> | null)?.__sandburg_tla as Promise<unknown> | undefined;
     if (tla && typeof tla.then === 'function') {

@@ -196,7 +196,7 @@ export function createProcess(opts: ProcessOptions) {
   };
   hrtime.bigint = () => BigInt(Math.round((performance.timeOrigin + performance.now()) * 1e6));
   const memory = () => {
-    const heap = (performance as unknown as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number } }).memory;
+    const heap = performance.memory;
     const used = heap?.usedJSHeapSize ?? 64e6;
     return { rss: used * 1.5, heapTotal: heap?.totalJSHeapSize ?? used * 1.2, heapUsed: used, external: 0, arrayBuffers: 0 };
   };

@@ -335,7 +335,7 @@ let axeSource: Promise<string> | null = null;
 async function loadAxe(app: Frame, origin?: string, code?: PageCode): Promise<void> {
   const own = !!origin && URL.canParse(app.url()) && new URL(app.url()).origin === origin;
   const csp = () => app.evaluate(() => !!document.querySelector('meta[http-equiv="content-security-policy" i]')).catch(() => true);
-  const defined = () => app.evaluate(() => typeof (window as unknown as { axe?: unknown }).axe === 'object').catch(() => false);
+  const defined = () => app.evaluate(() => typeof window.axe === 'object').catch(() => false);
   if (own && code && !(await csp())) {
     const loaded = await code.load(app);
     void code.close(); // the code is for this load only
@@ -347,7 +347,7 @@ async function loadAxe(app: Frame, origin?: string, code?: PageCode): Promise<vo
       .evaluate(
         (u) =>
           !document.querySelector('meta[http-equiv="content-security-policy" i]') &&
-          import(u).then(() => typeof (window as unknown as { axe?: unknown }).axe === 'object'),
+          import(u).then(() => typeof window.axe === 'object'),
         origin + AXE_PATH,
       )
       .catch(() => false));
@@ -359,7 +359,7 @@ async function loadAxe(app: Frame, origin?: string, code?: PageCode): Promise<vo
 async function runAxe(app: Frame, loaded: Promise<void>): Promise<{ status: CheckStatus; message?: string; details?: unknown }> {
   await loaded;
   const summary = await app.evaluate(async () => {
-    const axe = (window as unknown as { axe: { run(ctx: Document, opts: object): Promise<{ violations: { id: string; impact: string | null; nodes: unknown[] }[] }> } }).axe;
+    const axe = window.axe!;
     const { violations } = await axe.run(document, { resultTypes: ['violations'] });
     return violations.map((v) => ({ id: v.id, impact: v.impact, nodes: v.nodes.length }));
   });
