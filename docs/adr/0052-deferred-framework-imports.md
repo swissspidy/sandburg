@@ -1,4 +1,4 @@
-# ADR NNNN: Framework modules loaded at first use; what is left in Next.js, Angular and Nuxt runs
+# ADR 0052: Framework modules loaded at first use; what is left in Next.js, Angular and Nuxt runs
 
 - Status: Accepted
 - Date: 2026-10-25
@@ -48,7 +48,7 @@ requires) showed:
     (archiver), listhen (node-forge), Nitro's dev error handler and `@nuxt/cli`'s dev server (youch).
 
   Each listed module is used only inside functions (a transform, a plugin hook, an error handler) and
-  has no evaluation side effect its importer relies on. `TRANSFORM_VERSION` 23.
+  has no evaluation side effect its importer relies on. `TRANSFORM_VERSION` 24 (23 on this branch alone; host-native transforms, ADR 0051, took 23 too).
 
 ## Consequences
 
