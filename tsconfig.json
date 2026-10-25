@@ -25,6 +25,7 @@
     "scripts/pages",
     "scripts/profile.ts",
     "scripts/edit-loop.ts",
+    "scripts/test-times.ts",
     "pages/compile.ts",
     "pages/generate",
     "evals",

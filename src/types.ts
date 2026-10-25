@@ -236,6 +236,11 @@ export interface RunResult {
     failed: NetworkEntry[];
     blocked: NetworkEntry[];
   };
+  /**
+   * The most memory the run's renderer (its page, workers and service worker) was seen to hold:
+   * resident anonymous and shared memory, read about once a second. In-browser runs on Linux only.
+   */
+  memory?: { rendererPeakBytes: number };
   artifacts: {
     screenshot?: string;
     a11ySnapshot?: string;

@@ -641,7 +641,7 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
  * Writes a file as a new file: an install may share files with another through hard links (see
  * Installer.startFromClosest), and writing into one would change both.
  */
-async function replaceFile(path: string, content: string | Buffer): Promise<void> {
+export async function replaceFile(path: string, content: string | Buffer): Promise<void> {
   await rm(path, { force: true });
   await writeFile(path, content);
 }
