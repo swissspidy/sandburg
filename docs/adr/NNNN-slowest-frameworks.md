@@ -1,0 +1,203 @@
+# ADR NNNN: The slowest frameworks: waits that were timers, a transform cache, rolldown's builtin hooks
+
+- Status: Accepted
+- Date: 2026-10-25
+
+## Context
+
+After ADRs 0033-0039, warm runs of the meta-framework fixtures on an idle 4-core machine (one
+session, the second and later runs; full Chromium) took: nuxt-app ~5.6 s, solid-start-app ~5.7 s,
+angular-tasks ~4.3 s, astro-app ~3.7 s, sveltekit-app ~2.8 s, react-router-app ~2.0 s, against
+1.2-1.5 s for vite-react-counter and lit-vite. CPU profiles of every thread (`scripts/profile.ts`,
+plus a script that also records the app frame's requests, `devtools.timeline`) and a log of every
+timer of 50 ms or more the runtime armed, with its stack, showed three kinds of time:
+
+- **Waits on timers, with every thread idle.**
+  - Nitro's dev server (Nuxt) holds a request that comes before its worker is ready and checks again
+    every 600 ms (`DevServer.getWorker`): the first page waited ~0.5 s after the worker was ready.
+  - SolidStart 2's server functions plugin loads its manifest (a virtual module the server entry and
+    the client import) once no module with `"use server"` has been compiled for 1 s: every first
+    page waited 1 s, and the page's hydration another second for the client's copy.
+- **Per-module calls into rolldown's WebAssembly binding that did nothing.** Vite 8 runs some of
+  rolldown's builtin plugins from JavaScript (`makeBuiltinPluginCallable`), which gives each every
+  hook the binding has. Vite called each for every module: in a warm nuxt-app run 241 transform calls
+  each to vite-json, vite-resolve and oxc-runtime (copying the module's code into the binding),
+  ~1,000 resolveId calls to oxc-runtime, and loads to all of them, for hooks the plugins do not have
+  (rolldown's `register_hook_usage`) or modules they leave alone. Each is ~0.1-0.3 ms to call and
+  more to return through emnapi: ~0.4 s of a Nuxt or Astro run's thread.
+- **Work every warm run repeats.** vite-plugin-solid compiles each `.jsx`/`.tsx` module with Babel,
+  for the server and again for the client (~1.2 s of a warm SolidStart run, SolidStart's own dev
+  toolbar's ~60 modules included). jiti compiles `nuxt.config.ts` with its Babel bundle on every
+  start (and keeps the result in `node_modules/.cache/jiti`, which runs did not keep).
+
+What the profiles showed but this does not change: most of a meta-framework's remaining time is
+Vite's own per-module work (import analysis, vite-resolve's resolveId, transforms) and the runtime's
+compiles of the code it loads, on the program's one busy thread; Nitro's rollup build of its server
+(~0.7 s of a warm Nuxt run); the Angular CLI's TypeScript (~1.6 s) and esbuild (~0.6 s, Go in the
+runtime's thread).
+
+## Decision
+
+- **Source patches** (`SOURCE_PATCHES` in `src/adapters/node/install-rules.ts`; `TRANSFORM_VERSION`
+  bumped, so installed copies are transformed again):
+  - nitropack: `getWorker` checks every 50 ms, for as long as before (12 times the checks).
+  - @solidjs/start: the server functions manifest waits 100 ms for more server functions, not 1 s.
+    A module compiled later still registers its functions when it runs and has the plugin invalidate
+    the manifest, as before; a call to a function no module registered is looked up by its file (the
+    plugin's `server-fn-lookup`), as before.
+  - @solidjs/start: the file-system router's first listing of the routes (`buildRoutes`, when the
+    routes module first loads) dispatches no `reload` events. It dispatched one per route, which in
+    the client reloaded the routes module 200 ms later: a hot update of app.tsx. Once runs got faster
+    the page heard it in ~1 run in 20 and lost what a check had typed. Routes added, changed or
+    removed later reload as before.
+  - rolldown's `makeBuiltinPluginCallable`: each known builtin plugin keeps only the hooks its Rust
+    source has (rolldown 1.2), with Vite's hook filters (which Vite's dev plugin container and rolldown
+    both apply) no narrower than the plugin's own test: vite-json transforms `*.json`; oxc-runtime
+    resolves `@oxc-project/runtime/helpers/…`, and `./…` only from one of its helpers (a guard on the
+    importer, which filters cannot test), and loads `\0@oxc-project+runtime@…`; replace transforms only
+    code that contains one of its keys (not when `objectGuards` adds typeof forms); vite-resolve keeps
+    resolveId, watchChange, and a load for its own virtual modules (`\0vite:esm-external-builtin-require:`,
+    `__vite-browser-external`, `__vite-optional-peer-dep`); the React refresh wrapper keeps resolveId
+    and transform. Builtin plugins it does not know keep every hook.
+  - vite-plugin-solid: looks its Babel compile up in the project's transform cache (below) before it
+    compiles, and records what it compiled, unless the app passes Babel options of its own.
+- **A project's transform cache** (`src/node-runtime/transform-cache.ts`): the runtime gives dev server
+  plugins a cache under `Symbol.for('sandburg.transformCache')` (not enumerable). An entry is a JSON
+  file in `node_modules/.vite/sandburg-transforms/<plugin>/`, named by hashes of the module's id and
+  environment and of its source, and holding the source it was compiled from; it is used only when id,
+  environment and source are equal. Virtual modules (not a file in the run's file system) and sources
+  over 1 MB get none. Before a run's caches are read to be kept, a run that used the cache drops the
+  entries it neither used nor added. The directory is under `node_modules/.vite`, a dev-server cache
+  directory (ADR 0033), so the project's next run starts from it.
+- **jiti's cache is kept** with the dev-server caches (`node_modules/.cache/jiti` added to
+  `DEV_CACHE_DIRS`): jiti names an entry by a hash of the file's source and its version.
+
+## Consequences
+
+- The branch against origin/main, `scripts/bench.ts` (both sides refs, interleaved, 3 rounds, medians
+  of the time to the result), warm:
+
+  | Fixture | Total | Start | Ready | Checks |
+  |---|---|---|---|---|
+  | solid-start-app | 5.50 → 2.93 s (−47%) | 0.74 → 0.68 s | 3.01 → 1.23 s | 1.49 → 0.65 s |
+  | nuxt-app | 5.56 → 4.26 s (−23%) | 0.58 → 0.46 s | 3.62 → 2.64 s | 0.95 → 0.75 s |
+  | astro-app | 3.98 → 3.08 s (−22%) | 1.01 → 0.92 s | 2.15 → 1.40 s | 0.39 → 0.39 s |
+  | sveltekit-app | 3.10 → 2.74 s (−12%) | 1.20 → 1.04 s | 0.93 → 0.76 s | 0.58 → 0.50 s |
+  | react-router-app | 2.21 → 2.04 s (−7%) | 0.90 → 0.87 s | 0.56 → 0.42 s | 0.43 → 0.40 s |
+  | angular-tasks | 4.08 → 4.12 s (+1%) | 2.72 → 2.78 s | 0.39 → 0.37 s | 0.39 → 0.39 s |
+  | vite-react-counter | 1.43 → 1.38 s (−4%) | 0.56 → 0.59 s | 0.36 → 0.25 s | 0.29 → 0.30 s |
+  | lit-vite | 1.05 → 1.03 s (−2%) | 0.48 → 0.42 s | 0.17 → 0.20 s | 0.22 → 0.21 s |
+
+  All 48 runs passed. angular-tasks is within noise here (±3% between A/B series); the builtin hooks
+  commit's own A/B had it at −6% (start 2.79 → 2.64 s). solid-start-app's install phase is 0.20 →
+  0.29 s for its larger dev-server cache (the transform cache).
+
+  Cold (`.sandburg/` removed, npm's cache warm; install included, which moves with npm):
+
+  | Fixture | Total | Start | Ready | Checks |
+  |---|---|---|---|---|
+  | nuxt-app | 24.27 → 19.98 s (−18%) | 2.19 → 2.16 s | 6.01 → 5.27 s | 1.11 → 0.86 s |
+  | solid-start-app | 13.73 → 11.46 s (−17%) | 2.30 → 2.20 s | 4.24 → 3.01 s | 2.58 → 1.64 s |
+  | astro-app | 15.93 → 13.96 s (−12%) | 4.33 → 4.30 s | 5.77 → 4.59 s | 0.42 → 0.39 s |
+  | react-router-app | 9.75 → 8.90 s (−9%) | 2.36 → 2.32 s | 1.49 → 1.24 s | 0.40 → 0.40 s |
+  | angular-tasks | 16.30 → 15.07 s (−7%) | 6.04 → 6.09 s | 1.76 → 1.55 s | 0.40 → 0.37 s |
+  | sveltekit-app | 11.35 → 10.83 s (−5%) | 5.50 → 5.35 s | 1.57 → 1.35 s | 0.57 → 0.53 s |
+
+  All 36 runs passed. The install phase was 2-23% shorter on the branch's side in this series, npm's
+  own variance (nothing here changes installs); ready and checks are this work's. A cold SolidStart
+  run's dispose is 0.03 → 0.17 s: it stores the transform cache, once.
+
+- Each change's own A/B is in its commit message (interleaved, warm):
+
+  | Change | Fixture | Total | Phase |
+  |---|---|---|---|
+  | Nitro's worker checks | nuxt-app | 5.36 → 5.09 s (−5%, n=5) | ready 3.44 → 3.10 s |
+  | SolidStart's manifest | solid-start-app | 5.42 → 4.15 s (−23%, n=5) | ready 3.02 → 2.12 s, checks 1.43 → 1.02 s |
+  | Transform cache (with the router fix) | solid-start-app | 4.16 → 3.19 s (−23%, n=6) | ready 2.16 → 1.47 s, checks 1.04 → 0.68 s |
+  | Builtin hooks | astro-app | 3.90 → 3.22 s (−17%, n=3) | ready 2.09 → 1.64 s |
+  | | nuxt-app | 4.91 → 4.52 s (−8%) | ready 2.95 → 2.60 s, checks 0.94 → 0.74 s |
+  | | solid-start-app | 3.27 → 2.95 s (−10%) | start 0.75 → 0.64 s |
+  | | angular-tasks | 4.15 → 3.92 s (−6%) | start 2.79 → 2.64 s |
+  | | lit-vite | 1.15 → 1.02 s (−12%) | start 0.52 → 0.44 s |
+  | | sveltekit-app, react-router-app, vite-react-counter | −4%, −4%, −2% | ready −13%, −13%, −29% |
+  | vite-resolve's load, oxc-runtime's guard | astro-app | 3.38 → 3.09 s (−8%, n=4) | ready 1.71 → 1.46 s |
+  | | nuxt-app | 4.55 → 4.45 s (−2%) | |
+  | jiti's cache | nuxt-app | 4.42 → 4.28 s (−3%, n=6) | start 0.61 → 0.48 s |
+
+- The transform cache grows a SolidStart project's stored dev-server cache from 0.8 to 6.1 MB (213
+  entries): mount +0.03 s and install +0.04 s in warm runs, already in the numbers above. The first run
+  of a project compiles as before and stores the cache once.
+- **Behaviour changes:**
+  - A Nuxt app's first request is served up to 0.55 s sooner after Nitro's worker is ready.
+  - A SolidStart app's server functions manifest lists the modules with server functions compiled
+    within 100 ms of each other, where it waited for a 1 s pause; one compiled later makes the plugin
+    invalidate the manifest (as one compiled after the 1 s did).
+  - A SolidStart app's page no longer gets a hot update of app.tsx (`[vite] hot updated: /src/app.tsx`)
+    a moment after it loads; the routes listed first no longer count as added.
+  - Rolldown's builtin plugins run from JavaScript are no longer called for hooks they do not have or
+    for modules their filters exclude; what they return is unchanged.
+  - vite-plugin-solid's output for a module whose id, environment and source were compiled in an
+    earlier run of the project comes from that run (the same output, unless a Babel plugin of the
+    project's is not deterministic; an app that passes Babel options does not use the cache). A
+    project's runs keep `node_modules/.vite/sandburg-transforms/` and `node_modules/.cache/jiti/`
+    between them, as they keep Vite's cache.
+  - `globalThis[Symbol.for('sandburg.transformCache')]` exists in the runtime.
+
+## Security
+
+- The transform cache and jiti's cache are dev-server caches like Vite's (ADR 0033): the page writes
+  them (it runs the project's code), and the host keeps and hands out a cache only under a key it
+  issued to a run of the same project, a digest of every project file and the install, and only files
+  under the issued directories (`cacheEntries`). One project cannot plant compiled code in another's
+  run; a project can only change what its own later runs (which run its code anyway) compile to.
+  Entries are used only for the exact source they hold (compared whole, not by hash), and jiti only
+  uses an entry whose name is the hash of the source it loads.
+- The host does not read, parse or run what the entries hold; nothing new runs on the host.
+- The source patches change no boundary: they shorten waits, drop calls that returned nothing, and
+  stop a spurious event. Rolldown's builtin plugins see the same calls that can produce output.
+- Tests: `test/unit/transform-cache.test.ts` (a hit only for the same module, environment and source;
+  a planted or colliding entry naming another module is a miss; virtual modules and large sources get
+  no entry; unused entries pruned), `test/unit/source-patches.test.ts` (each patch applies to the
+  published code; the router's first listing dispatches nothing and later changes do; each builtin
+  plugin's hooks and filters, and an unknown plugin keeps all), and an e2e test in
+  `test/e2e/vite-frameworks.test.ts`: a SolidStart project's cache holds its compile of src/app.tsx,
+  and a copy with that file edited gets a cache of its own, with only compiles of its own source,
+  while the first project's is unchanged.
+
+## What did not help
+
+Interleaved warm A/B unless noted:
+
+- **Replaying the previous run's requests** (the module URLs the page asked for, sent to the dev
+  server by the runtime once it listened, so that Vite transformed them while the server was otherwise
+  idle): nuxt-app ready +0.5 s and checks −0.5 s, total unchanged; solid-start-app +0.9 s (n=6 each).
+  Started when the page's first module request came instead: no gain for Nuxt, and SolidStart's checks
+  failed (its server action URLs are GETs that change state). The program's thread was busy: there was
+  little idle time to fill, and the replayed requests competed with the server render.
+- **The Angular CLI's TypeScript on its own thread again** (`NG_BUILD_PARALLEL_TS=1`, which ADR 0033
+  turned off): angular-tasks 4.03 → 4.09 s, start 2.63 → 2.67 s (n=4).
+
+## Not done
+
+- **Nitro's rollup build kept between runs** (rollup's cache, persisted from `BUNDLE_END` and passed to
+  `rollup.watch`, whose Task ignores `options.cache` today): it would skip the transforms and parses of
+  Nitro's ~0.7 s build but not rollup's tree-shaking and rendering, for a cache of ASTs that must be
+  read back each run; estimated 0.1-0.2 s of a warm Nuxt run.
+- **SolidStart's and Astro's dev toolbars** (devtools overlays): SolidStart's is ~60 of the page's ~130
+  modules, rendered on the server too, and its error viewer loads shiki after hydration; Astro's runs
+  its audit app in the page. Turning them off from the host (`devOverlay`, Astro's `devToolbar`
+  preference) would change the page's DOM and accessibility tree, and so the a11y snapshot and axe-core
+  results.
+- **Astro's eager imports**: `astro/dist/assets/svg/svgo.js` (svgo, csso, css-tree), the fonts code
+  (unifont, capsize) and `@astrojs/telemetry` are loaded and evaluated as the dev server starts whether
+  or not the project uses them (~0.1 s of a warm start).
+- **esbuild-wasm off the Angular CLI's thread** (ADR 0038's): its Go code still runs on the runtime's
+  thread (~0.6 s); a worker would need the runtime's file system (relative imports are resolved by Go).
+- **More transform caches**: vite-plugin-solid was the one per-module compile that showed; Vue's,
+  Svelte's and Astro's compilers keep state that later requests read (descriptors, the CSS of a
+  component), so their compiles cannot be skipped by output alone, and Vite's own transforms (import
+  analysis) record the module graph.
+- **Vite's per-module cost** (import analysis, vite-resolve's resolveId through the WebAssembly binding,
+  inline source maps) is most of what is left in every meta-framework; that is the runtime's and the
+  wasm tools' hot path.
+- `waitForRender` polls every 100 ms (`session.ts`), ~50 ms of each run's ready on average.
