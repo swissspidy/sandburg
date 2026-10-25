@@ -1,4 +1,4 @@
-# ADR NNNN: Memory accounting: each app's renderer, measured
+# ADR 0046: Memory accounting: each app's renderer, measured
 
 - Status: Accepted
 - Date: 2026-10-25
