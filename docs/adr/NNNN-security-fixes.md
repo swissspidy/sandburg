@@ -121,7 +121,12 @@ Each fails on main and passes with its fix.
 
 ## Consequences
 
-- BENCH
+- Against origin/main on a 4-core machine (`scripts/bench.ts --base origin/main --head HEAD
+  --fixtures vite-react-counter,next-app-router --modes warm --rounds 3`, interleaved, medians; all
+  runs passed): vite-react-counter warm 1.85 s → 1.78 s (−4%), next-app-router warm 4.96 s → 4.90 s
+  (−1%): no change beyond noise. Every e2e suite touched (node, run, batch, browser-install,
+  fullstack, websockets, frameworks, vite-frameworks, page-checks), the unit and the runtime tests
+  pass.
 - **Behavior changes**: a CONNECT target that is not `host:port` (a zero-padded or missing port, a
   bracket without an IPv6 literal) gets a 400 instead of a tunnel attempt or a 403. A page's POST to
   `/__sandburg/dev-cache/<key>` without its run's token is refused whatever the key, and a run
