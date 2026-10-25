@@ -427,6 +427,14 @@ async function packageType(installDir: string, rel: string): Promise<'module' | 
  * (where its own on-demand download would extract it). Put the installed copy there.
  */
 /**
+ * Versions of the WebAssembly bindings' dependencies that do not load with what the bindings pin.
+ * @napi-rs/wasm-runtime 1.2.6 bundles emnapi plugins built for @emnapi/core 2.0.0-beta.2 exactly;
+ * bindings that pin 2.0.0-alpha.5 (rolldown 1.2.15) and take ~1.2.5 then fail to load ("Cannot find
+ * native binding"). 1.2.5 works with both.
+ */
+const WASI_OVERRIDES = { '@napi-rs/wasm-runtime@1.2.6': '1.2.5' };
+
+/**
  * napi-rs packages (rolldown, the Astro compiler, oxc, …) list a `*-wasm32-wasi` build among their
  * optional dependencies; npm skips it on this platform (cpu: wasm32). The runtime loads those builds
  * through node:wasi, so they are installed here, with their own dependencies (@napi-rs/wasm-runtime,
@@ -447,7 +455,7 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
   }
   // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
   const install = (bindings: [string, string][]) =>
-    sideInstall(sides, { name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings) }, ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
+    sideInstall(sides, { name: 'sandburg-wasi', private: true, dependencies: Object.fromEntries(bindings), overrides: WASI_OVERRIDES }, ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], log);
   // The listed bindings are installed while npm view looks for the others. Most of those do not
   // exist; when one does, all are installed together, as one tree.
   const listed = Object.entries(wanted).filter(([name]) => !top.has(name));
