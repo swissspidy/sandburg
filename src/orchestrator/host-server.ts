@@ -132,7 +132,7 @@ function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
 }
 
 /** The path of arguments stashed for a sandbox's host page (see HostServer.stash). */
-export const ARGS_PATH = '/__sandburg/args/';
+const ARGS_PATH = '/__sandburg/args/';
 /** How long stashed arguments wait for their page. */
 const STASH_TTL_MS = 120_000;
 
