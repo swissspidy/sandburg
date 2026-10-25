@@ -117,6 +117,22 @@ export interface TransformStep {
   optional?: boolean;
 }
 
+/**
+ * Starts esbuild's services before the first compile needs them: its synchronous API starts a
+ * worker and the esbuild process on first use (~50 ms, 122 ms on a busy host in a cold Vite run's
+ * first compile), the asynchronous one its own process (the first transforms of installed files).
+ */
+export function warmCompiler(): void {
+  setImmediate(() => {
+    try {
+      esbuild.transformSync('', { loader: 'js' });
+    } catch {
+      // the first compile starts it
+    }
+    esbuild.transform('', { loader: 'js' }).catch(() => {});
+  });
+}
+
 function runSync(steps: Generator<TransformStep, string, string>): string {
   let step = steps.next();
   while (!step.done) {

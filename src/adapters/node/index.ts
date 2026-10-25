@@ -16,7 +16,7 @@ import { projectFromFiles } from '../../project.ts';
 import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticInstall, subProject } from './plan.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
-import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, type CompileKind } from './compile.ts';
+import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
 import { CompileCache } from './compile-cache.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
@@ -795,5 +795,8 @@ export const node: AdapterDescriptor = {
   serve,
   warmups,
   isWarm: (project) => installer.installed(project, extraDependencies(project)),
-  prepare: () => installer.prepare(),
+  prepare: () => {
+    installer.prepare();
+    warmCompiler();
+  },
 };
