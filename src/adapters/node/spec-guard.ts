@@ -65,19 +65,43 @@ export function assertRegistryManifest(manifest: { dependencies?: Record<string,
   checkOverrides(manifest.overrides, 'overrides');
 }
 
-/** A string that names a non-registry source (a protocol or a path): git, file, link, workspace, a URL. */
-function nonRegistrySource(value: string): boolean {
-  // Registry tarballs resolve to https URLs; everything else (git+…, file:, link:, a bare path) is a source.
-  if (/^https:\/\//.test(value)) return false;
+/**
+ * The origins a package may be fetched from: npm's configured registry, and the public registry as a
+ * default. A lockfile's `resolved` tarball URLs point at the registry that produced them; anything
+ * else is another host the install would reach.
+ */
+export function registryOrigins(): Set<string> {
+  const out = new Set<string>(['https://registry.npmjs.org']);
+  const reg = process.env.npm_config_registry;
+  if (reg) {
+    try {
+      out.add(new URL(reg).origin);
+    } catch {
+      // not a URL: the default stands
+    }
+  }
+  return out;
+}
+
+/** A `version`/`from` string that names a non-registry source (a protocol or a path): git, file, link, a URL. */
+function nonRegistryVersion(value: string): boolean {
   return /:\/\/|^(git\+|git:|file:|link:|workspace:|github:|gitlab:|bitbucket:|gist:|https?:|npm:)/.test(value) || value.startsWith('/') || /^\.\.?[/\\]/.test(value);
 }
 
+/** A `resolved` string that points anywhere but an allowed registry origin (another host, or a non-URL such as git+…/file:). */
+function resolvedOffRegistry(value: string, origins: Set<string>): boolean {
+  const url = URL.parse(value);
+  return !url || !origins.has(url.origin);
+}
+
 /**
- * Refuses a project lockfile that installs anything but registry packages: a `link` entry, a package
- * whose `resolved` is not an https registry tarball, or a git/file/path `version` or `from`. npm would
- * clone and prepare such an entry during the full install the package store falls back to.
+ * Refuses a lockfile that installs anything but registry packages: a `link` entry, a package whose
+ * `resolved` is not a tarball on an allowed registry origin, or a git/file/path `version` or `from`.
+ * npm would clone, fetch or prepare such an entry during the install the store falls back to (and
+ * `npm cache add` of an off-registry `resolved` fetches that host). Used for the project's own
+ * lockfile and, after resolution, for the tree npm resolved (its transitive dependencies).
  */
-export function assertRegistryLockfile(lockText: string): void {
+export function assertRegistryLockfile(lockText: string, origins: Set<string> = registryOrigins()): void {
   let lock: unknown;
   try {
     lock = JSON.parse(lockText);
@@ -90,11 +114,20 @@ export function assertRegistryLockfile(lockText: string): void {
   // npm lockfile v2/v3: the `packages` map (keyed by location).
   for (const [loc, entry] of Object.entries(l.packages ?? {})) {
     if (!entry || typeof entry !== 'object') continue;
-    const e = entry as { link?: unknown; resolved?: unknown; version?: unknown };
+    const e = entry as { link?: unknown; resolved?: unknown; version?: unknown } & Record<string, unknown>;
     const at = loc || '<root>';
     if (e.link === true) reject(at, 'link:');
-    if (typeof e.resolved === 'string' && e.resolved !== '' && nonRegistrySource(e.resolved)) reject(at, e.resolved);
-    if (typeof e.version === 'string' && nonRegistrySource(e.version)) reject(at, e.version);
+    if (typeof e.resolved === 'string' && e.resolved !== '' && resolvedOffRegistry(e.resolved, origins)) reject(at, e.resolved);
+    if (typeof e.version === 'string' && nonRegistryVersion(e.version)) reject(at, e.version);
+    // The dependency ranges each package declares: a git, directory or URL spec here is a transitive
+    // non-registry dependency (npm may leave it as an empty node the full install would then fetch).
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+      const deps = e[field];
+      if (!deps || typeof deps !== 'object') continue;
+      for (const [dep, spec] of Object.entries(deps as Record<string, unknown>)) {
+        if (typeof spec === 'string' && !isRegistrySpec(spec)) reject(`${at} → ${dep}`, spec);
+      }
+    }
   }
   // npm lockfile v1 (and the v2 back-compat tree): nested `dependencies`.
   const walk = (deps: Record<string, unknown> | undefined, path: string): void => {
@@ -102,8 +135,9 @@ export function assertRegistryLockfile(lockText: string): void {
       if (!entry || typeof entry !== 'object') continue;
       const e = entry as { resolved?: unknown; version?: unknown; from?: unknown; dependencies?: Record<string, unknown> };
       const at = path ? `${path}/${name}` : name;
-      for (const value of [e.resolved, e.version, e.from]) {
-        if (typeof value === 'string' && value !== '' && nonRegistrySource(value)) reject(at, value);
+      if (typeof e.resolved === 'string' && e.resolved !== '' && resolvedOffRegistry(e.resolved, origins)) reject(at, e.resolved);
+      for (const value of [e.version, e.from]) {
+        if (typeof value === 'string' && value !== '' && nonRegistryVersion(value)) reject(at, value);
       }
       walk(e.dependencies, at);
     }
