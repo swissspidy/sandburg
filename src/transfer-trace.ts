@@ -49,11 +49,19 @@ const nativeDebug = typeof console !== 'undefined' ? console.debug.bind(console)
 export function traceConsole(text: string): boolean {
   if (!text.startsWith(TRACE_MARK)) return false;
   try {
-    traceTransfer(JSON.parse(text.slice(TRACE_MARK.length)) as Transfer);
+    const t: unknown = JSON.parse(text.slice(TRACE_MARK.length));
+    // The page's console is the app's too: only a well-formed report is kept (the summary at exit formats each).
+    if (isTransfer(t)) traceTransfer(t);
   } catch {
     // not one of ours after all
   }
   return true;
+}
+
+function isTransfer(value: unknown): value is Transfer {
+  if (!value || typeof value !== 'object') return false;
+  const t = value as Record<string, unknown>;
+  return typeof t.hop === 'string' && typeof t.what === 'string' && typeof t.encoding === 'string' && Number.isFinite(t.bytes) && Number.isFinite(t.ms);
 }
 
 /** Install keys, cache keys and digests are elided so that transfers of the same kind group together. */
