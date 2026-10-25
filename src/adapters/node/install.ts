@@ -20,7 +20,7 @@ import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } 
 import type { Project } from '../../types.ts';
 import { NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
-import { installFromLockfile, installedPackages, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
+import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 
 /** --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds. */
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
@@ -505,11 +505,11 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
     for (const [binding] of missing) {
       if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
       await rm(join(nm, binding), { recursive: true, force: true });
-      await cp(join(sideNm, binding), join(nm, binding), { recursive: true });
+      await place(join(sideNm, binding), join(nm, binding));
       for (const dep of sidePackages) {
         if (dep in wanted) continue;
         const to = join(nm, binding, 'node_modules', dep);
-        if (!existsSyncSafe(join(to, 'package.json'))) await cp(join(sideNm, dep), to, { recursive: true });
+        if (!existsSyncSafe(join(to, 'package.json'))) await place(join(sideNm, dep), to);
       }
     }
     log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
@@ -649,12 +649,12 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
       const target = join(pkgDir, 'node_modules', build.wasm);
       if (side && !existsSyncSafe(join(target, 'package.json'))) {
         const sideNm = join(await side, 'node_modules');
-        await cp(join(sideNm, build.wasm), target, { recursive: true });
+        await place(join(sideNm, build.wasm), target);
         // Its own dependencies (lightningcss-wasm's napi-wasm) go inside it.
         for (const entry of await readdir(sideNm, { withFileTypes: true })) {
           if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
           const names = entry.name.startsWith('@') ? (await readdir(join(sideNm, entry.name))).map((n) => `${entry.name}/${n}`) : [entry.name];
-          for (const dep of names) if (dep !== build.wasm) await cp(join(sideNm, dep), join(target, 'node_modules', dep), { recursive: true });
+          for (const dep of names) if (dep !== build.wasm) await place(join(sideNm, dep), join(target, 'node_modules', dep));
         }
       }
       await replaceFile(join(pkgDir, build.file), build.shim);
@@ -697,7 +697,21 @@ async function placeNextSwcWasm(dir: string): Promise<void> {
   if (!(await access(from).then(() => true, () => false)) || !(await access(next).then(() => true, () => false))) return;
   const to = join(dir, NEXT_SWC_WASM.to);
   await rm(to, { recursive: true, force: true });
-  await cp(from, to, { recursive: true });
+  await place(from, to);
+}
+
+/**
+ * A package directory of a side install (or of this install) put in place: its files hard-linked,
+ * as the store links them (a copy each was ~0.5 s of an Astro app's install), or copied where that
+ * fails. Installs replace their files, never write them in place (replaceFile), so links are safe.
+ */
+async function place(from: string, to: string): Promise<void> {
+  try {
+    linkTree(from, to);
+  } catch {
+    await rm(to, { recursive: true, force: true });
+    await cp(from, to, { recursive: true });
+  }
 }
 
 async function buildIndex(dir: string): Promise<FileIndex> {
