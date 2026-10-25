@@ -1,4 +1,4 @@
-# ADR NNNN: The runtime as a module from Cache Storage: V8's code for every runtime of a run but the first
+# ADR 0049: The runtime as a module from Cache Storage: V8's code for every runtime of a run but the first
 
 - Status: Accepted
 - Date: 2026-10-25
