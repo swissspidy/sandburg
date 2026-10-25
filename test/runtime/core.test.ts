@@ -914,7 +914,7 @@ test('crypto: the runtime’s own hashes and HMACs give what Node gives', async 
       const h = crypto.createHash(alg).update(data.subarray(0, 100));
       const c = h.copy();
       out.push(h.update('tail').digest('base64'), c.digest('base64url'));
-      for (const key of ['', 'k', 'x'.repeat(64), 'y'.repeat(129), Buffer.from([1, 2, 3])]) out.push(crypto.createHmac(alg, key).update(data.subarray(0, 200)).update('é', 'utf8').digest('hex'));
+      for (const key of ['', 'k', 'x'.repeat(64), 'y'.repeat(129), Buffer.from([1, 2, 3]), new Uint8Array([4, 5, 6]).buffer, new DataView(new Uint8Array([7, 8]).buffer)]) out.push(crypto.createHmac(alg, key).update(data.subarray(0, 200)).update('é', 'utf8').digest('hex'));
       out.push(crypto.createHash(alg).update('😀 '.repeat(50)).digest('latin1'), crypto.createHash(alg).update('616263', 'hex').digest('nope').length);
       out.push(crypto.hash ? crypto.hash(alg, 'abc') : null);
     }

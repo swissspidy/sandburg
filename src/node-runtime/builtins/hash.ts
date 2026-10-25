@@ -449,10 +449,11 @@ export class Hmac extends Transform {
   }
 }
 
-/** An HMAC key: a string (UTF-8), bytes, or a secret KeyObject (its export()). */
+/** An HMAC key: a string (UTF-8), bytes (a view or an ArrayBuffer), or a secret KeyObject (its export()). */
 function keyBytes(key: unknown): Uint8Array {
   if (key && typeof key === 'object' && typeof (key as { export?: unknown }).export === 'function' && (key as { type?: unknown }).type === 'secret') {
     return toBytes((key as { export(): unknown }).export(), undefined, 'key');
   }
+  if (key instanceof ArrayBuffer) return new Uint8Array(key);
   return toBytes(key, undefined, 'key');
 }
