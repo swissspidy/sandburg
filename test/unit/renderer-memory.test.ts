@@ -62,6 +62,31 @@ test('RendererMemory looks again until one renderer fits, then reads only that o
   assert.equal(await memory.locate(), true);
 });
 
+test('RendererMemory keeps the renderers that fitted every look: identical tabs are told apart over time', async () => {
+  // Three busy renderers of apps that started together. No single look tells the page's (2) apart.
+  const looks = [
+    { page: 1.0, before: [[1, 0.98], [2, 0.99], [3, 1.5]], after: [[1, 1.05], [2, 1.06], [3, 1.6]] },
+    { page: 2.0, before: [[1, 2.5], [2, 1.99], [3, 1.98]], after: [[1, 2.6], [2, 2.02], [3, 2.05]] },
+  ];
+  let look = 0;
+  let phase: 'before' | 'after' = 'before';
+  const memory = new RendererMemory({
+    pageCpu: async () => looks[look].page,
+    renderers: async () => {
+      const at = looks[look][phase];
+      phase = phase === 'before' ? 'after' : 'before';
+      return at.map(([pid, cpuSeconds]) => ({ pid, cpuSeconds }));
+    },
+    memory: (pid) => pid * 100,
+  });
+  assert.equal(matchRenderer(looks[0].page, looks[0].before.map(([pid, cpuSeconds]) => ({ pid, cpuSeconds })), looks[0].after.map(([pid, cpuSeconds]) => ({ pid, cpuSeconds }))), null);
+  assert.equal(matchRenderer(looks[1].page, looks[1].before.map(([pid, cpuSeconds]) => ({ pid, cpuSeconds })), looks[1].after.map(([pid, cpuSeconds]) => ({ pid, cpuSeconds }))), null);
+  assert.equal(await memory.locate(), false, '1 and 2 fit');
+  look = 1;
+  assert.equal(await memory.locate(), true, '2 and 3 fit now: only 2 fitted both');
+  assert.equal(memory.used(), 200);
+});
+
 test('RendererMemory reads nothing when the page or the browser cannot say', async () => {
   const memory = new RendererMemory({
     pageCpu: async () => {
