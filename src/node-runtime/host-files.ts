@@ -5,6 +5,7 @@
  * The preload bundle and its shared copy stay in worker.ts, which init sets up.
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
+import { traceTransfer } from '../transfer-trace.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
 let installedRequests = 0;
@@ -46,7 +47,9 @@ export function prefetchedBody(url: string): Uint8Array | null {
   if (!sab) return null;
   delete prefetched[url];
   const state = new Int32Array(sab, 0, 2);
+  const t0 = performance.now();
   if (Atomics.wait(state, 0, 0, 60_000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
+  traceTransfer({ hop: 'runtime waits for prefetch', what: url, bytes: Atomics.load(state, 1), encoding: 'shared', ms: performance.now() - t0 });
   return new Uint8Array(sab, 8, Atomics.load(state, 1));
 }
 
@@ -108,9 +111,15 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
       // A bundle in shared memory (the page downloaded it) is read there.
       own = sharedFile(key);
     }
-    if (own) return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
+    if (own) {
+      noteRead(key);
+      return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
+    }
     const hit = preloaded?.get(key);
-    if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+    if (hit) {
+      noteRead(key);
+      return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+    }
     const side = downloadedOnSide(key);
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
     const early = sentAhead(key, url);
@@ -119,6 +128,34 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
     if (res) return { status: res.status, body: binary ? res.body : new TextDecoder().decode(res.body) };
   }
   return requestSync(url, binary);
+}
+
+/**
+ * The preload bundle's files this runtime read, told to the host in batches over the file channel:
+ * a bundle holds every file runs of the install ever loaded (and what was predicted for its first
+ * run), and a warm next-app-router run read 16 of its 43 MB; the host's next bundle for the install
+ * holds what runs read (see markRead in adapters/node/index.ts).
+ */
+const reads = new Set<string>();
+let unreported: string[] = [];
+let reportTimer: ReturnType<typeof setTimeout> | null = null;
+/** Files per report: a report is one frame of the file channel (MAX_FRAME, 64 KB). */
+const REPORT_BATCH = 100;
+
+function noteRead(key: string): void {
+  if (!channel || !installKey || reads.has(key)) return;
+  reads.add(key);
+  unreported.push(key);
+  if (unreported.length >= REPORT_BATCH) reportReads();
+  else reportTimer ??= nativeSetTimeout(reportReads, 500);
+}
+
+function reportReads(): void {
+  if (reportTimer) clearTimeout(reportTimer);
+  reportTimer = null;
+  const keys = unreported;
+  unreported = [];
+  if (keys.length) channel?.post({ note: `${base}/nm/${installKey}/read?files=${encodeURIComponent(keys.join('\n'))}` });
 }
 
 /**
@@ -219,7 +256,9 @@ export function requestSync(url: string, binary: boolean): { status: number; bod
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
+  const t0 = performance.now();
   xhr.send();
+  traceTransfer({ hop: 'host→runtime sync xhr', what: url, bytes: binary ? ((xhr.response as ArrayBuffer | null)?.byteLength ?? 0) : xhr.responseText.length, encoding: binary ? 'binary' : 'text', ms: performance.now() - t0 });
   return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
 }
 
@@ -254,12 +293,13 @@ function open(url, ready) {
     const shared = asked.get(head.getUint32(0, true));
     if (!shared) return;
     asked.delete(head.getUint32(0, true));
+    if (shared instanceof MessagePort) return shared.postMessage({ status: head.getUint32(4, true), body: new Uint8Array(data, 8) });
     settle(shared, head.getUint32(4, true), new Uint8Array(data, 8));
   };
   socket.onclose = () => {
     Atomics.store(ready, 0, 2);
     Atomics.notify(ready, 0);
-    for (const shared of asked.values()) settle(shared, 0, null);
+    for (const shared of asked.values()) shared instanceof MessagePort ? shared.postMessage({ status: 0 }) : settle(shared, 0, null);
     asked.clear();
   };
 }
@@ -272,6 +312,19 @@ const handle = async ({ data }) => {
     const id = ++ids;
     asked.set(id, data.shared);
     return socket.send(id + ' ' + data.get);
+  }
+  // A POST (a binary frame: id, the path's length, the path, the body), answered on the port given.
+  if (data.post) {
+    if (!socket || socket.readyState !== 1) return data.reply.postMessage({ status: 0 });
+    const id = ++ids;
+    asked.set(id, data.reply);
+    const path = new TextEncoder().encode(data.post);
+    const frame = new Uint8Array(8 + path.length + data.body.length);
+    new DataView(frame.buffer).setUint32(0, id, true);
+    new DataView(frame.buffer).setUint32(4, path.length, true);
+    frame.set(path, 8);
+    frame.set(data.body, 8 + path.length);
+    return socket.send(frame);
   }
   const state = new Int32Array(data.shared, 0, 2);
   if (data.hello) return Atomics.store(state, 1, 1);
@@ -345,6 +398,24 @@ export function shareChannel(): { port: MessagePort; ready: SharedArrayBuffer } 
 
 export function useChannel(given: { port: MessagePort; ready: SharedArrayBuffer }): void {
   channel = { post: (m, t = []) => nativePostMessage.call(given.port, m, t), ready: given.ready, mailbox: null };
+}
+
+/**
+ * A POST over the channel, answered asynchronously: the status and body, or null (no channel, or
+ * status 0: a path or body the channel does not take) to use HTTP.
+ */
+export function postViaChannel(url: string, body: Uint8Array): Promise<{ status: number; body: Uint8Array } | null> | null {
+  const c = channel;
+  if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
+  const pair = new NativeMessageChannel();
+  const answer = new Promise<{ status: number; body: Uint8Array } | null>((resolve) => {
+    pair.port1.onmessage = ({ data }: MessageEvent<{ status: number; body?: Uint8Array }>) => {
+      pair.port1.close();
+      resolve(data.status && data.body ? { status: data.status, body: data.body } : null);
+    };
+  });
+  c.post({ post: url, body, reply: pair.port2 }, [pair.port2]);
+  return answer;
 }
 
 /** A GET over the channel: the status and a copy of the body (decoders do not read shared memory), or null to use HTTP. */

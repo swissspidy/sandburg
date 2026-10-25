@@ -25,3 +25,6 @@ declare module 'sha.js/hash.js' {
   const Hash: { prototype: { update(data: unknown, enc?: string): unknown } };
   export default Hash;
 }
+
+/** The host's esbuild version (bundle.ts defines it). */
+declare const __SANDBURG_ESBUILD__: string;

@@ -39,10 +39,14 @@ test('installed files: the preload bundle, shared with threads, and single files
   assert.equal(out.stdout, 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n');
   const nm = `/__sandburg/nm/${INSTALL_KEY}`;
   // The thread reads the bundled package in its parent's shared memory, and asks for the rest
-  // through its parent's channel; nothing installed is asked for over HTTP but the bundle.
+  // through its parent's channel; nothing installed is asked for over HTTP but the bundle. Each
+  // runtime tells the host which of the bundle's files it read (see noteRead).
+  const read = `ws ${nm}/read?files=${encodeURIComponent('f/node_modules/bundled/package.json\nt/node_modules/bundled/index.js')}`;
   assert.deepEqual(h.asked.filter((a) => a.includes('/nm/')).sort(), [
     `ws ${nm}/f/node_modules/single/package.json?ahead=1`,
     `ws ${nm}/f/node_modules/single/package.json?ahead=1`,
+    read,
+    read,
     `ws ${nm}/t/node_modules/single/index.js?ahead=1`,
     `ws ${nm}/t/node_modules/single/index.js?ahead=1`,
   ]);

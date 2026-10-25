@@ -8,6 +8,7 @@
 import { Buffer } from 'buffer';
 import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
+import { bundleCache, listCache } from './cache-tree.ts';
 import type { FromWorker, NetMessage, ToParent, ThreadInit, ToWorker, SharedPreload } from './messages.ts';
 import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, warmRuntimes, type ThreadHost } from './threads.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
@@ -24,8 +25,10 @@ import { createModuleSystem } from './loader.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
+import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
+import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
-import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile } from './host-files.ts';
+import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested } from './peers.ts';
 
@@ -231,6 +234,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
   preloadUrl = msg.preload ?? null;
+  if (msg.trace) (globalThis as { __sandburgTraceTransfers?: boolean }).__sandburgTraceTransfers = true;
   compileCache = msg.compileCache ?? null;
   projectRoot = msg.cwd;
   thread = msg.thread ?? null;
@@ -491,6 +495,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // Dev server plugins look their compiles up here (see transform-cache.ts); not enumerable.
   transformCache = createTransformCache(vfs, () => (proc.cwd as () => string)());
   Object.defineProperty(g, TRANSFORM_CACHE, { value: transformCache });
+  Object.defineProperty(g, CONFIG_BUNDLES, { value: createConfigBundles(vfs, transformCache, () => (proc.cwd as () => string)()) });
+  // esbuild's transforms on the host's native esbuild (see native-transform.ts), when there is a host.
+  if (!pageCompiler && !pack) Object.defineProperty(g, NATIVE_TRANSFORM, { value: createNativeTransform({ base, hostVersion: __SANDBURG_ESBUILD__, fetch: globalThis.fetch.bind(globalThis), post: postViaChannel, pending: pendingWork }) });
 
   // Uncaught errors and rejections go through process events, as in Node.
   self.addEventListener('error', (e) => {
@@ -730,56 +737,34 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
-  else if (msg.type === 'read-tree') {
-    // Before the caches are read to be kept: compiles this run did not use go (see transform-cache.ts).
+  else if (msg.type === 'read-cache') {
+    // As read-tree: compiles this run did not use go first, and an unchanged cache is not read.
     transformCache?.prune();
-    // Nothing changed under the tracked directories since the program started: no need to read them.
-    if (msg.ifChanged && !msg.match && vfs.trackedChanged() === false) post({ type: 'tree', id: msg.id, files: {}, unchanged: true });
+    if (msg.ifChanged && vfs.trackedChanged() === false) post({ type: 'cache', id: msg.id, files: [], bundle: null, unchanged: true });
     else {
-      const files: Record<string, string | { base64: string }> = {};
-      const utf8 = new TextDecoder('utf-8', { fatal: true });
-      const walk = (dir: string) => {
-        for (const name of vfs.readdir(dir)) {
-          const path = `${dir}/${name}`;
-          const st = vfs.stat(path);
-          if (st.kind === 'dir') walk(path);
-          else if (st.size < 64 << 20) {
-            const bytes = vfs.read(path);
-            let text: string | null = null;
-            try {
-              text = utf8.decode(bytes);
-            } catch {
-              // binary (webpack's cache packs)
-            }
-            files[path.slice(projectRoot.length + 1)] = text ?? { base64: Buffer.from(bytes).toString('base64') };
-          }
-        }
-      };
-      for (const dir of msg.dirs) {
-        try {
-          walk(`${projectRoot}/${dir}`);
-        } catch {
-          // not there
-        }
-      }
-      if (msg.match) {
-        const pattern = new RegExp(msg.match);
-        const find = (dir: string) => {
-          for (const name of vfs.readdir(dir)) {
-            const path = `${dir}/${name}`;
-            const st = vfs.stat(path);
-            if (st.kind === 'dir') {
-              if (name !== 'node_modules' && !name.startsWith('.')) find(path);
-            } else if (pattern.test(path.slice(projectRoot.length + 1))) {
-              // Whole, whatever the size: a database without its journal would lose committed data.
-              files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
-            }
-          }
-        };
-        find(projectRoot);
-      }
-      post({ type: 'tree', id: msg.id, files });
+      const files = listCache(vfs, projectRoot, msg.dirs);
+      const bundle = msg.bytes ? bundleCache(vfs, projectRoot, files) : null;
+      post({ type: 'cache', id: msg.id, files, bundle }, bundle ? [bundle] : []);
     }
+  }
+  else if (msg.type === 'read-tree') {
+    // The project's files whose path matches, outside node_modules and dot directories.
+    const files: Record<string, { base64: string }> = {};
+    const pattern = new RegExp(msg.match);
+    const find = (dir: string) => {
+      for (const name of vfs.readdir(dir)) {
+        const path = `${dir}/${name}`;
+        const st = vfs.stat(path);
+        if (st.kind === 'dir') {
+          if (name !== 'node_modules' && !name.startsWith('.')) find(path);
+        } else if (pattern.test(path.slice(projectRoot.length + 1))) {
+          // Whole, whatever the size: a database without its journal would lose committed data.
+          files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
+        }
+      }
+    };
+    find(projectRoot);
+    post({ type: 'tree', id: msg.id, files });
   }
     else if (msg.type === 'write-file') {
     const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;

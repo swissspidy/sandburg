@@ -155,7 +155,10 @@ test('a run stores its own dev-server cache and compiles, with the capability it
   // The app's cache, beside its compiles (a Vite seed run may have stored the seed of its packages too).
   const cache = added.find((f) => /^[0-9a-f]{24}\.json$/.test(f) && added.some((c) => c.startsWith('compiled-') && c.endsWith(`-${f.slice(0, 24)}.bin`)));
   assert.ok(cache, added.join('\n'));
-  assert.ok(Object.keys(JSON.parse(await readFile(`${dir}/${cache}`, 'utf8'))).includes('node_modules/.vite/deps/_metadata.json'));
+  const kept = Object.keys(JSON.parse(await readFile(`${dir}/${cache}`, 'utf8')));
+  assert.ok(kept.includes('node_modules/.vite/deps/_metadata.json'));
+  // Vite's bundle of vite.config.ts, for the project's next run (node-runtime/config-bundles.ts).
+  assert.ok(kept.some((f) => f.startsWith('node_modules/.vite/sandburg-transforms/vite-config/')), kept.join('\n'));
 });
 
 test('importing an undeclared package is an app bug, not a runtime limitation', async () => {
