@@ -196,7 +196,9 @@ const typescript7 = (name: string, source: string) =>
       }),
       'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'nodenext', strict: true, noEmit: true }, include: ['*.ts'] }),
       'greeting.ts': source,
-      'server.js': "import { createServer } from 'node:http';\ncreateServer((q, s) => s.end('<h1>type-checked</h1>')).listen(3000);\n",
+      // A page with its type, as dev servers send it: without one, the runtime waits up to 60 s for a
+      // port that answers with HTML before it takes the first (pagePort).
+      'server.js': "import { createServer } from 'node:http';\ncreateServer((q, s) => s.writeHead(200, { 'content-type': 'text/html' }).end('<h1>type-checked</h1>')).listen(3000);\n",
     },
     { name, path: name },
   );
