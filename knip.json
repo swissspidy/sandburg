@@ -18,7 +18,8 @@
     "src/adapters/node/sw.js",
     "src/adapters/node/ws-shim.js",
     "src/page-checks/runtime.ts",
-    "src/page-checks/dom-shim.ts"
+    "src/page-checks/dom-shim.ts",
+    "lint/*.ts"
   ],
   "project": [
     "src/**/*.{ts,js,cjs}",
@@ -27,7 +28,8 @@
     "test/**/*.ts",
     "evals/**/*.ts",
     "integrations/harbor/*.ts",
-    "bin/*.js"
+    "bin/*.js",
+    "lint/*.ts"
   ],
   "ignoreDependencies": [
     "assert",

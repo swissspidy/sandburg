@@ -469,6 +469,7 @@ function packageType(installDir: string, rel: string, index: FileIndex): Promise
       }
       return packageType(installDir, dir, index);
     })();
+    // oxlint-disable-next-line sandburg/cache-key-digest -- installDir is the install's, named by its lockfile's digest
     typeCache.set(id, type);
   }
   return type;

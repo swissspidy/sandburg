@@ -96,7 +96,9 @@
           }
         ]
       }
-    ]
+    ],
+    "sandburg/cache-key-digest": "error",
+    "sandburg/one-host-server": "error"
   },
   "overrides": [
     {
@@ -185,6 +187,52 @@
       "rules": {
         "eslint/no-restricted-imports": "off"
       }
+    },
+    {
+      "files": [
+        "src/node-runtime/**",
+        "src/host/**",
+        "src/page-checks/**",
+        "src/adapters/node/browser.ts",
+        "src/adapters/node/process.ts",
+        "src/adapters/node/compile-worker.ts",
+        "src/adapters/node/warmup.ts",
+        "src/adapters/node/sw.js",
+        "src/adapters/node/ws-shim.js",
+        "scripts/**",
+        "test/**",
+        "pages/**",
+        "evals/**",
+        "lint/**",
+        "integrations/**"
+      ],
+      "rules": {
+        "sandburg/cache-key-digest": "off",
+        "sandburg/one-host-server": "off"
+      }
+    },
+    {
+      "files": [
+        "src/orchestrator/host-server.ts",
+        "src/orchestrator/egress-proxy.ts",
+        "src/reference/docker.ts"
+      ],
+      "rules": {
+        "sandburg/one-host-server": "off"
+      }
+    },
+    {
+      "files": [
+        "src/adapters/node/install.ts",
+        "src/adapters/node/install-rules.ts",
+        "src/adapters/node/package-store.ts"
+      ],
+      "rules": {
+        "sandburg/no-write-in-place": "error"
+      }
     }
+  ],
+  "jsPlugins": [
+    "./lint/sandburg-plugin.ts"
   ]
 }
