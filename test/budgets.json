@@ -4,7 +4,7 @@
   "e2e/browser-install": 75,
   "e2e/frameworks": 120,
   "e2e/fullstack": 90,
-  "e2e/node": 240,
+  "e2e/node": 120,
   "e2e/page-checks": 45,
   "e2e/reference": 200,
   "e2e/run": 120,
