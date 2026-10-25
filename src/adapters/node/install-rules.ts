@@ -456,3 +456,33 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
   },
 ];
 
+/**
+ * The emnapi a tree of WebAssembly bindings is to be resolved again with, given each
+ * @napi-rs/wasm-runtime in it (its peer range for @emnapi/core) and the @emnapi/core it resolves.
+ * Since 1.2.6 the runtime bundles emnapi plugins that use @emnapi/core's private fields, and takes
+ * only the exact 2.x prerelease they were built against (its peer range: "^1.7.1 || 2.0.0-beta.2").
+ * Bindings pin the emnapi they were built with (rolldown 1.2.15: 2.0.0-alpha.5) and take the
+ * runtime by range, so a new runtime arrives beside an emnapi it does not load with ("Cannot set
+ * properties of undefined (setting 'initWorker')"). The bindings' WebAssembly works with the newer
+ * emnapi (rolldown's parses and bundles), so @emnapi/core and @emnapi/runtime are overridden to it.
+ * null: nothing to align (no runtime, no exact version, an emnapi 1.x, or runtimes that want
+ * different ones).
+ */
+export function emnapiToAlign(runtimes: { peer?: string; core?: string }[]): string | null {
+  const needed = new Set<string>();
+  let mismatch = false;
+  for (const { peer, core } of runtimes) {
+    const exact = (peer ?? '')
+      .split('||')
+      .map((alt) => alt.trim())
+      .find((alt) => /^2\.\d+\.\d+-[\w.]+$/.test(alt));
+    if (!exact) continue;
+    needed.add(exact);
+    // emnapi 1.x ignores the plugins, and loads with any runtime (satteri's binding pins 1.11.1).
+    if (core !== exact && core?.startsWith('2.')) mismatch = true;
+  }
+  return mismatch && needed.size === 1 ? [...needed][0] : null;
+}
+
+/** npm overrides that give a tree of WebAssembly bindings the emnapi its runtime needs (emnapiToAlign). */
+export const emnapiOverrides = (version: string) => ({ '@emnapi/core': version, '@emnapi/runtime': version });
