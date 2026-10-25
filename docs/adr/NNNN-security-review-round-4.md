@@ -63,6 +63,12 @@ and the host must hold against, each of these:
   reaches that host; and npm's `git` binary is pointed at a path that does not exist, so a transitive
   git dependency cannot be cloned even on the CLI fallback path.
 
+- **A sandbox's file channels are bounded** (`host-server.ts`). A sandbox's pages open a file channel
+  per runtime helper; a per-sandbox cap (256, well above what any run opens) keeps one sandbox from
+  opening enough to exhaust the host's file descriptors and starve other runs in the same process.
+  Further upgrades get a 503, and a slot is released when a connection ends (a hijacked upgrade socket
+  signals the client's disconnect with `end`, so the release listens for `end` as well as `close`).
+
 - **The host's app-driven parsers are fuzzed** (`test/unit/parser-fuzz.test.ts`). The file channel's
   WebSocket frame reader runs in the `upgrade` handler's `data` listener, outside any try/catch, so a
   throw there would be an uncaught exception that ends the host process (the ADR 0040 F1 class); the
@@ -76,6 +82,7 @@ and the host must hold against, each of these:
 |---|---|---|
 | The host installs registry packages only (no git/dir/URL/file prepare on the host) | `spec-guard.ts`, `install.ts`, `resolver.ts` | `unit/spec-guard` (the allowlist, manifest, overrides, v1/v3 lockfiles, registry-host resolved URLs), `unit/install-specs` (the Installer refuses git/file/URL deps and a non-registry lockfile, writing nothing), `unit/install-transitive` (a registry package's off-registry-tarball dep refused during resolution with no request to that host; its file: dep refused by the resolved-tree check; resolved URLs off the registry host refused) |
 | The file channel frame reader never crashes the host | `host-socket.ts` `readFrames` | `unit/parser-fuzz` (mutation fuzzing across chunk boundaries), `unit/host-socket` |
+| One sandbox cannot exhaust the host's file descriptors through the file channel | `host-server.ts` (per-sandbox cap) | `unit/host-server` (a sandbox refused past its bound, a slot freed on close, another sandbox unaffected) |
 | CONNECT targets parse to a bracketless host and a valid port, or nothing | `egress-proxy.ts` `parseConnectTarget` | `unit/parser-fuzz` (mutation fuzzing of the target), `unit/egress-proxy` |
 
 The round-3 boundary table (ADR 0043) stands; this adds the installer's spec allowlist to it and
@@ -107,13 +114,7 @@ Each has a fast fixed-seed unit test and was run longer by hand while writing it
   key) can enlarge that install's preload bundle, and the per-package list can make an install preload
   more of *its own* files. Integrity holds in both cases (the files are always the install's own); the
   only cost is a larger bundle.
-- **Compile CPU**: **accepted** (as ADR 0040). The host's compiles are bounded in memory by input size
-  (ADR 0039) but not in rate, so a page can keep the shared host busy; in a batch this is felt by
-  sibling runs in the same process. It is proportional, not asymmetric: the compile route's regex
-  passes were checked and none backtracks catastrophically (each nested quantifier's branches are
-  mutually exclusive by first character, so matching is linear), so there is no small-input CPU bomb,
-  and the input is already bounded (`SOURCE_BODY_MAX`, 32 MB). An asynchronous transform was tried in
-  ADR 0030 for no gain. Fairness across sandboxes in one process remains future work.
+- **Compile CPU**: **accepted** (as ADR 0040; see "Decisions on resource fairness" for the reasoning).
 - **esbuild error text** (the compile route's 400 body): **accepted.** The message is esbuild's, about
   the app's own code and the app-provided `path`; it names no host path.
 
@@ -129,6 +130,36 @@ unpacking keeps entries inside the package (ADR 0040
 F5) and verifies integrity before a package enters the store; bin links are normalized to stay inside
 the package (ADR 0032, 0043). Case-insensitive name clashes and `exports`/symlink handling were
 reviewed and are npm's own, over integrity-checked registry tarballs.
+
+## Other surfaces reviewed
+
+No change was needed in these; they are recorded so the next round need not re-derive them.
+
+- **The service-worker shim (`sw.js`) and the WebSocket shim (`ws-shim.js`)** run on the sandbox
+  origin, same-origin as the app, and add no host-facing parser: app requests they forward reach the
+  host only through the host server, which applies its own checks. App responses are marked
+  `cross-origin-resource-policy: same-origin`.
+- **The dev-cache and seed routes under concurrent runs.** A write needs the run's own token, bound to
+  its key and sandbox and spent once (ADR 0040). Two runs of the same versions racing for a seed each
+  hold a token for their own sandbox only; the seed run writes the shared cache, and a same-key app
+  gets a read, not a write. A run racing itself only overwrites its own cache.
+- **Tarball contents.** The tar reader keeps only regular files, so a symlink, hardlink or device
+  entry in a package tarball is dropped (no symlink escape); entries that would land outside the
+  package are dropped (ADR 0040 F5). Bin links are normalized so a name or target cannot point outside
+  the package (ADR 0032, 0043). Case-insensitive name clashes are not a concern on the Linux host, and
+  the store is content-addressed by integrity. A package's `exports` cannot widen what the host serves:
+  the file routes require a `node_modules/` prefix and reject `..`.
+
+## Decisions on resource fairness
+
+- **Per-sandbox compile fairness: accepted.** The host's `/__sandburg/compile` runs esbuild
+  synchronously on the main thread, so in a batch one sandbox's large or frequent compiles can delay
+  siblings in the same process. It is bounded in memory by input size (ADR 0039) and in input size
+  (`SOURCE_BODY_MAX`, 32 MB), and it is proportional, not asymmetric: the compile route's regex passes
+  were checked and none backtracks catastrophically (each nested quantifier's branches are mutually
+  exclusive by first character). The only true fix is compiling off the main thread, which ADR 0030
+  measured as no gain; revisiting it is a performance task, not a boundary fix, so it is left as future
+  work rather than changed here.
 
 ## Consequences
 
