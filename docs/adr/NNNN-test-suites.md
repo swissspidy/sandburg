@@ -14,9 +14,9 @@ What the suites took (all passing):
 
 | Suite | Local, cold (empty `.sandburg`, fixtures not in `~/.npm`) | Local, warm (median of 5) | CI on main (run 40136346513, test step) |
 |---|---:|---:|---:|
-| e2e/node | 151 s | | 107 s |
-| e2e/vite-frameworks | 154 s | | 100 s |
-| e2e/angular | 102 s | | 62 s |
+| e2e/node | 151 s | 108 s (3 runs); 46 s after this ADR | 107 s |
+| e2e/vite-frameworks | 154 s | 44.7 s (3 runs) | 100 s |
+| e2e/angular | 102 s | 35.0 s (3 runs) | 62 s |
 | e2e/browser-install | 74 s | | 34 s |
 | e2e/frameworks | 58 s | 38.7 s | 56 s |
 | e2e/fullstack | 55 s | 27.9 s | 41 s |
@@ -41,6 +41,11 @@ when nothing goes wrong. What went wrong, and what the suites lacked:
   missing or broken Chromium hung the job, with no output, until its 45-minute timeout.
 - **No time was recorded per suite or test**, so a suite that got slower showed only when it hit the
   timeout.
+- **Most of the node suite was one test waiting out a 60 s timeout.** "TypeScript 7 type-checks a
+  project in the runtime" took 62 s in every run, warm or cold (start phase 61.9-62.2 s): its dev script
+  is `tsc --noEmit -p . && node server.js`, and its server answered without a content-type. For a dev
+  script the runtime's shell runs, the host looks for the port that answers `GET /` with HTML
+  (`pagePort`) and, finding none, waits 60 s without a new port before it takes the first.
 - **The unit suite's critical path was one test waiting out a 5 s timeout** in real time
   (thread-vfs: "a thread whose parent is blocked answers from its snapshot after all").
 - **The host server's checks had no test of their own.** The e2e test of another sandbox's script
@@ -59,6 +64,8 @@ when nothing goes wrong. What went wrong, and what the suites lacked:
   it does not start (runtime, pack and e2e jobs).
 - **The batch suite opens everything inside the `try` that closes it**: a browser that does not
   launch fails its tests in 1.2 s instead of hanging the file.
+- **The TypeScript 7 test's server sends `content-type: text/html`**, as dev servers do: 62.5 s →
+  2.4 s; what it checks is unchanged.
 - **The blocked-parent wait is an argument** of `RemoteVfs`/`ThreadVfs` (`PARENT_BLOCKED_MS`, 5 s,
   unless given; the runtime gives none); the unit test gives 1 s.
 - **The control run of the dead-proxy test waits until the canary is reached** (at most 5 s) instead
@@ -133,6 +140,10 @@ when nothing goes wrong. What went wrong, and what the suites lacked:
 - **Splitting the slowest suites across jobs.** `node --test --test-shard` splits by file, and node and
   vite-frameworks are one file each (107 s and 100 s in CI); splitting them by test name would save
   ~50 s of a ~3 minute run and make the matrix harder to keep right.
+- **An app whose page has no content-type, started by a compound dev script, waits 60 s** (for the
+  runtime's owners, not done here): `echo hi && node server.js` with `s.end('<h1>…</h1>')` starts in
+  61.5 s, `node server.js` alone at once. Browsers sniff such a page as HTML; `pagePort` could too
+  (a body that starts with `<`), or take a lone port sooner.
 - **Shorter app-bug tests.** The slowest e2e tests besides installs are the app-bug cases (a TSX,
   Svelte or Vue syntax error, an undeclared import, SCSS without a preprocessor; ~10 s each): the
   ready phase gives an app that logged a console error 8 s (`CONSOLE_GRACE_MS`) to render anyway. A
