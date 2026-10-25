@@ -64,7 +64,8 @@ jobs:
       # The runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
       # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror.
       - run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)
-      - run: npm run test:pack
+      # npm run test:pack, with each file's time in the job summary.
+      - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/pack/*.test.ts
 
   e2e:
     name: E2E (${{ matrix.suite }})

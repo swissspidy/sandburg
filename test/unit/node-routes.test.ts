@@ -5,7 +5,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HostRequest, HostResponse } from '../../src/types.ts';
@@ -28,7 +28,13 @@ before(async () => {
   await symlink(join(root, 'host-secret.txt'), join(install, 'node_modules', 'pkg', 'link.json'));
   ({ serve, cacheEntries } = await import('../../src/adapters/node/index.ts'));
 });
-after(() => rm(root, { recursive: true, force: true }));
+after(async () => {
+  // The first test's served file is recorded in the install's preload list, written 2 s later:
+  // wait for it, so that it cannot make the directory again once it is removed.
+  const list = join(root, 'dev-cache', `preload-${KEY}.json`);
+  for (let i = 0; i < 40 && !(await access(list).then(() => true, () => false)); i++) await new Promise((r) => setTimeout(r, 100));
+  await rm(root, { recursive: true, force: true });
+});
 
 function req(path: string, method = 'GET', body = ''): HostRequest {
   return { method, path, query: new URLSearchParams(), body: async () => Buffer.from(body) };
@@ -67,7 +73,8 @@ test('a cache is stored only under a key the host issued, and read only when han
   // A GET stores nothing either.
   assert.equal(await serve(req(`/__sandburg/dev-cache/${KEY}`, 'GET')), null);
   const devCache = join(root, 'dev-cache');
-  assert.deepEqual(await readdir(devCache).catch(() => []), []);
+  const stored = await readdir(devCache).catch(() => [] as string[]);
+  for (const key of [KEY, OTHER]) assert.ok(!stored.some((f) => f.startsWith(key)), `${key}: ${stored}`);
 
   // A cache on disk (an earlier run's, or one put there) is read only for a run it was handed to.
   await mkdir(devCache, { recursive: true });
