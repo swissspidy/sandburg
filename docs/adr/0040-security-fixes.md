@@ -1,4 +1,4 @@
-# ADR NNNN: Security fixes: the egress proxy's parser, cache writes, request bodies, lockfile locations, errors
+# ADR 0040: Security fixes: the egress proxy's parser, cache writes, request bodies, lockfile locations, errors
 
 - Status: Accepted
 - Date: 2026-10-25
