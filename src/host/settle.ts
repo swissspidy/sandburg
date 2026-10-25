@@ -24,6 +24,9 @@ export function quiet(a: Activity, quietMs: number, longMs: number): boolean {
  *   (Next.js and React Router hydrate the document).
  * - Nuxt mounts its app before its page component has hydrated (`isHydrating`), and its requests
  *   pause for 100 ms and more meanwhile.
+ * - SvelteKit's page (its dev script sets `__sveltekit_dev`) is hydrated in one pass once its modules
+ *   have loaded and run, and Svelte's dev build gives each element it hydrates `__svelte_meta`. Its
+ *   requests can pause for 100 ms while the last modules run: a check then lost its first click.
  */
 export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | undefined {
   try {
@@ -32,6 +35,7 @@ export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | un
     if (w._$HY && typeof w._$HY === 'object') return true;
     const reactRoot = (node: Node | null) => !!node && Object.keys(node).some((k) => k.startsWith('__reactContainer$'));
     if ([doc, doc.body, doc.getElementById('root'), doc.getElementById('app'), doc.getElementById('__next')].some(reactRoot)) return true;
+    if (Object.keys(w).some((k) => k.startsWith('__sveltekit_'))) return [...(doc.body?.querySelectorAll('*') ?? [])].slice(0, 200).some((e) => '__svelte_meta' in e);
     const nuxt = doc.getElementById('__nuxt') as (Element & { __vue_app__?: { config?: { globalProperties?: { $nuxt?: { isHydrating?: unknown } } } } }) | null;
     if (!nuxt) return undefined;
     const app = nuxt.__vue_app__?.config?.globalProperties?.$nuxt;

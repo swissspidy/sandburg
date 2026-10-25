@@ -57,6 +57,18 @@ test('Nuxt: not until its page has hydrated, whatever the servers do', async () 
   assert.equal(await safe(), true);
 });
 
+test('SvelteKit: not until Svelte has hydrated its page, whatever the servers do', async () => {
+  await load('<script>window.__sveltekit_dev = { base: "" }</script><div style="display: contents"><main><button>Clicked 0 times</button></main></div>');
+  assert.equal(await safe(), false);
+  await page.evaluate(() => {
+    for (const e of document.querySelectorAll('main, button')) Object.assign(e, { __svelte_meta: { loc: { file: 'src/routes/+page.svelte' } } });
+  });
+  assert.equal(await safe(), true);
+  // A Svelte app without SvelteKit: the servers decide, as before.
+  await load('<div id="app"><button>Clicked 0 times</button></div>');
+  assert.equal(await safe(), undefined);
+});
+
 test("a getter that throws in the app's window is undefined, not an error", async () => {
   await load('<p>hi</p>');
   await page.evaluate(() => Object.defineProperty(window, '_$HY', { get() { throw new Error('no'); } }));
