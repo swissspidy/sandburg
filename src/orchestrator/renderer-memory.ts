@@ -8,8 +8,10 @@
  * renderer process's CPU time, read in that process) and each renderer's, by pid
  * (`SystemInfo.getProcessInfo`, read by the browser process). The page's renderer is the one whose
  * CPU time, read just before and just after the page's, brackets it; when more than one renderer
- * fits (two tabs that loaded side by side), RendererMemory looks again later, when their times have
- * parted. The pid then gives the renderer's memory, from /proc (Linux).
+ * fits (two tabs that loaded side by side), RendererMemory looks again later and keeps only the
+ * renderers that fitted every look: the page's own fits each one, and the others drop out as their
+ * times part, even when no single look tells them apart (identical apps started together). The pid
+ * then gives the renderer's memory, from /proc (Linux).
  */
 import { readFileSync } from 'node:fs';
 
@@ -23,18 +25,25 @@ export interface ProcessCpu {
 const CPU_TICK_S = 0.011;
 
 /**
- * The renderer whose CPU time is the page's, or null when none or more than one fits. The
- * renderers' times were read just before the page's (`before`) and just after (`after`): the
- * page's renderer had at most the page's time before and at least it after, so each renderer is
- * held to what it used itself in between (an idle one fits only its exact time).
+ * The renderers whose CPU time could be the page's. The renderers' times were read just before the
+ * page's (`before`) and just after (`after`): the page's renderer had at most the page's time
+ * before and at least it after, so each renderer is held to what it used itself in between (an
+ * idle one fits only its exact time).
  */
-export function matchRenderer(pageCpuS: number, before: ProcessCpu[], after: ProcessCpu[]): number | null {
+export function fittingRenderers(pageCpuS: number, before: ProcessCpu[], after: ProcessCpu[]): number[] {
   const earlier = new Map(before.map((r) => [r.pid, r.cpuSeconds]));
-  const fits = after.filter((r) => {
-    const was = earlier.get(r.pid);
-    return was !== undefined && was <= pageCpuS + CPU_TICK_S && r.cpuSeconds >= pageCpuS - CPU_TICK_S;
-  });
-  return fits.length === 1 ? fits[0].pid : null;
+  return after
+    .filter((r) => {
+      const was = earlier.get(r.pid);
+      return was !== undefined && was <= pageCpuS + CPU_TICK_S && r.cpuSeconds >= pageCpuS - CPU_TICK_S;
+    })
+    .map((r) => r.pid);
+}
+
+/** The renderer whose CPU time is the page's, or null when none or more than one fits. */
+export function matchRenderer(pageCpuS: number, before: ProcessCpu[], after: ProcessCpu[]): number | null {
+  const fits = fittingRenderers(pageCpuS, before, after);
+  return fits.length === 1 ? fits[0] : null;
 }
 
 /**
@@ -69,6 +78,8 @@ export interface RendererMemorySource {
 /** One run's renderer: found once (locate), then read on demand (used). */
 export class RendererMemory {
   private pid: number | null = null;
+  /** The renderers that fitted every look so far (null before the first). */
+  private candidates: Set<number> | null = null;
   private locating: Promise<void> | null = null;
   private stopped = false;
   /** The most the renderer was seen to use (bytes; 0 until it is found). */
@@ -86,7 +97,11 @@ export class RendererMemory {
       const before = await this.source.renderers();
       const pageCpu = await this.source.pageCpu();
       const after = await this.source.renderers();
-      const pid = matchRenderer(pageCpu, before, after);
+      const fits = new Set(fittingRenderers(pageCpu, before, after));
+      const kept = this.candidates ? new Set([...this.candidates].filter((p) => fits.has(p))) : fits;
+      // None left (a reading a tick off, or a renderer replaced): start again from this look.
+      this.candidates = kept.size > 0 ? kept : fits;
+      const pid = this.candidates.size === 1 ? [...this.candidates][0] : null;
       if (pid !== null && !this.stopped) {
         this.pid = pid;
         this.source.release?.();
