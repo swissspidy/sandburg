@@ -5,6 +5,7 @@
  * The preload bundle and its shared copy stay in worker.ts, which init sets up.
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
+import { traceTransfer } from '../transfer-trace.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
 let installedRequests = 0;
@@ -46,7 +47,9 @@ export function prefetchedBody(url: string): Uint8Array | null {
   if (!sab) return null;
   delete prefetched[url];
   const state = new Int32Array(sab, 0, 2);
+  const t0 = performance.now();
   if (Atomics.wait(state, 0, 0, 60_000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
+  traceTransfer({ hop: 'runtime waits for prefetch', what: url, bytes: Atomics.load(state, 1), encoding: 'shared', ms: performance.now() - t0 });
   return new Uint8Array(sab, 8, Atomics.load(state, 1));
 }
 
@@ -219,7 +222,9 @@ export function requestSync(url: string, binary: boolean): { status: number; bod
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
+  const t0 = performance.now();
   xhr.send();
+  traceTransfer({ hop: 'host→runtime sync xhr', what: url, bytes: binary ? ((xhr.response as ArrayBuffer | null)?.byteLength ?? 0) : xhr.responseText.length, encoding: binary ? 'binary' : 'text', ms: performance.now() - t0 });
   return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
 }
 

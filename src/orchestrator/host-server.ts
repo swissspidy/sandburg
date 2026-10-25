@@ -14,6 +14,7 @@ import { source } from '../sources.ts';
 import { PAGE_CHECKS_PATH, runtimeBundle } from '../page-checks/index.ts';
 import { CLASSIC_CHARSET, classicBody, type HostScript } from './code-cache.ts';
 import { acceptFileChannel, FILE_CHANNEL_PATH } from './host-socket.ts';
+import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 
 const HOST_ENTRY = source('host/host.ts');
 export const SANDBOX_DOMAIN = 'sandburg.localhost';
@@ -26,7 +27,7 @@ const HOST_HTML = `<!doctype html>
 <style>html,body{margin:0;height:100%}#app{border:0;width:100%;height:100%;display:block}</style>
 </head>
 <body>
-<iframe id="app" title="app"></iframe>
+<iframe id="app" title="app"></iframe>${tracingTransfers ? '<script>window.__sandburgTraceTransfers = true</script>' : ''}
 <script type="module" src="/__sandburg/host.js"></script>
 </body>
 </html>
@@ -140,6 +141,7 @@ export class HostServer {
    */
   constructor({ onError = (err: unknown, path: string) => console.error(`sandburg: the host server failed to answer ${path}:`, err) } = {}) {
     this.server = createServer((req, res) => {
+      if (tracingTransfers) traceResponse(req, res);
       this.handle(req, res).catch((err) => {
         try {
           onError(err, (req.url ?? '').split('?')[0].slice(0, 300));
@@ -284,6 +286,27 @@ export class HostServer {
       res.end('not found');
     }
   }
+}
+
+/** Traces a response's body and a request's (SANDBURG_TRACE_TRANSFERS). */
+function traceResponse(req: IncomingMessage, res: ServerResponse): void {
+  const t0 = performance.now();
+  let received = 0;
+  let sent = 0;
+  req.on('data', (c: Buffer) => (received += c.length));
+  const end = res.end.bind(res) as (body?: unknown) => ServerResponse;
+  (res as { end: (body?: unknown) => ServerResponse }).end = (body?: unknown) => {
+    if (typeof body === 'string') sent = Buffer.byteLength(body);
+    else if (body instanceof Uint8Array) sent = body.length;
+    return end(body);
+  };
+  res.once('finish', () => {
+    const path = (req.url ?? '').split('?')[0];
+    const ms = performance.now() - t0;
+    const binary = /octet-stream|wasm/.test(String(res.getHeader('content-type') ?? ''));
+    traceTransfer({ hop: 'host→page http', what: `${req.method} ${path}`, bytes: sent, encoding: binary ? 'binary' : 'text', ms });
+    traceTransfer({ hop: 'page→host http', what: `${req.method} ${path}`, bytes: received, encoding: String(req.headers['content-type'] ?? '').includes('json') ? 'json' : 'binary', ms });
+  });
 }
 
 function contentType(path: string): string {

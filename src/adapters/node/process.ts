@@ -7,6 +7,10 @@ import { AdapterError, type Activity } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
 import type { FromWorker, ToWorker } from '../../node-runtime/messages.ts';
 import type { BridgeReply, BridgedRequest } from '../sw-bridge.ts';
+import { traceTransfer } from '../../transfer-trace.ts';
+
+/** Whether the host traces transfers (src/transfer-trace.ts): the host page says so. */
+const tracing = () => !!(globalThis as { __sandburgTraceTransfers?: boolean }).__sandburgTraceTransfers;
 
 export interface NodeProcessOptions {
   files: FileTree;
@@ -72,6 +76,7 @@ function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | nul
     Atomics.store(state, 0, status);
     Atomics.notify(state, 0);
   };
+  const t0 = performance.now();
   void (async () => {
     const res = await fetch(url);
     if (!res.ok || !res.body) return settle(2);
@@ -88,6 +93,7 @@ function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | nul
       length += value.length;
     }
     settle(1, length);
+    traceTransfer({ hop: 'host→page prefetch', what: url, bytes: length, encoding: 'shared', ms: performance.now() - t0 });
   })().catch(() => settle(2));
   return sab;
 }
@@ -155,7 +161,7 @@ export class NodeProcess {
     this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
       this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
     this.send(
-      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv },
+      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv, ...(tracing() ? { trace: true } : {}) },
       opts.compilePort ? [opts.compilePort] : [],
     );
   }
@@ -384,6 +390,7 @@ export class NodeProcess {
         } else if (!this.ports.includes(m.port)) this.ports.push(m.port);
         break;
       case 'tree':
+        if (tracing()) traceTransfer({ hop: 'runtime→page postMessage', what: 'tree', bytes: Object.values(m.files).reduce((n, f) => n + (typeof f === 'string' ? f.length : f.base64.length), 0), encoding: Object.values(m.files).some((f) => typeof f !== 'string') ? 'base64' : 'text', ms: 0 });
         this.trees.get(m.id)?.(m.unchanged ? null : m.files);
         this.trees.delete(m.id);
         break;

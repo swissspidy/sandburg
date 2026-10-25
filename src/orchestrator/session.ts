@@ -36,6 +36,7 @@ import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
 import { RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
+import { traceConsole, traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 
 export interface SessionOptions {
   /** Directory for the HTTP cache. Default: .sandburg/cache */
@@ -529,7 +530,7 @@ export class Session {
         return true;
       }).catch(() => false);
       const host = <K extends keyof HostApi>(name: K, ...args: Parameters<HostApi[K]>) =>
-        page.evaluate(([n, a]) => (window.__sandburg[n] as (...x: unknown[]) => Promise<RpcResult<unknown>>)(...a), [name, args] as const).then(unwrap);
+        traced(`evaluate ${name}`, args, () => page.evaluate(([n, a]) => (window.__sandburg[n] as (...x: unknown[]) => Promise<RpcResult<unknown>>)(...a), [name, args] as const)).then(unwrap);
 
       if (ok) {
         const steps = async () => {
@@ -884,6 +885,7 @@ class RunState {
     const sourceOf = (url: string): 'app' | 'host' =>
       url.startsWith(`${origin}/__sandburg/`) || url.startsWith(`${origin}/__sw__`) || url.includes('esbuild-wasm') || url.startsWith('https://registry.npmjs.org/') ? 'host' : 'app';
     page.on('console', (msg) => {
+      if (tracingTransfers && msg.type() === 'debug' && traceConsole(msg.text())) return;
       if (this.console.length >= 500) return;
       const url = msg.location().url;
       this.console.push({ source: sourceOf(url), type: msg.type(), text: msg.text().slice(0, 2000), url: url || undefined });
@@ -971,6 +973,17 @@ class RunState {
     await writeFile(join(outDir, 'result.json'), JSON.stringify(result, null, 2) + '\n');
     return result;
   }
+}
+
+/** A call into the host page, its arguments' and result's sizes traced (SANDBURG_TRACE_TRANSFERS: JSON, as Playwright serializes them). */
+async function traced<T>(what: string, args: unknown, call: () => Promise<T>): Promise<T> {
+  if (!tracingTransfers) return call();
+  const t0 = performance.now();
+  const out = await call();
+  const ms = performance.now() - t0;
+  traceTransfer({ hop: 'host→page evaluate', what, bytes: JSON.stringify(args ?? null).length, encoding: 'json', ms });
+  traceTransfer({ hop: 'page→host evaluate', what, bytes: JSON.stringify(out ?? null).length, encoding: 'json', ms });
+  return out;
 }
 
 function unwrap<T>(result: RpcResult<T>): T {
