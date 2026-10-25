@@ -95,6 +95,12 @@ export function prefetchBundle(url: string | null | undefined): SharedArrayBuffe
 /** How long a server on a port the system picked waits before it may be taken for the app (see 'listening'). */
 const EPHEMERAL_PATIENCE_MS = 5_000;
 
+/** Whether a body without a Content-Type is HTML (as a browser sniffs it): its first tag is one of a document's. */
+export function looksLikeHtml(bytes: Uint8Array): boolean {
+  const head = new TextDecoder().decode(bytes.subarray(0, 512)).replace(/^\uFEFF/, '').trimStart().toLowerCase();
+  return /^<(!doctype html|html|head|body|!--)[\s>]/.test(head);
+}
+
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
   readonly ports: number[] = [];
@@ -172,14 +178,23 @@ export class NodeProcess {
       probed.add(port);
       lastPort = Date.now();
       const channel = new MessageChannel();
+      const done = (page: boolean) => {
+        if (page && found === null) found = port;
+        settled++;
+        channel.port1.close();
+        for (const w of this.waiters) w();
+      };
+      // An answer without a Content-Type (a hand-written http server) is a page if its body starts as HTML does.
+      let sniff = false;
       channel.port1.onmessage = (e) => {
-        const m = e.data as { type: string; status?: number; headers?: [string, string][] };
+        const m = e.data as { type: string; status?: number; headers?: [string, string][]; body?: ArrayBuffer; chunk?: Uint8Array };
+        if (sniff) return m.type === 'chunk' ? done(looksLikeHtml(m.chunk!)) : done(false);
         if (m.type === 'start' || m.type === 'full' || m.type === 'error') {
-          const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
-          if (m.type !== 'error' && m.status! < 400 && /html/.test(type) && found === null) found = port;
-          settled++;
-          channel.port1.close();
-          for (const w of this.waiters) w();
+          const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1];
+          if (m.type === 'error' || m.status! >= 400) return done(false);
+          if (type !== undefined) return done(/html/.test(type));
+          if (m.type === 'full') return done(!!m.body && looksLikeHtml(new Uint8Array(m.body)));
+          sniff = true;
         }
       };
       this.request(port, { method: 'GET', url: '/', headers: [['accept', 'text/html']], body: null }, channel.port2);
