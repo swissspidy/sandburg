@@ -1,4 +1,4 @@
-# ADR NNNN: Cold runs: trimmed packuments, read-ahead and pushed modules, a lighter host transform path
+# ADR 0045: Cold runs: trimmed packuments, read-ahead and pushed modules, a lighter host transform path
 
 - Status: Accepted
 - Date: 2026-10-25
