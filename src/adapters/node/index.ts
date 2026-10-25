@@ -347,7 +347,31 @@ const readList = (key: string) => preloadList(`${key}-read`);
 /** Most files a report may name (the runtime sends 100 at a time). */
 const READ_REPORT_MAX = 1000;
 
-async function markRead(key: string, entries: string[]): Promise<void> {
+/**
+ * The sandboxes whose runtimes' reads shape an install's bundles: those of the runs it was installed
+ * for (hostInstall), by key, bound once the run's tab is known. Files are served by key to any
+ * sandbox (ADR 0040); only these say what the install's runs read.
+ */
+const readers = new Map<string, Set<string>>();
+
+/** Lets the run whose page will be in `sandbox` say what it read of install `key` (see markRead). */
+export function grantReads(key: string, sandbox: Promise<string> | undefined): void {
+  void sandbox?.then(
+    (id) => {
+      let set = readers.get(key);
+      if (!set) readers.set(key, (set = new Set()));
+      set.add(id);
+      setTimeout(() => {
+        set.delete(id);
+        if (!set.size && readers.get(key) === set) readers.delete(key);
+      }, TOKEN_TTL_MS).unref();
+    },
+    () => {},
+  );
+}
+
+async function markRead(key: string, entries: string[], sandbox: string | undefined): Promise<void> {
+  if (!sandbox || !readers.get(key)?.has(sandbox)) return;
   const index = await installer.index(key).catch(() => null);
   if (!index) return;
   const read = await readList(key);
@@ -360,10 +384,10 @@ async function markRead(key: string, entries: string[]): Promise<void> {
   }
 }
 
-/** A file a runtime asked for: loaded (recordLoad), and read. */
-async function recordRead(key: string, mode: string, rel: string): Promise<void> {
+/** A file a runtime asked for: loaded (recordLoad), and read if the runtime's sandbox is one of the install's (markRead). */
+async function recordRead(key: string, mode: string, rel: string, sandbox: string | undefined): Promise<void> {
   await recordLoad(key, mode, rel);
-  await markRead(key, [`${mode}/${rel}`]);
+  await markRead(key, [`${mode}/${rel}`], sandbox);
 }
 
 /**
@@ -862,7 +886,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   // The preload bundle's files a runtime read (see markRead).
   const reads = /^\/__sandburg\/nm\/([0-9a-f]{24})\/read$/.exec(req.path);
   if (reads) {
-    await markRead(reads[1], (req.query.get('files') ?? '').split('\n'));
+    await markRead(reads[1], (req.query.get('files') ?? '').split('\n'), req.sandbox);
     return { status: 204, headers: {}, body: '' };
   }
   const m = /^\/__sandburg\/nm\/([0-9a-f]{24})\/(f|t)\/(.+)$/.exec(req.path);
@@ -870,14 +894,14 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     const [, key, mode, rel] = m;
     // A file the runtime read from a read-ahead answer: recorded as loaded, as if it had been asked for.
     if (req.query.get('used') === '1') {
-      if (decodeURIComponent(rel) in (await installer.index(key))) void recordRead(key, mode, decodeURIComponent(rel));
+      if (decodeURIComponent(rel) in (await installer.index(key))) void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
       return { status: 204, headers: {}, body: '' };
     }
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
     if (file && mode === 'f' && req.query.get('ahead') === '1') {
       const body = await readAhead(key, decodeURIComponent(rel), file.body, req.query.get('until'));
       if (body) {
-        void recordRead(key, mode, decodeURIComponent(rel));
+        void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
         return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
       }
     }
@@ -885,12 +909,12 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
       const prefetcher = await prefetchers.get(key);
       const body = prefetcher ? pushAhead(key, decodeURIComponent(rel), file.body, prefetcher, req.channel) : null;
       if (body) {
-        void recordRead(key, mode, decodeURIComponent(rel));
+        void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
         void prefetcher!.loaded(decodeURIComponent(rel), file.body.toString('utf8'));
         return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
       }
     }
-    if (file) void recordRead(key, mode, decodeURIComponent(rel));
+    if (file) void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
     if (file && mode === 't') void prefetchers.get(key)?.then((p) => p.loaded(decodeURIComponent(rel), file.body.toString('utf8')));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
@@ -987,6 +1011,7 @@ export const node: AdapterDescriptor = {
       devCache = { ...devCache, files: {}, digests: cacheDigests(devCache.files) };
     }
     if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
+    grantReads(key, options?.sandbox);
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
     return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, compileCache: compiles, preload: await preloadUrl(key, entry) };
