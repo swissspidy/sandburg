@@ -87,8 +87,12 @@ The modules that read worker.ts's state import it from worker.ts (live bindings)
 (TypeScript refuses an assignment to an import, so a move that would need one fails to typecheck).
 The preload bundle stays in worker.ts, which init sets up. The runtime's script is still one esbuild
 bundle with the modules hoisted into one scope. Each split commit was checked line by line: every non-import line removed
-is in the new modules, and only their header comments are new. With the split, the node, run,
-websockets, fullstack, vite-frameworks, frameworks and page-checks e2e suites pass.
+is in the new modules, and only their header comments are new. On the round-3 tree, from an empty
+`.sandburg`, the run (10), node (13), vite-frameworks (9), frameworks (7), angular (6), fullstack
+(7), batch (4), page-checks (3) and browser-install (6) e2e suites pass. Warm runs (3 rounds,
+medians, against e7f4a23): vite-react-counter 1.45 → 1.49 s (+2%), next-app-router 4.68 → 4.70 s
+(+0%), astro-app 3.53 → 3.45 s (-2%): within the noise; the +4% next-app-router read on the first
+base did not hold.
 
 ### Re-applied on the round-3 tree
 
