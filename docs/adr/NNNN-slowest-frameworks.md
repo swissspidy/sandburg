@@ -93,6 +93,11 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   hydration check lost its first click in 6 of 8 warm runs on one machine (1.2 s instead of 30-40 ms;
   0 of 8 on origin/main).
 
+- **A dev script's page without a Content-Type** (`pagePort` in `src/adapters/node/process.ts`): an
+  answer to the probe's GET / without a Content-Type is the page if its body starts as an HTML
+  document does (doctype, `<html>`, `<head>`, `<body>` or a comment), as a browser sniffs it. A
+  compound script (`a && b`) whose hand-written server sent none waited out pagePort's 60 s.
+
 ## Consequences
 
 - The branch against origin/main, `scripts/bench.ts` (both sides refs, interleaved, 3 rounds, medians
@@ -149,6 +154,7 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   | jiti's cache | nuxt-app | 4.42 → 4.28 s (−3%, n=6) | start 0.61 → 0.48 s |
   | Nitro's rollup cache | nuxt-app | 4.09 → 3.81 s (−7%, n=6) | checks 0.73 → 0.46 s; Nitro's build 703 → ~280 ms |
   | Written over and back | angular-tasks | 3.88 → 3.81 s (−2%, n=5) | dispose 0.06 → 0.01 s |
+  | No Content-Type | a compound script's raw http server | start 61.4 → 0.42 s (one run each) | |
   | SvelteKit's signal | sveltekit-app | 3.92 → 3.04 s (−23%, n=5) | checks 1.47 → 0.41 s (no lost click in 10 runs) |
 
 - The transform cache grows a SolidStart project's stored dev-server cache from 0.8 to 6.1 MB (213
@@ -175,6 +181,8 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   - `globalThis[Symbol.for('sandburg.transformCache')]` exists in the runtime.
   - A restored dev-server cache whose files end the run with the bytes they started with is not read
     back at dispose, however often they were written.
+  - A dev script's server that answers GET / with an HTML document without a Content-Type is taken
+    for the page at once (it was after 60 s, as the first port).
   - A SvelteKit app's functional checks start once Svelte has hydrated its page (up to 3 s), not once
     its servers have been quiet for 100 ms.
 
@@ -239,4 +247,8 @@ Interleaved warm A/B unless noted:
 - **Vite's per-module cost** (import analysis, vite-resolve's resolveId through the WebAssembly binding,
   inline source maps) is most of what is left in every meta-framework; that is the runtime's and the
   wasm tools' hot path.
+- **Next.js' dev-cache readback** (a lead from perf-runtime-hotpaths): a seed run's dispose reads the
+  whole webpack cache back every 250 ms until it settles, base64 for every pack (~2 s of the host
+  page's thread, ~0.9 s of the runtime's); binary transport and digests compared in the runtime would
+  cut both. Not started for lack of time.
 - `waitForRender` polls every 100 ms (`session.ts`), ~50 ms of each run's ready on average.
