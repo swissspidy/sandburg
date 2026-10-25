@@ -52,12 +52,14 @@ whether *how* code gets into V8 could change that. Measured in Chromium 153 (Chr
   already strict (`"use strict"` opened it), declares no globals, and its stack frames keep naming its
   URL; it still loads its libraries with `importScripts` (the worker stays a classic worker).
 - **The host page registers the service worker as it loads**, before it starts the program's runtime,
-  instead of when the app starts: a worker is a service worker's client only if the page was
-  controlled when it started it. The runtime the page prepares as it loads (ADR 0031) is so the first
-  runtime of the context, and the run's spares, threads and child processes start from its code. A
-  session's next tab is opened while the current run runs (ADR 0031), so the code is produced before
-  the next run starts. A page that is not controlled (no service worker) runs the runtime as before,
-  compiling it in each worker.
+  instead of when the app starts: a dedicated worker is a service worker's client by its own URL
+  (whether or not its page is one) if the registration is active when it starts. The runtime the page
+  prepares as it loads (ADR 0031) is so the first runtime of the context, and the run's spares,
+  threads and child processes start from its code. The page itself becomes the service worker's
+  client when it gives the service worker an app's port, as before (the service worker claims it then,
+  no longer as it activates): until an app starts, the page's own requests go to the host. A session's
+  next tab is opened while the current run runs (ADR 0031), so the code is produced before the next run
+  starts. Without a service worker, a runtime compiles its script as before.
 - **A host that serves the runtime's script itself as `node-worker.js`** (the static deployment,
   `scripts/pages/build.ts`) works as before: the runtime is a classic script there.
 
@@ -88,9 +90,9 @@ whether *how* code gets into V8 could change that. Measured in Chromium 153 (Chr
   - The host serves `/__sandburg/node-worker.js` as a 0.6 KB classic script and the runtime at
     `/__sandburg/runtime/<digest>.mjs`.
   - The host page registers its service worker as it loads, not when the app starts, and starts the
-    program's runtime once the service worker controls it (the runtime is not needed before the
-    install ends). If the run takes it before then, the run starts
-    its own runtime, as before when one failed to load.
+    program's runtime once it is active (the runtime is not needed before the install ends; a run
+    that takes the page before then starts its own, as when one failed to load). The service worker
+    claims the page when the app's port arrives, not as it activates.
   - Each run's browser context keeps the runtime's module and its code in Cache Storage
     (`sandburg-runtime`, ~0.9 MB and its code) for the context's life.
   - A runtime evaluates its script after a task more than before (the module's import), and messages
