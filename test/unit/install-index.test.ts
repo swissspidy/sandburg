@@ -37,7 +37,7 @@ test('install index: a stored index that names paths outside node_modules is wal
   const installs = join(root, 'b');
   const key = 'b'.repeat(24);
   const dir = install(installs, key, { 'node_modules/p/index.js': 'x' });
-  for (const bad of [{ 'node_modules/../../secret': 1 }, { 'package.json': 2 }, { 'node_modules/p/index.js': '1' }, ['node_modules/p/index.js']]) {
+  for (const bad of [{ 'node_modules/../../secret': 1 }, { 'node_modules/p/..': 1 }, { 'package.json': 2 }, { 'node_modules/p/index.js': '1' }, ['node_modules/p/index.js']]) {
     writeFileSync(join(dir, '.sandburg-index.json'), JSON.stringify(bad));
     assert.deepEqual(await new Installer(installs).index(key), { 'node_modules/p/index.js': 1 }, JSON.stringify(bad));
   }

@@ -821,11 +821,14 @@ async function loadIndex(dir: string): Promise<FileIndex> {
 }
 
 const INDEX_FILE = '.sandburg-index.json';
+const DOTDOT = /\/\.\.(?:\/|$)/;
 
 function isIndex(value: unknown): value is FileIndex {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   for (const [rel, size] of Object.entries(value)) {
-    if (typeof size !== 'number' || !rel.startsWith('node_modules/') || rel.split('/').includes('..')) return false;
+    // A `..` segment (paths start with node_modules/, so only after a slash): splitting each of a
+    // Next.js install's 12,500 paths took ~10 ms.
+    if (typeof size !== 'number' || !rel.startsWith('node_modules/') || DOTDOT.test(rel)) return false;
   }
   return true;
 }
