@@ -8,6 +8,7 @@ import { defaultParallel, runBatch, type BatchItem, type BatchSummary } from '..
 import type { NodeRuntime, RunOptions, Session } from '../orchestrator/session.ts';
 import type { RunResult } from '../types.ts';
 
+/** Options of compare(): a batch's options, and the reference runtime the batch runs on too. */
 export interface CompareOptions extends RunOptions {
   /** In-browser runtime under test (default: auto, chosen per project). */
   runtime?: string;
@@ -27,6 +28,7 @@ export interface CompareOptions extends RunOptions {
   onResult?: (side: 'browser' | 'reference', result: RunResult, item: BatchItem) => void;
 }
 
+/** One side's run of a project in a comparison (the in-browser runtime's or the reference's). */
 export interface SideOutcome {
   runId: string;
   status: RunResult['status'];
@@ -38,6 +40,7 @@ export interface SideOutcome {
   message: string | null;
 }
 
+/** A project's two runs, and whether they agree. */
 export interface ComparePair {
   label: string;
   framework: string;
@@ -53,6 +56,7 @@ export interface ComparePair {
   cause: string | null;
 }
 
+/** Agreement between the two runtimes over `n` comparable projects: the agreement as a fraction, the rest as counts. */
 export interface Rates {
   n: number;
   agreement: number;
@@ -62,6 +66,7 @@ export interface Rates {
   browserLenient: number;
 }
 
+/** Run times of one side of a comparison, and what a run costs at that speed. */
 export interface TimingStats {
   medianMs: number;
   p90Ms: number;
@@ -73,6 +78,7 @@ export interface TimingStats {
   costUsdPerRun: number;
 }
 
+/** A fidelity comparison's result (written as report.json; renderReport() makes its Markdown). */
 export interface CompareReport {
   schemaVersion: 1;
   createdAt: string;
@@ -92,6 +98,10 @@ export interface CompareReport {
   pairs: ComparePair[];
 }
 
+/**
+ * Runs each project in the in-browser runtime and in the reference runtime, pairs the results and
+ * reports how often they agree, by framework and overall (ADR 0004).
+ */
 export async function compare(session: Session, items: BatchItem[], options: CompareOptions): Promise<CompareReport> {
   const vcpus = options.vcpus ?? (await import('node:os')).availableParallelism();
   const vcpuHourUsd = options.vcpuHourUsd ?? 0.0504;

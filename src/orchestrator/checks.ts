@@ -13,6 +13,7 @@ import { AXE_PATH } from './host-server.ts';
 import type { PageCode } from './code-cache.ts';
 import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, type PageChecks } from '../page-checks/index.ts';
 
+/** What a check function is given: the app, its tab, Playwright's expect and a URL helper. */
 export interface CheckContext {
   /** The app frame. Locators, getByRole etc. work as on a page. */
   app: Frame;
@@ -27,6 +28,7 @@ export interface CheckContext {
   appUrl(path: string): string;
 }
 
+/** A check: it passes unless it throws (a failed expect() throws). */
 export type CheckFn = (ctx: CheckContext) => Promise<void> | void;
 /** Default export of a checks file: check name → function. */
 export type Checks = Record<string, CheckFn>;

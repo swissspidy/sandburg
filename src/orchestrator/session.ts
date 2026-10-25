@@ -37,6 +37,7 @@ import { SnapshotStore } from '../store.ts';
 import { RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 
+/** Options of a Session: the browser, the caches and stores it keeps on disk. */
 export interface SessionOptions {
   /** Directory for the HTTP cache. Default: .sandburg/cache */
   cacheDir?: string;
@@ -106,6 +107,7 @@ export interface NodeRuntime {
   dispose(): Promise<void>;
 }
 
+/** Options of one run (Session.run): the runtime, the checks, where results go, deadlines. */
 export interface RunOptions {
   /** In-browser runtime adapter name, or `auto` (the default) to choose one per project. Ignored when nodeRuntime is set. */
   runtime?: string;
@@ -170,6 +172,7 @@ export interface RunRenderer {
   collectGarbage(): Promise<void>;
 }
 
+/** Each phase's deadline in milliseconds, a check's, and an expect() assertion's (RunOptions.timeouts overrides them). */
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
   probe: 5_000,
   load: 30_000,
@@ -204,6 +207,11 @@ class RpcError extends Error {
   }
 }
 
+/**
+ * A browser and the host's services (the host server, the egress gateway, caches) that runs
+ * project after project, each in its own browser context and origin. open() it, run() projects
+ * (concurrently if you like), close() it.
+ */
 export class Session {
   private options: SessionOptions;
   private browser: Browser | null = null;
@@ -223,6 +231,7 @@ export class Session {
     });
   }
 
+  /** Starts the browser and the host server. Call once, before run(). */
   async open(): Promise<void> {
     // While the browser launches: the host gets ready for a first install (npm loaded).
     getAdapter(DEFAULT_RUNTIME).prepare?.();
@@ -344,6 +353,7 @@ export class Session {
     this.host.unregister(tab.id);
   }
 
+  /** Waits for the host installs and seed runs it started, then closes the browser and the host's servers. */
   async close(): Promise<void> {
     // A seed run started beside an app (adapters/node/index.ts) finishes first: later runs start from it.
     // So does a host install still running (started before the browser context, so a run that
@@ -359,6 +369,11 @@ export class Session {
     await this.egress.close();
   }
 
+  /**
+   * Runs a project (a path, "snapshot:<id>" or a Project) through its phases and checks, and returns
+   * its result (also written to <outDir>/<runId>/result.json). A run that fails as infra is
+   * retried (RunOptions.infraRetries).
+   */
   async run(projectInput: string | Project, options: RunOptions = {}): Promise<RunResult> {
     const previous: string[] = [];
     for (let attempt = 0; ; attempt++) {

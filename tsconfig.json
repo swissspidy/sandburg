@@ -35,6 +35,7 @@
     "evals",
     "integrations/harbor/build-tasks.ts",
     "fixtures/vite-react-counter/checks.spec.ts",
-    "scripts/code-stats.ts"
+    "scripts/code-stats.ts",
+    "scripts/api-report.ts"
   ]
 }

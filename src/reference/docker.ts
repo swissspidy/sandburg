@@ -15,6 +15,7 @@ import { AdapterError } from '../host/types.ts';
 import type { InstallReport, ProbeVerdict, Project } from '../types.ts';
 import type { NodeRuntime } from '../orchestrator/session.ts';
 
+/** Options of dockerReference(): the image and where the container's files and npm cache live. */
 export interface DockerReferenceOptions {
   /** Base image (default: node:22-slim). */
   image?: string;

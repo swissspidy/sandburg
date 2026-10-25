@@ -8,6 +8,7 @@ function ratesRow(name: string, r: Rates): string {
   return `| ${name} | ${r.n} | **${pct(r.agreement)}** | ${r.bothPass} | ${r.bothFail} | ${r.browserStricter} | ${r.browserLenient} |`;
 }
 
+/** Renders a fidelity comparison as Markdown. */
 export function renderReport(report: CompareReport, title = 'Sandburg fidelity report'): string {
   const t = report.timing;
   const lines = [
