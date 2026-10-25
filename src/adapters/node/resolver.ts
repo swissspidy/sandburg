@@ -15,7 +15,8 @@
  */
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { execFileSync } from 'node:child_process';
-import { realpathSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { realpathSync, existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { setPriority } from 'node:os';
 import { createRequire, enableCompileCache } from 'node:module';
 import { dirname, join } from 'node:path';
 import { format } from 'node:url';
@@ -50,6 +51,8 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   const sink = new Writable({ write: (_chunk, _encoding, done) => done() });
   let ready: Promise<{ flat: object; Arborist: new (o: object) => { reify(o: object): Promise<unknown> } }> | null = null;
   const cache = new PackumentCache(PACKUMENT_BYTES);
+  // Before npm loads: pacote's packuments are parsed through minipass-fetch's Body.json.
+  new TrimmedPackuments(require).install();
   // The packages npm picks, as it goes: the host unpacks them meanwhile (package-store.ts's unpackHint).
   const ahead = new ReadAhead(require, cache, (picked) => parentPort!.postMessage({ picked }));
   /** Resolutions running (a small one runs beside another). */
@@ -153,6 +156,200 @@ export class PackumentCache extends Map<string, Packument> {
 }
 
 type Options = Record<string, unknown>;
+
+/**
+ * Packuments without what npm's resolution never reads, kept in npm's own cache beside the
+ * packuments they come from. A full packument is mostly fields no install looks at: Vite's 39 MB is
+ * 35 MB of a `licenseText` in each version; npm's cache of 523 packuments here was 498 MB, of which
+ * readmes, maintainers, `exports`, dev dependencies, legacy PGP signatures and the like are half. And
+ * reading one is most of a resolution's CPU (lit-vite's: JSON.parse 0.6 s, decoding 0.3 s, cacache's
+ * integrity check 0.23 s, garbage collection 0.27 s, of 2.35 s).
+ *
+ * When pacote parses a packument that make-fetch-happen serves from npm's cache (fresh, or
+ * revalidated with a 304: the same bytes), a helper thread parses those bytes again, drops the
+ * fields below and stores the rest under a key of its own (TRIM_PREFIX + the cache entry's key),
+ * with the integrity of the bytes it came from. A later read of the same cache entry with the same
+ * integrity is answered with the trimmed packument and leaves the cached body unread; any other
+ * (a newer packument, an entry from the registry, a trimmed one cacache's integrity check refuses)
+ * is read as before. npm's cache decides freshness and revalidation as before: only the bytes of the
+ * body it answers with are replaced by what they trim to. Lockfiles are the same as with full
+ * packuments (resolver.test.ts, and the fixtures' installs).
+ */
+const TRIM_PREFIX = 'sandburg:packument-trim:1:';
+const TRIM_TAG = 'sandburg-packument-trim';
+/** Smaller packuments are read as they are: looking up a trimmed one costs about as much as parsing. */
+const TRIM_MIN = 64 << 10;
+/** Bytes of packuments waiting for the helper; more are not trimmed (this time). */
+const TRIM_QUEUE = 64 << 20;
+const TRIMMED_FIELDS = new Set(['readme', 'readmeFilename', 'users', 'keywords', 'description', 'maintainers', 'contributors', 'author', 'bugs', 'homepage', 'repository']);
+const TRIMMED_VERSION_FIELDS = new Set([
+  ...TRIMMED_FIELDS,
+  'licenseText',
+  '_npmOperationalInternal',
+  '_npmUser',
+  '_nodeVersion',
+  '_npmVersion',
+  'gitHead',
+  'exports',
+  'imports',
+  'types',
+  'typings',
+  'typesVersions',
+  'devDependencies',
+  'files',
+  'module',
+  'browser',
+  'sideEffects',
+  'publishConfig',
+  'jest',
+  'eslintConfig',
+  'prettier',
+  'lint-staged',
+  'husky',
+  '//',
+]);
+/** Signatures and attestations are read only by `npm audit signatures` (pacote's verifySignatures). */
+const TRIMMED_DIST_FIELDS = new Set(['npm-signature', 'signatures', 'attestations', 'fileCount', 'unpackedSize']);
+
+const omit = (o: Record<string, unknown>, fields: Set<string>) => Object.fromEntries(Object.entries(o).filter(([k]) => !fields.has(k)));
+
+/** A packument without the fields npm's resolution does not read; null if it is not one. */
+export function trimPackument(packument: unknown): Record<string, unknown> | null {
+  if (!packument || typeof packument !== 'object') return null;
+  const p = packument as Record<string, unknown>;
+  if (!p.versions || typeof p.versions !== 'object' || typeof p.name !== 'string') return null;
+  const versions: Record<string, unknown> = {};
+  for (const [version, manifest] of Object.entries(p.versions as Record<string, unknown>)) {
+    if (!manifest || typeof manifest !== 'object') return null;
+    const m = omit(manifest as Record<string, unknown>, TRIMMED_VERSION_FIELDS);
+    if (m.dist && typeof m.dist === 'object') m.dist = omit(m.dist as Record<string, unknown>, TRIMMED_DIST_FIELDS);
+    versions[version] = m;
+  }
+  return { ...omit(p, TRIMMED_FIELDS), versions };
+}
+
+interface Cacache {
+  get: {
+    info(cache: string, key: string): Promise<{ integrity: string; metadata?: { source?: string } } | null>;
+    byDigest(cache: string, integrity: string): Promise<Buffer>;
+  };
+  put(cache: string, key: string, data: string | Buffer, options: { metadata: object }): Promise<unknown>;
+}
+interface CachedResponse {
+  status: number;
+  headers: { get(name: string): string | null };
+}
+
+/** The packument cache entry a response came from: npm's cache, its key and the body's integrity. */
+function cachedBody(res: CachedResponse): { cache: string; key: string; source: string } | null {
+  const [cache, key, source] = ['x-local-cache', 'x-local-cache-key', 'x-local-cache-hash'].map((h) => res.headers.get(h));
+  if (res.status !== 200 || !cache || !key || !source || Number(res.headers.get('content-length')) < TRIM_MIN) return null;
+  try {
+    const entry = { cache: decodeURIComponent(cache), key: decodeURIComponent(key), source: decodeURIComponent(source) };
+    return entry.key.startsWith('make-fetch-happen:request-cache:') ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
+class TrimmedPackuments {
+  private readonly require: NodeJS.Require;
+  private cacache!: Cacache;
+  private helper: Worker | null = null;
+  private queued = 0;
+
+  constructor(require: NodeJS.Require) {
+    this.require = require;
+  }
+
+  /** Answers pacote's res.json() with trimmed packuments; false if minipass-fetch is not as expected (all is read as before). */
+  install(): boolean {
+    try {
+      this.cacache = this.require('cacache') as Cacache;
+      const Body = this.require('minipass-fetch/lib/body.js') as { prototype: Record<string | symbol, unknown> };
+      const consume = Object.getOwnPropertySymbols(Body.prototype).find((s) => s.description === 'consumeBody');
+      const json = Body.prototype.json as (this: unknown) => Promise<unknown>;
+      if (!consume || typeof json !== 'function') return false;
+      const self = this;
+      Body.prototype.json = async function (this: CachedResponse & Record<symbol, () => Promise<Buffer>>) {
+        const entry = cachedBody(this);
+        if (!entry) return json.call(this);
+        const trimmed = await self.read(entry);
+        if (trimmed) return trimmed;
+        // The body's bytes, as json() reads them, go to the helper too.
+        const read = this[consume];
+        this[consume] = async function (this: unknown) {
+          const bytes = await read.call(this);
+          self.offer(entry, bytes);
+          return bytes;
+        };
+        return json.call(this);
+      };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async read({ cache, key, source }: { cache: string; key: string; source: string }): Promise<unknown> {
+    try {
+      const info = await this.cacache.get.info(cache, TRIM_PREFIX + key);
+      if (!info || info.metadata?.source !== source) return null;
+      // byDigest checks the bytes against their integrity: a trimmed entry that changed is refused.
+      return JSON.parse((await this.cacache.get.byDigest(cache, info.integrity)).toString());
+    } catch {
+      return null;
+    }
+  }
+
+  private offer(entry: { cache: string; key: string; source: string }, bytes: Buffer): void {
+    if (this.queued + bytes.length > TRIM_QUEUE) return;
+    try {
+      this.helper ??= this.startHelper();
+      const copy = new Uint8Array(bytes.length);
+      copy.set(bytes);
+      this.queued += bytes.length;
+      this.helper.postMessage({ ...entry, bytes: copy }, [copy.buffer]);
+    } catch {
+      // not trimmed this time
+    }
+  }
+
+  private startHelper(): Worker {
+    const helper = new Worker(new URL(import.meta.url), { workerData: { tag: TRIM_TAG, cacache: dirname(this.require.resolve('cacache/package.json')) } });
+    helper.unref();
+    helper.on('message', (bytes: number) => (this.queued -= bytes));
+    helper.on('error', () => {
+      if (this.helper === helper) this.helper = null;
+    });
+    return helper;
+  }
+}
+
+/** In the helper thread: trims each packument it is sent and stores it in npm's cache. */
+function trimInHelper({ cacache: dir }: { cacache: string }): void {
+  const cacache = createRequire(join(dir, 'package.json'))('cacache') as Cacache;
+  // The lowest priority, where a thread has one of its own (Linux): what it does can wait for
+  // the resolution and the run beside it.
+  try {
+    setPriority(Number(readlinkSync('/proc/thread-self').split('/').pop()), 19);
+  } catch {
+    // another system
+  }
+  let chain = Promise.resolve();
+  parentPort!.on('message', ({ cache, key, source, bytes }: { cache: string; key: string; source: string; bytes: Uint8Array }) => {
+    chain = chain.then(async () => {
+      try {
+        const trimmed = trimPackument(JSON.parse(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString()));
+        if (trimmed) await cacache.put(cache, TRIM_PREFIX + key, JSON.stringify(trimmed), { metadata: { source } });
+      } catch {
+        // not trimmed
+      } finally {
+        parentPort!.postMessage(bytes.byteLength);
+      }
+    });
+  });
+}
 
 /** A package a resolution picks: its name, version, tarball's integrity, and the optional dependencies its manifest lists. */
 export interface Picked {
@@ -464,3 +661,4 @@ export class Resolver {
 
 // Last: the worker needs the classes above.
 if (!isMainThread && (workerData as Init | null)?.tag === WORKER_TAG) void serve(workerData as Init);
+if (!isMainThread && (workerData as { tag?: string } | null)?.tag === TRIM_TAG) trimInHelper(workerData as { cacache: string });
