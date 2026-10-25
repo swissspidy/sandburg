@@ -194,9 +194,12 @@ test("rolldown's builtin plugins keep only their own hooks, with filters no narr
 
   const runtime = callable('builtin:oxc-runtime');
   assert.deepEqual(hooks(runtime), ['resolveId', 'load']);
-  assert.ok(filter(runtime, 'resolveId')!.id!.test('@oxc-project/runtime/helpers/decorate'));
-  assert.ok(filter(runtime, 'resolveId')!.id!.test('./typeof.js'));
-  assert.ok(!filter(runtime, 'resolveId')!.id!.test('vue'));
+  // The binding is asked (its stand-in answers null) only for a helper, or ./… from a helper.
+  const resolve = runtime.resolveId as (id: string, importer?: string) => Promise<unknown> | null;
+  assert.equal(resolve('vue', '/app/src/main.ts'), null);
+  assert.equal(resolve('./App.vue', '/app/src/main.ts'), null);
+  assert.ok(resolve('@oxc-project/runtime/helpers/decorate', '/app/src/main.ts') instanceof Promise);
+  assert.ok(resolve('./typeof.js', '\0@oxc-project+runtime@0.155.0/helpers/esm/decorate.js') instanceof Promise);
   assert.ok(filter(runtime, 'load')!.id!.test('\0@oxc-project+runtime@0.155.0/helpers/esm/decorate.js'));
   assert.ok(!filter(runtime, 'load')!.id!.test('/app/src/main.ts'));
 
@@ -207,7 +210,10 @@ test("rolldown's builtin plugins keep only their own hooks, with filters no narr
   const guarded = callable('builtin:replace', { values: { 'process.env.NODE_ENV': '"x"' }, objectGuards: true });
   assert.equal(typeof guarded.transform, 'function');
 
-  assert.deepEqual(hooks(callable('builtin:vite-resolve', {})), ['resolveId', 'load', 'watchChange']);
+  const viteResolve = callable('builtin:vite-resolve', {});
+  assert.deepEqual(hooks(viteResolve), ['resolveId', 'load', 'watchChange']);
+  for (const id of ['\0vite:esm-external-builtin-require:fs', '__vite-browser-external', '__vite-browser-external:fs', '__vite-optional-peer-dep:a:b']) assert.ok(filter(viteResolve, 'load')!.id!.test(id), id);
+  assert.ok(!filter(viteResolve, 'load')!.id!.test('/app/src/main.ts'));
   assert.deepEqual(hooks(callable('builtin:vite-react-refresh-wrapper', {})), ['resolveId', 'transform']);
   // A builtin plugin this does not know keeps every hook.
   assert.deepEqual(hooks(callable('builtin:something-new', {})), ['resolveId', 'load', 'transform', 'watchChange']);

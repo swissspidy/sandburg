@@ -296,26 +296,35 @@ module.exports = {
  * not have (rolldown's register_hook_usage) or for modules it leaves alone. Here each known plugin
  * keeps only its own hooks, with Vite's hook filters for the ids or code it can act on, as its Rust
  * source decides (rolldown 1.2): vite-json transforms *.json (is_json_ext); oxc-runtime resolves
- * `@oxc-project/runtime/helpers/…` (and `./…` from one of them) and loads what it resolved to;
- * replace transforms only code with one of its keys in it (its matcher's keys, unless objectGuards
- * adds typeof forms); vite-resolve has resolveId, load and watchChange; the React refresh wrapper
- * resolveId and transform. A filter is no narrower than the plugin's own test: the plugin decides.
+ * `@oxc-project/runtime/helpers/…` (and `./…` from one of them: a guard on the importer, which
+ * Vite's filters cannot test) and loads what it resolved to; replace transforms only code with one
+ * of its keys in it (its matcher's keys, unless objectGuards adds typeof forms); vite-resolve
+ * resolves, watches, and loads only its own virtual modules (browser externals, optional peer
+ * dependencies, external builtins' facades); the React refresh wrapper has resolveId and transform.
+ * A filter is no narrower than the plugin's own test: the plugin decides.
  */
 const ROLLDOWN_BUILTIN_HOOKS = `
 	// sandburg: see SOURCE_PATCHES
 	const sandburgReplace = plugin.name === "builtin:replace" && plugin._options && !plugin._options.objectGuards && plugin._options.values ? Object.keys(plugin._options.values) : null;
 	const sandburgHooks = {
 		"builtin:vite-json": { transform: { id: /\\.json(?:$|\\?)/ } },
-		"builtin:oxc-runtime": { resolveId: { id: /^(?:@oxc-project\\/runtime\\/helpers\\/|\\.\\/)/ }, load: { id: /^\\0@oxc-project\\+runtime@/ } },
+		"builtin:oxc-runtime": { resolveId: (id, importer) => id.startsWith("@oxc-project/runtime/helpers/") || (id.startsWith("./") && typeof importer === "string" && importer.startsWith("\\0@oxc-project+runtime@")), load: { id: /^\\0@oxc-project\\+runtime@/ } },
 		"builtin:replace": { transform: sandburgReplace && sandburgReplace.length ? { code: sandburgReplace } : true },
-		"builtin:vite-resolve": { resolveId: true, load: true, watchChange: true },
+		"builtin:vite-resolve": { resolveId: true, load: { id: /^(?:\\0vite:esm-external-builtin-require:|__vite-browser-external|__vite-optional-peer-dep)/ }, watchChange: true },
 		"builtin:vite-react-refresh-wrapper": { resolveId: true, transform: true }
 	}[plugin.name];
 	if (sandburgHooks) for (const key of ["resolveId", "load", "transform", "watchChange"]) {
 		if (!(key in wrappedPlugin)) continue;
 		const use = sandburgHooks[key];
 		if (!use) delete wrappedPlugin[key];
-		else if (use !== true) {
+		else if (typeof use === "function") {
+			const hook = wrappedPlugin[key];
+			const handler = typeof hook === "object" ? hook.handler : hook;
+			const guarded = function(...args) {
+				return use(...args) ? handler.apply(this, args) : null;
+			};
+			wrappedPlugin[key] = typeof hook === "object" ? { ...hook, handler: guarded } : guarded;
+		} else if (use !== true) {
 			const hook = wrappedPlugin[key];
 			wrappedPlugin[key] = typeof hook === "object" ? { ...hook, filter: use } : { handler: hook, filter: use };
 		}
