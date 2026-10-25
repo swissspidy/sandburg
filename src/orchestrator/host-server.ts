@@ -73,6 +73,31 @@ export function bundleHost(adapter: AdapterDescriptor): Promise<string> {
   return bundle;
 }
 
+/** The largest request body a route reads unless it allows more (HostRequest.body). */
+export const BODY_MAX = 1 << 20;
+
+/** A request body over its route's limit: answered with a 413, and the connection closed. */
+export class BodyTooLargeError extends Error {
+  constructor(max: number) {
+    super(`request body over ${max} bytes`);
+    this.name = 'BodyTooLargeError';
+  }
+}
+
+/** Reads a request's body, refusing it as soon as its Content-Length or the bytes received exceed `max`. */
+export async function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
+  const declared = req.headers['content-length'];
+  if (declared !== undefined && !(Number(declared) <= max)) throw new BodyTooLargeError(max);
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for await (const c of req) {
+    length += (c as Buffer).length;
+    if (length > max) throw new BodyTooLargeError(max);
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 export class HostServer {
   private server: Server;
   private sandboxes = new Map<string, AdapterDescriptor>();
@@ -174,18 +199,23 @@ export class HostServer {
       res.end(js);
     } else if (path.startsWith('/__sandburg/') && adapter.serve) {
       const url = new URL(req.url ?? '/', 'http://x');
-      const out = await adapter.serve({
-        method: req.method ?? 'GET',
-        path,
-        query: url.searchParams,
-        sandbox: id!,
-        headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : v])),
-        body: async () => {
-          const chunks: Buffer[] = [];
-          for await (const c of req) chunks.push(c as Buffer);
-          return Buffer.concat(chunks);
-        },
-      });
+      let out;
+      try {
+        out = await adapter.serve({
+          method: req.method ?? 'GET',
+          path,
+          query: url.searchParams,
+          sandbox: id!,
+          headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : v])),
+          body: (max) => readBody(req, max),
+        });
+      } catch (err) {
+        if (!(err instanceof BodyTooLargeError)) throw err;
+        // The rest of the body is not read: the connection closes after the answer.
+        res.writeHead(413, { ...headers, 'content-type': 'text/plain', connection: 'close' });
+        res.end('request body too large');
+        return;
+      }
       if (!out) {
         res.writeHead(404, { ...headers, 'content-type': 'text/plain' });
         res.end('not found');

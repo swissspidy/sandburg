@@ -97,7 +97,11 @@ export interface HostRequest {
   sandbox?: string;
   /** Request headers, lowercase names. */
   headers?: Record<string, string | undefined>;
-  body(): Promise<Buffer>;
+  /**
+   * The request's body, at most `max` bytes (the host server's default, BODY_MAX, without one): a
+   * larger one is refused with a 413 as soon as its Content-Length or the bytes received exceed it.
+   */
+  body(max?: number): Promise<Buffer>;
 }
 
 export interface HostResponse {

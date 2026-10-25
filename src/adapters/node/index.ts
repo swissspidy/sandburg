@@ -76,6 +76,8 @@ const compileWrites = new Map<string, { key: string; sandbox: string | null }>()
 /** Tokens are dropped after this long unused (the longest run's deadlines are well under it). */
 const TOKEN_TTL_MS = 6 * 60 * 60_000;
 export const DEV_CACHE_MAX = 256 << 20;
+/** The largest code the runtime sends to compile, or sources to scan (next dev's largest chunks are ~8 MB). */
+export const SOURCE_BODY_MAX = 32 << 20;
 
 /** A new capability token for the run whose page will be in `sandbox` (bound once its tab is known). */
 function issue<T extends { sandbox: string | null }>(into: Map<string, T>, grant: T, sandbox: Promise<string> | undefined): string {
@@ -181,10 +183,16 @@ function takeCacheWrite(key: string, token: string | null | undefined, sandbox: 
   return { ...grant, token: token! };
 }
 
-async function writeDevCache(grant: CacheWrite & { token: string }, body: () => Promise<Buffer>): Promise<boolean> {
+async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: number) => Promise<Buffer>): Promise<boolean> {
   const { key, dirs } = grant;
+  const restore = () => cacheWrites.set(grant.token, { key, dirs, sandbox: grant.sandbox });
+  // A body over the limit is answered by the host server (a 413).
+  const text = await body(DEV_CACHE_MAX).catch((err: unknown) => {
+    restore();
+    throw err;
+  });
   try {
-    const files = cacheEntries(JSON.parse((await body()).toString('utf8')), dirs);
+    const files = cacheEntries(JSON.parse(text.toString('utf8')), dirs);
     await mkdir(devCacheRoot(), { recursive: true });
     const file = join(devCacheRoot(), `${key}.json`);
     const tmp = `${file}.${tmpSuffix()}.tmp`;
@@ -192,7 +200,7 @@ async function writeDevCache(grant: CacheWrite & { token: string }, body: () => 
     await rename(tmp, file);
     return true;
   } catch {
-    cacheWrites.set(grant.token, { key, dirs, sandbox: grant.sandbox });
+    restore();
     return false;
   }
 }
@@ -605,7 +613,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     return { status: 200, headers: { 'content-type': 'application/wasm', 'cache-control': 'max-age=31536000, immutable' }, body: await readFile(SQLITE_WASM) };
   }
   if (req.path === '/__sandburg/tla-scan' && req.method === 'POST') {
-    const files = JSON.parse((await req.body()).toString('utf8')) as Record<string, string>;
+    const files = JSON.parse((await req.body(SOURCE_BODY_MAX)).toString('utf8')) as Record<string, string>;
     return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topLevelAwait: projectHasTopLevelAwait(files) }) };
   }
   // Code the runtime asks for by digest before it sends it (worker.ts): what was compiled before.
@@ -616,8 +624,9 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   }
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;
+    const code = (await req.body(SOURCE_BODY_MAX)).toString('utf8');
     try {
-      const [code, path, async, key] = [(await req.body()).toString('utf8'), req.query.get('path') ?? '/unknown.js', req.query.get('async') === '1', req.query.get('cache')];
+      const [path, async, key] = [req.query.get('path') ?? '/unknown.js', req.query.get('async') === '1', req.query.get('cache')];
       const out = compileForRuntime(code, path, kind, { asyncModules: async });
       if (key && granted(compileWrites, req.headers?.['x-sandburg-token'], key, req.sandbox)) void compileCache.record(key, kind, async, path, code, out);
       return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: out };
