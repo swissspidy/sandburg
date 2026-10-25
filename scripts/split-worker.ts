@@ -16,6 +16,9 @@ import { splitModule } from './split-module.ts';
 const WORKER = 'src/node-runtime/worker.ts';
 const at = (p: string) => `src/node-runtime/${p}`;
 
+/** The types of the messages that start a thread and that it sends (messages.ts imports nothing from threads.ts then). */
+splitModule(at('threads.ts'), at('messages.ts'), ['ThreadInit', 'VfsOp', 'ProjectSnapshot']);
+
 /** The messages between the page and runtimes, with the other way's (FromWorker, ToParent). */
 splitModule(WORKER, at('messages.ts'), ['ToWorker', 'SharedPreload']);
 
@@ -72,8 +75,16 @@ splitModule(
     'compileInPage',
     'connectPageCompiler',
     'installedFile',
+    'ahead',
+    'covered',
+    'aheadBytes',
+    'AHEAD_MAX',
+    'readAhead',
+    'withPushed',
+    'keepAhead',
+    'sentAhead',
   ],
-  "How a runtime gets files from the host and the page: bundles and files downloaded on the side,\nsynchronous requests, the file channel and its digests, and the page's compiler (ADR 0029).\nThe preload bundle and its shared copy stay in worker.ts, which init sets up.",
+  "How a runtime gets files from the host and the page: bundles and files downloaded on the side,\nsynchronous requests, files the host sends ahead, the file channel and its digests, and the page's\ncompiler (ADR 0029).\nThe preload bundle and its shared copy stay in worker.ts, which init sets up.",
 );
 
 splitModule(

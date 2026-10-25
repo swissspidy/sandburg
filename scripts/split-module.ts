@@ -473,6 +473,16 @@ export function splitModule(fromPath: string, toPath: string, names: string[], d
     for (const [path, specs] of targetImports) {
       if (fresh.includes(importLine(specs, path))) target = mergeImport(target, to, specs, path);
     }
+    // What the target imported of the moved names from the source is its own now.
+    const cuts: [number, number, string][] = [];
+    for (const imp of imports(parse(to, target).body)) {
+      if (resolveImport(to, imp.source) !== from) continue;
+      const keep = imp.specs.filter((s) => !(s.kind === 'named' && movedNames.has(s.imported)));
+      if (keep.length === imp.specs.length) continue;
+      const end = target.indexOf('\n', imp.node.end) + 1;
+      cuts.push([imp.node.start, end, keep.length ? importLine(keep.map((s) => ({ ...s, typeOnly: s.typeOnly || imp.typeOnly })), imp.source) : '']);
+    }
+    for (const [s, e, t] of cuts.sort((a, b) => b[0] - a[0])) target = target.slice(0, s) + t + target.slice(e);
     writeFileSync(to, `${target.replace(/\n*$/, '\n')}\n${moved.replace(/^\n+/, '').replace(/\n*$/, '\n')}`);
   } else {
     const header = doc ? `/**\n${doc.split('\n').map((l) => ` * ${l}`.trimEnd()).join('\n')}\n */\n` : '';
