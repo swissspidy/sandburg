@@ -59,8 +59,26 @@ esbuild shim, and microbenchmarks of the tools in Node showed where their time g
 
 ## Consequences
 
-- The branch against its starting point (`origin/quality-structure`), `scripts/bench.ts`, both sides
-  as refs, interleaved, medians: (to come)
+- The branch against its starting point (`origin/quality-structure`, c4c760c), `scripts/bench.ts`,
+  both sides as refs, interleaved, medians, warm (3 rounds; `node-express` 8):
+
+  | Fixture | Total | Start | Ready |
+  |---|---|---|---|
+  | corpus/012-vite-react (Vite 6) | 2.10 → 1.50 s (−28%) | 0.53 → 0.25 s | 0.55 → 0.44 s |
+  | corpus/003-vite-react (Vite 6, Tailwind) | 2.75 → 2.22 s (−19%) | 0.77 → 0.48 s | 0.79 → 0.65 s |
+  | vite-react-counter | 1.75 → 1.69 s (−4%) | 0.77 → 0.65 s | 0.33 → 0.39 s |
+  | svelte-vite | 2.06 → 1.93 s (−7%) | 0.82 → 0.63 s | 0.46 → 0.44 s |
+  | solid-start-app | 3.66 → 3.64 s (−1%) | 0.80 → 0.69 s | 1.61 → 1.71 s |
+  | angular-tasks | 5.21 → 5.17 s (−1%) | 3.60 → 3.44 s | 0.45 → 0.47 s |
+  | next-app-router | 5.11 → 5.20 s (+2%) | 1.21 → 1.12 s | 2.59 → 2.75 s |
+  | node-express | 0.67 → 0.67 s (+0%) | 0.16 → 0.16 s | 0.12 → 0.10 s |
+
+  `next-app-router`'s first round had no seed on either side (9.8 and 9.2 s), its other rounds
+  4.7-5.2 s on both. Cold runs (first runs: empty `.sandburg/`, npm's cache warm), 3 rounds:
+  `corpus/012-vite-react` 11.05 → 11.55 s, `corpus/003-vite-react` 13.41 → 13.74 s,
+  `vite-react-counter` 5.82 → 5.75 s; within the noise of npm's install and the 5 s pre-bundle (the
+  host transforms alone measured 11.39 → 10.64 s for `corpus/012-vite-react`, the config bundles
+  against them 10.88 → 11.09 s over 5 rounds, ready 5.67 → 5.46 s).
 - Each change's own A/B:
   - host transforms (532b928, 664ca2c, a3280f1), against c4c760c, 3 rounds: warm
     `corpus/003-vite-react` 2.81 → 2.64 s (ready 0.87 → 0.64 s), `corpus/009-vite-react` 1.75 →
@@ -72,7 +90,9 @@ esbuild shim, and microbenchmarks of the tools in Node showed where their time g
   - config bundles (e1f6d71), against a3280f1, 4 rounds, warm: `corpus/012-vite-react` 1.74 → 1.57 s
     (start 0.51 → 0.24 s), `corpus/003-vite-react` 2.45 → 2.16 s (start 0.77 → 0.43 s),
     `vite-react-counter` 1.67 → 1.56 s (start 0.71 → 0.59 s), `lit-vite` (no config file) 1.26 →
-    1.30 s. (meta-frameworks: to come)
+    1.30 s; 3 rounds: `svelte-vite` 2.08 → 1.87 s (start 0.82 → 0.68 s), `solid-start-app` 3.82 →
+    3.69 s (start 0.93 → 0.67 s), `sveltekit-app` 3.24 → 3.27 s (start 1.27 → 1.17 s),
+    `react-router-app` 2.68 → 2.76 s (start 1.20 → 1.16 s; its rounds spread over 2.5-3.5 s).
 - CPU: a transform's work moves from the browser's WebAssembly to the host's native code, ~10x less.
 - **Behaviour changes:**
   - An app's esbuild `transform` (esbuild 0.25.0-0.28.2, the listed options) is answered by
@@ -140,5 +160,7 @@ esbuild shim, and microbenchmarks of the tools in Node showed where their time g
   `WebAssembly.Module` (ADR 0037 compiled one per thread) would help only seedless runs.
 - **esbuild's synchronous API** (`transformSync`, `buildSync`) could be offered with Go on a thread and
   `Atomics.wait`, as esbuild does in Node; the thread prototype above is most of it.
-- **oxc's per-module transforms (Vite 8) from the transform cache**: they read tsconfig files in Rust,
-  which a key would have to cover.
+- **oxc's per-module transforms (Vite 8) from the transform cache**: Vite's `transformWithOxc` took
+  165 ms (67 calls) of a warm `solid-start-app` run, 30 ms of `astro-app`'s and 52 ms of
+  `nuxt-app`'s (marks around each call); the binding reads tsconfig files itself, which a key would
+  have to cover (its result lists them, `tsconfigFilePaths`).
