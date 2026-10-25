@@ -43,8 +43,9 @@ interface Init {
 
 /** In the worker: loads npm once, then resolves each directory it is sent. */
 async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
-  // As npm's CLI does (bin/npm-cli.js): its modules load from V8's code cache.
-  enableCompileCache?.();
+  // As npm's CLI does (bin/npm-cli.js): its modules load from V8's code cache. In .sandburg/ (beside
+  // the installs), as the CLI's own (bin/sandburg.js), not in the temporary directory other users share.
+  enableCompileCache?.(process.env.NODE_COMPILE_CACHE || join(configDir, '..', '..', 'node-compile-cache'));
   const require = createRequire(join(npmRoot, 'package.json'));
   // npm's configuration also reads process.argv: only the flags count, as on the command line.
   process.argv = [process.execPath, join(npmRoot, 'bin', 'npm-cli.js')];
