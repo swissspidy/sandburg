@@ -86,6 +86,12 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   began, and a file that ends with them is no change. The Angular CLI writes its `.tsbuildinfo` twice
   per start, ending as it was: every warm run read its 4.8 MB cache back at dispose to find it
   unchanged.
+- **A hydration signal for SvelteKit** (`inputSafe` in `src/host/settle.ts`, ADR 0036): on a page
+  with SvelteKit's dev script (`__sveltekit_dev`), the checks wait until an element has Svelte's dev
+  `__svelte_meta`, which Svelte sets on each element in the one pass that hydrates the page. Once its
+  modules were served faster, SvelteKit's requests could pause for 100 ms before it hydrated, and the
+  hydration check lost its first click in 6 of 8 warm runs on one machine (1.2 s instead of 30-40 ms;
+  0 of 8 on origin/main).
 
 ## Consequences
 
@@ -94,20 +100,23 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
 
   | Fixture | Total | Start | Ready | Checks |
   |---|---|---|---|---|
-  | solid-start-app | 5.50 → 2.93 s (−47%) | 0.74 → 0.68 s | 3.01 → 1.23 s | 1.49 → 0.65 s |
-  | nuxt-app | 5.56 → 4.26 s (−23%) | 0.58 → 0.46 s | 3.62 → 2.64 s | 0.95 → 0.75 s |
-  | astro-app | 3.98 → 3.08 s (−22%) | 1.01 → 0.92 s | 2.15 → 1.40 s | 0.39 → 0.39 s |
-  | sveltekit-app | 3.10 → 2.74 s (−12%) | 1.20 → 1.04 s | 0.93 → 0.76 s | 0.58 → 0.50 s |
-  | react-router-app | 2.21 → 2.04 s (−7%) | 0.90 → 0.87 s | 0.56 → 0.42 s | 0.43 → 0.40 s |
-  | angular-tasks | 4.08 → 4.12 s (+1%) | 2.72 → 2.78 s | 0.39 → 0.37 s | 0.39 → 0.39 s |
-  | vite-react-counter | 1.43 → 1.38 s (−4%) | 0.56 → 0.59 s | 0.36 → 0.25 s | 0.29 → 0.30 s |
-  | lit-vite | 1.05 → 1.03 s (−2%) | 0.48 → 0.42 s | 0.17 → 0.20 s | 0.22 → 0.21 s |
+  | solid-start-app | 6.13 → 3.22 s (−48%) | 0.87 → 0.82 s | 3.39 → 1.33 s | 1.51 → 0.72 s |
+  | nuxt-app | 5.68 → 4.55 s (−20%) | 0.71 → 0.53 s | 3.44 → 2.97 s | 1.10 → 0.49 s |
+  | astro-app | 4.23 → 3.40 s (−20%) | 1.14 → 1.06 s | 2.26 → 1.49 s | 0.45 → 0.41 s |
+  | sveltekit-app | 3.33 → 2.98 s (−10%) | 1.30 → 1.20 s | 1.14 → 0.94 s | 0.55 → 0.44 s |
+  | react-router-app | 2.59 → 2.35 s (−9%) | 1.02 → 1.02 s | 0.68 → 0.48 s | 0.48 → 0.44 s |
+  | angular-tasks | 4.56 → 4.39 s (−4%) | 3.09 → 2.99 s | 0.47 → 0.40 s | 0.41 → 0.41 s |
+  | vite-react-counter | 1.63 → 1.59 s (−3%) | 0.72 → 0.70 s | 0.35 → 0.30 s | 0.32 → 0.34 s |
+  | lit-vite | 1.22 → 1.15 s (−6%) | 0.47 → 0.48 s | 0.17 → 0.23 s | 0.24 → 0.23 s |
 
-  All 48 runs passed. angular-tasks is within noise here (±3% between A/B series); the builtin hooks
-  commit's own A/B had it at −6% (start 2.79 → 2.64 s). solid-start-app's install phase is 0.20 →
-  0.29 s for its larger dev-server cache (the transform cache).
+  All 48 runs passed. This machine ran ~10-15% slower than the one the commits' own A/Bs ran on (both
+  sides). solid-start-app's install phase is 0.21 → 0.34 s for its larger dev-server cache (the
+  transform cache). lit-vite's ready was 30-60 ms longer in three of four series (0.17 → 0.20-0.25 s)
+  while its start was shorter; not explained (it has no route a changed hook serves differently).
 
-  Cold (`.sandburg/` removed, npm's cache warm; install included, which moves with npm):
+  Cold (`.sandburg/` removed, npm's cache warm; install included, which moves with npm; measured at
+  51c2806, before Nitro's rollup cache, the written-over cache file and SvelteKit's signal, which
+  change little in a first run):
 
   | Fixture | Total | Start | Ready | Checks |
   |---|---|---|---|---|
@@ -140,6 +149,7 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   | jiti's cache | nuxt-app | 4.42 → 4.28 s (−3%, n=6) | start 0.61 → 0.48 s |
   | Nitro's rollup cache | nuxt-app | 4.09 → 3.81 s (−7%, n=6) | checks 0.73 → 0.46 s; Nitro's build 703 → ~280 ms |
   | Written over and back | angular-tasks | 3.88 → 3.81 s (−2%, n=5) | dispose 0.06 → 0.01 s |
+  | SvelteKit's signal | sveltekit-app | 3.92 → 3.04 s (−23%, n=5) | checks 1.47 → 0.41 s (no lost click in 10 runs) |
 
 - The transform cache grows a SolidStart project's stored dev-server cache from 0.8 to 6.1 MB (213
   entries), and Nitro's rollup cache a Nuxt project's by 5.3 MB: mount +0.03 s and install +0.04 s in
@@ -165,6 +175,8 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   - `globalThis[Symbol.for('sandburg.transformCache')]` exists in the runtime.
   - A restored dev-server cache whose files end the run with the bytes they started with is not read
     back at dispose, however often they were written.
+  - A SvelteKit app's functional checks start once Svelte has hydrated its page (up to 3 s), not once
+    its servers have been quiet for 100 ms.
 
 ## Security
 
@@ -177,6 +189,8 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   an entry whose name is the hash of the source it loads, and rollup only a cached module whose
   original code equals what its load hook returns. A plugin's file name cannot leave its directory.
 - The host does not read, parse or run what the entries hold; nothing new runs on the host.
+- The SvelteKit signal reads the app frame's window and elements (the same origin, as ADR 0036's
+  signals): a value the app sets can only make the checks start sooner or later, within 3 s.
 - The source patches change no boundary: they shorten waits, drop calls that returned nothing, and
   stop a spurious event. Rolldown's builtin plugins see the same calls that can produce output.
 - Tests: `test/unit/transform-cache.test.ts` (a hit only for the same module, environment and source;
@@ -186,7 +200,9 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   changes do; each builtin plugin's hooks and filters, and an unknown plugin keeps all; rollup's Task
   takes a cache object only; Nitro's watcher starts from the stored cache, writes it only when a module
   changed, and drops it after a failed build), `test/unit/vfs-track.test.ts` (written over and back is
-  no change, in place or not; a new file is a change even if written twice), and an e2e test in
+  no change, in place or not; a new file is a change even if written twice), `test/runtime/settle.test.ts`
+  (a SvelteKit page is not safe until an element has `__svelte_meta`; an app getter cannot make the
+  host read more than the app's window, as before), and an e2e test in
   `test/e2e/vite-frameworks.test.ts`: a SolidStart project's cache holds its compile of src/app.tsx,
   and a copy with that file edited gets a cache of its own, with only compiles of its own source,
   while the first project's is unchanged.
