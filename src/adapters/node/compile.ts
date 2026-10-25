@@ -216,7 +216,7 @@ export async function compileForRuntimeAsync(
  */
 function* compileSteps(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean }): Generator<TransformStep, string, string> {
   const out = yield* compileOnce(code, path, kind, opts, false);
-  return out.startsWith(ESM_MARKER) && collidesWithWrapper(code, out) ? yield* compileOnce(code, path, kind, opts, true) : out;
+  return out.startsWith(ESM_MARKER) && collidesWithWrapper(out) ? yield* compileOnce(code, path, kind, opts, true) : out;
 }
 
 const ESM_MARKER = '/*sandburg:esm*/';

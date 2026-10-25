@@ -391,7 +391,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
   const convert = async (code: string) => {
     const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
-    return esm && collidesWithWrapper(code, out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+    return esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
   };
   try {
     return mark(await convert(source));
