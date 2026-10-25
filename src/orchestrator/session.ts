@@ -28,7 +28,7 @@ import type {
 import type { HostApi, RpcResult } from '../host/types.ts';
 import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.ts';
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
-import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
+import { EgressGateway, newEgressStats, originMatcher, record, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
 import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { SANDBURG_VERSION } from '../version.ts';
@@ -436,8 +436,12 @@ export class Session {
 
       // The host's half of the install (npm, on a cold machine) starts now, while the tab and the host
       // page load: the install phase waits for it.
+      // The sandbox the run's page is in, once its tab is taken: what the install issues to the run is bound to it.
+      let bindSandbox: (id: string) => void = () => {};
+      const sandbox = new Promise<string>((resolve) => (bindSandbox = resolve));
       const hostInstall = adapter?.hostInstall?.(project, (line) => run.runtimeLogs.push(line), {
         seed: options.seed,
+        sandbox,
         installIn: options.installIn,
         runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
       });
@@ -467,6 +471,7 @@ export class Session {
       const runtimeAllow = originMatcher(adapter!.egress);
       // The spare tab, with its host page loaded or loading; the next run's opens meanwhile.
       tab = await this.takeTab(adapter!, timeouts.load);
+      bindSandbox(tab.id);
       // Not for a seed run (it runs beside an app), nor a held one.
       if (!options.seed && !options.hold) this.prepareTab(adapter!);
       ({ context, proxy } = tab);
@@ -763,7 +768,7 @@ function recordRequestFailures(context: BrowserContext, run: RunState): void {
   context.on('requestfailed', (req) => {
     const reason = req.failure()?.errorText ?? 'failed';
     if (/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(reason) || !run.network || run.network.failed.length >= 100) return;
-    run.network.failed.push({ url: req.url(), method: req.method(), reason: `browser: ${reason}` });
+    record(run.network.failed, { url: req.url(), method: req.method(), reason: `browser: ${reason}` });
   });
 }
 

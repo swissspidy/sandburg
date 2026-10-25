@@ -13,6 +13,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Session } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
+import { createHash } from 'node:crypto';
+import { node } from '../../src/adapters/node/index.ts';
+import { TRANSFORM_VERSION } from '../../src/adapters/node/install.ts';
+import { NODE_VERSION } from '../../src/node-runtime/version.ts';
+import type { Checks } from '../../src/index.ts';
 
 const fixture = (name: string) => fileURLToPath(new URL(`../../fixtures/${name}`, import.meta.url));
 const outDir = fileURLToPath(new URL('../../.sandburg/test-runs', import.meta.url));
@@ -36,28 +41,64 @@ async function nextSeeds(): Promise<Map<string, string[]>> {
   return seeds;
 }
 
+/** The key of a Next.js seed (nextSeedKey in src/adapters/node/index.ts): a digest of public inputs. */
+function seedKey(resolved: Record<string, string>, router: 'app' | 'pages'): string {
+  const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
+  return createHash('sha256').update(`next-seed\0${router === 'app' ? '' : `${router}\0`}${JSON.stringify(versions)}\0${NODE_VERSION}\0${TRANSFORM_VERSION}`).digest('hex').slice(0, 24);
+}
+
 // First: later tests start from the seed it stores.
-test('the first Next.js app of each router starts a seed run beside it, which stores all of webpack\'s cache', async () => {
+test('the first Next.js app of each router starts a seed run beside it, which stores all of webpack\'s cache, and the app cannot write it first', async () => {
   for (const file of (await nextSeeds()).keys()) await Promise.all([rm(file), rm(`${file}.bin`, { force: true })]);
+  // The versions each app's install resolved, from which its page could compute its seed's key.
+  const resolved = new Map<string, Record<string, string>>();
+  const hostInstall = node.hostInstall!;
+  node.hostInstall = async (project, log, options) => {
+    const host = (await hostInstall.call(node, project, log, options)) as { resolved: Record<string, string> };
+    if (!options?.seed) resolved.set(project.name, host.resolved);
+    return host as never;
+  };
+  const statuses: number[] = [];
   const own = new Session();
   await own.open();
   try {
     for (const dir of [fixture('next-app-router'), fixture('next-pages-router')]) {
-      const result = await own.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
+      const project = await loadProject(dir);
+      const checks = { ...((await import(`${dir}/checks.spec.ts`)) as { default: Checks }).default };
+      if (dir.endsWith('next-pages-router')) {
+        // The app runs beside its own seed run, whose key is issued once the seed run installs: its page
+        // posts a planted cache under that key until it is taken, or for 15 s.
+        checks['posts a cache under the seed key of its versions'] = async ({ app }) => {
+          const key = seedKey(resolved.get(project.name)!, 'pages');
+          const body = JSON.stringify({ '.next/dev/cache/webpack/client-development/index.pack.gz': 'planted', '.next/dev/cache/webpack/server-development/index.pack.gz': 'planted' });
+          for (const end = Date.now() + 15_000; Date.now() < end && !statuses.includes(200); ) {
+            statuses.push(await app.evaluate(([k, b]) => fetch(`/__sandburg/dev-cache/${k}`, { method: 'POST', body: b }).then((r) => r.status), [key, body] as const));
+            await new Promise((r) => setTimeout(r, 250));
+          }
+        };
+      }
+      const result = await own.run(project, { checks, outDir });
       assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
     }
   } finally {
+    node.hostInstall = hostInstall;
     // Waits for the seed runs.
     await own.close();
   }
+  assert.ok(statuses.length > 0 && statuses.every((s) => s === 403), JSON.stringify(statuses));
   // One for the App Router, one for the Pages Router (webpack's names for modules differ between them).
-  const seeds = [...(await nextSeeds()).values()];
+  const stored = await nextSeeds();
+  const seeds = [...stored.values()];
   assert.equal(seeds.length, 2);
   for (const seed of seeds) {
     for (const compiler of ['client', 'server']) assert.ok(seed.includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), seed.join('\n'));
     // Not while webpack was still writing a pack (under <name>_).
     assert.ok(!seed.some((p) => p.endsWith('_')), seed.join('\n'));
   }
+  // The seed run's own write landed, under the key the app knew.
+  const pages = [...stored.keys()].find((file) => file.endsWith(`${seedKey(resolved.get('next-pages-router')!, 'pages')}.json`));
+  assert.ok(pages, [...stored.keys()].join('\n'));
+  assert.ok(!(await readFile(pages, 'utf8')).includes('planted'));
 });
 
 test('an app cannot store a seed: the host refuses a cache under a seed\'s key from its run', async () => {
@@ -196,7 +237,9 @@ const typescript7 = (name: string, source: string) =>
       }),
       'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'nodenext', strict: true, noEmit: true }, include: ['*.ts'] }),
       'greeting.ts': source,
-      'server.js': "import { createServer } from 'node:http';\ncreateServer((q, s) => s.end('<h1>type-checked</h1>')).listen(3000);\n",
+      // A page with its type, as dev servers send it: without one, the runtime waits up to 60 s for a
+      // port that answers with HTML before it takes the first (pagePort).
+      'server.js': "import { createServer } from 'node:http';\ncreateServer((q, s) => s.writeHead(200, { 'content-type': 'text/html' }).end('<h1>type-checked</h1>')).listen(3000);\n",
     },
     { name, path: name },
   );
