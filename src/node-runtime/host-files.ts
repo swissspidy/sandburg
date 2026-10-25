@@ -5,6 +5,7 @@
  * The preload bundle and its shared copy stay in worker.ts, which init sets up.
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
+import { traceTransfer } from '../transfer-trace.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
 let installedRequests = 0;
@@ -46,7 +47,9 @@ export function prefetchedBody(url: string): Uint8Array | null {
   if (!sab) return null;
   delete prefetched[url];
   const state = new Int32Array(sab, 0, 2);
+  const t0 = performance.now();
   if (Atomics.wait(state, 0, 0, 60_000) === 'timed-out' || Atomics.load(state, 0) !== 1) return null;
+  traceTransfer({ hop: 'runtime waits for prefetch', what: url, bytes: Atomics.load(state, 1), encoding: 'shared', ms: performance.now() - t0 });
   return new Uint8Array(sab, 8, Atomics.load(state, 1));
 }
 
@@ -108,9 +111,15 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
       // A bundle in shared memory (the page downloaded it) is read there.
       own = sharedFile(key);
     }
-    if (own) return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
+    if (own) {
+      noteRead(key);
+      return { status: 200, body: binary ? own : new TextDecoder().decode(own) };
+    }
     const hit = preloaded?.get(key);
-    if (hit) return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+    if (hit) {
+      noteRead(key);
+      return { status: 200, body: binary ? hit.slice() : new TextDecoder().decode(hit) };
+    }
     const side = downloadedOnSide(key);
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
     const early = sentAhead(key, url);
@@ -119,6 +128,34 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
     if (res) return { status: res.status, body: binary ? res.body : new TextDecoder().decode(res.body) };
   }
   return requestSync(url, binary);
+}
+
+/**
+ * The preload bundle's files this runtime read, told to the host in batches over the file channel:
+ * a bundle holds every file runs of the install ever loaded (and what was predicted for its first
+ * run), and a warm next-app-router run read 16 of its 43 MB; the host's next bundle for the install
+ * holds what runs read (see markRead in adapters/node/index.ts).
+ */
+const reads = new Set<string>();
+let unreported: string[] = [];
+let reportTimer: ReturnType<typeof setTimeout> | null = null;
+/** Files per report: a report is one frame of the file channel (MAX_FRAME, 64 KB). */
+const REPORT_BATCH = 100;
+
+function noteRead(key: string): void {
+  if (!channel || !installKey || reads.has(key)) return;
+  reads.add(key);
+  unreported.push(key);
+  if (unreported.length >= REPORT_BATCH) reportReads();
+  else reportTimer ??= nativeSetTimeout(reportReads, 500);
+}
+
+function reportReads(): void {
+  if (reportTimer) clearTimeout(reportTimer);
+  reportTimer = null;
+  const keys = unreported;
+  unreported = [];
+  if (keys.length) channel?.post({ note: `${base}/nm/${installKey}/read?files=${encodeURIComponent(keys.join('\n'))}` });
 }
 
 /**
@@ -219,7 +256,9 @@ export function requestSync(url: string, binary: boolean): { status: number; bod
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
+  const t0 = performance.now();
   xhr.send();
+  traceTransfer({ hop: 'host→runtime sync xhr', what: url, bytes: binary ? ((xhr.response as ArrayBuffer | null)?.byteLength ?? 0) : xhr.responseText.length, encoding: binary ? 'binary' : 'text', ms: performance.now() - t0 });
   return { status: xhr.status, body: binary ? new Uint8Array(xhr.response as ArrayBuffer) : xhr.responseText };
 }
 

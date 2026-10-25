@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { HostRequest, HostResponse } from '../types.ts';
+import { traceTransfer } from '../transfer-trace.ts';
 
 export const FILE_CHANNEL_PATH = '/__sandburg/files';
 /** Larger bodies are answered with status 0 (over a WebSocket, 40 MB took 4x as long as over HTTP). */
@@ -52,21 +53,23 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
     if (opcode === 0x8) return void socket.end(frame(0x8, Buffer.alloc(0)));
     if (opcode === 0x9) return void socket.write(frame(0xa, payload));
     if (opcode !== 0x1 && opcode !== 0x2) return;
-    const reply = (id: number) => (res: { status: number; body: Buffer }) => {
+    const t0 = performance.now();
+    const reply = (id: number, what: string) => (res: { status: number; body: Buffer }) => {
       const head = Buffer.alloc(8);
       head.writeUInt32LE(id >>> 0, 0);
       head.writeUInt32LE(res.status, 4);
       if (!socket.destroyed) socket.write(frame(0x2, Buffer.concat([head, res.body])));
+      traceTransfer({ hop: 'host→runtime ws', what, bytes: res.body.length, encoding: 'binary', ms: performance.now() - t0 });
     };
     if (opcode === 0x2) {
       if (payload.length < 8 || 8 + payload.readUInt32LE(4) > payload.length) return void socket.destroy();
       const length = payload.readUInt32LE(4);
       const target = payload.subarray(8, 8 + length).toString('utf8');
-      return void answerPost(target, payload.subarray(8 + length), serve, channel).then(reply(payload.readUInt32LE(0)));
+      return void answerPost(target, payload.subarray(8 + length), serve, channel).then(reply(payload.readUInt32LE(0), target));
     }
     const text = payload.toString('utf8');
     const space = text.indexOf(' ');
-    void answer(text.slice(space + 1), serve, channel).then(reply(Number(text.slice(0, space))));
+    void answer(text.slice(space + 1), serve, channel).then(reply(Number(text.slice(0, space)), text.slice(space + 1)));
   });
 }
 

@@ -93,6 +93,30 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
   }
 });
 
+test('two sessions in one process run apps side by side on one .sandburg/, each in its own browser', async () => {
+  const sessions = [new Session(), new Session()];
+  await Promise.all(sessions.map((s) => s.open()));
+  try {
+    // The same install, the same dev-cache key's neighbours, the same host modules: only the heading differs.
+    const results = await Promise.all(
+      sessions.map((session, i) =>
+        session.run(variant(`twin-${i}`, { 'src/App.tsx': (counter.files['src/App.tsx'] as string).replace('Counter and todos', `Twin ${i}`) }), {
+          outDir,
+          checks: {
+            'renders its own heading': async ({ app, expect }) => {
+              await expect(app.getByRole('heading', { level: 1 })).toHaveText(`Twin ${i}`);
+            },
+          },
+        }),
+      ),
+    );
+    for (const r of results) assert.equal(r.status, 'passed', JSON.stringify([r.failure, r.checks.filter((c) => c.status !== 'passed')]));
+    assert.notEqual(results[0].runId, results[1].runId);
+  } finally {
+    await Promise.all(sessions.map((s) => s.close()));
+  }
+});
+
 /** A loopback TCP server that counts connections; the app must never reach it. */
 async function canary(): Promise<{ server: Server; port: number; connections: () => number }> {
   let count = 0;

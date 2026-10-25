@@ -24,16 +24,32 @@ export interface BridgeReply {
 let handler: ((r: BridgedRequest, reply: BridgeReply) => void) | null = null;
 let listening = false;
 
-/** Registers the service worker and keeps handing it a port for app requests. */
+let registered: Promise<ServiceWorkerRegistration> | null = null;
+
+/**
+ * Registers the service worker, once, and resolves when it is active. The host page does as it
+ * loads: the workers it starts from then on (the runtime's, see adapters/node/browser.ts) are the
+ * service worker's clients, matched by their own URL. The page itself is not until it gives the
+ * service worker a port for an app (which claims it then).
+ */
+export function registerServiceWorker(): Promise<ServiceWorkerRegistration> {
+  registered ??= (async () => {
+    // A page may name its own service worker (the static demos register theirs under their path).
+    const sw = (globalThis as { __sandburgServiceWorker?: { url: string; scope: string } }).__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
+    await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
+    return navigator.serviceWorker.ready;
+  })();
+  registered.catch(() => (registered = null));
+  return registered;
+}
+
+/** Registers the service worker and keeps handing it a port for app requests; resolves once it controls the page. */
 export async function connectServiceWorker(onRequest: (r: BridgedRequest, reply: BridgeReply) => void): Promise<void> {
   handler = onRequest;
-  // A page may name its own service worker (the static demos register theirs under their path).
-  const sw = (globalThis as { __sandburgServiceWorker?: { url: string; scope: string } }).__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
-  const registration = await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
-  await navigator.serviceWorker.ready;
-  if (!navigator.serviceWorker.controller) {
-    await new Promise<void>((resolve) => navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true }));
-  }
+  const registration = await registerServiceWorker();
+  const controlled = navigator.serviceWorker.controller
+    ? null
+    : new Promise<void>((resolve) => navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true }));
   const give = () => {
     const channel = new MessageChannel();
     const port = channel.port1;
@@ -51,4 +67,5 @@ export async function connectServiceWorker(onRequest: (r: BridgedRequest, reply:
     });
   }
   give();
+  await controlled;
 }

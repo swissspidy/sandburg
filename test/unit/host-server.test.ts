@@ -78,7 +78,7 @@ test('a sandbox that ended is not served any more', async () => {
 test('requests from another site are refused before the adapter sees them', async () => {
   served.length = 0;
   for (const site of ['same-site', 'cross-site']) {
-    for (const path of ['/', '/__sandburg/host.js', '/__sandburg/dev-cache/0123456789abcdef01234567', '/__sandburg/compile', '/__sw__.js']) {
+    for (const path of ['/', '/__sandburg/host.js', '/__sandburg/dev-cache/0123456789abcdef01234567', '/__sandburg/compile', '/__sw__.js', '/__sandburg/node-worker.js', `/__sandburg/runtime/${'0'.repeat(64)}.mjs`]) {
       for (const method of ['GET', 'POST']) {
         const res = await get(path, { host: hostOf(one), 'sec-fetch-site': site, origin: two }, method);
         assert.deepEqual(res, { status: 403, body: 'requests from another site are refused' }, `${method} ${path} (${site})`);
@@ -180,4 +180,29 @@ test('a request the host fails to answer gets a 500 without the error: its detai
   } finally {
     await host.close();
   }
+});
+
+test('stashed arguments are served once, to their own sandbox, by GET only', async () => {
+  const path = host.stash('one', JSON.stringify([{ index: { 'node_modules/a/index.js': 1 } }]));
+  // Another sandbox's origin (it knows the path), another site, a POST: not found.
+  assert.equal((await get(path, { host: hostOf(two) })).status, 404);
+  assert.equal((await get(path, { host: hostOf(one), 'sec-fetch-site': 'same-site' })).status, 403);
+  assert.equal((await get(path, { host: hostOf(one) }, 'POST')).status, 404);
+  // A guessed id.
+  assert.equal((await get(`${path.slice(0, -4)}AAAA`, { host: hostOf(one) })).status, 404);
+  const first = await get(path, { host: hostOf(one), 'sec-fetch-site': 'same-origin' });
+  assert.equal(first.status, 200);
+  assert.deepEqual(JSON.parse(first.body), [{ index: { 'node_modules/a/index.js': 1 } }]);
+  assert.equal((await get(path, { host: hostOf(one) })).status, 404);
+  // Nothing reached the adapter.
+  assert.ok(!served.some((s) => s.includes('/__sandburg/args/')));
+});
+
+test('a sandbox unregistered drops its stashed arguments', async () => {
+  const three = host.register('three', adapter('three'));
+  const path = host.stash('three', '[1]');
+  host.unregister('three');
+  host.register('three', adapter('three'));
+  assert.equal((await get(path, { host: hostOf(three) })).status, 404);
+  host.unregister('three');
 });

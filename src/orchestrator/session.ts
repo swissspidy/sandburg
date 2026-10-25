@@ -36,6 +36,7 @@ import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
 import { RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
+import { traceConsole, traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 
 export interface SessionOptions {
   /** Directory for the HTTP cache. Default: .sandburg/cache */
@@ -528,8 +529,17 @@ export class Session {
         await tab!.loaded;
         return true;
       }).catch(() => false);
-      const host = <K extends keyof HostApi>(name: K, ...args: Parameters<HostApi[K]>) =>
-        page.evaluate(([n, a]) => (window.__sandburg[n] as (...x: unknown[]) => Promise<RpcResult<unknown>>)(...a), [name, args] as const).then(unwrap);
+      // Large arguments (the install data) are fetched by the page from the host server (HostServer.stash).
+      const host = <K extends keyof HostApi>(name: K, ...args: Parameters<HostApi[K]>) => {
+        const json = args.length && !(args as unknown[]).includes(undefined) ? JSON.stringify(args) : '';
+        const stash = json.length > STASH_ABOVE ? this.host.stash(tab!.id, json) : null;
+        return traced(`evaluate ${name}`, stash ? [stash] : args, () =>
+          page.evaluate(
+            async ([n, a, from]) => (window.__sandburg[n] as (...x: unknown[]) => Promise<RpcResult<unknown>>)(...(from ? ((await (await fetch(from)).json()) as unknown[]) : a)),
+            [name, stash ? [] : args, stash] as const,
+          ),
+        ).then(unwrap);
+      };
 
       if (ok) {
         const steps = async () => {
@@ -884,6 +894,7 @@ class RunState {
     const sourceOf = (url: string): 'app' | 'host' =>
       url.startsWith(`${origin}/__sandburg/`) || url.startsWith(`${origin}/__sw__`) || url.includes('esbuild-wasm') || url.startsWith('https://registry.npmjs.org/') ? 'host' : 'app';
     page.on('console', (msg) => {
+      if (tracingTransfers && msg.type() === 'debug' && traceConsole(msg.text())) return;
       if (this.console.length >= 500) return;
       const url = msg.location().url;
       this.console.push({ source: sourceOf(url), type: msg.type(), text: msg.text().slice(0, 2000), url: url || undefined });
@@ -971,6 +982,20 @@ class RunState {
     await writeFile(join(outDir, 'result.json'), JSON.stringify(result, null, 2) + '\n');
     return result;
   }
+}
+
+/** Arguments larger than this (as JSON) go to the host page from the host server, not through page.evaluate. */
+const STASH_ABOVE = 16 << 10;
+
+/** A call into the host page, its arguments' and result's sizes traced (SANDBURG_TRACE_TRANSFERS: JSON, as Playwright serializes them). */
+async function traced<T>(what: string, args: unknown, call: () => Promise<T>): Promise<T> {
+  if (!tracingTransfers) return call();
+  const t0 = performance.now();
+  const out = await call();
+  const ms = performance.now() - t0;
+  traceTransfer({ hop: 'host→page evaluate', what, bytes: JSON.stringify(args ?? null).length, encoding: 'json', ms });
+  traceTransfer({ hop: 'page→host evaluate', what, bytes: JSON.stringify(out ?? null).length, encoding: 'json', ms });
+  return out;
 }
 
 function unwrap<T>(result: RpcResult<T>): T {

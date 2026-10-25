@@ -9,6 +9,8 @@ import { chromium, type Browser, type Page } from 'playwright-core';
 import { readFile } from 'node:fs/promises';
 import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SPARE_SCRIPT, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
 import { RUNTIME_LIBS, type RuntimeLib } from '../../src/node-runtime/libs.ts';
+import { RUNTIME_MODULE, runtimeBootstrap } from '../../src/node-runtime/runtime-module.ts';
+import { createHash } from 'node:crypto';
 import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
 import type { HostRequest } from '../../src/types.ts';
 import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from '../../src/adapters/node/compile.ts';
@@ -109,6 +111,8 @@ export class RuntimeHarness {
   asked: string[] = [];
   /** Answer /__sandburg/node-spare.js with a 404, as a host that does not serve it. */
   noSpareScript = false;
+  /** Answer /__sandburg/node-worker.js with the runtime's script itself, as a static deployment does (scripts/pages/build.ts). */
+  classicRuntime = false;
 
   /** The host's answer for an install's file or its preload bundle, as the node adapter serves them. */
   private installed(path: string): Buffer | null {
@@ -153,6 +157,8 @@ export class RuntimeHarness {
 
   async open(): Promise<void> {
     const js = await bundleNodeRuntime();
+    // As the host serves it: a classic script that imports the runtime's module by its digest (runtime-module.ts).
+    const digest = createHash('sha256').update(js).digest('hex');
     // oxlint-disable-next-line typescript/no-misused-promises -- a test server: a failed request fails its test
     this.server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://x');
@@ -169,7 +175,12 @@ export class RuntimeHarness {
           return res.end();
         }
         res.writeHead(200, { 'content-type': 'text/javascript', 'cross-origin-embedder-policy': 'require-corp' });
-        return res.end(url.pathname.endsWith('spare.js') ? SPARE_SCRIPT : js);
+        return res.end(url.pathname.endsWith('spare.js') ? SPARE_SCRIPT : this.classicRuntime ? js : runtimeBootstrap(digest));
+      }
+      if (RUNTIME_MODULE.exec(url.pathname)?.[1] === digest) {
+        this.asked.push(`http ${url.pathname}`);
+        res.writeHead(200, { 'content-type': 'text/javascript' });
+        return res.end(js);
       }
       const lib = /^\/__sandburg\/node-([a-z]+)\.js$/.exec(url.pathname)?.[1];
       if (lib && Object.hasOwn(RUNTIME_LIBS, lib)) {
