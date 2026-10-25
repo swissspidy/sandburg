@@ -185,7 +185,42 @@ function takeCacheWrite(key: string, token: string | null | undefined, sandbox: 
   return { ...grant, token: token! };
 }
 
-async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: number) => Promise<Buffer>): Promise<boolean> {
+/**
+ * The files of a cache the page sends as a bundle (the preload format: u32 header length, JSON
+ * header [[mode, path, length], …], the bytes; see node-runtime/cache-tree.ts), as the stored form
+ * has them: UTF-8 text, or binary as { base64 }. Null if it is not one: a header that is not a list
+ * of files, or whose lengths do not add up to the body's.
+ */
+export function bundledEntries(body: Buffer): Record<string, string | { base64: string }> | null {
+  if (body.length < 4) return null;
+  const length = body.readUInt32LE(0);
+  if (4 + length > body.length) return null;
+  let header: unknown;
+  try {
+    header = JSON.parse(body.subarray(4, 4 + length).toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(header)) return null;
+  const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const out: Record<string, string | { base64: string }> = {};
+  let at = 4 + length;
+  for (const entry of header as unknown[]) {
+    if (!Array.isArray(entry) || entry.length !== 3 || typeof entry[1] !== 'string' || !Number.isSafeInteger(entry[2]) || entry[2] < 0 || at + entry[2] > body.length) return null;
+    const bytes = body.subarray(at, at + entry[2]);
+    at += entry[2];
+    let text: string | null = null;
+    try {
+      text = utf8.decode(bytes);
+    } catch {
+      // binary (webpack's cache packs)
+    }
+    out[entry[1]] = text ?? { base64: bytes.toString('base64') };
+  }
+  return at === body.length ? out : null;
+}
+
+async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: number) => Promise<Buffer>, binary = false): Promise<boolean> {
   const { key, dirs } = grant;
   const restore = () => cacheWrites.set(grant.token, { key, dirs, sandbox: grant.sandbox });
   // A body over the limit is answered by the host server (a 413).
@@ -194,7 +229,10 @@ async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: 
     throw err;
   });
   try {
-    const files = cacheEntries(JSON.parse(text.toString('utf8')), dirs);
+    // A bundle (the page's form), or JSON: path → text or { base64 }. Only files under the grant's directories are kept.
+    const sent: unknown = binary ? bundledEntries(text) : JSON.parse(text.toString('utf8'));
+    if (sent === null) throw new Error('not a bundle of files');
+    const files = cacheEntries(sent, dirs);
     await mkdir(devCacheRoot(), { recursive: true });
     const file = join(devCacheRoot(), `${key}.json`);
     const tmp = `${file}.${tmpSuffix()}.tmp`;
@@ -813,7 +851,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   const cache = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})$/.exec(req.path);
   if (cache && req.method === 'POST') {
     const grant = takeCacheWrite(cache[1], req.headers?.['x-sandburg-token'], req.sandbox);
-    const saved = !!grant && (await writeDevCache(grant, req.body));
+    const saved = !!grant && (await writeDevCache(grant, req.body, req.headers?.['content-type'] === 'application/octet-stream'));
     return saved ? { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' } : { status: 403, headers: { 'content-type': 'text/plain' }, body: 'not a cache of this run' };
   }
   const pre = /^\/__sandburg\/preload\/([0-9a-f]{24})\/([0-9a-f]{16})$/.exec(req.path);
