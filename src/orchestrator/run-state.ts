@@ -16,6 +16,7 @@ import { record, type EgressStats } from './egress.ts';
 import { SANDBURG_VERSION } from '../version.ts';
 import { RendererMemory } from './renderer-memory.ts';
 import { traceConsole, tracingTransfers } from '../transfer-trace.ts';
+import { CONSOLE_MAX, capResult, capText } from './limits.ts';
 
 class PhaseTimeout extends Error {
   constructor(phase: PhaseName, ms: number) {
@@ -127,12 +128,12 @@ export class RunState {
       if (tracingTransfers && msg.type() === 'debug' && traceConsole(msg.text())) return;
       if (this.console.length >= 500) return;
       const url = msg.location().url;
-      this.console.push({ source: sourceOf(url), type: msg.type(), text: msg.text().slice(0, 2000), url: url || undefined });
+      this.console.push({ source: sourceOf(url), type: msg.type(), text: capText(msg.text(), CONSOLE_MAX), url: url ? capText(url, CONSOLE_MAX) : undefined });
     });
     page.on('pageerror', (err) => {
       if (this.pageErrors.length >= 100) return;
       const firstFrame = /(https?:\/\/[^\s)]+)/.exec(err.stack ?? '')?.[1] ?? '';
-      this.pageErrors.push({ source: sourceOf(firstFrame), message: err.message, stack: err.stack });
+      this.pageErrors.push({ source: sourceOf(firstFrame), message: capText(err.message), stack: err.stack === undefined ? undefined : capText(err.stack) });
     });
     page.on('crash', () => {
       this.infraError = { phase: this.phases.at(-1)?.name ?? 'load', message: 'browser tab crashed' };
@@ -209,6 +210,7 @@ export class RunState {
       result.artifacts.runtimeLog = join(outDir, 'runtime.log');
       await writeFile(result.artifacts.runtimeLog, this.runtimeLogs.join('\n') + '\n');
     }
+    capResult(result);
     await writeFile(join(outDir, 'result.json'), JSON.stringify(result, null, 2) + '\n');
     return result;
   }
@@ -227,9 +229,9 @@ function isInfra(err: unknown): boolean {
 function serialize(err: unknown): SerializedError {
   if (err instanceof Error) {
     const code = (err as { code?: unknown }).code;
-    return { name: err.name, message: err.message, code: typeof code === 'string' ? code : undefined, stack: err.stack };
+    return { name: capText(err.name, 200), message: capText(err.message), code: typeof code === 'string' ? capText(code, 200) : undefined, stack: err.stack === undefined ? undefined : capText(err.stack) };
   }
-  return { name: 'Error', message: String(err) };
+  return { name: 'Error', message: capText(String(err)) };
 }
 
 function ms(start: number): number {
