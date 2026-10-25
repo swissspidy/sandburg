@@ -529,8 +529,17 @@ export class Session {
         await tab!.loaded;
         return true;
       }).catch(() => false);
-      const host = <K extends keyof HostApi>(name: K, ...args: Parameters<HostApi[K]>) =>
-        traced(`evaluate ${name}`, args, () => page.evaluate(([n, a]) => (window.__sandburg[n] as (...x: unknown[]) => Promise<RpcResult<unknown>>)(...a), [name, args] as const)).then(unwrap);
+      // Large arguments (the install data) are fetched by the page from the host server (HostServer.stash).
+      const host = <K extends keyof HostApi>(name: K, ...args: Parameters<HostApi[K]>) => {
+        const json = args.length && !(args as unknown[]).includes(undefined) ? JSON.stringify(args) : '';
+        const stash = json.length > STASH_ABOVE ? this.host.stash(tab!.id, json) : null;
+        return traced(`evaluate ${name}`, stash ? [stash] : args, () =>
+          page.evaluate(
+            async ([n, a, from]) => (window.__sandburg[n] as (...x: unknown[]) => Promise<RpcResult<unknown>>)(...(from ? ((await (await fetch(from)).json()) as unknown[]) : a)),
+            [name, stash ? [] : args, stash] as const,
+          ),
+        ).then(unwrap);
+      };
 
       if (ok) {
         const steps = async () => {
@@ -974,6 +983,9 @@ class RunState {
     return result;
   }
 }
+
+/** Arguments larger than this (as JSON) go to the host page from the host server, not through page.evaluate. */
+const STASH_ABOVE = 16 << 10;
 
 /** A call into the host page, its arguments' and result's sizes traced (SANDBURG_TRACE_TRANSFERS: JSON, as Playwright serializes them). */
 async function traced<T>(what: string, args: unknown, call: () => Promise<T>): Promise<T> {
