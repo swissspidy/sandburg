@@ -256,11 +256,18 @@ const context = (options = {}) =>
 const sync = (name) => () => {
   throw new Error('esbuild.' + name + '() is not available in the browser runtime (esbuild-wasm has no synchronous API there); use the asynchronous API');
 };
+// A transform the host's native esbuild can answer goes there; anything else, and any call it does
+// not answer, runs here (src/node-runtime/native-transform.ts).
+const native = globalThis[Symbol.for('sandburg.esbuildTransform')];
+const transform = (input, options) => {
+  const viaHost = native ? native(esbuild.version, input, options) : null;
+  return viaHost ? viaHost.then((r) => r || later('transform')(input, options)) : later('transform')(input, options);
+};
 module.exports = {
   version: esbuild.version,
   build,
   context,
-  transform: later('transform'),
+  transform,
   formatMessages: later('formatMessages'),
   analyzeMetafile: later('analyzeMetafile'),
   buildSync: sync('buildSync'),

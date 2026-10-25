@@ -102,7 +102,8 @@ export function bundleNodeRuntime(): Promise<string> {
       inject: [here('globals-shim.ts')],
       banner: { js: SPARE_BANNER },
       footer: { js: '}' },
-      define: { global: 'globalThis' },
+      // The host's esbuild, which answers the runtime's transforms (native-transform.ts).
+      define: { global: 'globalThis', __SANDBURG_ESBUILD__: JSON.stringify(esbuild.version) },
       plugins: [
         {
           name: 'runtime-libs',

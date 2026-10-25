@@ -19,6 +19,7 @@ import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, 
 import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
 import { CompileCache } from './compile-cache.ts';
 import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix, type FileIndex } from './install.ts';
+import { NATIVE_TRANSFORM_PATH, nativeTransform } from './native-transform.ts';
 import { Prefetcher } from './prefetch.ts';
 import { diskCompileStore, sweepCompiles } from './compile-store.ts';
 import type { HostInstall } from './browser.ts';
@@ -752,6 +753,8 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     const out = compiled(known[1]);
     return out === undefined ? null : { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: out };
   }
+  // esbuild's transforms, on the host's native esbuild (native-transform.ts).
+  if (req.path === `/__sandburg${NATIVE_TRANSFORM_PATH}`) return nativeTransform(req);
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;
     const code = (await req.body(SOURCE_BODY_MAX)).toString('utf8');

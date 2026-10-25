@@ -29,7 +29,7 @@ const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=op
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 22;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 16;
+const LAYOUT_VERSION = 17;
 
 export interface InstallInfo {
   key: string;

@@ -24,6 +24,7 @@ import { createModuleSystem } from './loader.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
+import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
@@ -491,6 +492,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // Dev server plugins look their compiles up here (see transform-cache.ts); not enumerable.
   transformCache = createTransformCache(vfs, () => (proc.cwd as () => string)());
   Object.defineProperty(g, TRANSFORM_CACHE, { value: transformCache });
+  // esbuild's transforms on the host's native esbuild (see native-transform.ts), when there is a host.
+  if (!pageCompiler && !pack) Object.defineProperty(g, NATIVE_TRANSFORM, { value: createNativeTransform(base, __SANDBURG_ESBUILD__, globalThis.fetch.bind(globalThis), pendingWork) });
 
   // Uncaught errors and rejections go through process events, as in Node.
   self.addEventListener('error', (e) => {
