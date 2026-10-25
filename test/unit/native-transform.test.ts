@@ -43,6 +43,8 @@ test("only a transform's own options, with plain values, go to the host", () => 
   assert.ok(nativeOptions(undefined));
   assert.ok(nativeOptions(OPTIONS));
   assert.ok(nativeOptions({ ...OPTIONS, define: { 'process.env.X': '"1"' }, supported: { bigint: true }, minify: undefined }));
+  // Vite's: its own JSX option leaves the tsconfig's out.
+  assert.ok(nativeOptions({ ...OPTIONS, tsconfigRaw: { compilerOptions: { jsx: undefined, target: 'ES2022' } } }));
   for (const options of [
     { mangleProps: /^_/ }, // a regular expression
     { mangleProps: {} }, // not a transform option the host passes on
@@ -55,6 +57,7 @@ test("only a transform's own options, with plain values, go to the host", () => 
     { define: { x: () => 1 } },
     { banner: new Uint8Array(1) },
     { lineLimit: Infinity },
+    { pure: ['a', undefined] }, // JSON makes it null
     Object.create({ loader: 'ts' }),
     [],
     null,
@@ -141,7 +144,7 @@ test("the runtime's hook asks only for eligible transforms and falls back on any
   const reply = (status: number, body: unknown): typeof fetch => async (url) => (asked.push(String(url)), new Response(JSON.stringify(body), { status }));
   const ok = { code: 'export const n = 1;\n', map: '', warnings: [] };
   const pendingWork = { count: 0 };
-  const hook = (f: typeof fetch) => createNativeTransform('/__sandburg', esbuild.version, f, pendingWork);
+  const hook = (f: typeof fetch, post?: (url: string, body: Uint8Array) => Promise<{ status: number; body: Uint8Array } | null> | null) => createNativeTransform({ base: '/__sandburg', hostVersion: esbuild.version, fetch: f, post, pending: pendingWork });
   assert.equal(hook(reply(200, ok))('0.24.2', 'x', {}), null);
   assert.equal(hook(reply(200, ok))(esbuild.version, new Uint8Array(1), {}), null);
   assert.equal(hook(reply(200, ok))(esbuild.version, 'x', { mangleProps: /x/ }), null);
@@ -156,6 +159,15 @@ test("the runtime's hook asks only for eligible transforms and falls back on any
   assert.equal(await hook(reply(200, warned))(esbuild.version, 'x', { logLevel: 'warning' }), null);
   const silent = await hook(reply(200, warned))(esbuild.version, 'x', {});
   assert.ok(silent && 'detail' in silent.warnings[0]);
+  // Over the file channel when it answers; over HTTP when it does not.
+  asked.length = 0;
+  const posted: string[] = [];
+  const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+  assert.deepEqual(await hook(reply(200, ok), (url) => (posted.push(url), Promise.resolve({ status: 200, body: bytes(ok) })))(esbuild.version, 'x', {}), ok);
+  assert.equal(await hook(reply(200, ok), () => Promise.resolve({ status: 422, body: bytes('no') }))(esbuild.version, 'x', {}), null);
+  assert.deepEqual(await hook(reply(200, ok), () => Promise.resolve(null))(esbuild.version, 'x', {}), ok);
+  assert.deepEqual(await hook(reply(200, ok), () => null)(esbuild.version, 'x', {}), ok);
+  assert.deepEqual([posted.length, asked.length], [1, 2]);
   assert.equal(pendingWork.count, 0);
 });
 

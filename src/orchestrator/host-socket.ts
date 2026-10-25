@@ -10,6 +10,10 @@
  * the answer is a binary message: the id and the HTTP status (u32 little-endian each), then the body.
  * Status 0 means "ask over HTTP": the path is not one the channel serves, or its body is larger than
  * MAX_BODY (large bodies are faster over HTTP).
+ *
+ * A POST is a binary message: the id and the path's length (u32 little-endian each), the path, then the
+ * body (at most MAX_POST bytes), answered the same way. Only esbuild's transforms are posted (see
+ * src/adapters/node/native-transform.ts): an asynchronous request each, which over HTTP took 15-60 ms.
  */
 import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
@@ -21,8 +25,12 @@ export const FILE_CHANNEL_PATH = '/__sandburg/files';
 export const MAX_BODY = 1 << 20;
 /** Larger frames from the client close the channel: a request is `<id> <path>`, and nothing is buffered beyond this. */
 export const MAX_FRAME = 1 << 16;
+/** Larger POST frames close the channel (a transform's code and options; the route's own bound is 4 MB). */
+export const MAX_POST = (4 << 20) + MAX_FRAME;
 /** The paths a runtime asks for over the channel: installed files. */
 const SERVED = /^\/__sandburg\/nm\//;
+/** The paths it posts to: esbuild's transforms. */
+const POSTED = /^\/__sandburg\/esbuild-transform$/;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 /**
@@ -43,17 +51,41 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   readFrames(socket, (opcode, payload) => {
     if (opcode === 0x8) return void socket.end(frame(0x8, Buffer.alloc(0)));
     if (opcode === 0x9) return void socket.write(frame(0xa, payload));
-    if (opcode !== 0x1) return;
-    const text = payload.toString('utf8');
-    const space = text.indexOf(' ');
-    const id = Number(text.slice(0, space));
-    void answer(text.slice(space + 1), serve, channel).then((res) => {
+    if (opcode !== 0x1 && opcode !== 0x2) return;
+    const reply = (id: number) => (res: { status: number; body: Buffer }) => {
       const head = Buffer.alloc(8);
       head.writeUInt32LE(id >>> 0, 0);
       head.writeUInt32LE(res.status, 4);
       if (!socket.destroyed) socket.write(frame(0x2, Buffer.concat([head, res.body])));
-    });
+    };
+    if (opcode === 0x2) {
+      if (payload.length < 8 || 8 + payload.readUInt32LE(4) > payload.length) return void socket.destroy();
+      const length = payload.readUInt32LE(4);
+      const target = payload.subarray(8, 8 + length).toString('utf8');
+      return void answerPost(target, payload.subarray(8 + length), serve, channel).then(reply(payload.readUInt32LE(0)));
+    }
+    const text = payload.toString('utf8');
+    const space = text.indexOf(' ');
+    void answer(text.slice(space + 1), serve, channel).then(reply(Number(text.slice(0, space))));
   });
+}
+
+async function answerPost(target: string, body: Buffer, serve: (req: HostRequest) => Promise<HostResponse | null>, channel: object): Promise<{ status: number; body: Buffer }> {
+  const empty = Buffer.alloc(0);
+  try {
+    const url = new URL(target, 'http://x');
+    if (!POSTED.test(url.pathname)) return { status: 0, body: empty };
+    const read = async (max?: number) => {
+      if (max !== undefined && body.length > max) throw Object.assign(new Error('body too large'), { status: 413 });
+      return body;
+    };
+    const out = await serve({ method: 'POST', path: url.pathname, query: url.searchParams, body: read, channel });
+    if (!out) return { status: 404, body: empty };
+    const answer = typeof out.body === 'string' ? Buffer.from(out.body) : Buffer.from(out.body.buffer, out.body.byteOffset, out.body.byteLength);
+    return answer.length > MAX_BODY ? { status: 0, body: empty } : { status: out.status, body: answer };
+  } catch {
+    return { status: 0, body: empty };
+  }
 }
 
 async function answer(target: string, serve: (req: HostRequest) => Promise<HostResponse | null>, channel: object): Promise<{ status: number; body: Buffer }> {
@@ -88,7 +120,7 @@ function readFrames(socket: Duplex, onFrame: (opcode: number, payload: Buffer) =
         length = Number(buf.readBigUInt64BE(2));
         at = 10;
       }
-      if (length > MAX_FRAME) {
+      if (length > ((buf[0] & 0x0f) === 0x2 ? MAX_POST : MAX_FRAME)) {
         buf = Buffer.alloc(0);
         return void socket.destroy();
       }

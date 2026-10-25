@@ -47,7 +47,11 @@ export function nativeVersion(version: unknown, host: string): boolean {
   return !!v && !!h && compare(v, NATIVE_FROM) >= 0 && compare(v, h) <= 0;
 }
 
-/** A JSON value with nothing JSON would change: no functions, regular expressions, typed arrays, undefined, or non-finite numbers. */
+/**
+ * A JSON value with nothing JSON would change: no functions, regular expressions, typed arrays, or
+ * non-finite numbers, and undefined only as an object's property (which JSON leaves out, and esbuild
+ * reads as absent: Vite's tsconfigRaw has `jsx: undefined` when its own options set the JSX mode).
+ */
 function plain(value: unknown, depth = 0): boolean {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
   if (typeof value === 'number') return Number.isFinite(value);
@@ -55,7 +59,7 @@ function plain(value: unknown, depth = 0): boolean {
   if (Array.isArray(value)) return value.every((v) => plain(v, depth + 1));
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return false;
-  return Object.values(value).every((v) => plain(v, depth + 1));
+  return Object.values(value).every((v) => v === undefined || plain(v, depth + 1));
 }
 
 /**
@@ -86,30 +90,45 @@ interface TransformResult {
   warnings: { detail?: unknown }[];
 }
 
+interface Transport {
+  /** The host's address for the runtime (worker.ts's `base`). */
+  base: string;
+  /** The host's esbuild version. */
+  hostVersion: string;
+  fetch: typeof fetch;
+  /** A POST over the file channel (host-files.ts): null, or a null answer, means HTTP. */
+  post?: (url: string, body: Uint8Array) => Promise<{ status: number; body: Uint8Array } | null> | null;
+  /** The requests in progress (the runtime's pendingWork: a child process stays alive for them). */
+  pending: { count: number };
+}
+
 /**
  * The runtime's hook: the host's answer to an eligible transform, or null for the caller's own
- * esbuild (also when the answer has warnings that the app's log level would print). `pending` counts
- * the requests in progress (the runtime's pendingWork: a child process stays alive for them).
+ * esbuild (also when the answer has warnings that the app's log level would print). It asks over the
+ * file channel (~1 ms), else over HTTP (15-60 ms: every request of a sandbox goes through Playwright).
  */
-export function createNativeTransform(base: string, hostVersion: string, fetchImpl: typeof fetch, pending: { count: number }): (version: unknown, input: unknown, options: unknown) => Promise<TransformResult | null> | null {
+export function createNativeTransform(t: Transport): (version: unknown, input: unknown, options: unknown) => Promise<TransformResult | null> | null {
   return (version, input, options) => {
-    if (typeof input !== 'string' || !nativeVersion(version, hostVersion) || !nativeOptions(options)) return null;
+    if (typeof input !== 'string' || !nativeVersion(version, t.hostVersion) || !nativeOptions(options)) return null;
     const body = JSON.stringify([defined(options), input]);
     // Characters, a cheap first bound: the host checks the bytes.
     if (body.length > NATIVE_MAX_BYTES) return null;
-    pending.count++;
-    return fetchImpl(`${base}${NATIVE_TRANSFORM_PATH}?v=${version as string}`, { method: 'POST', body, headers: { 'content-type': 'application/json' } })
-      .then(async (res) => {
-        if (res.status !== 200) return null;
-        const result = (await res.json()) as TransformResult;
+    const url = `${t.base}${NATIVE_TRANSFORM_PATH}?v=${version as string}`;
+    const http = () => t.fetch(url, { method: 'POST', body, headers: { 'content-type': 'application/json' } }).then(async (res) => (res.status === 200 ? await res.text() : null));
+    t.pending.count++;
+    const viaChannel = t.post?.(url, new TextEncoder().encode(body));
+    return (viaChannel ? viaChannel.then((r) => (r ? (r.status === 200 ? new TextDecoder().decode(r.body) : null) : http())) : http())
+      .then((text) => {
+        if (text === null) return null;
+        const result = JSON.parse(text) as TransformResult;
         if (typeof result?.code !== 'string' || !Array.isArray(result.warnings)) return null;
-        const level = options?.logLevel;
+        const level = (options as { logLevel?: unknown } | undefined)?.logLevel;
         if (result.warnings.length && level !== undefined && level !== 'silent') return null;
         // JSON leaves out a message's `detail` when it is undefined, as it always is in a transform.
         for (const w of result.warnings) if (!('detail' in w)) w.detail = undefined;
         return result;
       })
       .catch(() => null)
-      .finally(() => pending.count--);
+      .finally(() => t.pending.count--);
   };
 }
