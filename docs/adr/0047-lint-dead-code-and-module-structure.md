@@ -1,4 +1,4 @@
-# ADR NNNN: A linter, dead code, typed runtime messages and a split runtime
+# ADR 0047: A linter, dead code, typed runtime messages and a split runtime
 
 - Status: Accepted
 - Date: 2026-10-24
@@ -6,10 +6,10 @@
 ## Context
 
 The repository had no linter and no dead-code check; `tsc` was its only static check. Its largest
-module, `src/node-runtime/worker.ts`, was 1,956 lines: the runtime's message loop, its state and
+module, `src/node-runtime/worker.ts`, was 2,136 lines (after rounds 1-3; 1,956 when this work began): the runtime's message loop, its state and
 init, the buffer polyfill's patches, the runtime's built-in modules, how it gets files from the host
 (downloads, synchronous requests, the file channel, digests) and the networking between runtimes.
-`src` had 67 `as unknown as` casts and 911 `as` casts in all. The messages between a runtime and the
+`src` had 68 `as unknown as` casts and 1,022 `as` casts in all. The messages between a runtime and the
 runtime that started it (a worker thread's or child process's parent) were untyped on both sides:
 `FromWorker` typed what a runtime posts to the page, but a runtime also posts `net-*`,
 `lb-request`, `wt-message` and `vfs-rpc` messages up, through an untyped `postMessage`, and the
@@ -35,7 +35,8 @@ with tsgolint (typescript-go) for the rules that need types. `.oxlintrc.json`:
   code; `node:child_process` only in the files that start processes now; `node:vm` nowhere; no
   `node:*` import in code that runs in the browser.
 
-`npm run lint` lints the repository in 1.8 s (4.0 s of CPU) on a 4-core machine; with knip, 3.4 s.
+`npm run lint` takes 1.9 s on a 4-core machine (oxlint 1.2 s, knip 1.2 s, run one after the other
+by npm with some overlap of start-up).
 CI runs it in the typecheck job.
 
 ### Dead code: knip
@@ -71,12 +72,12 @@ npm run lint`.
 
 | module | lines | what |
 | --- | --- | --- |
-| worker.ts | 1,956 → 819 | the message loop, the runtime's state, init, run, requests, WebSockets |
-| messages.ts | 27 → 135 | ToWorker and SharedPreload beside FromWorker and ToParent (new) |
-| buffer-patches.ts | 187 | the buffer polyfill's patches |
+| worker.ts | 2,136 → 848 | the message loop, the runtime's state, init, run, requests, WebSockets |
+| messages.ts | 27 → 171 | every message type: ToWorker, SharedPreload, and ThreadInit, VfsOp and ProjectSnapshot from threads.ts, beside FromWorker and ToParent (new) |
+| buffer-patches.ts | 209 | the buffer polyfill's patches |
 | async-context.ts | 158 → 176 | EventEmitterAsyncResource |
-| host-files.ts | 412 | downloads on the side, synchronous requests, the file channel and digests, the page's compiler |
-| builtins.ts | 286 | buildBuiltins |
+| host-files.ts | 487 | downloads on the side, synchronous requests, files the host sends ahead, the file channel and digests, the page's compiler |
+| builtins.ts | 339 | buildBuiltins |
 | peers.ts | 226 | net connections and loopback requests between runtimes |
 
 `scripts/split-page-checks.ts` does the same for `src/page-checks/runtime.ts`: 887 → 233 lines,
@@ -89,17 +90,39 @@ bundle with the modules hoisted into one scope. Each split commit was checked li
 is in the new modules, and only their header comments are new. With the split, the node, run,
 websockets, fullstack, vite-frameworks, frameworks and page-checks e2e suites pass.
 
+### Re-applied on the round-3 tree
+
+This work began on 8daa57c and was brought onto main + #61 (e7f4a23) by a merge, with the splits
+reverted first and run again on the merged tree (the move list gained main's files sent ahead,
+and the thread types, which messages.ts would otherwise import from threads.ts: the package's
+declaration build reaches messages.ts through the page's adapter, and threads.ts does not build
+declarations). The rules stayed as they were; the code merged since was brought in line: 22 type
+assertions that changed nothing, a `this` alias (resolver.ts's body cache, now bound methods), two
+promise aggregators given a plain value (now `Promise.resolve(false)` and `Promise.resolve()`, which
+is what they did), six exports used only in their module, socket data concatenated without
+`String()` in tests. Two exceptions, each named in `.oxlintrc.json` or a comment:
+
+- `src/node-runtime/bundle-cache.ts` (new on main) runs on the host (it keeps the runtime's builds in
+  `.sandburg/bundles`), so it joins `bundle.ts` in the exemption from "no `node:*` in browser code".
+  The rule is right; the file is in the runtime's directory but not in the runtime.
+- A test client's async `connect` handler (host-bodies.test.ts) carries a `no-misused-promises`
+  disable comment, as the earlier test servers do.
+
+While the branch had `import type { ToWorker } from '…/worker.ts'` (between the typed messages and
+the split), `npm run build` failed: worker.ts entered the package's declaration build. The split
+moves the type to messages.ts, and the build passes.
+
 ### Numbers
 
-| | main | this branch |
+| | base (main + #61, e7f4a23) | this branch |
 | --- | --- | --- |
-| `as unknown as` in src | 67 | 60 |
-| `as` casts in src | 911 | 858 |
-| exports used only in their module | 44 | 0 (and 4 public types now exported by the package) |
-| worker.ts | 1,956 lines | 819 lines |
+| `as unknown as` in src | 68 | 61 |
+| `as` casts in src | 1,022 | 964 |
+| exports used only in their module | 50 (44 found first, 6 in code merged since) | 0 (and 4 public types now exported by the package) |
+| worker.ts | 2,136 lines | 848 lines |
 | page-checks/runtime.ts | 887 lines | 233 lines |
-| runtime script (bundleNodeRuntime) | 886,558 bytes | 887,725 bytes (+0.13%: the split's per-module comments, +650; the typed relays and coerced stack, +560) |
-| static checks | `tsc` | `tsc`, `npm run lint` (3.4 s) |
+| runtime script (bundleNodeRuntime) | 919,987 bytes | 921,157 bytes (+0.13%: esbuild's per-module comments, the typed relays and the coerced stack) |
+| static checks | `tsc` | `tsc`, `npm run lint` (1.9 s) |
 
 ## Bugs the linter found, fixed
 
@@ -147,7 +170,7 @@ What this touches, and why the boundaries hold:
 - `npm run lint` must pass in CI. A new floating promise, a non-exhaustive switch over a union, an
   unused export or an unlisted dependency fails it.
 - The runtime's protocol is in one file, typed both ways.
-- worker.ts is 819 lines; the parts that do not need init's state live in their own modules.
+- worker.ts is 848 lines; the parts that do not need init's state live in their own modules.
 - Behaviour changes: the four readers above count a file that does not parse as missing (before,
   they failed the batch or the install phase, or ended the host's process); `Readable.fromWeb`
   no longer reports an unhandled rejection; the package exports four more types (`BatchRunSummary`,
