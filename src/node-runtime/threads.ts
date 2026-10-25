@@ -11,24 +11,8 @@
 import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, parent, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
-
-/** How a thread started: what its parent passed (worker.ts init message). */
-export interface ThreadInit {
-  id: number;
-  workerData: unknown;
-  env: Record<string, string>;
-  argv: string[];
-  /** The thread's entry script; it starts right after init (the parent may be blocked meanwhile). */
-  main: string;
-  /** The project's files when the thread started (see projectSnapshot): reads of them while they are unchanged, and while the parent is blocked. */
-  snapshot?: ProjectSnapshot | Record<string, Uint8Array>;
-  /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
-  mailboxes?: ReturnType<typeof mailboxesFor>;
-  /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
-  process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
-  /** A thread (at any depth) of the app's own process, not of a child process (see WASM_CRASH_CHANNEL). */
-  mainProcess?: boolean;
-}
+import { SPARE_NAME, SPARE_WAKE } from './names.ts';
+import type { ToParent, VfsCall, ThreadInit, VfsOp, ProjectSnapshot, ToWorker } from './messages.ts';
 
 /**
  * Where a thread of the app's own process reports a WebAssembly trap to the page directly: its
@@ -38,7 +22,6 @@ export const WASM_CRASH_CHANNEL = 'sandburg-wasm-thread-crash';
 
 // --- the shared VFS ----------------------------------------------------------------------
 
-type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'writeAt' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
 const HEADER = 16;
 const READ_OPS = new Set<VfsOp>(['exists', 'stat', 'read', 'readdir']);
 /** How long a thread waits for its parent before reading from its snapshot instead. */
@@ -51,11 +34,11 @@ const PARENT_BLOCKED_MS = 5000;
 
 /** A thread's VFS: every operation runs on the parent's VFS. */
 export class RemoteVfs extends Vfs {
-  private post: (msg: unknown) => void;
+  private post: (msg: VfsCall) => void;
   /** PARENT_BLOCKED_MS, unless given (tests). */
   private blockedMs: number;
 
-  constructor(post: (msg: unknown) => void, blockedMs = PARENT_BLOCKED_MS) {
+  constructor(post: (msg: VfsCall) => void, blockedMs = PARENT_BLOCKED_MS) {
     super(() => {
       throw new Error('RemoteVfs does not fetch remote files itself');
     });
@@ -131,7 +114,7 @@ export class RemoteVfs extends Vfs {
   }
   override kind(path: string): 'file' | 'dir' | null {
     try {
-      return this.stat(path).kind as 'file' | 'dir';
+      return this.stat(path).kind;
     } catch {
       return null;
     }
@@ -177,7 +160,7 @@ export class ThreadVfs extends RemoteVfs {
   private root: string;
   private nodeModulesWrites: Int32Array | null;
 
-  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: ProjectSnapshot | Record<string, Uint8Array>, nodeModulesWrites?: Int32Array, blockedMs?: number) {
+  constructor(post: (msg: VfsCall) => void, installed: Vfs, cwd: string, snapshot?: ProjectSnapshot | Record<string, Uint8Array>, nodeModulesWrites?: Int32Array, blockedMs?: number) {
     super(post, blockedMs);
     this.installed = installed;
     this.root = cwd;
@@ -354,21 +337,6 @@ const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.angular|\.next|\.nuxt|\.output|
 /** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
 const WRITTEN_DIRS = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)(?:\/|$)|\/(?:\.angular|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
 const SNAPSHOT_MAX_FILE = 4 << 20;
-/**
- * The project's files as a thread starts: their bytes, and the parent's stats and directory listings
- * of everything under the project's root but caches, build output and node_modules (SNAPSHOT_SKIP),
- * and of the directories above it. `stale` is raised in shared memory once anything it covers
- * changes in the parent (a file written, made, removed or renamed, or a directory's listing): until
- * then a thread answers reads of those paths from it, as the parent would (ThreadVfs.answerExactly).
- * Installed packages are registered (Vfs.addRemote, which no watcher sees) before any thread starts.
- */
-export interface ProjectSnapshot {
-  root: string;
-  files: Record<string, Uint8Array>;
-  stats: Record<string, VStat>;
-  dirs: Record<string, string[]>;
-  stale: Int32Array;
-}
 
 function isProjectSnapshot(s: unknown): s is ProjectSnapshot {
   return !!s && (s as { stale?: unknown }).stale instanceof Int32Array;
@@ -452,7 +420,7 @@ function walkProject(vfs: Vfs, root: string): ProjectSnapshot {
 }
 
 /** Serves a thread's VFS call on this thread's VFS and wakes the thread. */
-export function serveVfsCall(vfs: Vfs, msg: { sab: SharedArrayBuffer; op: VfsOp; args: unknown[] }): void {
+export function serveVfsCall(vfs: Vfs, msg: VfsCall): void {
   const header = new Int32Array(msg.sab, 0, 4);
   const capacity = msg.sab.byteLength - HEADER;
   let status = 1;
@@ -486,7 +454,7 @@ export function serveVfsCall(vfs: Vfs, msg: { sab: SharedArrayBuffer; op: VfsOp;
 export interface ThreadHost {
   vfs: () => Vfs;
   /** The init message for a child runtime (install key, base, cwd). */
-  childInit(thread: ThreadInit): Record<string, unknown>;
+  childInit(thread: ThreadInit): Extract<ToWorker, { type: 'init' }>;
   /** Output of a child thread (it goes to this thread's stdout/stderr, as in Node). */
   write(stream: 'stdout' | 'stderr', text: string): void;
   cwd(): string;
@@ -498,9 +466,9 @@ export interface ThreadHost {
   /** This thread, when it is a worker thread (for parentPort and workerData). */
   self: ThreadInit | null;
   /** Sends to this thread's parent (child side). */
-  postToParent(msg: unknown, transfer?: Transferable[]): void;
+  postToParent(msg: ToParent, transfer?: Transferable[]): void;
   /** Messages of a nested runtime about servers it runs (listening, responses, WebSockets), which this runtime passes on. */
-  relay(msg: { type: string; [k: string]: unknown }, from: globalThis.Worker): boolean;
+  relay(msg: ToParent, from: globalThis.Worker): boolean;
   /** Ends this process with an error: a WebAssembly thread of it crashed (see Worker's 'fatal'). */
   crash(message: string, stack?: string): void;
 }
@@ -535,10 +503,6 @@ let warmBase = '';
 let awake = false;
 /** How many woken spares a process keeps ready once it is awake (see wakeSpares). */
 const AWAKE_AHEAD = 2;
-
-/** The worker name that makes a runtime a spare, and the message that wakes one (bundle.ts). */
-const SPARE_NAME = 'sandburg-spare';
-const SPARE_WAKE = 'sandburg-spare-wake';
 
 export function warmRuntimes(base: string, count: number): void {
   warmBase = base;
@@ -591,13 +555,13 @@ function takeSpare(): globalThis.Worker | undefined {
   return warm.splice(i < 0 ? 0 : i, 1)[0]?.worker;
 }
 
-export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: { type: string; [k: string]: unknown }) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
+export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: ToParent) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
   const worker = takeSpare() ?? new globalThis.Worker(`${host.base()}/node-worker.js`);
   if (warmTarget) queueMicrotask(refill);
-  worker.onmessage = (e: MessageEvent) => {
-    const m = e.data as { type: string; [k: string]: unknown };
-    if (m.type === 'wt-message') adoptMailboxes(e.ports, m.mailboxes as Parameters<typeof adoptMailboxes>[1]);
-    if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m as unknown as Parameters<typeof serveVfsCall>[1]);
+  worker.onmessage = (e: MessageEvent<ToParent>) => {
+    const m = e.data;
+    if (m.type === 'wt-message') adoptMailboxes(e.ports, m.mailboxes);
+    if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m);
     else if (!host.relay(m, worker)) onMessage(m);
   };
   worker.onerror = (e) => {
@@ -607,7 +571,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   const message = host.childInit({ ...init, snapshot: projectSnapshot(host.vfs(), host.root()) });
   // The child's own ports to the page's compiler and to the file channel, if there are (worker.ts);
   // last, after the ports of `transfer` (their mailboxes go by position).
-  const ports = [message.compilePort, (message.filesChannel as { port: MessagePort } | null | undefined)?.port].filter((p): p is MessagePort => !!p);
+  const ports = [message.compilePort, message.filesChannel?.port].filter((p): p is MessagePort => !!p);
   worker.postMessage(message, [...transfer, ...ports]);
   liveRuntimes.add(worker);
   const terminate = worker.terminate.bind(worker);
@@ -659,7 +623,7 @@ export function createWorkerThreads(host: ThreadHost) {
       );
     }
 
-    private onChild(m: { type: string; [k: string]: unknown }) {
+    private onChild(m: ToParent) {
       switch (m.type) {
         case 'ready':
           // The thread runs its entry on its own (see ThreadInit.main).
@@ -669,7 +633,7 @@ export function createWorkerThreads(host: ThreadHost) {
           this.emit('message', m.data);
           break;
         case 'log':
-          host.write(m.stream as 'stdout' | 'stderr', m.text as string);
+          host.write(m.stream, m.text);
           break;
         case 'fatal': {
           // A WebAssembly trap (memory access out of bounds, a Rust panic) in a thread leaves the
@@ -677,18 +641,22 @@ export function createWorkerThreads(host: ThreadHost) {
           // rolldown waits forever for a crashed thread's work. Natively that is a segfault or an
           // abort, which ends the process, so the process ends here too.
           if (m.trap) {
-            const crashed = /^a WebAssembly thread crashed/.test(String(m.message));
-            host.crash(crashed ? String(m.message) : `a WebAssembly thread crashed (worker ${this.threadId}): RuntimeError: ${m.message}`, m.stack ? String(m.stack) : undefined);
+            const crashed = /^a WebAssembly thread crashed/.test(m.message);
+            host.crash(crashed ? m.message : `a WebAssembly thread crashed (worker ${this.threadId}): RuntimeError: ${m.message}`, m.stack);
           }
-          const err = new Error(String(m.message));
-          if (m.stack) err.stack = String(m.stack);
+          const err = new Error(m.message);
+          if (m.stack) err.stack = m.stack;
           if (this.listenerCount('error')) this.emit('error', err);
           else host.write('stderr', `Uncaught (in worker ${this.threadId}) ${err.stack}\n`);
           this.finish(1);
           break;
         }
         case 'exit':
+          // An app may exit with a string (process.exit('1')).
           this.finish(Number(m.code ?? 0));
+          break;
+        // Its servers' messages are relayed (ThreadHost.relay); the rest are not a thread's.
+        default:
           break;
       }
     }
@@ -702,7 +670,7 @@ export function createWorkerThreads(host: ThreadHost) {
 
     postMessage(value: unknown, transferList?: Transferable[] | { transfer?: Transferable[] }) {
       const transfer = Array.isArray(transferList) ? transferList : (transferList?.transfer ?? []);
-      this.worker.postMessage({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) }, transfer);
+      this.worker.postMessage({ type: 'wt-message', data: value, mailboxes: mailboxesFor(transfer) } satisfies ToWorker, transfer);
     }
 
     terminate(): Promise<number> {

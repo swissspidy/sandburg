@@ -10,9 +10,10 @@
  */
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'stream';
-import { liveRuntimes, startRuntime, type ThreadHost, type ThreadInit } from './threads.ts';
+import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
 import { timers } from './builtins/process.ts';
 import { runScript } from './shell.ts';
+import type { ThreadInit, ToWorker } from './messages.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
 
@@ -197,7 +198,7 @@ export function createChildProcess(host: ChildProcessHost) {
         host,
         init,
         (m) => {
-          if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text as string);
+          if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text);
           else if (m.type === 'message') this.emit('message', m.data);
           else if (m.type === 'exit') this.finish(Number(m.code ?? 0), null);
           else if (m.type === 'fatal') {
@@ -297,14 +298,14 @@ export function createChildProcess(host: ChildProcessHost) {
         else timers.setTimeout(() => this.emit('error', err), 0);
         return false;
       }
-      this.worker.postMessage({ type: 'message', data: message });
+      this.worker.postMessage({ type: 'message', data: message } satisfies ToWorker);
       if (cb) timers.setTimeout(() => cb(null), 0);
       return true;
     }
     disconnect() {
       if (!this.connected) return;
       this.connected = false;
-      this.worker?.postMessage({ type: 'disconnect' });
+      this.worker?.postMessage({ type: 'disconnect' } satisfies ToWorker);
       timers.setTimeout(() => this.emit('disconnect'), 0);
     }
     ref() {
@@ -320,7 +321,7 @@ export function createChildProcess(host: ChildProcessHost) {
     }
   }
 
-  const argsAndOptions = (a?: unknown, b?: unknown): [string[], SpawnOptions] => (Array.isArray(a) ? [a.map(String), (b ?? {}) as SpawnOptions] : [[], (a ?? {}) as SpawnOptions]);
+  const argsAndOptions = (a?: unknown, b?: unknown): [string[], SpawnOptions] => (Array.isArray(a) ? [a.map(String), (b ?? {})] : [[], (a ?? {})]);
 
   function spawn(file: string, a?: unknown, b?: unknown) {
     const [args, options] = argsAndOptions(a, b);

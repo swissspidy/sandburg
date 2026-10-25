@@ -62,6 +62,7 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   const ahead = new ReadAhead(require, cache, (picked) => parentPort!.postMessage({ picked }));
   /** Resolutions running (a small one runs beside another). */
   let active = 0;
+  // oxlint-disable-next-line typescript/no-misused-promises -- its body catches what it throws
   parentPort!.on('message', async ({ id, dir, force, view }: { id: number; dir: string; force: boolean; view?: string }) => {
     try {
       ready ??= (async () => {
@@ -289,17 +290,20 @@ class TrimmedPackuments {
       const consume = Object.getOwnPropertySymbols(Body.prototype).find((s) => s.description === 'consumeBody');
       const json = Body.prototype.json as (this: unknown) => Promise<unknown>;
       if (!consume || typeof json !== 'function') return false;
-      const self = this;
+      // The cache's own methods, for the functions below (their `this` is the response).
+      const readEntry = this.read.bind(this);
+      const offer = this.offer.bind(this);
+      const cacheDir = () => this.cacheDir;
       Body.prototype.json = async function (this: CachedResponse & Record<symbol, () => Promise<Buffer>>) {
-        const entry = cachedBody(this, self.cacheDir);
+        const entry = cachedBody(this, cacheDir());
         if (!entry) return json.call(this);
-        const trimmed = await self.read(entry);
+        const trimmed = await readEntry(entry);
         if (trimmed) return trimmed;
         // The body's bytes, as json() reads them, go to the helper too.
         const read = this[consume];
         this[consume] = async function (this: unknown) {
           const bytes = await read.call(this);
-          self.offer(entry, bytes);
+          offer(entry, bytes);
           return bytes;
         };
         return json.call(this);

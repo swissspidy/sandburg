@@ -12,8 +12,8 @@ import { timers } from './process.ts';
 import { servers as httpServers } from './http.ts';
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
-export const isIPv4 = (s: string) => IPV4.test(s);
-export const isIPv6 = (s: string) => {
+const isIPv4 = (s: string) => IPV4.test(s);
+const isIPv6 = (s: string) => {
   if (!/^[0-9a-fA-F:.]+$/.test(s) || !s.includes(':')) return false;
   try {
     new URL(`http://[${s}]/`);
@@ -53,7 +53,7 @@ export class Socket extends Duplex {
   peer: Peer | null = null;
   private key: number | string | null = null;
   constructor(_opts?: unknown) {
-    super({ allowHalfOpen: true } as never);
+    super({ allowHalfOpen: true });
   }
   connect(...args: unknown[]) {
     const cb = typeof args.at(-1) === 'function' ? (args.pop() as () => void) : undefined;

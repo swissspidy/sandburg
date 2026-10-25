@@ -352,11 +352,11 @@ function toBytes(data: unknown, enc: unknown, name: string): Uint8Array {
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   throw Object.assign(new TypeError(`The "${name}" argument must be of type string or an instance of Buffer, TypedArray, or DataView.${describe(data)}`), { code: 'ERR_INVALID_ARG_TYPE' });
 }
-const describe = (v: unknown) => (v === null || v === undefined ? ` Received ${v}` : typeof v === 'object' ? ` Received an instance of ${(v as object).constructor?.name ?? 'Object'}` : ` Received type ${typeof v} (${String(v)})`);
+const describe = (v: unknown) => (v === null || v === undefined ? ` Received ${v}` : typeof v === 'object' ? ` Received an instance of ${(v).constructor?.name ?? 'Object'}` : ` Received type ${typeof v} (${String(v)})`);
 const encode = (bytes: Uint8Array, enc: unknown): Buffer | string => {
   const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // An encoding Node does not know gives a Buffer, as in Node.
-  return typeof enc === 'string' && Buffer.isEncoding(enc) ? buf.toString(enc as BufferEncoding) : buf;
+  return typeof enc === 'string' && Buffer.isEncoding(enc) ? buf.toString(enc) : buf;
 };
 
 /** node:crypto's Hash: update() and digest(), and a Transform stream of its input to its digest, as in Node. */

@@ -6,7 +6,7 @@ import { zip } from '../../pages/generate/zip.ts';
 import { pageInstall } from '../../src/adapters/node/plan.ts';
 import { detectFramework } from '../../src/framework.ts';
 import { readZip } from '../../src/zip.ts';
-import type { PackageJson, Project } from '../../src/types.ts';
+import type { PackageJson } from '../../src/types.ts';
 
 test('parses files, deletions and prose from an answer', () => {
   const answer = `A counter.\n\n<file path="src/App.jsx">\nexport default 1;\n</file>\n<file path="./src/x.css">\n\`\`\`css\nbody {}\n\`\`\`\n</file>\n<delete path="src/old.js" />\nDone.`;
@@ -67,7 +67,7 @@ test('each scaffold has a way to start in the page, and a backend with SQLite', 
     // A plain Node server (Express) is "unknown" to detection, and starts from its dev script.
     const framework = detectFramework(t.files, pkg);
     assert.ok(framework !== 'unknown' || pkg?.scripts?.dev, t.id);
-    const plan = pageInstall({ name: t.id, path: t.id, files: t.files, packageJson: pkg, framework, snapshotId: '' } as Project);
+    const plan = pageInstall({ name: t.id, path: t.id, files: t.files, packageJson: pkg, framework, snapshotId: '' });
     if (framework === 'next') assert.equal(plan.start, null, t.id);
     else assert.ok(plan.start, t.id);
     if (framework !== 'static') assert.ok(plan.browserInstall?.length, t.id);

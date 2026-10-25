@@ -22,11 +22,14 @@ test('a packument read ahead is what pacote gets, and one that fails is read aga
   const cache = new PackumentCache(100);
   cache.pending('a', Promise.resolve({ _contentLength: 10, v: 1 } as { _contentLength: number }), () => Promise.reject(new Error('not again')));
   assert.ok(cache.has('a'));
+  // A packument being read ahead is returned as its promise (pacote awaits what get() returns).
+  // oxlint-disable-next-line typescript/await-thenable
   assert.deepEqual(await cache.get('a'), { _contentLength: 10, v: 1 });
   // Kept once read.
   assert.deepEqual(cache.get('a'), { _contentLength: 10, v: 1 });
   let again = 0;
   cache.pending('b', Promise.reject(new Error('offline')), async () => ({ _contentLength: 10, again: ++again }) as { _contentLength: number });
+  // oxlint-disable-next-line typescript/await-thenable
   assert.deepEqual(await cache.get('b'), { _contentLength: 10, again: 1 });
   assert.equal(again, 1);
 });

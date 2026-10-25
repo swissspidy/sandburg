@@ -99,13 +99,13 @@ export function defaultParallel(): number {
  * The memory a batch keeps free before it opens another app: about one app's peak (a Next.js run's
  * renderer peaks at ~1 GB, a Vite run's at ~0.5 GB) and the host's share of an install.
  */
-export const MEMORY_RESERVE = 1.5 * 2 ** 30;
+const MEMORY_RESERVE = 1.5 * 2 ** 30;
 
 /**
  * The memory an app is expected to reach when no earlier batch measured it: about a Next.js run's
  * renderer peak (the largest). See outstanding.
  */
-export const START_ALLOWANCE = 2 ** 30;
+const START_ALLOWANCE = 2 ** 30;
 
 /** An earlier run's peak, plus this much, is what the project is expected to reach again. */
 const PEAK_MARGIN = 1.1;
@@ -120,7 +120,7 @@ const PEAK_MARGIN = 1.1;
  * PEAK_MARGIN), else START_ALLOWANCE. Where the renderer's memory cannot be read (not Linux), the
  * whole expected peak until its checks.
  */
-export function outstanding(app: { expected: number | null; used: number | null; inChecks: boolean }): number {
+function outstanding(app: { expected: number | null; used: number | null; inChecks: boolean }): number {
   if (app.inChecks) return 0;
   return Math.max(0, (app.expected ?? START_ALLOWANCE) - (app.used ?? 0));
 }
@@ -302,10 +302,10 @@ async function history(items: BatchItem[], batchDir: string, outOfBrowser: boole
   const ids = (await readdir(dir).catch(() => [] as string[])).filter((id) => /^b-[0-9a-z]+-[0-9a-f]+$/.test(id));
   ids.sort((a, b) => parseInt(b.split('-')[1], 36) - parseInt(a.split('-')[1], 36));
   for (const id of ids.slice(0, batches)) {
-    const summary = await readFile(join(dir, id, 'summary.json'), 'utf8').then(
-      (t) => JSON.parse(t) as Partial<BatchSummary>,
-      () => null,
-    );
+    // A summary cut off (a batch that ended as it wrote it) counts as none: parsed inside the catch.
+    const summary = await readFile(join(dir, id, 'summary.json'), 'utf8')
+      .then((t) => JSON.parse(t) as Partial<BatchSummary> | null)
+      .catch(() => null);
     for (const run of Array.isArray(summary?.runs) ? summary.runs : []) {
       // Runs in the browser, or in an out-of-browser runtime (compare's reference), as this batch's.
       if (adapterNames.includes(run?.runtime) === outOfBrowser) continue;

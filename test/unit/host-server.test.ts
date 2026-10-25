@@ -105,7 +105,7 @@ function upgrade(path: string, headers: Record<string, string>): Promise<number>
     let head = '';
     socket.setEncoding('utf8');
     socket.on('data', (d) => {
-      head += d;
+      head += String(d);
       const line = /^HTTP\/1\.1 (\d+)/.exec(head);
       if (line) {
         socket.destroy();

@@ -49,9 +49,9 @@ test('milestone 1: the Vite + React fixture runs and its functional checks pass'
   const schema = JSON.parse(await readFile(new URL('../../src/result-schema.json', import.meta.url), 'utf8'));
   // (and of its optional fields, only those it has: a run on Linux reports its renderer's memory)
   const optional = Object.keys(schema.properties).filter((k) => !schema.required.includes(k));
-  assert.deepEqual(Object.keys(result).sort(), [...schema.required, ...optional.filter((k) => k in result)].sort());
+  assert.deepEqual(Object.keys(result).sort(), ([...schema.required, ...optional.filter((k) => k in result)] as string[]).sort());
   if (process.platform === 'linux') assert.ok(result.memory!.rendererPeakBytes > 50 * 2 ** 20, JSON.stringify(result.memory));
-  assert.deepEqual(Object.keys(result.timings).sort(), [...schema.properties.timings.required].sort());
+  assert.deepEqual(Object.keys(result.timings).sort(), ([...schema.properties.timings.required] as string[]).sort());
 });
 
 test("a run's renderer is found, and collecting its garbage in its checks leaves the run passing", { skip: process.platform !== 'linux' }, async () => {

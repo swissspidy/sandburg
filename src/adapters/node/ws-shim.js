@@ -17,20 +17,20 @@ globalThis.__async ??= (__this, __arguments, generator) =>
   new Promise((resolve, reject) => {
     const fulfilled = (value) => {
       try {
-        step(generator.next(value));
+        void step(generator.next(value));
       } catch (e) {
         reject(e);
       }
     };
     const rejected = (value) => {
       try {
-        step(generator.throw(value));
+        void step(generator.throw(value));
       } catch (e) {
         reject(e);
       }
     };
     const step = (x) => (x.done ? resolve(x.value) : Promise.resolve(x.value).then(fulfilled, rejected));
-    step((generator = generator.apply(__this, __arguments)).next());
+    void step((generator = generator.apply(__this, __arguments)).next());
   });
 
 (() => {
@@ -98,7 +98,7 @@ globalThis.__async ??= (__this, __arguments, generator) =>
       if (this.readyState === CONNECTING) throw new DOMException("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", 'InvalidStateError');
       if (this.readyState !== OPEN) return;
       if (typeof data === 'string') this._port.postMessage({ type: 'send', data });
-      else if (data instanceof Blob) data.arrayBuffer().then((buf) => this._port.postMessage({ type: 'send', data: buf }, [buf]));
+      else if (data instanceof Blob) void data.arrayBuffer().then((buf) => this._port.postMessage({ type: 'send', data: buf }, [buf]));
       else {
         const view = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
         const copy = view.slice().buffer;

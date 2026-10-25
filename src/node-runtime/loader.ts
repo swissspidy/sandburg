@@ -10,8 +10,8 @@
  * pre-compiled from the host; other files (the project, files generated at run
  * time such as Next.js' .next output) are compiled on demand through the host.
  */
-import { Buffer } from 'buffer';
 import type { Vfs } from './vfs.ts';
+import { ESM_MARKER, IMPORT_CONDITIONS as BASE_IMPORT_CONDITIONS, REQUIRE_CONDITIONS as BASE_REQUIRE_CONDITIONS } from './names.ts';
 
 export interface LoaderHost {
   vfs: Vfs;
@@ -38,13 +38,10 @@ export interface LoaderHost {
   conditions?: string[];
 }
 
-let REQUIRE_CONDITIONS = ['require', 'node', 'module-sync', 'node-addons', 'default'];
-/** Conditions for `import` (ES modules are converted to CommonJS, but resolve as imports). */
-let IMPORT_CONDITIONS = ['import', 'node', 'module-sync', 'node-addons', 'default'];
+let REQUIRE_CONDITIONS = [...BASE_REQUIRE_CONDITIONS];
+let IMPORT_CONDITIONS = [...BASE_IMPORT_CONDITIONS];
 /** The conditions of the resolution in progress (resolution is synchronous). */
 let conditions = REQUIRE_CONDITIONS;
-/** First line of code compiled from an ES module (src/adapters/node/compile.ts, install.ts). */
-export const ESM_MARKER = '/*sandburg:esm*/';
 /** Exports objects of converted ES modules (see src/adapters/node/interop.ts). */
 const esmExports: WeakSet<object> = ((globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.esm')] ??= new WeakSet()) as WeakSet<object>;
 
@@ -573,7 +570,7 @@ function splitPackage(request: string): [string, string] {
   return [parts.slice(0, n).join('/'), rest ? `/${rest}` : ''];
 }
 
-export function dirname(p: string): string {
+function dirname(p: string): string {
   const i = p.lastIndexOf('/');
   return i <= 0 ? '/' : p.slice(0, i);
 }
@@ -582,7 +579,7 @@ function basename(p: string): string {
   return p.slice(p.lastIndexOf('/') + 1);
 }
 
-export function resolvePath(base: string, rel: string): string {
+function resolvePath(base: string, rel: string): string {
   const parts = (rel.startsWith('/') ? rel : `${base}/${rel}`).split('/');
   const out: string[] = [];
   for (const part of parts) {
@@ -605,5 +602,3 @@ function stripBOM(s: string): string {
 function stripShebang(s: string): string {
   return s.startsWith('#!') ? '//' + s : s;
 }
-
-export { Buffer };

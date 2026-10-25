@@ -89,8 +89,7 @@ test('a thread tells that a node_modules path is not installed without asking, u
   parent.write('/app/src/main.ts', new Uint8Array());
   const asked: string[] = [];
   const thread = new ThreadVfs(
-    (m) => {
-      const msg = m as Parameters<typeof serveVfsCall>[1];
+    (msg) => {
       asked.push(`${msg.op} ${msg.args[0]}`);
       serveVfsCall(parent, msg); // a parent that answers at once
     },
@@ -147,7 +146,7 @@ test('a thread answers reads of unchanged project files from its snapshot, as it
   const asked: string[] = [];
   const thread = new ThreadVfs(
     (m) => {
-      const msg = m as Parameters<typeof serveVfsCall>[1];
+      const msg = m;
       asked.push(`${msg.op} ${msg.args[0]}`);
       serveVfsCall(parent, msg);
     },
@@ -216,7 +215,7 @@ test('a thread asks its parent again once a file its snapshot covers changes, an
     const thread = (snapshot: ReturnType<typeof projectSnapshot>) =>
       new ThreadVfs(
         (m) => {
-          const msg = m as Parameters<typeof serveVfsCall>[1];
+          const msg = m;
           asked.push(`${msg.op} ${msg.args[0]}`);
           serveVfsCall(parent, msg);
         },

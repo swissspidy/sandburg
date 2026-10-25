@@ -16,7 +16,7 @@ type EncOpt = Encoding | { encoding?: Encoding; flag?: string; withFileTypes?: b
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 
-export const constants = {
+const constants = {
   F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
   O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024,
   S_IFMT: 0o170000, S_IFREG, S_IFDIR, S_IFLNK: 0o120000,
@@ -72,7 +72,7 @@ export class BigIntStats {
 }
 
 /** A glob pattern as a regular expression: `**`, `*`, `?`, `[...]` and `{a,b}`. */
-export function globToRegExp(pattern: string): RegExp {
+function globToRegExp(pattern: string): RegExp {
   const convert = (p: string): string => {
     let out = '';
     for (let i = 0; i < p.length; i++) {
@@ -503,7 +503,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   Object.setPrototypeOf(WriteStream, Writable);
   WriteStream.prototype._write = function (this: WriteStream, chunk: unknown, encoding: BufferEncoding, cb: (e?: Error | null) => void) {
     try {
-      const bytes = toBytes(chunk, encoding as Encoding);
+      const bytes = toBytes(chunk, encoding);
       vfs.write(this.path, bytes, true);
       this.bytesWritten += bytes.length;
       cb();

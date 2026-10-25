@@ -17,7 +17,7 @@ const own = (init: HeadersSource, fallback?: Headers): Headers => {
     from.forEach((v, k) => (k === 'set-cookie' ? undefined : h.append(k, v)));
     for (const c of from.getSetCookie?.() ?? []) h.append('set-cookie', c);
   } else if (Array.isArray(from)) for (const [k, v] of from) h.append(k, v);
-  else for (const [k, v] of Object.entries(from)) h.append(k, v as string);
+  else for (const [k, v] of Object.entries(from)) h.append(k, v);
   return h;
 };
 

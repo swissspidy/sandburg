@@ -86,7 +86,7 @@ export const BODY_MAX = 1 << 20;
 const BODY_REFUSED_GRACE_MS = 1000;
 
 /** A request body over its route's limit: answered with a 413, and the connection closed. */
-export class BodyTooLargeError extends Error {
+class BodyTooLargeError extends Error {
   constructor(max: number) {
     super(`request body over ${max} bytes`);
     this.name = 'BodyTooLargeError';
@@ -98,7 +98,7 @@ export class BodyTooLargeError extends Error {
  * What comes after a refusal is dropped as it arrives (the stream is not destroyed: that would close
  * the connection before the 413 is sent).
  */
-export function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
+function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
   const declared = req.headers['content-length'];
   if (declared !== undefined && !(Number(declared) <= max)) return Promise.reject(new BodyTooLargeError(max));
   return new Promise((resolve, reject) => {

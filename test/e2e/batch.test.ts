@@ -2,7 +2,7 @@
  * Milestone 2: parallel tabs, shared cache, isolation between sandboxes, and
  * proof that nothing leaves the browser except through the egress gateway.
  */
-import { after, before, test } from 'node:test';
+import { before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';

@@ -7,7 +7,7 @@
 import { Buffer } from 'buffer';
 import { Handle, bindAll, columnNames, describeError, readRow, safeReset, splitParams, sqlite, type BindValue, type FileAccess, type OoStmt } from './core.ts';
 
-export class SqliteError extends Error {
+class SqliteError extends Error {
   code: string;
   constructor(message: string, code: string) {
     super(message);

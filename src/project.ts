@@ -62,7 +62,7 @@ export function projectFromFiles(files: FileTree, meta: { name: string; path: st
 }
 
 /** A zip's entries as a file tree, with the same exclusions as a directory (node_modules, .git, check files, …). */
-export function filesFromZip(buf: Buffer): FileTree {
+function filesFromZip(buf: Buffer): FileTree {
   const files: FileTree = {};
   // macOS "Compress" adds a __MACOSX/ sibling; drop it before looking for a common root folder.
   const entries = readZip(buf).filter((e) => !e.path.startsWith('__MACOSX/'));

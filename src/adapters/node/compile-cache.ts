@@ -69,8 +69,9 @@ export class CompileCache {
       this.keys.delete(key);
       this.keys.set(key, entries);
     } else {
-      entries = readFile(this.file(key)).then(
-        (bundle) => {
+      // A file that is missing, or that does not parse (parse() throws), counts as none.
+      entries = readFile(this.file(key))
+        .then((bundle) => {
           const map = new Map<string, Entry>();
           let size = 0;
           for (const e of parse(bundle)) {
@@ -79,9 +80,8 @@ export class CompileCache {
           }
           this.bytes.set(key, size);
           return map;
-        },
-        () => new Map<string, Entry>(),
-      );
+        })
+        .catch(() => new Map<string, Entry>());
       this.keys.set(key, entries);
       for (const old of this.keys.keys()) {
         if (this.keys.size <= KEYS_KEPT) break;
@@ -159,9 +159,11 @@ function id(kind: string, async: boolean, path: string, code: Buffer): string {
   return createHash('sha256').update(`${kind}\0${async ? 1 : 0}\0${path}\0`).update(code).digest('hex');
 }
 
+/** A stored bundle's entries; throws for one that is cut off or is not a bundle. */
 function parse(bundle: Buffer): Entry[] {
   const length = bundle.readUInt32LE(0);
   const header = JSON.parse(bundle.subarray(4, 4 + length).toString('utf8')) as [CompileKind, number, string, number, number][];
+  if (!Array.isArray(header) || 4 + length + header.reduce((n, e) => n + e[3] + e[4], 0) !== bundle.length) throw new Error('not a compile bundle');
   const out: Entry[] = [];
   let at = 4 + length;
   for (const [kind, async, path, codeLength, outLength] of header) {

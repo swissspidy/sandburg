@@ -30,7 +30,7 @@ const CPU_TICK_S = 0.011;
  * before and at least it after, so each renderer is held to what it used itself in between (an
  * idle one fits only its exact time).
  */
-export function fittingRenderers(pageCpuS: number, before: ProcessCpu[], after: ProcessCpu[]): number[] {
+function fittingRenderers(pageCpuS: number, before: ProcessCpu[], after: ProcessCpu[]): number[] {
   const earlier = new Map(before.map((r) => [r.pid, r.cpuSeconds]));
   return after
     .filter((r) => {

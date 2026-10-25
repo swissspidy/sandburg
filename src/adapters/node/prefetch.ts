@@ -15,11 +15,8 @@
  * (a require behind a condition) costs a transform, cached for later runs, and bundle space.
  */
 import type { FileIndex, Installer } from './install.ts';
+import { ESM_MARKER, IMPORT_CONDITIONS, REQUIRE_CONDITIONS } from '../../node-runtime/names.ts';
 
-/** As in the runtime's loader (src/node-runtime/loader.ts). */
-const REQUIRE_CONDITIONS = ['require', 'node', 'module-sync', 'node-addons', 'default'];
-const IMPORT_CONDITIONS = ['import', 'node', 'module-sync', 'node-addons', 'default'];
-const ESM_MARKER = '/*sandburg:esm*/';
 const REQUIRE = /\brequire\(\s*(["'])([^"'\n\\]+)\1\s*\)/g;
 
 /**
@@ -146,7 +143,7 @@ export class Prefetcher {
   }
 
   /** The installed file `request` from a file in `dir` resolves to, or null (a builtin, the project's, not found). */
-  private async resolve(request: string, dir: string, conditions: string[]): Promise<string | null> {
+  private async resolve(request: string, dir: string, conditions: readonly string[]): Promise<string | null> {
     if (request.startsWith('node:') || request.startsWith('#') || request.startsWith('/')) return null;
     if (request.startsWith('./') || request.startsWith('../') || request === '.' || request === '..') return this.tryPath(normalize(`${dir}/${request}`));
     const parts = request.split('/');
@@ -189,10 +186,10 @@ export class Prefetcher {
     let pkg = this.packages.get(pkgDir);
     if (!pkg) {
       this.raw.add(`${pkgDir}/package.json`);
-      pkg = this.installer.raw(this.key, `${pkgDir}/package.json`).then(
-        (f) => (f ? (JSON.parse(f.body.toString('utf8')) as PackageJson) : null),
-        () => null,
-      );
+      pkg = this.installer
+        .raw(this.key, `${pkgDir}/package.json`)
+        .then((f) => (f ? (JSON.parse(f.body.toString('utf8')) as PackageJson | null) : null))
+        .catch(() => null);
       this.packages.set(pkgDir, pkg);
     }
     return pkg;
@@ -210,7 +207,7 @@ function normalize(p: string): string {
 }
 
 /** A package's "exports" target for a subpath, as the runtime's loader picks it (patterns included). */
-function exportsTarget(exports: unknown, subpath: string, conditions: string[]): string | null {
+function exportsTarget(exports: unknown, subpath: string, conditions: readonly string[]): string | null {
   let map = exports;
   if (typeof map === 'string' || Array.isArray(map) || (map && typeof map === 'object' && !Object.keys(map).some((k) => k.startsWith('.')))) map = { '.': map };
   const entries = map as Record<string, unknown>;
@@ -231,7 +228,7 @@ function exportsTarget(exports: unknown, subpath: string, conditions: string[]):
   return best ? target(entries[best.key], best.match, conditions, best.key.endsWith('/') && !best.key.includes('*')) : null;
 }
 
-function target(value: unknown, match: string, conditions: string[], folder = false): string | null {
+function target(value: unknown, match: string, conditions: readonly string[], folder = false): string | null {
   if (typeof value === 'string') return folder ? value + match : value.replaceAll('*', match);
   if (Array.isArray(value)) {
     for (const v of value) {

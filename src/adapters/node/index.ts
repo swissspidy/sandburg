@@ -230,7 +230,10 @@ const packageVersions = new Map<string, Promise<string | null>>();
 async function preloadList(key: string): Promise<Map<string, true>> {
   let list = preloadLists.get(key);
   if (!list) {
-    const saved = await readFile(preloadListPath(key), 'utf8').then((t) => JSON.parse(t) as string[], () => [] as string[]);
+    const saved = await readFile(preloadListPath(key), 'utf8')
+      .then((t) => JSON.parse(t) as unknown)
+      .then((v) => (Array.isArray(v) ? v.filter((e): e is string => typeof e === 'string') : []))
+      .catch(() => [] as string[]);
     list = preloadLists.get(key) ?? new Map(saved.map((e) => [e, true] as const));
     preloadLists.set(key, list);
   }
@@ -239,18 +242,21 @@ async function preloadList(key: string): Promise<Map<string, true>> {
 
 function markDirty(key: string) {
   preloadDirty.add(key);
-  preloadFlush ??= setTimeout(async () => {
-    preloadFlush = null;
-    await mkdir(devCacheRoot(), { recursive: true });
-    for (const k of [...preloadDirty]) {
-      preloadDirty.delete(k);
-      const file = preloadListPath(k);
-      const tmp = `${file}.${tmpSuffix()}.tmp`;
-      await writeFile(tmp, JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])]))
-        .then(() => rename(tmp, file))
-        .catch(() => {});
-    }
-  }, 2000);
+  preloadFlush ??= setTimeout(() => void flushPreloadLists(), 2000);
+}
+
+/** Writes the preload lists recorded since the last write. Called from a timer: a failure only loses what the next run would have preloaded. */
+async function flushPreloadLists(): Promise<void> {
+  preloadFlush = null;
+  if (!(await mkdir(devCacheRoot(), { recursive: true }).then(() => true, () => false))) return;
+  for (const k of [...preloadDirty]) {
+    preloadDirty.delete(k);
+    const file = preloadListPath(k);
+    const tmp = `${file}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, JSON.stringify([...(preloadLists.get(k)?.keys() ?? [])]))
+      .then(() => rename(tmp, file))
+      .catch(() => {});
+  }
 }
 
 /** The package a path is in: its directory ("…/node_modules/@scope/name"), name and the path inside it. */
@@ -267,10 +273,10 @@ function packageOf(rel: string): { dir: string; name: string; inner: string } | 
 function packageVersion(key: string, dir: string): Promise<string | null> {
   let v = packageVersions.get(`${key}\0${dir}`);
   if (!v) {
-    v = installer.raw(key, `${dir}/package.json`).then(
-      (f) => (f ? ((JSON.parse(f.body.toString('utf8')) as { version?: string }).version ?? null) : null),
-      () => null,
-    );
+    v = installer
+      .raw(key, `${dir}/package.json`)
+      .then((f) => (f ? ((JSON.parse(f.body.toString('utf8')) as { version?: string } | null)?.version ?? null) : null))
+      .catch(() => null);
     packageVersions.set(`${key}\0${dir}`, v);
   }
   return v;
@@ -300,7 +306,9 @@ async function preloadEntries(key: string): Promise<string[]> {
   const byPackage = new Map<string, string[]>();
   for (const e of (await preloadList(PACKAGE_LIST)).keys()) {
     const [pkg, entry] = e.split('\0');
-    byPackage.get(pkg)?.push(entry) ?? byPackage.set(pkg, [entry]);
+    const entries = byPackage.get(pkg);
+    if (entries) entries.push(entry);
+    else byPackage.set(pkg, [entry]);
   }
   const recorded = new Set([...byPackage.keys()].map((p) => p.slice(0, p.lastIndexOf('@'))));
   const index = await installer.index(key);

@@ -328,7 +328,7 @@ export class Session {
       },
       renderers: async () => {
         this.browserCdp ??= browser.newBrowserCDPSession();
-        const { processInfo } = (await (await this.browserCdp).send('SystemInfo.getProcessInfo')) as { processInfo: { type: string; id: number; cpuTime: number }[] };
+        const { processInfo } = (await (await this.browserCdp).send('SystemInfo.getProcessInfo'));
         return processInfo.filter((p) => p.type === 'renderer').map((p) => ({ pid: p.id, cpuSeconds: p.cpuTime }));
       },
       release: () => {

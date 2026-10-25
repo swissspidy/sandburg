@@ -19,7 +19,7 @@ export interface WsEvents {
 const OP = { continuation: 0x0, text: 0x1, binary: 0x2, close: 0x8, ping: 0x9, pong: 0xa };
 
 /** A masked client frame. */
-export function encodeFrame(opcode: number, payload: Uint8Array, mask: Uint8Array = crypto.getRandomValues(new Uint8Array(4))): Uint8Array {
+function encodeFrame(opcode: number, payload: Uint8Array, mask: Uint8Array = crypto.getRandomValues(new Uint8Array(4))): Uint8Array {
   const len = payload.length;
   const headerLen = 2 + (len < 126 ? 0 : len < 65536 ? 2 : 8) + 4;
   const out = new Uint8Array(headerLen + len);
@@ -42,7 +42,7 @@ export function encodeFrame(opcode: number, payload: Uint8Array, mask: Uint8Arra
   return out;
 }
 
-export function closePayload(code: number, reason: string): Uint8Array {
+function closePayload(code: number, reason: string): Uint8Array {
   const r = new TextEncoder().encode(reason);
   const out = new Uint8Array(2 + r.length);
   out[0] = code >> 8;

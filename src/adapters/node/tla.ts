@@ -26,7 +26,7 @@ import * as acorn from 'acorn';
 
 type Node = acorn.Node & Record<string, unknown>;
 
-export const TLA_EXPORT = '__sandburg_tla';
+const TLA_EXPORT = '__sandburg_tla';
 
 /** Whether an ES module has await (or for await) at its top level. */
 export function hasTopLevelAwait(code: string): boolean {
@@ -170,7 +170,7 @@ function containsTopLevelAwait(node: Node): boolean {
       found = true;
       return;
     }
-    if (/Function/.test(node.type as string)) return;
+    if (/Function/.test(node.type)) return;
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'start' || key === 'end' || key === 'loc') continue;
       const v = node[key];

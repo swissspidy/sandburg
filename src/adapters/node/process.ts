@@ -5,7 +5,7 @@
  */
 import { AdapterError, type Activity } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
-import type { FromWorker } from '../../node-runtime/messages.ts';
+import type { FromWorker, ToWorker } from '../../node-runtime/messages.ts';
 import type { BridgeReply, BridgedRequest } from '../sw-bridge.ts';
 
 export interface NodeProcessOptions {
@@ -58,7 +58,7 @@ const GrowableSharedArrayBuffer = SharedArrayBuffer as unknown as new (length: n
  * failed) and length, then the bytes; the memory grows to the bundle's size (its maximum reserves
  * address space only). Null where there is no shared memory.
  */
-export function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | null {
+function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | null {
   if (!url || !globalThis.crossOriginIsolated) return null;
   let sab: Growable;
   try {
@@ -154,10 +154,15 @@ export class NodeProcess {
     // reports here directly; WASM_CRASH_CHANNEL in threads.ts).
     this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
       this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
-    this.worker.postMessage(
+    this.send(
       { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv },
       opts.compilePort ? [opts.compilePort] : [],
     );
+  }
+
+  /** To the runtime: only a message it takes compiles. */
+  private send(msg: ToWorker, transfer: Transferable[] = []): void {
+    this.worker.postMessage(msg, transfer);
   }
 
   /** Resolves when the runtime has loaded. */
@@ -167,7 +172,7 @@ export class NodeProcess {
 
   /** `track`: project directories whose changes the runtime notes from now on (see readTree's ifChanged). */
   run(main: string, argv: string[] = [], track?: string[]): void {
-    this.worker.postMessage({ type: 'run', main, argv, track });
+    this.send({ type: 'run', main, argv, track });
   }
 
   /** Resolves with the first listening port (or `port`, once it listens). Rejects if the program crashes or exits first. */
@@ -277,7 +282,7 @@ export class NodeProcess {
     if (document.cookie) headers.push(['cookie', document.cookie]);
     // The server is at localhost:<port>, as on the developer's machine (a service worker's request carries no Host).
     headers.push(['host', `localhost:${port}`]);
-    this.worker.postMessage({ type: 'request', id, port, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
+    this.send({ type: 'request', id, port, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
   }
 
   /**
@@ -296,15 +301,15 @@ export class NodeProcess {
     if (document.cookie) headers.push(['cookie', document.cookie]);
     channel.onmessage = (e) => {
       const m = e.data as { type: 'send'; data: string | ArrayBuffer } | { type: 'close'; code?: number; reason?: string };
-      if (m.type === 'send') this.worker.postMessage({ type: 'ws-send', id, data: m.data }, typeof m.data === 'string' ? [] : [m.data]);
-      else this.worker.postMessage({ type: 'ws-close', id, code: m.code, reason: m.reason });
+      if (m.type === 'send') this.send({ type: 'ws-send', id, data: m.data }, typeof m.data === 'string' ? [] : [m.data]);
+      else this.send({ type: 'ws-close', id, code: m.code, reason: m.reason });
     };
-    this.worker.postMessage({ type: 'ws-open', id, port, url: target.pathname + target.search, headers, protocols });
+    this.send({ type: 'ws-open', id, port, url: target.pathname + target.search, headers, protocols });
   }
 
   /** Writes a project file in the running program's file system (dev servers' watchers pick it up). */
   writeFile(path: string, content: string): void {
-    this.worker.postMessage({ type: 'write-file', path, content });
+    this.send({ type: 'write-file', path, content });
   }
 
   /**
@@ -318,7 +323,7 @@ export class NodeProcess {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.trees.set(id, resolve);
-      this.worker.postMessage({ type: 'read-tree', id, dirs, match, ifChanged });
+      this.send({ type: 'read-tree', id, dirs, match, ifChanged });
     });
   }
 
@@ -440,6 +445,10 @@ export class NodeProcess {
         this.pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
         this.pending.delete(m.id);
         this.sent.delete(m.id);
+        break;
+      // The page's runtime is started with init right away, and has no parent for process.send().
+      case 'booted':
+      case 'message':
         break;
     }
     for (const w of this.waiters) w();

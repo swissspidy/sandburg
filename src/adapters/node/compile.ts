@@ -16,6 +16,7 @@ import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
+import { ESM_MARKER } from '../../node-runtime/names.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
@@ -110,7 +111,7 @@ function tlaLoader(path: string, code: string): esbuild.Loader | null {
 const MODULE_SYNTAX = /^\s*(import\s*[\w{*'"]|export\s+[\w{*]|export\s*\{)/m;
 
 /** A transform the compiler needs: esbuild's, synchronous on the host, asynchronous in a browser. */
-export interface TransformStep {
+interface TransformStep {
   code: string;
   options: esbuild.TransformOptions;
   /** A failure is answered with null instead of failing the compilation. */
@@ -219,8 +220,6 @@ function* compileSteps(code: string, path: string, kind: CompileKind, opts: { as
   return out.startsWith(ESM_MARKER) && collidesWithWrapper(out) ? yield* compileOnce(code, path, kind, opts, true) : out;
 }
 
-const ESM_MARKER = '/*sandburg:esm*/';
-
 function* compileOnce(code: string, path: string, kind: CompileKind, opts: { asyncModules?: boolean }, rename: boolean): Generator<TransformStep, string, string> {
   // A hashbang (a package's bin script) is only valid as the very first line, and the ESM marker
   // goes before the code: blanked, keeping the line count.
@@ -278,12 +277,8 @@ function* compileOnce(code: string, path: string, kind: CompileKind, opts: { asy
  * Lowers the code in each `eval("<string literal>")`. The literal is a JSON-style
  * double-quoted string (webpack emits JSON.stringify output), so it can be
  * matched, decoded and re-encoded exactly. The call stays a direct eval.
+ * Yields each transform; a null answer (the transform failed) keeps that eval as it was.
  */
-export function lowerEvalStrings(code: string): string {
-  return runSync(lowerEvalSteps(code));
-}
-
-/** lowerEvalStrings, yielding each transform; a null answer (the transform failed) keeps that eval as it was. */
 function* lowerEvalSteps(code: string): Generator<TransformStep, string, string> {
   let out = '';
   let last = 0;

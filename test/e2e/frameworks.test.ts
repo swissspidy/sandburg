@@ -71,7 +71,7 @@ test('a TSX syntax error is an app bug with its location', async () => {
   const result = await session.run(broken, { outDir });
   assert.equal(result.status, 'error');
   assert.equal(result.failure?.class, 'app-bug', failures(result));
-  assert.match(result.failure!.message, /src\/App\.tsx:\d+:\d+/);
+  assert.match(result.failure.message, /src\/App\.tsx:\d+:\d+/);
 });
 
 test('a Svelte syntax error is an app bug with its location', async () => {
@@ -80,7 +80,7 @@ test('a Svelte syntax error is an app bug with its location', async () => {
   const counter = (base.files['src/lib/Counter.svelte'] as string).replace('Count is {count}', 'Count is {count');
   const result = await session.run(projectFromFiles({ ...base.files, 'src/lib/Counter.svelte': counter }, { name: 'svelte-error', path: dir }), { outDir });
   assert.equal(result.failure?.class, 'app-bug', failures(result));
-  assert.match(result.failure!.message, /src\/lib\/Counter\.svelte:\d+:\d+/);
+  assert.match(result.failure.message, /src\/lib\/Counter\.svelte:\d+:\d+/);
 });
 
 test('<style lang="scss"> without a preprocessor is an app bug', async () => {
@@ -89,5 +89,5 @@ test('<style lang="scss"> without a preprocessor is an app bug', async () => {
   const counter = `${base.files['src/lib/Counter.svelte'] as string}\n<style lang="scss">\n  $c: red;\n  button { color: $c; }\n</style>\n`;
   const result = await session.run(projectFromFiles({ ...base.files, 'src/lib/Counter.svelte': counter }, { name: 'svelte-scss', path: dir }), { outDir });
   assert.equal(result.failure?.class, 'app-bug', failures(result));
-  assert.match(result.failure!.message, /src\/lib\/Counter\.svelte:\d+:\d+/);
+  assert.match(result.failure.message, /src\/lib\/Counter\.svelte:\d+:\d+/);
 });

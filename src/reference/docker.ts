@@ -119,8 +119,8 @@ class DockerRun implements NodeRuntime {
     const child = spawn('docker', ['exec', this.id, 'npm', 'run', script, '--', ...extra], { stdio: ['ignore', 'pipe', 'pipe'] });
     this.server = child;
     const onData = (buf: Buffer) => this.record(buf.toString());
-    child.stdout!.on('data', onData);
-    child.stderr!.on('data', onData);
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
     let exited: string | null = null;
     child.on('exit', (code) => (exited = `dev server exited with code ${code}`));
     // Ready when the dev server answers "/" (dev servers compile on the first request).

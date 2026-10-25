@@ -52,7 +52,7 @@ const DEMOS = [
 ] as const;
 
 const { values: args } = parseArgs({ options: { out: { type: 'string', default: 'dist-pages' }, only: { type: 'string' }, verify: { type: 'boolean', default: false }, 'verify-only': { type: 'boolean', default: false } } });
-const out = resolve(args.out!);
+const out = resolve(args.out);
 const demos = DEMOS.filter((d) => !args.only || args.only.split(',').includes(d.name));
 
 /** Recorded answers: request key → [blob, content type, status]. */
@@ -217,6 +217,7 @@ function verifyBrowser(spki: string, extra: Parameters<typeof chromium.launch>[0
 async function verify(): Promise<void> {
   const prefix = '/sandburg/';
   const certificate = await verifyCertificate();
+  // oxlint-disable-next-line typescript/no-misused-promises -- a local preview server
   const server = createServer(certificate, async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     let file = path.startsWith(prefix) ? join(out, decodeURIComponent(path.slice(prefix.length))) : null;

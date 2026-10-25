@@ -124,7 +124,7 @@ export function originMatcher(allow: string[]): OriginMatcher {
   };
 }
 
-export class OfflineMissError extends Error {
+class OfflineMissError extends Error {
   constructor(url: string) {
     super(`offline mode: ${url} is not in the cache`);
     this.name = 'OfflineMissError';

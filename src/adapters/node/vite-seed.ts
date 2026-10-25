@@ -43,7 +43,7 @@ function packageName(specifier: string): string | null {
  * from the module scripts of the HTML files, following local imports. (Imports through aliases are
  * not followed: Vite then finds the rest itself and pre-bundles again.)
  */
-export function importedPackages(files: FileTree): string[] {
+function importedPackages(files: FileTree): string[] {
   const deps = typeof files['package.json'] === 'string' ? safeDeps(files['package.json']) : {};
   const found = new Set<string>();
   const seen = new Set<string>();

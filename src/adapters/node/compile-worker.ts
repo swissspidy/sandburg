@@ -33,6 +33,7 @@ else broker();
 function compiler(): void {
   let ready: Promise<void> | null = null;
   const transform = async (code: string, options: esbuild.TransformOptions) => (await esbuild.transform(code, options)).code;
+  // oxlint-disable-next-line typescript/no-misused-promises -- its body catches what it throws
   scope.onmessage = async (e: MessageEvent<{ id: number; wasmModule: WebAssembly.Module; request: CompileJob | null }>) => {
     const { id, wasmModule, request } = e.data;
     try {
@@ -129,12 +130,13 @@ function broker(): void {
   };
 
   const serve = (port: Port) => {
+    // oxlint-disable-next-line typescript/no-misused-promises -- its body catches what it throws
     port.onmessage = async (e: MessageEvent<CompileRequest | { op: 'connect'; port: MessagePort }>) => {
       const m = e.data;
       // A new runtime (a thread or child process of this one): its own port.
       if (m.op === 'connect') return serve(m.port);
       const { mailbox, ...rest } = m;
-      const request = rest as CompileJob;
+      const request = rest;
       let result: { ok: boolean; text: string };
       try {
         const k = await key(request);

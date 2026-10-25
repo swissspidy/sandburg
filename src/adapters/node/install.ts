@@ -17,6 +17,7 @@ import * as esbuild from 'esbuild';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
+import { ESM_MARKER } from '../../node-runtime/names.ts';
 import type { Project } from '../../types.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
@@ -171,7 +172,7 @@ export class Installer {
       await mkdir(tmp, { recursive: true });
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
-      const base = await this.startFromClosest(manifest as Manifest, tmp, lock !== null);
+      const base = await this.startFromClosest(manifest, tmp, lock !== null);
       if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
       // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
       // when the lockfile has what the store does not handle.
@@ -429,7 +430,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   if (esm) source = source.replace(/^#!.*/, '');
   source = patchFunctionImport(patchAsyncFunction(source));
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
-  const mark = (code: string) => patchInterop(esm ? `/*sandburg:esm*/\n${code}` : code);
+  const mark = (code: string) => patchInterop(esm ? `${ESM_MARKER}\n${code}` : code);
   // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
   const convert = async (code: string) => {
     const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
@@ -451,7 +452,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   }
 }
 
-export const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.TransformOptions => ({
+const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.TransformOptions => ({
   loader: 'js',
   format: esm ? 'cjs' : undefined,
   sourcefile: esm ? esmSourcefile(path) : path,
