@@ -1,4 +1,4 @@
-# ADR NNNN: The host under many runs: where a batch waits, and caches several sessions share
+# ADR 0050: The host under many runs: where a batch waits, and caches several sessions share
 
 - Status: Accepted
 - Date: 2026-10-25
