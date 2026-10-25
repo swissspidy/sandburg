@@ -7,7 +7,7 @@
  * app: this module decides which calls it may answer, and asks it.
  *
  * A call goes to the host only when the app's esbuild is a version whose transforms the host's
- * matches (NATIVE_FROM up to the host's own version), and every option is one of TRANSFORM_OPTIONS
+ * was checked to give exactly (NATIVE_VERSIONS), and every option is one of TRANSFORM_OPTIONS
  * with a plain JSON value. Anything else, and any answer but a result (the host refused it, the code
  * has errors, the host was busy), is transformed by the app's own esbuild, as before: its errors and
  * log output are that version's own.
@@ -16,15 +16,24 @@
 export const NATIVE_TRANSFORM_PATH = '/esbuild-transform';
 /** The global the esbuild shim reads the runtime's hook from (a registered symbol: no app name collides with it). */
 export const NATIVE_TRANSFORM = Symbol.for('sandburg.esbuildTransform');
-/** The oldest esbuild whose transforms the host answers: 0.25's output matched 0.28's for every corpus and fixture module. */
-const NATIVE_FROM: readonly [number, number, number] = [0, 25, 0];
+/**
+ * The esbuild versions whose transforms the host's esbuild (CHECKED_AGAINST) gives exactly: every
+ * published 0.25-0.28 release, checked with scripts/esbuild-equivalence.ts (the same code, source
+ * maps, warnings and errors on 1,875 transforms of every TypeScript and JSX module of the corpus and
+ * fixtures). With another host esbuild, only its own version is answered until the list is checked again.
+ */
+const CHECKED_AGAINST = '0.28.2';
+const NATIVE_VERSIONS = new Set([
+  '0.25.0', '0.25.1', '0.25.2', '0.25.3', '0.25.4', '0.25.5', '0.25.6', '0.25.7', '0.25.8', '0.25.9', '0.25.10', '0.25.11', '0.25.12',
+  '0.26.0', '0.27.0', '0.27.1', '0.27.2', '0.27.3', '0.27.4', '0.27.5', '0.27.7', '0.28.0', '0.28.1', '0.28.2',
+]);
 /** Larger requests (input and options) are transformed in the runtime. */
 export const NATIVE_MAX_BYTES = 4 << 20;
 
 /**
  * The transform options the host passes on: those esbuild has had, with the same meaning, since
- * NATIVE_FROM. Not `mangleProps`/`reserveProps` (regular expressions), `mangleCache` (goes with
- * them), or options newer than NATIVE_FROM.
+ * 0.25. Not `mangleProps`/`reserveProps` (regular expressions), `mangleCache` (goes with
+ * them), or options newer than 0.25.
  */
 const TRANSFORM_OPTIONS = new Set([
   'banner', 'charset', 'color', 'define', 'drop', 'dropLabels', 'footer', 'format', 'globalName', 'ignoreAnnotations',
@@ -34,17 +43,9 @@ const TRANSFORM_OPTIONS = new Set([
   'target', 'treeShaking', 'tsconfigRaw',
 ]);
 
-const parseVersion = (v: unknown): [number, number, number] | null => {
-  const m = typeof v === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(v) : null;
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
-};
-const compare = (a: readonly number[], b: readonly number[]) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-
-/** Whether the host's esbuild (`host`) answers for an app's esbuild `version`: from NATIVE_FROM up to the host's own. */
+/** Whether the host's esbuild (`host`) answers for an app's esbuild `version`: its own, or one checked against it. */
 export function nativeVersion(version: unknown, host: string): boolean {
-  const v = parseVersion(version);
-  const h = parseVersion(host);
-  return !!v && !!h && compare(v, NATIVE_FROM) >= 0 && compare(v, h) <= 0;
+  return typeof version === 'string' && (version === host || (host === CHECKED_AGAINST && NATIVE_VERSIONS.has(version)));
 }
 
 /**

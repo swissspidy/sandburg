@@ -37,9 +37,12 @@ esbuild shim, and microbenchmarks of the tools in Node showed where their time g
   `adapters/node/native-transform.ts`). A transform is a pure function of its input and options: no
   plugins, no file system. The esbuild shim (`WASM_BUILDS` in `adapters/node/install-rules.ts`) asks
   the runtime's hook first, which sends a transform to the host when
-  - the app's esbuild is 0.25.0 or later and not newer than the host's (0.28.2): 1,254 transforms of
-    every TypeScript and JSX module of the corpus and fixtures, with Vite's options and with others,
-    gave the same code, source maps, warnings and errors from esbuild-wasm 0.25.12 and native 0.28.2;
+  - the app's esbuild is the host's own version (0.28.2) or one checked to transform exactly as it
+    does (`NATIVE_VERSIONS`): every published 0.25.0-0.28.2 release (24 versions) gave the same
+    code, source maps, warnings and errors as native 0.28.2 on 1,875 transforms of every TypeScript
+    and JSX module of the corpus and fixtures, with Vite's options and two other sets
+    (`scripts/esbuild-equivalence.ts`, to run again when the host's esbuild changes; until then
+    another host esbuild answers only for its own version);
   - every option is a transform option both have (`TRANSFORM_OPTIONS`) with a plain JSON value
     (undefined object properties allowed: Vite's tsconfigRaw has them), the log level prints nothing
     as esbuild works (`verbose`, `debug`), and the input is a string of at most 4 MB.
@@ -96,8 +99,8 @@ esbuild shim, and microbenchmarks of the tools in Node showed where their time g
 - CPU: a transform's work moves from the browser's WebAssembly to the host's native code, ~10x less.
 - **Behaviour changes:**
   - An app's esbuild `transform` (esbuild 0.25.0-0.28.2, the listed options) is answered by
-    Sandburg's esbuild 0.28.2. Its result is that version's (the same as 0.25's on every module
-    tried); errors, and warnings the app asked to see, still come from the app's esbuild. A warm
+    Sandburg's esbuild 0.28.2. Its result is that version's (the same as each listed version's on
+    every module tried); errors, and warnings the app asked to see, still come from the app's esbuild. A warm
     Vite 5-7 run may not load esbuild-wasm at all.
   - Vite's config file is not bundled again while it, what it imports from the project and the
     settings files beside them are as they were at the project's last run: the bundle (code and
@@ -112,8 +115,14 @@ esbuild shim, and microbenchmarks of the tools in Node showed where their time g
   app's, on data: a transform reads no files, runs no plugins, and its options are an allowlist of
   transform options with plain JSON values (no build options such as `tsconfig` or `absWorkingDir`,
   no `plugins`); anything else is refused (422) before esbuild sees it. Nothing of the app is printed
-  on the host (`logLevel: 'silent'`). Bounds: 4 MB per request, 4 transforms in progress per sandbox
-  and 16 in all (503 beyond), 10 s per transform (503; its slot stays taken until esbuild is done).
+  on the host (`logLevel: 'silent'`). Bounds: 4 MB per request (the host server's 413 beyond), 4
+  transforms in progress per sandbox and 16 in all (503 beyond), 10 s per transform (503). esbuild
+  cannot stop a transform it started, so a timed-out one keeps its slot until it is done, and a
+  sandbox with 2 timed-out transforms is not answered again (its runtime uses its own esbuild): one
+  sandbox holds at most 4 of the host's slots, and keeps esbuild busy past the timeout with at most
+  2 of its inputs.
+- **Never another version's output unawares**: only the versions listed above, each checked against
+  the host's esbuild, are answered.
 - **Answers are cached by a digest** (SHA-256 of the host's esbuild version and the whole request),
   shared by all sandboxes: the host computes every entry itself, so no run can plant one.
 - **The file channel's POST frames**: binary frames of at most 4 MB + 64 KB (larger ones close the
@@ -124,7 +133,7 @@ esbuild shim, and microbenchmarks of the tools in Node showed where their time g
   the same project and install (ADR 0044). An entry is code the project's own run produced from the
   project's own files; a run that tampers with it affects only the project's later runs, which run
   its code anyway. Entries for another file or working directory, or that do not parse, are not used.
-- Tests: `test/unit/native-transform.test.ts` (versions, options, size, concurrency, timeout, cache,
+- Tests: `test/unit/native-transform.test.ts` (versions, options, size and the host server's 413, concurrency, timeouts and the sandbox they stop, cache,
   another sandbox's and another site's pages refused by the host server, the shim's fallback),
   `test/unit/host-socket.test.ts` (POST frames: other paths, oversized and malformed frames),
   `test/unit/config-bundles.test.ts` (changed inputs and settings, foreign and tampered entries,

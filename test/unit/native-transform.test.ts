@@ -90,8 +90,9 @@ test('a request the host does not answer is refused, and the runtime transforms 
   assert.equal(await status(req('{"not": "json"')), 400);
   // Code with errors: the app's own esbuild reports them, as its version does.
   assert.equal(await status(req(JSON.stringify([OPTIONS, 'export const = 1;']))), 422);
-  // Larger than the bound.
-  assert.notEqual(await status(req(JSON.stringify([{}, 'x'.repeat(NATIVE_MAX_BYTES)]))), 200);
+  // Larger than the bound: the body's error goes to the host server, which answers 413; the slot is free again.
+  await assert.rejects(nativeTransform(req(JSON.stringify([{}, 'x'.repeat(NATIVE_MAX_BYTES)]), { sandbox: 'large' })), /413/);
+  for (let i = 0; i < 5; i++) assert.equal(await status(req(JSON.stringify([{}, `export const n${i} = 1;`]), { sandbox: 'large' })), 200);
   // Nothing an app asks for is printed on the host.
   let logged: unknown;
   await nativeTransform(req(JSON.stringify([{ logLevel: 'error' }, 'let x = 1 +;'])), (input, options) => ((logged = options?.logLevel), esbuild.transform(input, options)));
@@ -139,6 +140,14 @@ test('a transform that takes too long is answered 503, and holds its slot until 
   assert.equal((await nativeTransform(req(JSON.stringify([{}, 'export const s4 = 1;']), { sandbox: 'stuck' }))).status, 503);
   finish();
   await Promise.all(others);
+});
+
+test('a sandbox whose transforms timed out twice is not answered again; others are', async () => {
+  const stuck: typeof esbuild.transform = () => new Promise(() => {});
+  for (let i = 0; i < 2; i++) assert.equal((await nativeTransform(req(JSON.stringify([{}, `export const t${i} = 1;`]), { sandbox: 'slow' }), stuck, 20)).status, 503);
+  // Even a quick one: its runtime transforms with its own esbuild from now on.
+  assert.equal((await nativeTransform(req(JSON.stringify([{}, 'export const quick = 1;']), { sandbox: 'slow' }))).status, 503);
+  assert.equal((await nativeTransform(req(JSON.stringify([{}, 'export const quick = 1;']), { sandbox: 'fine' }))).status, 200);
 });
 
 test("the runtime's hook asks only for eligible transforms and falls back on any other answer", async () => {
@@ -202,6 +211,8 @@ test("only the sandbox's own pages reach the route", async () => {
   assert.equal(await post({ 'sec-fetch-site': 'same-origin' }, body), 200);
   // Another sandbox's page (same site: *.sandburg.localhost) and another site.
   for (const site of ['same-site', 'cross-site']) assert.equal(await post({ 'sec-fetch-site': site }, body), 403, site);
+  // A body over the route's bound: the host server's 413.
+  assert.equal(await post({ 'sec-fetch-site': 'same-origin' }, JSON.stringify([{}, 'x'.repeat(NATIVE_MAX_BYTES)])), 413);
 });
 
 // --- the esbuild shim -------------------------------------------------------------------------

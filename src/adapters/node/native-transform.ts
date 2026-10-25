@@ -6,7 +6,8 @@
  *
  * Bounds, as one app must not starve the host: a request is at most NATIVE_MAX_BYTES; a sandbox has
  * at most PER_SANDBOX transforms in progress and the host GLOBAL; a transform that takes longer than
- * TIMEOUT_MS is answered 503 (its slot stays taken until esbuild is done). Every refusal sends the
+ * TIMEOUT_MS is answered 503 (its slot stays taken until esbuild is done), and a sandbox with
+ * TIMEOUTS_MAX of them is not answered again. Every refusal sends the
  * runtime back to the app's own esbuild, so none of them changes what the app gets.
  */
 import { createHash } from 'node:crypto';
@@ -20,10 +21,17 @@ export { NATIVE_TRANSFORM_PATH } from '../../node-runtime/native-transform.ts';
 const PER_SANDBOX = 4;
 const GLOBAL = 16;
 const TIMEOUT_MS = 10_000;
+/**
+ * A sandbox whose transforms timed out this often is not answered again (its runtime uses its own
+ * esbuild): esbuild cannot be stopped mid-transform, so a timed-out one keeps its slot until it is
+ * done, and this bounds how much of the host's esbuild one sandbox's crafted inputs can hold.
+ */
+const TIMEOUTS_MAX = 2;
 
 /** Answers by digest of the esbuild version and the request (results, as the JSON sent). */
 const answers = new StringLru<string>(32 << 20);
 const inFlight = new Map<string, number>();
+const timedOut = new Map<string, number>();
 let total = 0;
 
 const refuse = (status: number, text: string): HostResponse => ({ status, headers: { 'content-type': 'text/plain' }, body: text });
@@ -33,6 +41,7 @@ export async function nativeTransform(req: HostRequest, transform = esbuild.tran
   if (req.method !== 'POST') return refuse(405, 'POST only');
   if (!nativeVersion(req.query.get('v'), esbuild.version)) return refuse(422, 'not this esbuild version');
   const sandbox = req.sandbox ?? '';
+  if ((timedOut.get(sandbox) ?? 0) >= TIMEOUTS_MAX) return refuse(503, 'too many transforms timed out');
   if (total >= GLOBAL || (inFlight.get(sandbox) ?? 0) >= PER_SANDBOX) return refuse(503, 'busy');
   // Taken before the body is read: a slow upload holds a slot too.
   total++;
@@ -44,8 +53,15 @@ export async function nativeTransform(req: HostRequest, transform = esbuild.tran
     else inFlight.delete(sandbox);
   };
   let released = false;
+  let raw: string;
   try {
-    const raw = (await req.body(NATIVE_MAX_BYTES)).toString('utf8');
+    raw = (await req.body(NATIVE_MAX_BYTES)).toString('utf8');
+  } catch (e) {
+    // Too large: the host server answers 413.
+    release();
+    throw e;
+  }
+  try {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
@@ -63,12 +79,15 @@ export async function nativeTransform(req: HostRequest, transform = esbuild.tran
     released = true;
     void work.then(release, release);
     const result = await Promise.race([work, new Promise<null>((r) => setTimeout(() => r(null), timeoutMs).unref())]);
-    if (!result) return refuse(503, 'timed out');
+    if (!result) {
+      timedOut.set(sandbox, (timedOut.get(sandbox) ?? 0) + 1);
+      return refuse(503, 'timed out');
+    }
     const body = JSON.stringify(result);
     answers.set(key, body);
     return { status: 200, headers: { 'content-type': 'application/json' }, body };
   } catch {
-    // The code has errors (the app's esbuild reports them as its version does), or the body was too large.
+    // The code has errors: the app's esbuild reports them, as its version does.
     return refuse(422, 'transform failed');
   } finally {
     if (!released) release();
