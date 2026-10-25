@@ -43,8 +43,8 @@ test('installed files: the preload bundle, shared with threads, and single files
   assert.deepEqual(h.asked.filter((a) => a.includes('/nm/')).sort(), [
     `ws ${nm}/f/node_modules/single/package.json?ahead=1`,
     `ws ${nm}/f/node_modules/single/package.json?ahead=1`,
-    `ws ${nm}/t/node_modules/single/index.js`,
-    `ws ${nm}/t/node_modules/single/index.js`,
+    `ws ${nm}/t/node_modules/single/index.js?ahead=1`,
+    `ws ${nm}/t/node_modules/single/index.js?ahead=1`,
   ]);
   assert.equal(h.asked.filter((a) => a.startsWith('http /__sandburg/preload/')).length, 1);
 });
@@ -82,6 +82,25 @@ test('installed files: raw files read one after another come with the files afte
     `ws ${nm}/c.js?ahead=1`,
     `ws ${nm}/d.js?used=1`,
   ]);
+});
+
+test('installed files: modules pushed with a transformed file are loaded without asking, and their use told', async () => {
+  const tool = {
+    files: {
+      'node_modules/tool/package.json': JSON.stringify({ name: 'tool', main: 'index.js' }),
+      'node_modules/tool/index.js': `module.exports = 'tool ' + require('./a.js');`,
+      'node_modules/tool/a.js': `module.exports = 'a ' + require('./b.js');`,
+      'node_modules/tool/b.js': `module.exports = 'b';`,
+    },
+    bundled: [],
+    pushes: { 'node_modules/tool/index.js': ['node_modules/tool/a.js', 'node_modules/tool/b.js'] },
+  };
+  const main = { 'main.js': `setTimeout(() => console.log(require('tool')), 300);` };
+  const out = await h.runInstalled(main, tool, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'tool a b\n');
+  const nm = `/__sandburg/nm/${INSTALL_KEY}/t/node_modules/tool`;
+  assert.deepEqual(h.asked.filter((a) => a.includes('/t/')).sort(), [`ws ${nm}/a.js?used=1`, `ws ${nm}/b.js?used=1`, `ws ${nm}/index.js?ahead=1`]);
 });
 
 test('installed files: a preload bundle the page downloaded is not requested again', async () => {

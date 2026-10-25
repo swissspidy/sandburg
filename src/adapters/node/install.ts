@@ -346,6 +346,11 @@ export class Installer {
     return { body: this.remember(`${key}\0${rel}`, await pending)!, type: 'text/javascript' };
   }
 
+  /** A transform of an install's file this process has in memory (see remember), or undefined. */
+  remembered(key: string, rel: string): Buffer | undefined {
+    return this.combined.has(key) ? undefined : this.memory.get(`${key}\0${rel}`);
+  }
+
   /** Transform cache directories made by this process. */
   private made = new Set<string>();
 

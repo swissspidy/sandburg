@@ -89,6 +89,8 @@ export interface HostRequest {
   path: string;
   query: URLSearchParams;
   body(): Promise<Buffer>;
+  /** The file channel (one per runtime and its threads) the request came on; absent over HTTP. */
+  channel?: object;
 }
 
 export interface HostResponse {

@@ -93,3 +93,48 @@ test('read-ahead: only files of the install, and an answer fits the file channel
   assert.ok(Buffer.from(out!.body as Uint8Array).length < MAX_BODY);
   assert.deepEqual(sent[0], ['node_modules/other/f000.js', 'y'.repeat(4000)]);
 });
+
+test('push: a transform comes with the transformed modules it requires, each once per file channel', async () => {
+  const { sharedInstaller } = await import('../../src/adapters/node/install.ts');
+  const { Prefetcher } = await import('../../src/adapters/node/prefetch.ts');
+  const { pushAhead } = await import('../../src/adapters/node/index.ts');
+  const app = 'e'.repeat(24);
+  const tree: Record<string, string> = {
+    'node_modules/tool/package.json': JSON.stringify({ name: 'tool', main: 'index.js' }),
+    'node_modules/tool/index.js': `module.exports = require('./a.js') + require('dep');`,
+    'node_modules/tool/a.js': `module.exports = require('./b.js');`,
+    'node_modules/tool/b.js': `module.exports = 1;`,
+    'node_modules/dep/package.json': JSON.stringify({ name: 'dep', main: 'main.js' }),
+    'node_modules/dep/main.js': `module.exports = 2;`,
+    'node_modules/dep/never.js': `module.exports = 3;`,
+  };
+  for (const [path, content] of Object.entries(tree)) {
+    mkdirSync(dirname(join(root, 'installs', app, path)), { recursive: true });
+    writeFileSync(join(root, 'installs', app, path), content);
+  }
+  const installer = sharedInstaller();
+  const prefetcher = new Prefetcher(installer, app, await installer.index(app));
+  prefetcher.add('node_modules/tool/index.js');
+  await prefetcher.idle();
+  const first = (await installer.file(app, 'node_modules/tool/index.js'))!.body;
+  const channel = {};
+  const out = pushAhead(app, 'node_modules/tool/index.js', first, prefetcher, channel)!;
+  const files = (() => {
+    const length = out.readUInt32LE(0);
+    return (JSON.parse(out.subarray(4, 4 + length).toString()) as [string, string, number][]).map(([mode, rel]) => `${mode}:${rel}`);
+  })();
+  // Breadth first, with each module's package.json once; never.js is required by nothing.
+  assert.deepEqual(files, ['t:node_modules/tool/index.js', 't:node_modules/tool/a.js', 'f:node_modules/tool/package.json', 't:node_modules/dep/main.js', 'f:node_modules/dep/package.json', 't:node_modules/tool/b.js']);
+  // The same channel gets nothing again; another channel (another runtime) does.
+  assert.equal(pushAhead(app, 'node_modules/tool/a.js', (await installer.file(app, 'node_modules/tool/a.js'))!.body, prefetcher, channel), null);
+  assert.ok(pushAhead(app, 'node_modules/tool/a.js', (await installer.file(app, 'node_modules/tool/a.js'))!.body, prefetcher, {}));
+});
+
+test('push: only over a file channel, and only for an install with a prefetch (never run)', async () => {
+  // No channel (HTTP): a plain answer.
+  const out = await serve({ method: 'GET', path: `/__sandburg/nm/${key}/t/node_modules/other/index.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0) } as HostRequest);
+  assert.equal(out?.status, 200);
+  // A channel, but no prefetcher for this install: a plain answer.
+  const viaChannel = await serve({ method: 'GET', path: `/__sandburg/nm/${key}/t/node_modules/other/index.js`, query: new URLSearchParams('ahead=1'), body: async () => Buffer.alloc(0), channel: {} } as HostRequest);
+  assert.equal(viaChannel?.status, 200);
+});

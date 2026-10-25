@@ -94,6 +94,8 @@ window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => 
 interface Install {
   files: Record<string, string>;
   bundled: string[];
+  /** Transformed files the host pushes with a transformed file asked for with ?ahead=1 (see pushAhead). */
+  pushes?: Record<string, string[]>;
 }
 export const INSTALL_KEY = 'a'.repeat(24);
 
@@ -131,6 +133,18 @@ export class RuntimeHarness {
     if (!after.length) return null;
     const files = [rel, ...after.map((n) => dir + n)].map((p) => [p, Buffer.from(this.install.files[p])] as const);
     const header = Buffer.from(JSON.stringify(files.map(([p, bytes]) => ['f', p, bytes.length])));
+    const length = Buffer.alloc(4);
+    length.writeUInt32LE(header.length);
+    return Buffer.concat([length, header, ...files.map((f) => f[1])]);
+  }
+
+  /** A push answer: the transformed file and the ones `pushes` lists for it. */
+  private pushed(path: string): Buffer | null {
+    const rel = decodeURIComponent(path.replace(/^\/__sandburg\/nm\/[0-9a-f]{24}\/t\//, ''));
+    const more = this.install.pushes?.[rel];
+    if (!more?.length) return null;
+    const files = [rel, ...more].map((p) => [p, Buffer.from(this.install.files[p])] as const);
+    const header = Buffer.from(JSON.stringify(files.map(([p, bytes]) => ['t', p, bytes.length])));
     const length = Buffer.alloc(4);
     length.writeUInt32LE(header.length);
     return Buffer.concat([length, header, ...files.map((f) => f[1])]);
@@ -196,7 +210,7 @@ export class RuntimeHarness {
         this.asked.push(`ws ${r.path}${query ? `?${query}` : ''}`);
         if (r.query.get('used') === '1') return { status: 204, body: '' };
         const body = this.installed(r.path);
-        const ahead = body && r.query.get('ahead') === '1' ? this.ahead(r.path, r.query.get('until')) : null;
+        const ahead = body && r.query.get('ahead') === '1' ? (r.path.includes('/t/') ? this.pushed(r.path) : this.ahead(r.path, r.query.get('until'))) : null;
         return ahead ? { status: 207, body: ahead } : body ? { status: 200, body } : null;
       });
     });

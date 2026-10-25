@@ -519,7 +519,7 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
     const early = sentAhead(key, url);
     if (early) return { status: 200, body: binary ? early : new TextDecoder().decode(early) };
-    const res = key.startsWith('f/') ? readAhead(url, key.slice(2)) : null;
+    const res = key.startsWith('f/') ? readAhead(url, key.slice(2)) : key.startsWith('t/') ? withPushed(url) : null;
     if (res) return { status: res.status, body: binary ? res.body : new TextDecoder().decode(res.body) };
   }
   return requestSync(url, binary);
@@ -552,13 +552,30 @@ function readAhead(url: string, rel: string): { status: number; body: Uint8Array
   const res = viaChannel(`${url}?ahead=1${until === undefined ? '' : `&until=${encodeURIComponent(until)}`}`);
   if (!res || res.status !== 207) return res;
   const files = bundleFiles(res.body);
-  for (const [path, bytes, mode] of files.slice(1)) {
-    ahead.set(`${mode}/${path}`, bytes);
-    aheadBytes += bytes.length;
-  }
+  for (const [path, bytes, mode] of files.slice(1)) keepAhead(`${mode}/${path}`, bytes);
   const last = files[files.length - 1][0];
   covered.set(dir, [...ranges, [name, last.slice(last.lastIndexOf('/') + 1)] as [string, string]].sort((a, b) => (a[0] < b[0] ? -1 : 1)));
   return { status: 200, body: files[0][1] };
+}
+
+/**
+ * A transformed installed file, with the modules it requires that the host has transformed already
+ * (an install never run: see pushAhead in src/adapters/node/index.ts). Over the file channel only;
+ * null to ask over HTTP.
+ */
+function withPushed(url: string): { status: number; body: Uint8Array } | null {
+  if (aheadBytes >= AHEAD_MAX) return viaChannel(url);
+  const res = viaChannel(`${url}?ahead=1`);
+  if (!res || res.status !== 207) return res;
+  const files = bundleFiles(res.body);
+  for (const [path, bytes, mode] of files.slice(1)) keepAhead(`${mode}/${path}`, bytes);
+  return { status: 200, body: files[0][1] };
+}
+
+function keepAhead(key: string, bytes: Uint8Array): void {
+  if (ahead.has(key)) return;
+  ahead.set(key, bytes);
+  aheadBytes += bytes.length;
 }
 
 /**
