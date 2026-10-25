@@ -1,4 +1,4 @@
-# ADR NNNN: The runtime's own hot paths
+# ADR 0041: The runtime's own hot paths
 
 - Status: Accepted
 - Date: 2026-10-25
