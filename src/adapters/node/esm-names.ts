@@ -48,8 +48,12 @@ export function collidesWithWrapper(code: string): boolean {
     return e instanceof SyntaxError;
   }
 }
-const LEXICAL = new RegExp(`\\b(?:const|let|class)\\s*\\{?[^;=]*?\\b(?:${ESM_WRAPPER_PARAMS.join('|')})\\b`);
-const DECLARES = new RegExp(`\\b(?:const|let|var|function|class|as|import)\\s*\\{?[^;=]*?\\b(?:${RESERVED.join('|')})\\b`);
+const PARAMS = ESM_WRAPPER_PARAMS.join('|');
+// A name as the first one declared, or after a `,`, `{` or `:` later in the declaration
+// (`const a = 1, require = 2`, `const { a = 1, module } = x`): the first stops at `=` so that
+// `const x = require(...)` is not parsed. DECLARES likewise.
+const LEXICAL = new RegExp(`\\b(?:const|let|class)\\s*\\{?[^;=]*?\\b(?:${PARAMS})\\b|\\b(?:const|let)\\b[^;]*?[,{:]\\s*(?:${PARAMS})\\s*(?:[=,};]|$)`);
+const DECLARES = new RegExp(`\\b(?:const|let|var|function|class|as|import)\\s*\\{?[^;=]*?\\b(?:${RESERVED.join('|')})\\b|\\b(?:const|let|var)\\b[^;]*?[,{:]\\s*(?:${RESERVED.join('|')})\\s*(?:[=,};]|$)`);
 
 type Node = acorn.Node & Record<string, unknown>;
 

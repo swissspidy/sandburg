@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PackumentCache, revalidates, trimPackument } from '../../src/adapters/node/resolver.ts';
+import { cachedBody, PackumentCache, revalidates, trimPackument } from '../../src/adapters/node/resolver.ts';
 
 test('the resolver keeps packuments by their size, least recently used out first', () => {
   const cache = new PackumentCache(100);
@@ -244,4 +244,16 @@ test('the resolver answers whether a version matches, as npm view does', async (
     for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
     await reg.close();
   }
+});
+
+test("only responses from npm's own cache are trimmed: headers naming another directory are not followed", () => {
+  const response = (cache: string) => {
+    const headers: Record<string, string> = { 'x-local-cache': encodeURIComponent(cache), 'x-local-cache-key': encodeURIComponent('make-fetch-happen:request-cache:https://registry.npmjs.org/p'), 'x-local-cache-hash': 'sha512-x', 'content-length': String(1 << 20) };
+    return { status: 200, headers: { get: (name: string) => headers[name] ?? null } };
+  };
+  assert.deepEqual(cachedBody(response('/home/u/.npm/_cacache'), '/home/u/.npm/_cacache')?.cache, '/home/u/.npm/_cacache');
+  // A response make-fetch-happen did not store keeps the registry's headers.
+  assert.equal(cachedBody(response('/tmp/elsewhere'), '/home/u/.npm/_cacache'), null);
+  // Before npm has loaded, its cache is not known: nothing is trimmed.
+  assert.equal(cachedBody(response('/home/u/.npm/_cacache'), null), null);
 });

@@ -53,7 +53,8 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   let ready: Promise<{ flat: object; Arborist: new (o: object) => { reify(o: object): Promise<unknown> } }> | null = null;
   const cache = new PackumentCache(PACKUMENT_BYTES);
   // Before npm loads: pacote's packuments are parsed through minipass-fetch's Body.json.
-  new TrimmedPackuments(require).install();
+  const trimmed = new TrimmedPackuments(require);
+  trimmed.install();
   // The packages npm picks, as it goes: the host unpacks them meanwhile (package-store.ts's unpackHint).
   const ahead = new ReadAhead(require, cache, (picked) => parentPort!.postMessage({ picked }));
   /** Resolutions running (a small one runs beside another). */
@@ -65,6 +66,7 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
         const npm = new Npm({ argv: ['install', ...flags], stdout: sink, stderr: sink });
         npm.config.cwd = configDir;
         await npm.load();
+        trimmed.cacheDir = String((npm.flatOptions as { cache?: unknown }).cache ?? '') || null;
         return { flat: npm.flatOptions, Arborist: require('@npmcli/arborist') };
       })();
       const { flat, Arborist } = await ready;
@@ -248,19 +250,25 @@ interface CachedResponse {
   headers: { get(name: string): string | null };
 }
 
-/** The packument cache entry a response came from: npm's cache, its key and the body's integrity. */
-function cachedBody(res: CachedResponse): { cache: string; key: string; source: string } | null {
+/**
+ * The packument cache entry a response came from: npm's cache, its key and the body's integrity.
+ * Only an entry in npm's own cache (cacheDir) counts: make-fetch-happen passes a response it does not
+ * store (`Cache-Control: no-store`) with the registry's headers, which could name any directory.
+ */
+export function cachedBody(res: CachedResponse, cacheDir: string | null): { cache: string; key: string; source: string } | null {
   const [cache, key, source] = ['x-local-cache', 'x-local-cache-key', 'x-local-cache-hash'].map((h) => res.headers.get(h));
-  if (res.status !== 200 || !cache || !key || !source || Number(res.headers.get('content-length')) < TRIM_MIN) return null;
+  if (!cacheDir || res.status !== 200 || !cache || !key || !source || Number(res.headers.get('content-length')) < TRIM_MIN) return null;
   try {
     const entry = { cache: decodeURIComponent(cache), key: decodeURIComponent(key), source: decodeURIComponent(source) };
-    return entry.key.startsWith('make-fetch-happen:request-cache:') ? entry : null;
+    return entry.cache === cacheDir && entry.key.startsWith('make-fetch-happen:request-cache:') ? entry : null;
   } catch {
     return null;
   }
 }
 
 class TrimmedPackuments {
+  /** npm's cache (its flat options' `cache`), once npm has loaded; nothing is trimmed before. */
+  cacheDir: string | null = null;
   private readonly require: NodeJS.Require;
   private cacache!: Cacache;
   private helper: Worker | null = null;
@@ -280,7 +288,7 @@ class TrimmedPackuments {
       if (!consume || typeof json !== 'function') return false;
       const self = this;
       Body.prototype.json = async function (this: CachedResponse & Record<symbol, () => Promise<Buffer>>) {
-        const entry = cachedBody(this);
+        const entry = cachedBody(this, self.cacheDir);
         if (!entry) return json.call(this);
         const trimmed = await self.read(entry);
         if (trimmed) return trimmed;
