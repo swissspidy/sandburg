@@ -1,4 +1,4 @@
-# ADR NNNN: The WebAssembly tools' work: esbuild's transforms on the host, Vite's config bundle kept
+# ADR 0051: The WebAssembly tools' work: esbuild's transforms on the host, Vite's config bundle kept
 
 - Status: Accepted
 - Date: 2026-10-25

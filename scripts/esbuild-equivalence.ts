@@ -1,5 +1,5 @@
 /**
- * Whether the host's native esbuild transforms code as another esbuild version does (ADR NNNN): the
+ * Whether the host's native esbuild transforms code as another esbuild version does (ADR 0051): the
  * versions in NATIVE_VERSIONS (src/node-runtime/native-transform.ts) are the ones this found equal.
  * Transforms every TypeScript and JSX module of corpus/ and fixtures/ with the WebAssembly build of
  * each version given and with the host's esbuild, with Vite's options and with others, and compares

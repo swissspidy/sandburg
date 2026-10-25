@@ -1,5 +1,5 @@
 /**
- * Vite's bundle of the project's config file, kept from the project's last run (ADR NNNN). Every
+ * Vite's bundle of the project's config file, kept from the project's last run (ADR 0051). Every
  * start of a Vite dev server bundles vite.config.ts and what it imports from the project, on the
  * program's thread: with esbuild's WebAssembly build (Vite 5-7: ~0.3 s of a warm start, most of it
  * esbuild's Go code starting and running cold) or rolldown's (Vite 8). The bundle is a function of

@@ -1,5 +1,5 @@
 /**
- * esbuild's `transform` on the host's native esbuild (ADR NNNN). A program's esbuild is the
+ * esbuild's `transform` on the host's native esbuild (ADR 0051). A program's esbuild is the
  * WebAssembly build, run in the runtime's thread (the esbuild shim in adapters/node/install-rules.ts):
  * Vite 5-7 transform every TypeScript and JSX module with it, ~20-100 ms each in a warm run, one at a
  * time, where the host's native esbuild takes 1-2 ms. A transform is a pure function of its input and
