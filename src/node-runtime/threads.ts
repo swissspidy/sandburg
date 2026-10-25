@@ -10,7 +10,7 @@
  */
 import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, parent, type VStat } from './vfs.ts';
-import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
+import { adoptMailboxes, mailboxesFor, receiveMessageOnPort, type Mailbox } from './message-ports.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
 import type { ToParent, VfsCall } from './messages.ts';
 import type { ToWorker } from './worker.ts';
@@ -26,7 +26,7 @@ export interface ThreadInit {
   /** The project's files when the thread started (see projectSnapshot): reads of them while they are unchanged, and while the parent is blocked. */
   snapshot?: ProjectSnapshot | Record<string, Uint8Array>;
   /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
-  mailboxes?: ReturnType<typeof mailboxesFor>;
+  mailboxes?: (Mailbox | null)[];
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
   process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
   /** A thread (at any depth) of the app's own process, not of a child process (see WASM_CRASH_CHANNEL). */
