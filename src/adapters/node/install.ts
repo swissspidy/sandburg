@@ -184,8 +184,11 @@ export class Installer {
       const [placeBindings, placeBuilds] = await additions;
       await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
       await writeBinIndex(tmp);
+      // The index is written with the install (see loadIndex): this process walked it anyway.
+      const index = walkIndex(tmp);
+      await writeFile(join(tmp, INDEX_FILE), JSON.stringify(index));
       await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
-      await settle(tmp, dir, done);
+      if (await settle(tmp, dir, done)) this.indexes.set(key, Promise.resolve(index));
     }
     const resolved: Record<string, string> = {};
     for (const name of Object.keys((manifest as { dependencies: object }).dependencies)) {
@@ -267,7 +270,7 @@ export class Installer {
     }
     let idx = this.indexes.get(key);
     if (!idx) {
-      idx = buildIndex(join(this.root, key));
+      idx = loadIndex(join(this.root, key));
       this.indexes.set(key, idx);
     }
     return idx;
@@ -724,14 +727,17 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
  * version did, removing it first) pulled the files from under those runs. Only a directory without
  * the record (left by an older version) is replaced.
  */
-async function settle(tmp: string, dir: string, done: string): Promise<void> {
+async function settle(tmp: string, dir: string, done: string): Promise<boolean> {
   const complete = () => access(done).then(() => true, () => false);
   for (let attempt = 0; ; attempt++) {
     try {
       await rename(tmp, dir);
-      return;
+      return true;
     } catch (err) {
-      if (await complete()) return void (await rm(tmp, { recursive: true, force: true }));
+      if (await complete()) {
+        await rm(tmp, { recursive: true, force: true });
+        return false;
+      }
       if (attempt) throw err;
       await rm(dir, { recursive: true, force: true });
     }
@@ -788,10 +794,47 @@ async function place(from: string, to: string): Promise<void> {
   }
 }
 
-async function buildIndex(dir: string): Promise<FileIndex> {
+/**
+ * An install's index, as written beside its node_modules when it was made (or by the first process
+ * that walked it, for an install made before indexes were written): ~5 ms to read for the 12,500
+ * files of a Next.js install, where walking them took the host's main thread 50-150 ms, once per
+ * install and process (a CLI batch walked each of its installs again; a single CLI run waited for
+ * it). An install does not change once made (installs replace their files, never write them in
+ * place), so the index stays true. One that is not an object of node_modules paths and sizes is
+ * walked again.
+ */
+async function loadIndex(dir: string): Promise<FileIndex> {
+  const file = join(dir, INDEX_FILE);
+  const saved = await readFile(file, 'utf8')
+    .then((t) => JSON.parse(t) as unknown)
+    .catch(() => null);
+  if (isIndex(saved)) return saved;
+  const index = walkIndex(dir);
+  // Kept for later processes, for a finished install only (written as other caches are: whole, by rename).
+  if (await access(join(dir, '.sandburg-complete')).then(() => true, () => false)) {
+    const tmp = `${file}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, JSON.stringify(index))
+      .then(() => rename(tmp, file))
+      .catch(() => rm(tmp, { force: true }));
+  }
+  return index;
+}
+
+const INDEX_FILE = '.sandburg-index.json';
+
+function isIndex(value: unknown): value is FileIndex {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  for (const [rel, size] of Object.entries(value)) {
+    if (typeof size !== 'number' || !rel.startsWith('node_modules/') || rel.split('/').includes('..')) return false;
+  }
+  return true;
+}
+
+/** The files under an install's node_modules (paths relative to `dir`) and their sizes. */
+function walkIndex(dir: string): FileIndex {
   const index: FileIndex = {};
   // Synchronous: 0.1-0.2 s for the 10,500 files of a Next.js install, where awaiting each lstat took
-  // 1.1-1.3 s (0.6 s with each directory's entries side by side). Once per install and process.
+  // 1.1-1.3 s (0.6 s with each directory's entries side by side).
   function walk(abs: string): void {
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
       if (entry.name === '.bin' || entry.name === '.cache' || entry.name === '.sandburg-transformed') continue;
