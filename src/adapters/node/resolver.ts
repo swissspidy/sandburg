@@ -21,6 +21,7 @@ import { createRequire, enableCompileCache } from 'node:module';
 import { dirname, join } from 'node:path';
 import { format } from 'node:url';
 import { Writable } from 'node:stream';
+import { UnsupportedDependencyError } from './spec-guard.ts';
 
 /** Bytes of packuments (by their length on the wire) the worker keeps. */
 const PACKUMENT_BYTES = 96 << 20;
@@ -624,7 +625,7 @@ export class Resolver {
       // fetch what the worker would not. The caller reports it as unsupported.
       if (error.includes(NON_REGISTRY_MARK)) {
         const detail = error.slice(error.indexOf(NON_REGISTRY_MARK) + NON_REGISTRY_MARK.length + 2);
-        throw Object.assign(new Error(`only registry versions can be installed: ${detail}`), { code: 'UNSUPPORTED' });
+        throw new UnsupportedDependencyError(`only registry versions can be installed: ${detail}`);
       }
       log(`npm (in process): ${error.split('\n')[0]}; npm resolves again`);
       return false;

@@ -147,7 +147,7 @@ export class Installer {
   }
 
   /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
-  install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
+  async install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
     const { key, manifest, lock } = this.plan(project, extra);
     // Registry dependencies only: a git or directory dependency's prepare script runs on the host,
     // even with --ignore-scripts (see spec-guard.ts). Refused here, before npm or pacote sees it.
@@ -182,11 +182,13 @@ export class Installer {
       // The resolved tree holds only registry packages: a transitive git, directory, or
       // off-registry-host tarball dependency (a registry package may declare one) is refused before
       // anything is unpacked or the full npm install fetches it.
+      // npm writes one even for a project without dependencies: none means nothing was checked.
       const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
-      if (resolvedLock !== null) assertRegistryLockfile(resolvedLock);
+      if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
+      assertRegistryLockfile(resolvedLock);
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
-      const packages = installedPackages(JSON.parse(resolvedLock ?? '{}'));
+      const packages = installedPackages(JSON.parse(resolvedLock));
       const sides = this.sides;
       const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
