@@ -35,11 +35,11 @@ import { chromium } from 'playwright-core';
 import { Session } from '../../src/index.ts';
 import { node } from '../../src/adapters/node/index.ts';
 import { bundleHost } from '../../src/orchestrator/host-server.ts';
-import { launchOptions } from '../../src/orchestrator/session.ts';
 import { loadChecks } from '../../src/orchestrator/checks.ts';
 import { expect } from '@playwright/test';
 import type { HostInstall } from '../../src/adapters/node/browser.ts';
 import type { Project } from '../../src/types.ts';
+import { launchOptions } from '../../src/orchestrator/launch.ts';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
