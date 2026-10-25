@@ -41,3 +41,14 @@ test('an installed file is fetched once; a large one again only after its reader
   assert.equal(vfs.read('/app/node_modules/b/b.wasm').length, 5 << 20);
   assert.equal(fetched.length, 3);
 });
+
+test('a large installed file written over with the bytes it had is no change to a tracked directory', () => {
+  const vfs = new Vfs(() => new Uint8Array(8 << 20).fill(7));
+  vfs.addRemote('/app/node_modules/.cache/x/big.bin', 8 << 20);
+  vfs.track(['/app/node_modules/.cache/x']);
+  const held = vfs.read('/app/node_modules/.cache/x/big.bin');
+  vfs.write('/app/node_modules/.cache/x/big.bin', new Uint8Array(held));
+  assert.equal(vfs.trackedChanged(), false);
+  vfs.write('/app/node_modules/.cache/x/big.bin', new Uint8Array(4));
+  assert.equal(vfs.trackedChanged(), true);
+});

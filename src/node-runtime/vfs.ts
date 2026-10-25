@@ -144,7 +144,9 @@ export class Vfs {
     const existing = this.files.get(path);
     const now = Date.now();
     if (append && existing) return this.writeAt(path, data, 'end');
-    if (this.tracked && !(existing?.data && sameBytes(existing.data, data))) this.touch(path);
+    // (A large remote file read is held weakly: its bytes, while they are still held, are compared too.)
+    const before = existing?.data ?? existing?.weak?.deref();
+    if (this.tracked && !(before && sameBytes(before, data))) this.touch(path);
     this.files.set(path, { data, size: data.length, mtimeMs: now, ino: existing?.ino ?? this.inos++ });
     if (!existing) {
       this.dirs.get(dir)!.add(base(path));

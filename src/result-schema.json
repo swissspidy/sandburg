@@ -24,7 +24,7 @@
     "memory": {
       "type": "object",
       "required": ["rendererPeakBytes"],
-      "properties": { "rendererPeakBytes": { "type": "number" } }
+      "properties": { "rendererPeakBytes": { "type": "integer", "minimum": 0 } }
     },
     "runtime": {
       "type": "object",
