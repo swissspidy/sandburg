@@ -22,9 +22,16 @@ import type { Project } from '../../types.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
+import { assertRegistryLockfile, assertRegistryManifest } from './spec-guard.ts';
 
+/**
+ * A git binary that does not exist, so that npm cannot clone (and prepare, see spec-guard.ts) a git
+ * dependency a registry package pulls in transitively. The project's own git and path dependencies are
+ * refused before npm runs (assertRegistryManifest, assertRegistryLockfile); this is the second layer.
+ */
+const NO_GIT = '/nonexistent/sandburg-git-is-disabled';
 /** --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds. */
-const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
+const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error', `--git=${NO_GIT}`];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 22;
@@ -143,6 +150,10 @@ export class Installer {
   /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
   install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
     const { key, manifest, lock } = this.plan(project, extra);
+    // Registry dependencies only: a git or directory dependency's prepare script runs on the host,
+    // even with --ignore-scripts (see spec-guard.ts). Refused here, before npm or pacote sees it.
+    assertRegistryManifest(manifest);
+    if (lock !== null) assertRegistryLockfile(lock);
     let pending = this.pending.get(key);
     if (!pending) {
       pending = this.doInstall(key, manifest, lock, log);
