@@ -1,4 +1,4 @@
-# ADR NNNN: Security invariants as lint rules, an API report, and the host's largest modules split
+# ADR 0053: Security invariants as lint rules, an API report, and the host's largest modules split
 
 - Status: Accepted
 - Date: 2026-10-25
