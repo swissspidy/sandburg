@@ -131,6 +131,8 @@ export type ToWorker =
       inherit?: { asyncModules: boolean; usesSqlite: boolean };
       /** Raised once anything but the install wrote in node_modules (see trackNodeModulesWrites); the main runtime's, for threads. */
       nodeModulesWrites?: Int32Array;
+      /** Report large transfers to the host (src/transfer-trace.ts; dev only). */
+      trace?: boolean;
     }
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }

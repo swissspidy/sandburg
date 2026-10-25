@@ -231,6 +231,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
   preloadUrl = msg.preload ?? null;
+  if (msg.trace) (globalThis as { __sandburgTraceTransfers?: boolean }).__sandburgTraceTransfers = true;
   compileCache = msg.compileCache ?? null;
   projectRoot = msg.cwd;
   thread = msg.thread ?? null;
