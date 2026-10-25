@@ -57,12 +57,53 @@ function devCacheKey(project: Project, installKey: string): string {
 }
 
 /**
- * Cache keys issued to runs, with the directories their caches may hold. A run can only store a
- * cache under a key it was given, and only files under those directories (the page can reach the
- * endpoint, so what it sends is untrusted).
+ * Write capabilities issued to runs, by token: a random token handed to one run's page with its
+ * install data, for one cache key and the sandbox (origin) that run is in. A cache key is a digest of
+ * what a run installs and runs, which another run can know (a seed's key is a digest of public
+ * versions, and later runs learn it from their bundle URL), so the key alone never grants a write:
+ * a store needs the token, from the run's own sandbox, once. What the page sends is untrusted, and is
+ * kept only under the key's directories.
  */
-const issuedCaches = new Map<string, string[]>();
-const DEV_CACHE_MAX = 256 << 20;
+interface CacheWrite {
+  key: string;
+  dirs: string[];
+  /** The sandbox of the run the token was issued to, once its tab is known (HostInstallOptions.sandbox). */
+  sandbox: string | null;
+}
+const cacheWrites = new Map<string, CacheWrite>();
+/** Compile-cache capabilities (see compile-cache.ts), by token: many records per run, from its sandbox only. */
+const compileWrites = new Map<string, { key: string; sandbox: string | null }>();
+/** Tokens are dropped after this long unused (the longest run's deadlines are well under it). */
+const TOKEN_TTL_MS = 6 * 60 * 60_000;
+export const DEV_CACHE_MAX = 256 << 20;
+/** The largest code the runtime sends to compile, or sources to scan (next dev's largest chunks are ~8 MB). */
+export const SOURCE_BODY_MAX = 32 << 20;
+
+/** A new capability token for the run whose page will be in `sandbox` (bound once its tab is known). */
+function issue<T extends { sandbox: string | null }>(into: Map<string, T>, grant: T, sandbox: Promise<string> | undefined): string {
+  const token = randomBytes(32).toString('base64url');
+  into.set(token, grant);
+  void sandbox?.then((id) => (grant.sandbox = id), () => {});
+  setTimeout(() => into.delete(token), TOKEN_TTL_MS).unref();
+  return token;
+}
+
+/** A capability to store a cache under `key` (files under `dirs`), once, for the run whose page will be in `sandbox`. */
+export function issueCacheWrite(key: string, dirs: string[], sandbox: Promise<string> | undefined): string {
+  return issue(cacheWrites, { key, dirs, sandbox: null }, sandbox);
+}
+
+/** A capability to record compiles under the dev-cache `key`, for the run whose page will be in `sandbox`. */
+export function issueCompileWrite(key: string, sandbox: Promise<string> | undefined): string {
+  compileKeys.add(key);
+  return issue(compileWrites, { key, sandbox: null }, sandbox);
+}
+
+/** The grant for a request's token, if it was issued for `key` to the requesting sandbox. */
+function granted<T extends { key: string; sandbox: string | null }>(from: Map<string, T>, token: string | null | undefined, key: string, sandbox: string | undefined): T | null {
+  const grant = token ? from.get(token) : undefined;
+  return grant && grant.key === key && grant.sandbox !== null && grant.sandbox === sandbox ? grant : null;
+}
 
 /** The entries of a cache that are text files under `dirs`. */
 export function cacheEntries(value: unknown, dirs: string[]): Record<string, string | { base64: string }> {
@@ -131,19 +172,27 @@ async function cacheBundle(key: string): Promise<Buffer | null> {
 }
 
 /**
- * Seed keys (Next.js and Vite seeds) issued to a seed run and not yet written. A seed's key is shared:
- * later runs learn it (their filesBundle URL), and the host cannot tell runs apart. So a seed key
- * takes one write, the seed run's own, and is withdrawn before it (restored if the write fails).
+ * Whether the request may store a cache under `key`: its token was issued for that key to the
+ * requesting sandbox (see cacheWrites). The token is withdrawn here, before the body is read (restored
+ * if the write fails), so it takes one write.
  */
-const pendingSeeds = new Set<string>();
+function takeCacheWrite(key: string, token: string | null | undefined, sandbox: string | undefined): (CacheWrite & { token: string }) | null {
+  const grant = granted(cacheWrites, token, key, sandbox);
+  if (!grant) return null;
+  cacheWrites.delete(token!);
+  return { ...grant, token: token! };
+}
 
-async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
-  const dirs = issuedCaches.get(key);
-  if (!dirs || body.length > DEV_CACHE_MAX) return false;
-  const seed = pendingSeeds.delete(key);
-  if (seed) issuedCaches.delete(key);
+async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: number) => Promise<Buffer>): Promise<boolean> {
+  const { key, dirs } = grant;
+  const restore = () => cacheWrites.set(grant.token, { key, dirs, sandbox: grant.sandbox });
+  // A body over the limit is answered by the host server (a 413).
+  const text = await body(DEV_CACHE_MAX).catch((err: unknown) => {
+    restore();
+    throw err;
+  });
   try {
-    const files = cacheEntries(JSON.parse(body.toString('utf8')), dirs);
+    const files = cacheEntries(JSON.parse(text.toString('utf8')), dirs);
     await mkdir(devCacheRoot(), { recursive: true });
     const file = join(devCacheRoot(), `${key}.json`);
     const tmp = `${file}.${tmpSuffix()}.tmp`;
@@ -151,10 +200,7 @@ async function writeDevCache(key: string, body: Buffer): Promise<boolean> {
     await rename(tmp, file);
     return true;
   } catch {
-    if (seed) {
-      pendingSeeds.add(key);
-      issuedCaches.set(key, dirs);
-    }
+    restore();
     return false;
   }
 }
@@ -567,7 +613,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     return { status: 200, headers: { 'content-type': 'application/wasm', 'cache-control': 'max-age=31536000, immutable' }, body: await readFile(SQLITE_WASM) };
   }
   if (req.path === '/__sandburg/tla-scan' && req.method === 'POST') {
-    const files = JSON.parse((await req.body()).toString('utf8')) as Record<string, string>;
+    const files = JSON.parse((await req.body(SOURCE_BODY_MAX)).toString('utf8')) as Record<string, string>;
     return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topLevelAwait: projectHasTopLevelAwait(files) }) };
   }
   // Code the runtime asks for by digest before it sends it (worker.ts): what was compiled before.
@@ -578,10 +624,11 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   }
   if (req.path === '/__sandburg/compile' && req.method === 'POST') {
     const kind = (req.query.get('kind') ?? 'cjs') as CompileKind;
+    const code = (await req.body(SOURCE_BODY_MAX)).toString('utf8');
     try {
-      const [code, path, async, key] = [(await req.body()).toString('utf8'), req.query.get('path') ?? '/unknown.js', req.query.get('async') === '1', req.query.get('cache')];
+      const [path, async, key] = [req.query.get('path') ?? '/unknown.js', req.query.get('async') === '1', req.query.get('cache')];
       const out = compileForRuntime(code, path, kind, { asyncModules: async });
-      if (key && compileKeys.has(key)) void compileCache.record(key, kind, async, path, code, out);
+      if (key && granted(compileWrites, req.headers?.['x-sandburg-token'], key, req.sandbox)) void compileCache.record(key, kind, async, path, code, out);
       return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: out };
     } catch (e) {
       return { status: 400, headers: { 'content-type': 'text/plain' }, body: String((e as Error).message) };
@@ -601,7 +648,8 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   }
   const cache = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})$/.exec(req.path);
   if (cache && req.method === 'POST') {
-    const saved = await writeDevCache(cache[1], await req.body());
+    const grant = takeCacheWrite(cache[1], req.headers?.['x-sandburg-token'], req.sandbox);
+    const saved = !!grant && (await writeDevCache(grant, req.body));
     return saved ? { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' } : { status: 403, headers: { 'content-type': 'text/plain' }, body: 'not a cache of this run' };
   }
   const pre = /^\/__sandburg\/preload\/([0-9a-f]{24})\/([0-9a-f]{16})$/.exec(req.path);
@@ -672,18 +720,20 @@ export const node: AdapterDescriptor = {
     const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
     const cacheKey = devCacheKey(project, key);
     const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
-    issuedCaches.set(cacheKey, cacheDirs);
-    compileKeys.add(cacheKey);
-    const compiles = { key: cacheKey, bundle: (await compileCache.has(cacheKey)) ? `/__sandburg/compile-cache/${cacheKey}` : null };
+    const compiles = {
+      key: cacheKey,
+      bundle: (await compileCache.has(cacheKey)) ? `/__sandburg/compile-cache/${cacheKey}` : null,
+      token: issueCompileWrite(cacheKey, options?.sandbox),
+    };
     let filesBundle: string | null = null;
+    // The run's write of a cache: one, under one key, from its own sandbox.
+    const write = (key: string, dirs: string[]) => issueCacheWrite(key, dirs, options?.sandbox);
     let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: await readDevCache(cacheKey, cacheDirs) };
     if (project.framework === 'next') {
       const seed = await nextSeedCache(info.resolved, nextRouter(project), options, log);
       if (seed && options?.seed) {
         // The seed run keeps its webpack cache under the shared key.
-        issuedCaches.set(seed.key, seed.dirs);
-        pendingSeeds.add(seed.key);
-        devCache = { key: seed.key, dirs: seed.dirs, files: {}, waitFor: [`${seed.dirs[0]}/webpack/client-development/index.pack.gz`, `${seed.dirs[0]}/webpack/server-development/index.pack.gz`] };
+        devCache = { key: seed.key, dirs: seed.dirs, files: {}, token: write(seed.key, seed.dirs), waitFor: [`${seed.dirs[0]}/webpack/client-development/index.pack.gz`, `${seed.dirs[0]}/webpack/server-development/index.pack.gz`] };
       } else if (seed?.ready) {
         readableCaches.set(seed.key, seed.dirs);
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
@@ -693,9 +743,7 @@ export const node: AdapterDescriptor = {
     if (project.framework === 'vite' && parts.length === 1 && (options?.seed || !Object.keys(devCache.files).length)) {
       const seed = await viteSeedCache(project, info.key, options, log);
       if (seed && options?.seed) {
-        issuedCaches.set(seed.key, VITE_SEED_DIRS);
-        pendingSeeds.add(seed.key);
-        devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, waitFor: VITE_SEED_WAIT };
+        devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, token: write(seed.key, VITE_SEED_DIRS), waitFor: VITE_SEED_WAIT };
       } else if (seed?.ready) {
         readableCaches.set(seed.key, VITE_SEED_DIRS);
         filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
@@ -709,6 +757,7 @@ export const node: AdapterDescriptor = {
       filesBundle = `/__sandburg/dev-cache/${cacheKey}/bundle`;
       devCache = { ...devCache, files: {}, digests: cacheDigests(devCache.files) };
     }
+    if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
     return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, compileCache: compiles, preload: await preloadUrl(key, entry) };

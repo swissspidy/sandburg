@@ -76,7 +76,7 @@ async function build(): Promise<void> {
   const serve = node.serve!.bind(node);
   node.serve = async (req) => {
     let body: Buffer | undefined;
-    const request = { ...req, body: async () => (body ??= await req.body()) };
+    const request = { ...req, body: async (max?: number) => (body ??= await req.body(max)) };
     const res = await serve(request);
     if (!res || (req.method === 'POST' && req.path.startsWith('/__sandburg/dev-cache/'))) return res;
     const key = req.method === 'POST' ? `POST ${req.path}?${req.query} ${createHash('sha256').update(await request.body()).digest('hex')}` : req.path;
