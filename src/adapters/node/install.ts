@@ -281,7 +281,9 @@ export class Installer {
     if (!/^[0-9a-f]{24}$/.test(key) || rel.split('/').includes('..') || !rel.startsWith('node_modules/')) return null;
     const index = await this.index(key);
     if (!(rel in index)) return null;
-    return { body: await readFile(join(this.root, key, rel)), type: 'application/octet-stream' };
+    // Small files synchronously, as in file(); large ones (WebAssembly binaries) without blocking.
+    const abs = join(this.root, key, rel);
+    return { body: index[rel] <= SYNC_READ_MAX ? readFileSync(abs) : await readFile(abs), type: 'application/octet-stream' };
   }
 
   /**
@@ -386,6 +388,9 @@ export class Installer {
     return body;
   }
 }
+
+/** Installed files up to this size are read synchronously (see Installer.file). */
+const SYNC_READ_MAX = 1 << 20;
 
 /** Bytes of transforms kept in memory (Installer.remember). */
 const MEMORY_MAX = 256 << 20;
