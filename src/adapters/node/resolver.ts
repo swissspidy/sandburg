@@ -57,7 +57,7 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   const ahead = new ReadAhead(require, cache, (picked) => parentPort!.postMessage({ picked }));
   /** Resolutions running (a small one runs beside another). */
   let active = 0;
-  parentPort!.on('message', async ({ id, dir, force }: { id: number; dir: string; force: boolean }) => {
+  parentPort!.on('message', async ({ id, dir, force, view }: { id: number; dir: string; force: boolean; view?: string }) => {
     try {
       ready ??= (async () => {
         const Npm = require('./lib/npm.js') as new (o: object) => { config: { cwd: string }; load(): Promise<unknown>; flatOptions: object };
@@ -67,6 +67,13 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
         return { flat: npm.flatOptions, Arborist: require('@npmcli/arborist') };
       })();
       const { flat, Arborist } = await ready;
+      if (view !== undefined) {
+        // As `npm view <spec> version` answers whether a version matches: pacote picks one from the
+        // packument, with npm's options and this worker's packuments.
+        const pacote = require('pacote') as Pacote;
+        const version = await pacote.manifest(view, { ...flat, fullMetadata: true, packumentCache: cache }).then((m) => String(m.version), () => null);
+        return parentPort!.postMessage({ id, version });
+      }
       ahead.start(dir, !active++);
       // As lib/commands/install.js runs it, with this worker's packuments.
       const opts = { ...flat, ...(force ? { force: true } : {}), npmCommand: 'install', auditLevel: null, path: dir, add: [], workspaces: undefined, packumentCache: cache };
@@ -551,7 +558,7 @@ export class Resolver {
   private large = false;
   private inflight = 0;
   private next = 0;
-  private waiting = new Map<number, (error: string | undefined) => void>();
+  private waiting = new Map<number, (answer: { error?: string; version?: string | null }) => void>();
   /** The requests each worker has: one that ends fails only its own (a stopped one exits after its successor starts). */
   private owned = new WeakMap<Worker, Set<number>>();
   private idle: ReturnType<typeof setTimeout> | null = null;
@@ -578,23 +585,42 @@ export class Resolver {
     this.root ??= npmRoot();
     if (!this.root) return false;
     if (!options.small) this.large = true;
-    this.inflight++;
-    if (this.idle) clearTimeout(this.idle);
     try {
-      const error = await new Promise<string | undefined>((done) => {
-        const id = this.next++;
-        this.waiting.set(id, done);
-        const worker = this.start();
-        this.owned.get(worker)!.add(id);
-        // Held while it resolves; otherwise it does not keep the process alive.
-        worker.ref();
-        worker.postMessage({ id, dir, force: !!options.force });
-      });
+      const { error } = await this.ask({ dir, force: !!options.force });
       if (error === undefined) return true;
       log(`npm (in process): ${error.split('\n')[0]}; npm resolves again`);
       return false;
     } finally {
       if (!options.small) this.large = false;
+    }
+  }
+
+  /**
+   * The version `npm view <spec> version` would print first (one that matches), null when none does
+   * or the registry cannot tell, or undefined when there is no worker to ask (run `npm view`).
+   * Answered beside resolutions, without a process of its own (an npm process each was ~0.5 s).
+   */
+  async view(spec: string): Promise<string | null | undefined> {
+    this.root ??= npmRoot();
+    if (!this.root) return undefined;
+    const { error, version } = await this.ask({ view: spec });
+    return error === undefined ? (version ?? null) : undefined;
+  }
+
+  private async ask(message: { dir: string; force: boolean } | { view: string }): Promise<{ error?: string; version?: string | null }> {
+    this.inflight++;
+    if (this.idle) clearTimeout(this.idle);
+    try {
+      return await new Promise((done) => {
+        const id = this.next++;
+        this.waiting.set(id, done);
+        const worker = this.start();
+        this.owned.get(worker)!.add(id);
+        // Held while it works; otherwise it does not keep the process alive.
+        worker.ref();
+        worker.postMessage({ id, ...message });
+      });
+    } finally {
       if (!--this.inflight) {
         this.worker?.unref();
         this.idle = setTimeout(() => this.stop(), IDLE_MS);
@@ -632,15 +658,15 @@ export class Resolver {
     worker.unref();
     const mine = new Set<number>();
     this.owned.set(worker, mine);
-    worker.on('message', ({ id, error, picked }: { id: number; error?: string; picked?: Picked }) => {
+    worker.on('message', ({ id, error, picked, version }: { id: number; error?: string; picked?: Picked; version?: string | null }) => {
       if (picked) return this.onPicked?.(picked);
-      this.waiting.get(id)?.(error);
+      this.waiting.get(id)?.({ error, version });
       this.waiting.delete(id);
       mine.delete(id);
     });
     const fail = (e: unknown) => {
       for (const id of mine) {
-        this.waiting.get(id)?.(e instanceof Error ? e.message : String(e));
+        this.waiting.get(id)?.({ error: e instanceof Error ? e.message : String(e) });
         this.waiting.delete(id);
       }
       mine.clear();

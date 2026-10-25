@@ -221,3 +221,27 @@ test('packuments are trimmed into npm\'s cache; a later resolution reads them, a
     await reg.close();
   }
 });
+
+test('the resolver answers whether a version matches, as npm view does', async () => {
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Resolver } = await import('../../src/adapters/node/resolver.ts');
+  const reg = await registry();
+  const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
+  try {
+    const root = await mkdtemp(join(tmpdir(), 'sandburg-view-'));
+    process.env.npm_config_registry = reg.url;
+    process.env.npm_config_cache = join(root, 'npm-cache');
+    const resolver = new Resolver(join(root, 'resolver'), ['--package-lock-only', '--ignore-scripts', '--loglevel=error']);
+    assert.equal(await resolver.view('lib@^1.0.0'), '1.2.0');
+    assert.equal(await resolver.view('leaf@~2.0.0'), '2.0.1');
+    // No such version, no such package: as npm view prints nothing.
+    assert.equal(await resolver.view('lib@^9.0.0'), null);
+    assert.equal(await resolver.view('lightningcss-wasm32-wasi@^1.0.0'), null);
+  } finally {
+    Object.assign(process.env, env);
+    for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
+    await reg.close();
+  }
+});

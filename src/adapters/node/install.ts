@@ -82,7 +82,7 @@ export class Installer {
     // WebAssembly build that replaces it) is under way. Guesses: npm may pick another version.
     this.resolver.onPicked = ({ name, version, integrity, optionalDependencies }) => {
       unpackHint(integrity, this.store);
-      for (const [binding, range] of Object.entries(wasiBindings(optionalDependencies).candidates)) void npmViewVersion(`${binding}@${range}`);
+      for (const [binding, range] of Object.entries(wasiBindings(optionalDependencies).candidates)) void npmViewVersion(`${binding}@${range}`, this.resolver);
       const build = WASM_BUILDS.find((b) => b.name === name && b.applies(version));
       if (build) wasmBuild(this.sides, build, version, () => {}).catch(() => {});
     };
@@ -483,7 +483,7 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
   const checks = await Promise.all(
     Object.entries(candidates)
       .filter(([name]) => !(name in wanted))
-      .map(async ([name, range]) => ((await npmViewVersion(`${name}@${range}`)) ? ([name, range] as const) : null)),
+      .map(async ([name, range]) => ((await npmViewVersion(`${name}@${range}`, sides.resolver)) ? ([name, range] as const) : null)),
   );
   const hits = checks.filter((hit) => hit !== null);
   for (const hit of hits) wanted[hit[0]] = hit[1];
@@ -588,10 +588,10 @@ interface Sides {
  * Whether a package version exists on the registry (npm view). Asked once per process: a Next.js app
  * and its seed both ask for @next/swc-wasm32-wasi (which does not exist), ~0.5 s each.
  */
-function npmViewVersion(spec: string): Promise<string | null> {
+function npmViewVersion(spec: string, resolver: Resolver): Promise<string | null> {
   let version = viewed.get(spec);
   if (!version) {
-    version = npmView(spec);
+    version = resolver.view(spec).then((v) => (v === undefined ? npmView(spec) : v));
     viewed.set(spec, version);
   }
   return version;
