@@ -67,6 +67,9 @@ test('SvelteKit: not until Svelte has hydrated its page, whatever the servers do
   // A Svelte app without SvelteKit: the servers decide, as before.
   await load('<div id="app"><button>Clicked 0 times</button></div>');
   assert.equal(await safe(), undefined);
+  // A production build (its globals are __sveltekit_<hash>, its elements have no __svelte_meta): the servers decide.
+  await load('<script>window.__sveltekit_1x2y3z = { base: "" }</script><main><button>Clicked 0 times</button></main>');
+  assert.equal(await safe(), undefined);
 });
 
 test("a getter that throws in the app's window is undefined, not an error", async () => {

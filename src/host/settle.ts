@@ -35,7 +35,7 @@ export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | un
     if (w._$HY && typeof w._$HY === 'object') return true;
     const reactRoot = (node: Node | null) => !!node && Object.keys(node).some((k) => k.startsWith('__reactContainer$'));
     if ([doc, doc.body, doc.getElementById('root'), doc.getElementById('app'), doc.getElementById('__next')].some(reactRoot)) return true;
-    if (Object.keys(w).some((k) => k.startsWith('__sveltekit_'))) return [...(doc.body?.querySelectorAll('*') ?? [])].slice(0, 200).some((e) => '__svelte_meta' in e);
+    if ('__sveltekit_dev' in w) return [...(doc.body?.querySelectorAll('*') ?? [])].slice(0, 200).some((e) => '__svelte_meta' in e);
     const nuxt = doc.getElementById('__nuxt') as (Element & { __vue_app__?: { config?: { globalProperties?: { $nuxt?: { isHydrating?: unknown } } } } }) | null;
     if (!nuxt) return undefined;
     const app = nuxt.__vue_app__?.config?.globalProperties?.$nuxt;
