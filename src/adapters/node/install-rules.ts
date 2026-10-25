@@ -343,6 +343,20 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     to: 'reload(route, type) {\n$1if (this.sandburgListing) return; // sandburg: see SOURCE_PATCHES\n$1this.dispatchEvent(',
   },
   {
+    // vite-plugin-solid compiles every .jsx/.tsx module with Babel, for the server and again for the
+    // client (~1.2 s of a warm SolidStart run's thread, its own dev toolbar's modules included): it
+    // looks the compile up in the project's transform cache first (node-runtime/transform-cache.ts),
+    // unless the app passes Babel options of its own.
+    file: /(^|\/)node_modules\/vite-plugin-solid\/dist\/(esm\/index\.mjs|cjs\/index\.cjs)$/,
+    from: /(const babelOptions = (?:mergeAnything\.)?mergeAndConcat\(babelUserOptions, opts\);\n)(\s*)(const \{\n\s*code,\n\s*map\n\s*\} = await (babel|babel__namespace)\.transformAsync\(source, babelOptions\);\n)/,
+    to:
+      "$1$2const sandburgCache = options.babel ? undefined : globalThis[Symbol.for('sandburg.transformCache')]; // sandburg: see SOURCE_PATCHES\n" +
+      "$2const sandburgHit = sandburgCache?.get('vite-plugin-solid', id, isSsr, source);\n" +
+      '$2if (sandburgHit) return sandburgHit;\n' +
+      '$2$3' +
+      "$2sandburgCache?.set('vite-plugin-solid', id, isSsr, source, { code, map });\n",
+  },
+  {
     file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
     from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
     to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",

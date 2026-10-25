@@ -63,6 +63,39 @@ test("SolidStart's server functions manifest waits 100 ms for more server functi
   assert.doesNotMatch(out, /1000/);
 });
 
+// vite-plugin-solid 2.11's transform hook, as published (dist/esm/index.mjs).
+const SOLID_PLUGIN = `import * as babel from '@babel/core';
+import { mergeAndConcat } from 'merge-anything';
+export default function solidPlugin(options = {}) {
+  return {
+    async transform(source, id, transformOptions) {
+      const isSsr = Boolean(transformOptions?.ssr);
+      const opts = { filename: id };
+      let babelUserOptions = {};
+      const babelOptions = mergeAndConcat(babelUserOptions, opts);
+      const {
+        code,
+        map
+      } = await babel.transformAsync(source, babelOptions);
+      return {
+        code,
+        map
+      };
+    }
+  };
+}
+`;
+
+test("vite-plugin-solid looks its Babel compiles up in the project's transform cache, unless the app passes Babel options", async () => {
+  const out = await transformForRuntime(SOLID_PLUGIN, 'node_modules/vite-plugin-solid/dist/esm/index.mjs', true);
+  assert.match(out, /options\.babel \? void 0 : globalThis\[\/\* @__PURE__ \*\/ Symbol\.for\("sandburg\.transformCache"\)\]/);
+  assert.match(out, /sandburgCache\?\.get\("vite-plugin-solid", id, isSsr, source\)/);
+  assert.match(out, /if \(sandburgHit\) return sandburgHit;/);
+  assert.match(out, /sandburgCache\?\.set\("vite-plugin-solid", id, isSsr, source, \{ code, map \}\)/);
+  const cjs = await transformForRuntime(SOLID_PLUGIN.replace('mergeAndConcat(', 'mergeAnything.mergeAndConcat(').replace('babel.transformAsync', 'babel__namespace.transformAsync'), 'node_modules/vite-plugin-solid/dist/cjs/index.cjs', false);
+  assert.match(cjs, /sandburgCache\?\.get\("vite-plugin-solid", id, isSsr, source\)/);
+});
+
 // @solidjs/start 2.1's file-system router, as published (dist/config/fs-routes/router.js), without its imports.
 const SOLID_ROUTER = `
 class BaseFileSystemRouter extends EventTarget {
