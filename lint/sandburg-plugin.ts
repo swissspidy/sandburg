@@ -173,10 +173,12 @@ function fsCalls(): { imports: (node: Node) => void; fsName: (call: Node) => str
     fsName(call) {
       const callee = call.callee as Node;
       if (callee.type === 'Identifier') return named.get(callee.name as string);
-      if (callee.type === 'MemberExpression' && !callee.computed && (callee.object as Node).type === 'Identifier' && namespaces.has((callee.object as Node).name as string)) {
-        return (callee.property as Node).name as string;
-      }
-      return undefined;
+      if (callee.type !== 'MemberExpression' || callee.computed) return undefined;
+      // fs.writeFile(…), and fs.promises.writeFile(…) (or the `promises` named import's).
+      let object = callee.object as Node;
+      if (object.type === 'MemberExpression' && !object.computed && (object.property as Node).name === 'promises') object = object.object as Node;
+      else if (object.type === 'Identifier' && named.get(object.name as string) === 'promises') return (callee.property as Node).name as string;
+      return object.type === 'Identifier' && namespaces.has(object.name as string) ? ((callee.property as Node).name as string) : undefined;
     },
   };
 }

@@ -82,6 +82,8 @@ tester.run('no-write-in-place', rule('no-write-in-place'), {
   invalid: [
     { code: `import { writeFile } from 'node:fs/promises'; export async function f(path: string) { await writeFile(path, ''); }`, errors: [{ message: /writeFile\(path\) may change a file in place/ }] },
     { code: `import * as fs from 'node:fs'; export function f(path: string) { fs.appendFileSync(path, 'x'); }`, errors: 1 },
+    { code: `import fs from 'node:fs'; export async function f(path: string) { await fs.promises.writeFile(path, 'x'); }`, errors: 1 },
+    { code: `import { promises } from 'node:fs'; export async function f(path: string) { await promises.truncate(path); }`, errors: 1 },
     { code: `import { chmodSync } from 'node:fs'; export function f(path: string) { chmodSync(path, 0o755); }`, errors: 1 },
     { code: `import { openSync } from 'node:fs'; export const fd = (path: string) => openSync(path, 'r+');`, errors: 1 },
     // Removed in another block (another function) is not removed first.
