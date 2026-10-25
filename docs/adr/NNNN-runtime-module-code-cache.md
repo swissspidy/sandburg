@@ -129,6 +129,11 @@ whether *how* code gets into V8 could change that. Measured in Chromium 153 (Chr
   helper and 18 ms to import with its code, against 31 ms for the program's runtime to `eval` it (its
   top level; the functions it runs compile later). The largest file bounds the critical path, `require`
   cannot wait for an import, and modules would have to be strict and name their files in stacks.
+- **`//# allFunctionsCalledOnLoad` on the module**, so that its code would hold every function: the
+  first runtime of the run compiled it in 85 ms and produced its code in 33 ms (23 and 8 ms without),
+  1.05 MB of code instead of 0.34 MB; each later runtime took 5 ms to read it (2 ms) and still compiled
+  ~260 functions lazily (~420): ~5 ms saved per runtime for ~90 ms more in the first (a warm
+  `vite-react-counter` run, traced).
 - **A module worker** (`new Worker(url, { type: 'module' })`): its own script's code is produced but
   never used; and the runtime needs `importScripts` for its libraries.
 - **Network initiators** as the cause of the source-position collections under tracing: the first
