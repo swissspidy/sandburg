@@ -76,6 +76,9 @@ export function bundleHost(adapter: AdapterDescriptor): Promise<string> {
 /** The largest request body a route reads unless it allows more (HostRequest.body). */
 export const BODY_MAX = 1 << 20;
 
+/** How long a refused body's connection is kept, discarding what comes, before it is closed. */
+const BODY_REFUSED_GRACE_MS = 1000;
+
 /** A request body over its route's limit: answered with a 413, and the connection closed. */
 export class BodyTooLargeError extends Error {
   constructor(max: number) {
@@ -84,18 +87,40 @@ export class BodyTooLargeError extends Error {
   }
 }
 
-/** Reads a request's body, refusing it as soon as its Content-Length or the bytes received exceed `max`. */
-export async function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
+/**
+ * Reads a request's body, refusing it as soon as its Content-Length or the bytes received exceed `max`.
+ * What comes after a refusal is dropped as it arrives (the stream is not destroyed: that would close
+ * the connection before the 413 is sent).
+ */
+export function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
   const declared = req.headers['content-length'];
-  if (declared !== undefined && !(Number(declared) <= max)) throw new BodyTooLargeError(max);
-  const chunks: Buffer[] = [];
-  let length = 0;
-  for await (const c of req) {
-    length += (c as Buffer).length;
-    if (length > max) throw new BodyTooLargeError(max);
-    chunks.push(c as Buffer);
-  }
-  return Buffer.concat(chunks);
+  if (declared !== undefined && !(Number(declared) <= max)) return Promise.reject(new BodyTooLargeError(max));
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    const done = () => {
+      req.off('data', onData).off('end', onEnd).off('error', onError);
+      req.on('data', () => {}).on('error', () => {});
+    };
+    const onData = (c: Buffer) => {
+      length += c.length;
+      if (length > max) {
+        done();
+        chunks.length = 0;
+        return reject(new BodyTooLargeError(max));
+      }
+      chunks.push(c);
+    };
+    const onEnd = () => {
+      done();
+      resolve(Buffer.concat(chunks));
+    };
+    const onError = (err: Error) => {
+      done();
+      reject(err);
+    };
+    req.on('data', onData).on('end', onEnd).on('error', onError);
+  });
 }
 
 export class HostServer {
@@ -225,9 +250,12 @@ export class HostServer {
         });
       } catch (err) {
         if (!(err instanceof BodyTooLargeError)) throw err;
-        // The rest of the body is not read: the connection closes after the answer.
-        res.writeHead(413, { ...headers, 'content-type': 'text/plain', connection: 'close' });
+        // The rest of the body is discarded as it comes (never kept), for a moment: closing at once,
+        // with the client's bytes unread, resets the connection and can lose the answer. Then the
+        // connection closes, unless the body ended by then.
+        res.writeHead(413, { ...headers, 'content-type': 'text/plain' });
         res.end('request body too large');
+        res.once('finish', () => setTimeout(() => !req.complete && req.socket.destroy(), BODY_REFUSED_GRACE_MS).unref());
         return;
       }
       if (!out) {
