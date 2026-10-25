@@ -21,9 +21,16 @@ import type { Project } from '../../types.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
+import { assertRegistryLockfile, assertRegistryManifest } from './spec-guard.ts';
 
+/**
+ * A git binary that does not exist, so that npm cannot clone (and prepare, see spec-guard.ts) a git
+ * dependency a registry package pulls in transitively. The project's own git and path dependencies are
+ * refused before npm runs (assertRegistryManifest, assertRegistryLockfile); this is the second layer.
+ */
+const NO_GIT = '/nonexistent/sandburg-git-is-disabled';
 /** --omit=optional drops native builds such as @next/swc-*; the runtime uses their wasm builds. */
-const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
+const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error', `--git=${NO_GIT}`];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 22;
@@ -140,8 +147,12 @@ export class Installer {
   }
 
   /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
-  install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
+  async install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
     const { key, manifest, lock } = this.plan(project, extra);
+    // Registry dependencies only: a git or directory dependency's prepare script runs on the host,
+    // even with --ignore-scripts (see spec-guard.ts). Refused here, before npm or pacote sees it.
+    assertRegistryManifest(manifest);
+    if (lock !== null) assertRegistryLockfile(lock);
     let pending = this.pending.get(key);
     if (!pending) {
       pending = this.doInstall(key, manifest, lock, log);
@@ -168,9 +179,16 @@ export class Installer {
       const m = manifest as Manifest;
       const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
       if (!(await this.resolver.resolve(tmp, log))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+      // The resolved tree holds only registry packages: a transitive git, directory, or
+      // off-registry-host tarball dependency (a registry package may declare one) is refused before
+      // anything is unpacked or the full npm install fetches it.
+      // npm writes one even for a project without dependencies: none means nothing was checked.
+      const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
+      if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
+      assertRegistryLockfile(resolvedLock);
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
-      const packages = installedPackages(JSON.parse(await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => '{}')));
+      const packages = installedPackages(JSON.parse(resolvedLock));
       const sides = this.sides;
       const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
