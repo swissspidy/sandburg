@@ -1,4 +1,4 @@
-# ADR NNNN: The slowest frameworks: waits that were timers, a transform cache, rolldown's builtin hooks
+# ADR NNNN: The slowest frameworks: waits that were timers, rolldown's builtin hooks, caches a project keeps
 
 - Status: Accepted
 - Date: 2026-10-25
@@ -27,14 +27,16 @@ timer of 50 ms or more the runtime armed, with its stack, showed three kinds of 
   more to return through emnapi: ~0.4 s of a Nuxt or Astro run's thread.
 - **Work every warm run repeats.** vite-plugin-solid compiles each `.jsx`/`.tsx` module with Babel,
   for the server and again for the client (~1.2 s of a warm SolidStart run, SolidStart's own dev
-  toolbar's ~60 modules included). jiti compiles `nuxt.config.ts` with its Babel bundle on every
-  start (and keeps the result in `node_modules/.cache/jiti`, which runs did not keep).
+  toolbar's ~60 modules included). Nitro builds Nuxt's server with rollup in watch mode on every
+  start (~0.7 s: 567 ms for the module graph, resolving, loading, transforming and parsing ~100
+  modules, then every module parsed again for watch mode's cache). jiti compiles `nuxt.config.ts`
+  with its Babel bundle on every start (and keeps the result in `node_modules/.cache/jiti`, which
+  runs did not keep).
 
 What the profiles showed but this does not change: most of a meta-framework's remaining time is
 Vite's own per-module work (import analysis, vite-resolve's resolveId, transforms) and the runtime's
-compiles of the code it loads, on the program's one busy thread; Nitro's rollup build of its server
-(~0.7 s of a warm Nuxt run); the Angular CLI's TypeScript (~1.6 s) and esbuild (~0.6 s, Go in the
-runtime's thread).
+compiles of the code it loads, on the program's one busy thread; the Angular CLI's TypeScript
+(~1.6 s) and esbuild (~0.6 s, Go in the runtime's thread).
 
 ## Decision
 
@@ -61,6 +63,12 @@ runtime's thread).
     and transform. Builtin plugins it does not know keep every hook.
   - vite-plugin-solid: looks its Babel compile up in the project's transform cache (below) before it
     compiles, and records what it compiled, unless the app passes Babel options of its own.
+  - rollup: a watch Task starts from `options.cache` when it is a cache object (it always started
+    empty). nitropack: `startRollupWatcher` starts from the project's last rollup cache (a file of
+    the transform cache, `getFile`/`setFile`), and on `BUNDLE_END` writes the new one only if a
+    module's code changed; a build that fails after starting from a cache leaves none for the next
+    run. Rollup uses a cached module only if the code its load hook returns equals the cached
+    original, and then reuses its transform, AST and resolutions.
 - **A project's transform cache** (`src/node-runtime/transform-cache.ts`): the runtime gives dev server
   plugins a cache under `Symbol.for('sandburg.transformCache')` (not enumerable). An entry is a JSON
   file in `node_modules/.vite/sandburg-transforms/<plugin>/`, named by hashes of the module's id and
@@ -68,7 +76,8 @@ runtime's thread).
   environment and source are equal. Virtual modules (not a file in the run's file system) and sources
   over 1 MB get none. Before a run's caches are read to be kept, a run that used the cache drops the
   entries it neither used nor added. The directory is under `node_modules/.vite`, a dev-server cache
-  directory (ADR 0033), so the project's next run starts from it.
+  directory (ADR 0033), so the project's next run starts from it. A plugin can also keep a file of
+  its own there by name (Nitro's rollup cache).
 - **jiti's cache is kept** with the dev-server caches (`node_modules/.cache/jiti` added to
   `DEV_CACHE_DIRS`): jiti names an entry by a hash of the file's source and its version.
 
@@ -123,10 +132,13 @@ runtime's thread).
   | vite-resolve's load, oxc-runtime's guard | astro-app | 3.38 → 3.09 s (−8%, n=4) | ready 1.71 → 1.46 s |
   | | nuxt-app | 4.55 → 4.45 s (−2%) | |
   | jiti's cache | nuxt-app | 4.42 → 4.28 s (−3%, n=6) | start 0.61 → 0.48 s |
+  | Nitro's rollup cache | nuxt-app | 4.09 → 3.81 s (−7%, n=6) | checks 0.73 → 0.46 s; Nitro's build 703 → ~280 ms |
 
 - The transform cache grows a SolidStart project's stored dev-server cache from 0.8 to 6.1 MB (213
-  entries): mount +0.03 s and install +0.04 s in warm runs, already in the numbers above. The first run
-  of a project compiles as before and stores the cache once.
+  entries), and Nitro's rollup cache a Nuxt project's by 5.3 MB: mount +0.03 s and install +0.04 s in
+  warm runs, already in the numbers above. Nuxt's checks gain most from Nitro's cache: Nuxt starts
+  Vite's warm-up of the client entry after Nitro's build, and it is done before the page asks. The
+  first run of a project compiles as before and stores the caches once.
 - **Behaviour changes:**
   - A Nuxt app's first request is served up to 0.55 s sooner after Nitro's worker is ready.
   - A SolidStart app's server functions manifest lists the modules with server functions compiled
@@ -141,6 +153,8 @@ runtime's thread).
     project's is not deterministic; an app that passes Babel options does not use the cache). A
     project's runs keep `node_modules/.vite/sandburg-transforms/` and `node_modules/.cache/jiti/`
     between them, as they keep Vite's cache.
+  - Nitro's dev build of a Nuxt app reuses the modules of the project's last run whose loaded code is
+    unchanged (and their resolutions), and a rollup watch given a cache starts from it.
   - `globalThis[Symbol.for('sandburg.transformCache')]` exists in the runtime.
 
 ## Security
@@ -150,16 +164,19 @@ runtime's thread).
   issued to a run of the same project, a digest of every project file and the install, and only files
   under the issued directories (`cacheEntries`). One project cannot plant compiled code in another's
   run; a project can only change what its own later runs (which run its code anyway) compile to.
-  Entries are used only for the exact source they hold (compared whole, not by hash), and jiti only
-  uses an entry whose name is the hash of the source it loads.
+  Entries are used only for the exact source they hold (compared whole, not by hash), jiti only uses
+  an entry whose name is the hash of the source it loads, and rollup only a cached module whose
+  original code equals what its load hook returns. A plugin's file name cannot leave its directory.
 - The host does not read, parse or run what the entries hold; nothing new runs on the host.
 - The source patches change no boundary: they shorten waits, drop calls that returned nothing, and
   stop a spurious event. Rolldown's builtin plugins see the same calls that can produce output.
 - Tests: `test/unit/transform-cache.test.ts` (a hit only for the same module, environment and source;
   a planted or colliding entry naming another module is a miss; virtual modules and large sources get
-  no entry; unused entries pruned), `test/unit/source-patches.test.ts` (each patch applies to the
-  published code; the router's first listing dispatches nothing and later changes do; each builtin
-  plugin's hooks and filters, and an unknown plugin keeps all), and an e2e test in
+  no entry; unused entries pruned; a plugin's file stays in its directory), `test/unit/source-patches.test.ts`
+  (each patch applies to the published code; the router's first listing dispatches nothing and later
+  changes do; each builtin plugin's hooks and filters, and an unknown plugin keeps all; rollup's Task
+  takes a cache object only; Nitro's watcher starts from the stored cache, writes it only when a module
+  changed, and drops it after a failed build), and an e2e test in
   `test/e2e/vite-frameworks.test.ts`: a SolidStart project's cache holds its compile of src/app.tsx,
   and a copy with that file edited gets a cache of its own, with only compiles of its own source,
   while the first project's is unchanged.
@@ -179,10 +196,6 @@ Interleaved warm A/B unless noted:
 
 ## Not done
 
-- **Nitro's rollup build kept between runs** (rollup's cache, persisted from `BUNDLE_END` and passed to
-  `rollup.watch`, whose Task ignores `options.cache` today): it would skip the transforms and parses of
-  Nitro's ~0.7 s build but not rollup's tree-shaking and rendering, for a cache of ASTs that must be
-  read back each run; estimated 0.1-0.2 s of a warm Nuxt run.
 - **SolidStart's and Astro's dev toolbars** (devtools overlays): SolidStart's is ~60 of the page's ~130
   modules, rendered on the server too, and its error viewer loads shiki after hydration; Astro's runs
   its audit app in the page. Turning them off from the host (`devOverlay`, Astro's `devToolbar`
