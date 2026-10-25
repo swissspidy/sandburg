@@ -9,7 +9,7 @@
  * need. Shared memory needs a cross-origin isolated page.
  */
 import { EventEmitter } from 'events';
-import { FsError, Vfs, norm, type VStat } from './vfs.ts';
+import { FsError, Vfs, norm, parent, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
@@ -20,8 +20,8 @@ export interface ThreadInit {
   argv: string[];
   /** The thread's entry script; it starts right after init (the parent may be blocked meanwhile). */
   main: string;
-  /** The project's files when the thread started (see projectSnapshot), for reads while the parent is blocked. */
-  snapshot?: Record<string, Uint8Array>;
+  /** The project's files when the thread started (see projectSnapshot): reads of them while they are unchanged, and while the parent is blocked. */
+  snapshot?: ProjectSnapshot | Record<string, Uint8Array>;
   /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
   mailboxes?: ReturnType<typeof mailboxesFor>;
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
@@ -172,25 +172,71 @@ export class ThreadVfs extends RemoteVfs {
   private installed: Vfs;
 
   private snapshot: Vfs | null;
+  /** The snapshot as the parent's file system had it, while nothing it covers has changed there (see projectSnapshot). */
+  private exact: ProjectSnapshot | null;
   private root: string;
   private nodeModulesWrites: Int32Array | null;
 
-  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: Record<string, Uint8Array>, nodeModulesWrites?: Int32Array, blockedMs?: number) {
+  constructor(post: (msg: unknown) => void, installed: Vfs, cwd: string, snapshot?: ProjectSnapshot | Record<string, Uint8Array>, nodeModulesWrites?: Int32Array, blockedMs?: number) {
     super(post, blockedMs);
     this.installed = installed;
     this.root = cwd;
     this.nodeModulesWrites = nodeModulesWrites ?? null;
     this.snapshot = null;
-    if (snapshot) {
+    this.exact = isProjectSnapshot(snapshot) ? snapshot : null;
+    const files = isProjectSnapshot(snapshot) ? snapshot.files : snapshot;
+    if (files) {
       const v = new Vfs(() => {
         throw new FsError('ENOENT', 'open', '');
       });
-      for (const [path, data] of Object.entries(snapshot)) {
+      for (const [path, data] of Object.entries(files)) {
         v.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', true);
         v.write(path, data);
       }
       this.snapshot = v;
     }
+  }
+
+  /**
+   * A read of a path the snapshot covers, answered without asking the parent while nothing the
+   * snapshot covers has changed there: what the parent would answer (its stats, listings and bytes
+   * as of the snapshot). A thread's parent is often busy or blocked: a rolldown thread's realpath of
+   * / waited 200 ms for a parent that was blocked on that thread. `undefined`: ask the parent.
+   */
+  private answerExactly(op: VfsOp, raw: unknown[]): { value: unknown } | undefined {
+    const x = this.exact;
+    if (!x || Atomics.load(x.stale, 0) !== 0) return undefined;
+    const path = norm(String(raw[0]));
+    if (!snapshotCovers(x.root, path)) return undefined;
+    const stat = x.stats[path];
+    if (op === 'exists') return { value: !!stat };
+    if (op === 'stat') {
+      if (!stat) throw new FsError('ENOENT', String(raw[1] ?? 'stat'), path);
+      return { value: { ...stat } };
+    }
+    if (op === 'read') {
+      if (stat?.kind === 'file') {
+        const bytes = x.files[path];
+        // A file too big for the snapshot: the parent has its bytes.
+        return bytes ? { value: bytes.slice() } : undefined;
+      }
+      throw new FsError(stat ? 'EISDIR' : 'ENOENT', 'open', path);
+    }
+    if (op === 'readdir') {
+      if (stat?.kind === 'dir') return x.dirs[path] ? { value: [...x.dirs[path]] } : undefined;
+      throw new FsError(stat ? 'ENOTDIR' : 'ENOENT', 'scandir', path);
+    }
+    return undefined;
+  }
+
+  protected override call(op: VfsOp, args: unknown[]): unknown {
+    const answer = this.exact && READ_OPS.has(op) ? this.answerExactly(op, args) : undefined;
+    return answer ? answer.value : super.call(op, args);
+  }
+
+  /** The snapshot to hand a thread this thread starts: its own, while it is exact (it covers the same files, with the same flag). */
+  exactSnapshot(): ProjectSnapshot | null {
+    return this.exact && Atomics.load(this.exact.stale, 0) === 0 ? this.exact : null;
   }
 
   /**
@@ -308,41 +354,101 @@ const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.angular|\.next|\.nuxt|\.output|
 /** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
 const WRITTEN_DIRS = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)(?:\/|$)|\/(?:\.angular|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
 const SNAPSHOT_MAX_FILE = 4 << 20;
-const snapshots = new WeakMap<Vfs, { value: Record<string, Uint8Array> | null; off: () => void }>();
+/**
+ * The project's files as a thread starts: their bytes, and the parent's stats and directory listings
+ * of everything under the project's root but caches, build output and node_modules (SNAPSHOT_SKIP),
+ * and of the directories above it. `stale` is raised in shared memory once anything it covers
+ * changes in the parent (a file written, made, removed or renamed, or a directory's listing): until
+ * then a thread answers reads of those paths from it, as the parent would (ThreadVfs.answerExactly).
+ * Installed packages are registered (Vfs.addRemote, which no watcher sees) before any thread starts.
+ */
+export interface ProjectSnapshot {
+  root: string;
+  files: Record<string, Uint8Array>;
+  stats: Record<string, VStat>;
+  dirs: Record<string, string[]>;
+  stale: Int32Array;
+}
+
+function isProjectSnapshot(s: unknown): s is ProjectSnapshot {
+  return !!s && (s as { stale?: unknown }).stale instanceof Int32Array;
+}
+
+/** Whether a snapshot of `root` has all there is at `path`: the root, the directories above it, and what is under it but SNAPSHOT_SKIP's. */
+function snapshotCovers(root: string, path: string): boolean {
+  if (path === root || (root.startsWith(path) && (path === '/' || root[path.length] === '/'))) return true;
+  return path.startsWith(`${root}/`) && !SNAPSHOT_SKIP.test(path);
+}
+
+const snapshots = new WeakMap<Vfs, { value: ProjectSnapshot | null; live: Set<Int32Array>; off: () => void }>();
 
 /** The project's files under `root`, for a new thread (rebuilt only after something changed). */
-export function projectSnapshot(vfs: Vfs, root: string): Record<string, Uint8Array> {
+export function projectSnapshot(vfs: Vfs, root: string): ProjectSnapshot | Record<string, Uint8Array> {
+  // A thread's file system is its parent's, which this thread is not told about changes to: its
+  // threads get its own snapshot while that is exact, or one that only answers while the parent is blocked.
+  if (vfs instanceof RemoteVfs) return (vfs instanceof ThreadVfs && vfs.exactSnapshot()) || walkProject(vfs, root).files;
   let entry = snapshots.get(vfs);
   if (!entry) {
-    const e: { value: Record<string, Uint8Array> | null; off: () => void } = { value: null, off: () => {} };
-    e.off = vfs.watch(() => (e.value = null));
+    const e: { value: ProjectSnapshot | null; live: Set<Int32Array>; off: () => void } = { value: null, live: new Set(), off: () => {} };
+    e.off = vfs.watch((_event, path) => {
+      e.value = null;
+      // A change to a path a snapshot covers, or to the listing of a directory it covers.
+      if (e.live.size && (snapshotCovers(root, path) || snapshotCovers(root, parent(path)))) {
+        for (const flag of e.live) Atomics.store(flag, 0, 1);
+        e.live.clear();
+      }
+    });
     snapshots.set(vfs, e);
     entry = e;
   }
   if (entry.value) return entry.value;
+  const snapshot = walkProject(vfs, root);
+  entry.live.add(snapshot.stale);
+  entry.value = snapshot;
+  return snapshot;
+}
+
+function walkProject(vfs: Vfs, root: string): ProjectSnapshot {
   const files: Record<string, Uint8Array> = {};
+  const stats: Record<string, VStat> = {};
+  const dirs: Record<string, string[]> = {};
+  const stale = new Int32Array(new SharedArrayBuffer(4));
+  // The directories above the root.
+  for (let at = root.lastIndexOf('/'); at >= 0; at = at === 0 ? -1 : root.lastIndexOf('/', at - 1)) {
+    const dir = root.slice(0, at) || '/';
+    try {
+      stats[dir] = vfs.stat(dir);
+      dirs[dir] = vfs.readdir(dir);
+    } catch {
+      // not there (yet)
+    }
+  }
   const walk = (dir: string) => {
     let names: string[];
     try {
+      stats[dir] = vfs.stat(dir);
       names = vfs.readdir(dir);
     } catch {
       return;
     }
+    dirs[dir] = names;
     for (const name of names) {
       const path = `${dir}/${name}`;
       if (SNAPSHOT_SKIP.test(path)) continue;
       try {
         const st = vfs.stat(path);
         if (st.kind === 'dir') walk(path);
-        else if (st.kind === 'file' && st.size <= SNAPSHOT_MAX_FILE) files[path] = vfs.read(path);
+        else {
+          stats[path] = st;
+          if (st.size <= SNAPSHOT_MAX_FILE) files[path] = vfs.read(path);
+        }
       } catch {
         // gone meanwhile
       }
     }
   };
   walk(root);
-  entry.value = files;
-  return files;
+  return { root, files, stats, dirs, stale };
 }
 
 /** Serves a thread's VFS call on this thread's VFS and wakes the thread. */
