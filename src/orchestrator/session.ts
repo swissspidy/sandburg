@@ -30,7 +30,8 @@ import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
 import { EgressGateway, newEgressStats, originMatcher, record, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
-import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
+import { AXE_CLASSIC_PATH, AXE_SCRIPT, HostServer, SANDBOX_DOMAIN } from './host-server.ts';
+import { CodeCache, type PageCode } from './code-cache.ts';
 import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
 import { RendererMemory } from './renderer-memory.ts';
@@ -41,6 +42,8 @@ export interface SessionOptions {
   cacheDir?: string;
   /** Directory of the snapshot store. Default: .sandburg/store */
   storeDir?: string;
+  /** Directory for V8's compiled code of the host's own scripts (code-cache.ts), or null for none on disk. Default: .sandburg/code-cache */
+  codeCacheDir?: string | null;
   /** Fail on cache misses instead of fetching upstream. */
   offline?: boolean;
   headless?: boolean;
@@ -80,6 +83,8 @@ interface Tab {
   loaded: Promise<void>;
   /** The tab crashed or failed to load before a run took it. */
   broken: boolean;
+  /** axe-core's compiled code, given to the page once its host page has loaded (code-cache.ts). */
+  code?: PageCode;
 }
 
 /**
@@ -204,6 +209,7 @@ export class Session {
   private browser: Browser | null = null;
   private host = new HostServer();
   private egress: EgressGateway;
+  private codeCache: CodeCache | null = null;
   readonly store: SnapshotStore;
   /** The browser's own DevTools session (the renderers' pids and CPU times; see rendererMemory). */
   private browserCdp: Promise<CDPSession> | null = null;
@@ -222,11 +228,16 @@ export class Session {
     getAdapter(DEFAULT_RUNTIME).prepare?.();
     await this.host.listen();
     try {
-      this.browser = await chromium.launch(launchOptions(this.options));
+      const launch = launchOptions(this.options);
+      this.browser = await chromium.launch(launch);
+      const dir = this.options.codeCacheDir === undefined ? '.sandburg/code-cache' : this.options.codeCacheDir;
+      this.codeCache = new CodeCache(this.browser, (launch.args ?? []).join(' '), dir === null ? null : resolve(dir));
     } catch (err) {
       await this.host.close();
       throw missingBrowser(err) ?? err;
     }
+    // axe-core's compiled code, for the checks of every run (read from disk, or produced in a context of its own).
+    void this.codeCache.prepare(AXE_SCRIPT);
     // The first run's tab opens while the run loads its project and the host installs it.
     this.prepareTab(getAdapter(DEFAULT_RUNTIME));
   }
@@ -288,6 +299,8 @@ export class Session {
       loaded.catch(() => {}); // the load phase reports it
       const tab: Tab = { id, origin, adapter, context, page, proxy, network, loaded, broken: false };
       page.on('crash', () => (tab.broken = true));
+      const codeCache = this.codeCache;
+      if (codeCache) loaded.then(() => (tab.code = codeCache.attach(page, AXE_SCRIPT, origin + AXE_CLASSIC_PATH)), () => {});
       return tab;
     } catch (err) {
       await context?.close().catch(() => {});
@@ -547,7 +560,7 @@ export class Session {
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
           const appSettled = () => host('settled', SETTLE_QUIET_MS, SETTLE_LONG_MS, SETTLE_MAX_MS);
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin, appSettled);
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin, appSettled, tab?.code);
         };
         await steps().catch(() => {}); // failures are recorded per phase
         if (options.collectFiles && options.onAppFiles) {
@@ -621,6 +634,7 @@ async function runChecksPhase(
   appIdle?: (remainingMs: number) => Promise<boolean>,
   hostOrigin?: string,
   appSettled?: () => Promise<unknown>,
+  axeCode?: PageCode,
 ): Promise<void> {
   run.checksOutput = await run.phase('checks', timeouts.checks, () =>
     runChecks({
@@ -637,6 +651,7 @@ async function runChecksPhase(
       appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
       hostOrigin,
       appSettled,
+      axeCode,
     }),
   );
   if (options.hold) await page.waitForEvent('close', { timeout: 0 });
