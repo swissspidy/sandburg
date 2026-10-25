@@ -346,6 +346,20 @@ const ROLLDOWN_BUILTIN_HOOKS = `
  */
 export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }[] = [
   {
+    // Vite bundles the project's config file on every start, with esbuild's WebAssembly build (5-7)
+    // or rolldown's (8): the bundle of the project's last run is used while the files it was made
+    // from are unchanged (node-runtime/config-bundles.ts).
+    file: /(^|\/)node_modules\/vite\/dist\/node\/chunks\/[^/]+\.js$/,
+    // Once: the browser's install patches a file as it installs it, and its compiler again.
+    from: /\nasync function bundleConfigFile\(fileName, isESM\) \{\n(?!  const sandburgBundles)/,
+    to:
+      '\nasync function bundleConfigFile(fileName, isESM) {\n' +
+      "  const sandburgBundles = globalThis[Symbol.for('sandburg.configBundles')]; // sandburg: see SOURCE_PATCHES\n" +
+      '  return sandburgBundles ? sandburgBundles(fileName, isESM, () => sandburgBundleConfigFile(fileName, isESM)) : sandburgBundleConfigFile(fileName, isESM);\n' +
+      '}\n' +
+      'async function sandburgBundleConfigFile(fileName, isESM) {\n',
+  },
+  {
     // Next.js' webpack cache: read-only unless the run keeps it (a seed run). next dev gzips its cache
     // packs as it stores them, 2.1 s of a warm run's main thread, for a cache no later run reads.
     file: /(^|\/)node_modules\/next\/dist\/build\/webpack-config\.js$/,
