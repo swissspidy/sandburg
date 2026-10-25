@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, connect } from 'node:net';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { request } from 'node:http';
 import { EgressProxy, parseConnectTarget } from '../../src/orchestrator/egress-proxy.ts';
 import { MAX_ENTRIES, MAX_URL, newEgressStats, originMatcher, record } from '../../src/orchestrator/egress.ts';
@@ -152,5 +154,19 @@ test('a run\'s blocked and failed requests are kept up to MAX_ENTRIES, with URLs
   const failed: { url: string; method: string; reason: string }[] = [];
   for (let i = 0; i < MAX_ENTRIES + 1; i++) record(failed, { url: `https://x.test/${'p'.repeat(1 << 20)}`, method: 'GET', reason: 'r'.repeat(1 << 20) });
   assert.equal(failed.length, MAX_ENTRIES);
+  assert.ok(failed.every((f) => f.url.length === MAX_URL && f.reason.length === MAX_URL));
+});
+
+test("a recorded URL does not keep the request's whole URL in memory", () => {
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  gc();
+  const before = process.memoryUsage().heapUsed;
+  const failed: { url: string; method: string; reason: string }[] = [];
+  // Each URL is 1 MB, made anew: a cut that is a view of it would keep all 200 MB.
+  for (let i = 0; i < MAX_ENTRIES; i++) record(failed, { url: `https://x.test/${i}/${'p'.repeat(1 << 20)}`, method: 'GET', reason: `${i}${'r'.repeat(1 << 20)}` });
+  gc();
+  const retained = process.memoryUsage().heapUsed - before;
+  assert.ok(retained < 32 * 2 ** 20, `${Math.round(retained / 2 ** 20)} MB kept for ${MAX_ENTRIES} entries`);
   assert.ok(failed.every((f) => f.url.length === MAX_URL && f.reason.length === MAX_URL));
 });

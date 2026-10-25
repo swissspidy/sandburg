@@ -59,7 +59,16 @@ export const MAX_URL = 2048;
 /** Records a blocked or failed request, within MAX_ENTRIES and MAX_URL. */
 export function record(list: NetworkEntry[], entry: NetworkEntry): void {
   if (list.length >= MAX_ENTRIES) return;
-  list.push({ ...entry, url: entry.url.slice(0, MAX_URL), reason: entry.reason.slice(0, MAX_URL) });
+  list.push({ ...entry, url: cut(entry.url), reason: cut(entry.reason) });
+}
+
+/**
+ * The first MAX_URL code units of `s`, as a string of their own: V8 keeps a slice of a long string
+ * as a view of it, so 200 cut entries of 1 MB URLs held 200 MB. UTF-16 both ways keeps the code
+ * units as they are (lone surrogates too).
+ */
+function cut(s: string): string {
+  return s.length > MAX_URL ? Buffer.from(s.slice(0, MAX_URL), 'utf16le').toString('utf16le') : s;
 }
 
 export function newEgressStats(): EgressStats {
