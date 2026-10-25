@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { HostRequest, HostResponse } from '../../src/types.ts';
 
 let root: string;
@@ -102,4 +103,19 @@ test("what a run sends as its cache is kept only for files inside the cache's di
   };
   assert.deepEqual(Object.keys(cacheEntries(sent, dirs)).sort(), ['client/node_modules/.vite/deps/_metadata.json', 'node_modules/.vite/deps/react.js', 'node_modules/.vite/pack.gz']);
   for (const value of [null, 'text', 42, []]) assert.deepEqual(cacheEntries(value, dirs), {});
+});
+
+test('the runtime module is served under the digest of its text only, to GET (ADR NNNN)', async () => {
+  const bootstrap = text(await serve(req('/__sandburg/node-worker.js')));
+  const digest = /runtime\/([0-9a-f]{64})\.mjs/.exec(bootstrap ?? '')?.[1];
+  assert.ok(digest, bootstrap ?? 'no bootstrap');
+  const module = await serve(req(`/__sandburg/runtime/${digest}.mjs`));
+  assert.equal(module?.status, 200);
+  assert.equal(createHash('sha256').update(Buffer.from(module.body as Uint8Array)).digest('hex'), digest);
+  // Another digest (another build's, or none), another spelling of this one, and requests that are not reads.
+  const other = (digest[0] === '0' ? '1' : '0') + digest.slice(1);
+  for (const path of [`/__sandburg/runtime/${other}.mjs`, `/__sandburg/runtime/${digest.toUpperCase()}.mjs`, `/__sandburg/runtime/${digest}.js`, `/__sandburg/runtime/${digest}.mjs/x`, '/__sandburg/runtime/node-worker.mjs']) {
+    assert.ok(await refused(serve(req(path))), path);
+  }
+  for (const method of ['POST', 'PUT', 'DELETE']) assert.ok(await refused(serve(req(`/__sandburg/runtime/${digest}.mjs`, method, 'planted'))), method);
 });
