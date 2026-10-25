@@ -21,6 +21,9 @@ export interface TransformResult {
 export interface TransformCache {
   get(scope: string, id: string, ssr: boolean, source: string): TransformResult | null;
   set(scope: string, id: string, ssr: boolean, source: string, result: TransformResult): void;
+  /** A plugin's own cache file (rollup's cache of Nitro's server build), by name: its text, or null. */
+  getFile(scope: string, name: string): string | null;
+  setFile(scope: string, name: string, text: string): void;
   /**
    * Before the cache is kept (the run's dev-server caches are read for the next run): entries this
    * run neither used nor added are dropped, so that a cache does not keep compiles of sources the
@@ -88,6 +91,26 @@ export function createTransformCache(vfs: Vfs, cwd: () => string): TransformCach
         used.add(file);
       } catch {
         // A cache that cannot be written is no cache: the plugin compiles as before.
+      }
+    },
+    getFile(scope, name) {
+      const file = `${dir(scope)}/${name.replace(/[^\w.-]/g, '_')}`;
+      try {
+        const text = new TextDecoder().decode(vfs.read(file));
+        used.add(file);
+        return text;
+      } catch {
+        return null;
+      }
+    },
+    setFile(scope, name, text) {
+      const file = `${dir(scope)}/${name.replace(/[^\w.-]/g, '_')}`;
+      try {
+        vfs.mkdir(dir(scope), true);
+        vfs.write(file, new TextEncoder().encode(text));
+        used.add(file);
+      } catch {
+        // as set()
       }
     },
     prune() {

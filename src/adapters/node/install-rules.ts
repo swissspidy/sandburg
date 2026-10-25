@@ -361,6 +361,45 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     to: 'const maxRetries = (isTest || isCI ? 100 : 10) * 12; // sandburg: see SOURCE_PATCHES\n$1while (this.building || ++retry < maxRetries) {\n$2await new Promise((resolve2) => setTimeout(resolve2, 50));',
   },
   {
+    // rollup's watch mode starts from the cache it is given (it kept one between rebuilds only).
+    file: /(^|\/)node_modules\/rollup\/dist\/(es\/)?shared\/watch\.js$/,
+    from: /(class Task \{\n\s*constructor\(watcher, options\) \{\n\s*)this\.cache = \{ modules: \[\] \};/,
+    to: "$1this.cache = options.cache && typeof options.cache === 'object' && Array.isArray(options.cache.modules) ? options.cache : { modules: [] }; // sandburg: see SOURCE_PATCHES",
+  },
+  {
+    // Nitro's dev server (Nuxt) builds its server with rollup in watch mode on every start (~0.7 s of
+    // a warm run's thread: resolving, loading, transforming and parsing ~100 modules, then parsing them
+    // all again for rollup's cache). It starts from the cache of the project's last run, which rollup
+    // checks module by module (the loaded code must equal the cached original), kept in the runtime's
+    // transform cache (node-runtime/transform-cache.ts) and written again only when a module changed.
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /function startRollupWatcher\(nitro, rollupConfig\) \{\n(\s*)const watcher = rollup\.watch\(\n(\s*)defu\$1\(rollupConfig, \{/,
+    to:
+      'function startRollupWatcher(nitro, rollupConfig) {\n' +
+      "$1const sandburgStore = globalThis[Symbol.for('sandburg.transformCache')]; // sandburg: see SOURCE_PATCHES\n" +
+      '$1let sandburgCache;\n' +
+      "$1try { sandburgCache = JSON.parse(sandburgStore?.getFile('nitro-rollup', 'cache.json') ?? 'null') ?? undefined; } catch {}\n" +
+      '$1const sandburgSave = (cache) => {\n' +
+      "$1  if (!sandburgStore || !cache || !Array.isArray(cache.modules)) return;\n" +
+      '$1  const before = new Map((sandburgCache?.modules ?? []).map((m) => [m.id, m.code]));\n' +
+      '$1  if (before.size === cache.modules.length && cache.modules.every((m) => before.get(m.id) === m.code)) return;\n' +
+      "$1  try { sandburgStore.setFile('nitro-rollup', 'cache.json', JSON.stringify(cache)); sandburgCache = cache; } catch {}\n" +
+      '$1};\n' +
+      '$1const watcher = rollup.watch(\n' +
+      '$2defu$$1(sandburgCache ? { ...rollupConfig, cache: sandburgCache } : rollupConfig, {',
+  },
+  {
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /(case "BUNDLE_END": \{\n)(\s*)(nitro\.hooks\.callHook\("compiled", nitro\);)/,
+    to: '$1$2sandburgSave(event.result?.cache); // sandburg: see SOURCE_PATCHES\n$2$3',
+  },
+  {
+    // A build that failed (the app's error, or a cache that no longer fits) leaves no cache for the next run.
+    file: /(^|\/)node_modules\/nitropack\/dist\/core\/index\.mjs$/,
+    from: /(case "ERROR": \{\n)(\s*)(nitro\.logger\.error\(formatRollupError\(event\.error\)\);\n\s*nitro\.hooks\.callHook\("dev:error", event\.error\);)/,
+    to: "$1$2if (sandburgCache) { sandburgCache = undefined; sandburgStore?.setFile('nitro-rollup', 'cache.json', 'null'); } // sandburg: see SOURCE_PATCHES\n$2$3",
+  },
+  {
     // SolidStart 2's server functions manifest (a virtual module the server entry and the client
     // import) loads once no module with "use server" has been compiled for 1 s: every first page
     // waited 1 s with nothing to do, on the server and again in the client. Here 100 ms. A module

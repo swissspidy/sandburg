@@ -108,3 +108,19 @@ test('a run that used only some entries drops the rest; one that did not use the
   next.prune();
   assert.equal(vfs.readdir(dir).length, 1);
 });
+
+test("a plugin's own cache file is kept by name, and counts as used", () => {
+  const vfs = project();
+  const cache = createTransformCache(vfs, () => '/app');
+  assert.equal(cache.getFile('nitro-rollup', 'cache.json'), null);
+  cache.set('vite-plugin-solid', '/app/src/app.tsx', false, SOURCE, RESULT);
+  cache.setFile('nitro-rollup', 'cache.json', '{"modules":[]}');
+  const next = createTransformCache(vfs, () => '/app');
+  assert.equal(next.getFile('nitro-rollup', 'cache.json'), '{"modules":[]}');
+  // A name cannot leave its plugin's directory.
+  next.setFile('nitro-rollup', '../../../src/app.tsx', 'x');
+  assert.equal(new TextDecoder().decode(vfs.read('/app/src/app.tsx')), SOURCE);
+  next.prune();
+  assert.equal(next.getFile('nitro-rollup', 'cache.json'), '{"modules":[]}');
+  assert.equal(next.get('vite-plugin-solid', '/app/src/app.tsx', false, SOURCE), null);
+});

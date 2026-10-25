@@ -218,3 +218,91 @@ test("rolldown's builtin plugins keep only their own hooks, with filters no narr
   // A builtin plugin this does not know keeps every hook.
   assert.deepEqual(hooks(callable('builtin:something-new', {})), ['resolveId', 'load', 'transform', 'watchChange']);
 });
+
+// rollup 4's watch Task constructor (dist/es/shared/watch.js), as published, reduced.
+const ROLLUP_TASK = `class Task {
+    constructor(watcher, options) {
+        this.cache = { modules: [] };
+        this.watchFiles = [];
+    }
+}
+module.exports = Task;
+`;
+
+test("rollup's watch mode starts from the cache it is given", async () => {
+  const out = await transformForRuntime(ROLLUP_TASK, 'node_modules/rollup/dist/es/shared/watch.js', false);
+  const module = { exports: {} as new (w: unknown, o: { cache?: unknown }) => { cache: unknown } };
+  new Function('module', 'exports', out)(module, module.exports);
+  const given = { modules: [{ id: '/a.js' }] };
+  assert.equal(new module.exports(null, { cache: given }).cache, given);
+  assert.deepEqual(new module.exports(null, {}).cache, { modules: [] });
+  assert.deepEqual(new module.exports(null, { cache: true }).cache, { modules: [] });
+});
+
+// nitropack 2.13's startRollupWatcher (dist/core/index.mjs), as published, over stand-ins for rollup,
+// defu and the runtime's transform cache.
+const NITRO_WATCHER = `function startRollupWatcher(nitro, rollupConfig) {
+  const watcher = rollup.watch(
+    defu$1(rollupConfig, {
+      watch: {
+        chokidar: nitro.options.watchOptions
+      }
+    })
+  );
+  let start;
+  watcher.on("event", (event) => {
+    switch (event.code) {
+      case "BUNDLE_END": {
+        nitro.hooks.callHook("compiled", nitro);
+        break;
+      }
+      case "ERROR": {
+        nitro.logger.error(formatRollupError(event.error));
+        nitro.hooks.callHook("dev:error", event.error);
+      }
+    }
+  });
+  return watcher;
+}
+const formatRollupError = (e) => String(e);
+module.exports = startRollupWatcher;
+`;
+
+test("Nitro's dev build starts from the project's rollup cache and keeps it when a module changed", async () => {
+  const out = await transformForRuntime(NITRO_WATCHER, 'node_modules/nitropack/dist/core/index.mjs', false);
+  const files = new Map<string, string>();
+  const store = { getFile: (_s: string, n: string) => files.get(n) ?? null, setFile: (_s: string, n: string, t: string) => void files.set(n, t) };
+  (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.transformCache')] = store;
+  try {
+    let config: { cache?: { modules: { id: string; code: string }[] } } = {};
+    let emit: (e: unknown) => void = () => {};
+    const rollup = { watch: (c: typeof config) => ((config = c), { on: (_: string, f: typeof emit) => (emit = f) }) };
+    const defu = (a: object, b: object) => ({ ...b, ...a });
+    const module = { exports: {} as (nitro: unknown, config: object) => void };
+    new Function('module', 'exports', 'rollup', 'defu$1', out)(module, module.exports, rollup, defu);
+    const nitro = { options: { watchOptions: {} }, hooks: { callHook() {} }, logger: { error() {} } };
+    const built = (modules: { id: string; code: string }[]) => emit({ code: 'BUNDLE_END', result: { cache: { modules } } });
+    // No cache yet: the build's is kept.
+    module.exports(nitro, { input: 'x' });
+    assert.equal(config.cache, undefined);
+    built([{ id: '/a.js', code: 'a' }]);
+    assert.deepEqual(JSON.parse(files.get('cache.json')!), { modules: [{ id: '/a.js', code: 'a' }] });
+    // The next start gets it; a build with the same modules writes nothing, one with a change does.
+    module.exports(nitro, { input: 'x' });
+    assert.deepEqual(config.cache, { modules: [{ id: '/a.js', code: 'a' }] });
+    files.set('cache.json', 'unchanged marker');
+    built([{ id: '/a.js', code: 'a' }]);
+    assert.equal(files.get('cache.json'), 'unchanged marker');
+    built([{ id: '/a.js', code: 'b' }]);
+    assert.deepEqual(JSON.parse(files.get('cache.json')!), { modules: [{ id: '/a.js', code: 'b' }] });
+    // A start from the cache whose build fails leaves none for the next.
+    module.exports(nitro, { input: 'x' });
+    assert.ok(config.cache);
+    emit({ code: 'ERROR', error: new Error('broken') });
+    assert.equal(files.get('cache.json'), 'null');
+    module.exports(nitro, { input: 'x' });
+    assert.equal(config.cache, undefined);
+  } finally {
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.transformCache')];
+  }
+});
