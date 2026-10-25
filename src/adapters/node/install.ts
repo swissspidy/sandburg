@@ -318,30 +318,44 @@ export class Installer {
     if (!/\.(c|m)?js$/.test(rel) && /\.[^/.]+$/.test(rel)) return { body: await readFile(abs), type: 'application/octet-stream' };
     // Transforms are kept by content, not by install: every install with the same package version
     // shares them (a new app with next@16 does not transform Next.js again).
-    const source = await readFile(abs, 'utf8');
+    // Read synchronously, as the transform's cache entry below: installed files and transforms are
+    // small and just written (in the page cache), and a promise-based read (open, stat, read, close)
+    // cost the host's main thread ~0.15 ms each, ~0.4 s of a cold Astro start.
+    const source = readFileSync(abs, 'utf8');
     const esm = rel.endsWith('.mjs') || (!rel.endsWith('.cjs') && (await packageType(join(this.root, key), rel, index)) === 'module');
     const hash = createHash('sha256').update(`${esm ? 'esm' : 'cjs'}\0${rel}\0`).update(source).digest('hex');
     const cached = join(this.root, '..', 'transforms', `v${TRANSFORM_VERSION}`, hash.slice(0, 2), `${hash.slice(2)}.js`);
-    try {
-      return { body: this.remember(`${key}\0${rel}`, await readFile(cached))!, type: 'text/javascript' };
-    } catch {
-      // not transformed yet
-    }
     // A transform in progress (the prefetcher's, see prefetch.ts, or another runtime's) is waited for.
     let pending = this.transforming.get(hash);
     if (!pending) {
-      pending = (async () => {
-        const body = Buffer.from(await transformForRuntime(source, rel, esm));
-        await mkdir(join(cached, '..'), { recursive: true });
-        const tmp = `${cached}.${tmpSuffix()}.tmp`;
-        await writeFile(tmp, body);
-        await rename(tmp, cached);
-        return body;
-      })();
+      try {
+        return { body: this.remember(`${key}\0${rel}`, readFileSync(cached))!, type: 'text/javascript' };
+      } catch {
+        // not transformed yet
+      }
+      pending = (async () => Buffer.from(await transformForRuntime(source, rel, esm)))();
       this.transforming.set(hash, pending);
-      void pending.catch(() => {}).finally(() => this.transforming.delete(hash));
+      // Answered once transformed; it stays in progress (for other requests) until it is on disk.
+      void pending
+        .then((body) => this.persist(cached, body))
+        .catch(() => {})
+        .finally(() => this.transforming.delete(hash));
     }
     return { body: this.remember(`${key}\0${rel}`, await pending)!, type: 'text/javascript' };
+  }
+
+  /** Transform cache directories made by this process. */
+  private made = new Set<string>();
+
+  private async persist(file: string, body: Buffer): Promise<void> {
+    const dir = join(file, '..');
+    if (!this.made.has(dir)) {
+      await mkdir(dir, { recursive: true });
+      this.made.add(dir);
+    }
+    const tmp = `${file}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, body);
+    await rename(tmp, file);
   }
 
   /**
