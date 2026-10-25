@@ -1,4 +1,4 @@
-# ADR NNNN: The bytes between host, page and runtime
+# ADR 0048: The bytes between host, page and runtime
 
 - Status: Accepted
 - Date: 2026-10-25
