@@ -127,7 +127,14 @@ when nothing goes wrong. What went wrong, and what the suites lacked:
 - CI: page-checks runs; each job's summary has its times; Chromium jobs no longer run apt (save 15-40 s
   per job, and the minutes a slow mirror costs).
 - The unit suite: 10.9 s → 7.0 s (median of 4, interleaved).
-- RESULTS_PLACEHOLDER
+- e2e/node: 108 s → 46 s warm (the TypeScript 7 test: 62.5 s → 2.4 s); e2e/batch: 26-29 s → 22 s
+  warm. Reliability: 30 warm runs of run, page-checks, batch, websockets, fullstack and frameworks
+  (5 each), 9 of node, vite-frameworks and angular (3 each), 3 of the runtime suite, and one cold run
+  of every e2e suite but reference (Docker): all passed; no flaky test was found.
+- Runs are unchanged (the production code changes are an optional argument and two exports).
+  `scripts/bench.ts --base origin/main --head HEAD`, interleaved, 3 rounds, medians of the time to the
+  result: vite-react-counter warm 1.86 → 1.95 s, cold 6.65 → 6.82 s; lit-vite warm 1.43 → 1.40 s,
+  cold 5.33 → 5.43 s (noise: phases move both ways).
 - **Behaviour changes:** none for the package. `RemoteVfs` and `ThreadVfs` take an optional last
   argument. CI's Chromium has no extra fonts (no test compares rendered text).
 
