@@ -26,7 +26,7 @@ import { installFromLockfile, installedPackages, sweepStore, unpackAhead, unpack
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 18;
+export const TRANSFORM_VERSION = 19;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 16;
 

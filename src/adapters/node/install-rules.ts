@@ -290,6 +290,40 @@ module.exports = {
 
 
 /**
+ * Rolldown's builtin plugins that Vite runs from JavaScript (makeBuiltinPluginCallable) get every hook
+ * the binding has, and Vite calls each of them for every module: a call into the WebAssembly binding
+ * that copies the module's code into it, ~1 ms of the runtime's thread each, for hooks the plugin does
+ * not have (rolldown's register_hook_usage) or for modules it leaves alone. Here each known plugin
+ * keeps only its own hooks, with Vite's hook filters for the ids or code it can act on, as its Rust
+ * source decides (rolldown 1.2): vite-json transforms *.json (is_json_ext); oxc-runtime resolves
+ * `@oxc-project/runtime/helpers/…` (and `./…` from one of them) and loads what it resolved to;
+ * replace transforms only code with one of its keys in it (its matcher's keys, unless objectGuards
+ * adds typeof forms); vite-resolve has resolveId, load and watchChange; the React refresh wrapper
+ * resolveId and transform. A filter is no narrower than the plugin's own test: the plugin decides.
+ */
+const ROLLDOWN_BUILTIN_HOOKS = `
+	// sandburg: see SOURCE_PATCHES
+	const sandburgReplace = plugin.name === "builtin:replace" && plugin._options && !plugin._options.objectGuards && plugin._options.values ? Object.keys(plugin._options.values) : null;
+	const sandburgHooks = {
+		"builtin:vite-json": { transform: { id: /\\.json(?:$|\\?)/ } },
+		"builtin:oxc-runtime": { resolveId: { id: /^(?:@oxc-project\\/runtime\\/helpers\\/|\\.\\/)/ }, load: { id: /^\\0@oxc-project\\+runtime@/ } },
+		"builtin:replace": { transform: sandburgReplace && sandburgReplace.length ? { code: sandburgReplace } : true },
+		"builtin:vite-resolve": { resolveId: true, load: true, watchChange: true },
+		"builtin:vite-react-refresh-wrapper": { resolveId: true, transform: true }
+	}[plugin.name];
+	if (sandburgHooks) for (const key of ["resolveId", "load", "transform", "watchChange"]) {
+		if (!(key in wrappedPlugin)) continue;
+		const use = sandburgHooks[key];
+		if (!use) delete wrappedPlugin[key];
+		else if (use !== true) {
+			const hook = wrappedPlugin[key];
+			wrappedPlugin[key] = typeof hook === "object" ? { ...hook, filter: use } : { handler: hook, filter: use };
+		}
+	}
+	return wrappedPlugin;
+}`;
+
+/**
  * Changes to package sources for what the browser cannot do, or does slowly. piscina's workers wait for tasks with
  * Atomics.wait and take them with receiveMessageOnPort, which needs a synchronous look into a
  * MessagePort (browsers have none): they use its message-event mode instead, as under WebContainers.
@@ -326,6 +360,11 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     file: /(^|\/)node_modules\/@solidjs\/start\/dist\/directives\/index\.js$/,
     from: /(this\.timeout = setTimeout\(\(\) => \{\n\s*this\.promise\.resolve\(this\.source\(\)\);\n\s*\}, )1000\);/,
     to: '$1100); // sandburg: see SOURCE_PATCHES',
+  },
+  {
+    file: /(^|\/)node_modules\/rolldown\/dist\/shared\/normalize-string-or-regex-[\w-]+\.mjs$/,
+    from: /(const order = callablePlugin\.getOrder\(key\);\n\s*if \(order == void 0\) wrappedPlugin\[key\] = wrappedHook;\n\s*else wrappedPlugin\[key\] = \{\n\s*handler: wrappedHook,\n\s*order\n\s*\};\n\s*\}\n)\treturn wrappedPlugin;\n\}/,
+    to: `$1${ROLLDOWN_BUILTIN_HOOKS}`,
   },
   {
     // SolidStart's file-system router lists the routes when its routes module first loads, and told

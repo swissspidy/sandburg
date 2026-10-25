@@ -137,3 +137,78 @@ test("SolidStart's router tells no one about the routes it lists first, and tell
   await router.addRoute('src/routes/new.tsx');
   assert.deepEqual(events, ['src/routes/new.tsx']);
 });
+
+// rolldown 1.2's makeBuiltinPluginCallable (dist/shared/normalize-string-or-regex-*.mjs), as published,
+// over a stand-in for the WebAssembly binding's callable plugin, which has every hook.
+const ROLLDOWN_CALLABLE = `
+class BindingCallableBuiltinPlugin {
+	constructor(options) { this.options = options; }
+	resolveId() { return null; }
+	load() { return null; }
+	transform() { return null; }
+	watchChange() {}
+	getOrder() { return undefined; }
+}
+const import_binding = { BindingCallableBuiltinPlugin };
+const error = (e) => { throw e; };
+const logPluginError = (e) => e;
+function bindingifyBuiltInPlugin(plugin) {
+	return { __name: plugin.name, options: plugin._options };
+}
+function makeBuiltinPluginCallable(plugin) {
+	let callablePlugin = new import_binding.BindingCallableBuiltinPlugin(bindingifyBuiltInPlugin(plugin));
+	const wrappedPlugin = plugin;
+	for (const key of ["resolveId", "load", "transform", "watchChange"]) {
+		const wrappedHook = async function(...args) {
+			try {
+				return await callablePlugin[key](...args);
+			} catch (e) {
+				return error(logPluginError(e, plugin.name, { hook: key }));
+			}
+		};
+		const order = callablePlugin.getOrder(key);
+		if (order == void 0) wrappedPlugin[key] = wrappedHook;
+		else wrappedPlugin[key] = {
+			handler: wrappedHook,
+			order
+		};
+	}
+	return wrappedPlugin;
+}
+module.exports = makeBuiltinPluginCallable;
+`;
+
+test("rolldown's builtin plugins keep only their own hooks, with filters no narrower than the plugin's own test", async () => {
+  const out = await transformForRuntime(ROLLDOWN_CALLABLE, 'node_modules/rolldown/dist/shared/normalize-string-or-regex-DUkI3MrN.mjs', false);
+  const module = { exports: {} as (p: object) => Record<string, unknown> };
+  new Function('module', 'exports', out)(module, module.exports);
+  const callable = (name: string, options?: object) => module.exports({ name, _options: options });
+  const hooks = (p: Record<string, unknown>) => ['resolveId', 'load', 'transform', 'watchChange'].filter((k) => k in p);
+  const filter = (p: Record<string, unknown>, hook: string) => (p[hook] as { filter?: { id?: RegExp; code?: string[] } }).filter;
+
+  const json = callable('builtin:vite-json', {});
+  assert.deepEqual(hooks(json), ['transform']);
+  const jsonIds = filter(json, 'transform')!.id!;
+  for (const id of ['/a/b.json', '/a/b.json?import', '/a/b.json?commonjs-prox']) assert.ok(jsonIds.test(id), id);
+  for (const id of ['/a/b.js', '/a/b.jsonc', '/a/json.ts']) assert.ok(!jsonIds.test(id), id);
+
+  const runtime = callable('builtin:oxc-runtime');
+  assert.deepEqual(hooks(runtime), ['resolveId', 'load']);
+  assert.ok(filter(runtime, 'resolveId')!.id!.test('@oxc-project/runtime/helpers/decorate'));
+  assert.ok(filter(runtime, 'resolveId')!.id!.test('./typeof.js'));
+  assert.ok(!filter(runtime, 'resolveId')!.id!.test('vue'));
+  assert.ok(filter(runtime, 'load')!.id!.test('\0@oxc-project+runtime@0.155.0/helpers/esm/decorate.js'));
+  assert.ok(!filter(runtime, 'load')!.id!.test('/app/src/main.ts'));
+
+  const replace = callable('builtin:replace', { values: { 'import.meta.server': 'true', 'import.meta.client': 'false' }, preventAssignment: true });
+  assert.deepEqual(hooks(replace), ['transform']);
+  assert.deepEqual(filter(replace, 'transform')!.code, ['import.meta.server', 'import.meta.client']);
+  // objectGuards replaces typeof forms the keys do not contain: no code filter.
+  const guarded = callable('builtin:replace', { values: { 'process.env.NODE_ENV': '"x"' }, objectGuards: true });
+  assert.equal(typeof guarded.transform, 'function');
+
+  assert.deepEqual(hooks(callable('builtin:vite-resolve', {})), ['resolveId', 'load', 'watchChange']);
+  assert.deepEqual(hooks(callable('builtin:vite-react-refresh-wrapper', {})), ['resolveId', 'transform']);
+  // A builtin plugin this does not know keeps every hook.
+  assert.deepEqual(hooks(callable('builtin:something-new', {})), ['resolveId', 'load', 'transform', 'watchChange']);
+});
