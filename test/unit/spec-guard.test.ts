@@ -7,7 +7,7 @@ import { assertRegistryLockfile, assertRegistryManifest, isRegistrySpec, Unsuppo
 // So only registry specs are installed; anything with a protocol or a path is refused before npm runs.
 
 test('isRegistrySpec accepts semver ranges, tags and npm: aliases', () => {
-  for (const spec of ['^1.2.3', '~1.2', '1.2.3', '1.2.3-beta.1', '*', 'latest', 'next', '>=1 <2', '1 || 2', '1.x', 'X', '', '  ^2.0.0 ', 'npm:left-pad@^1.3.0', 'npm:@scope/pkg@1', 'npm:other']) {
+  for (const spec of ['^1.2.3', '~1.2', '1.2.3', '1.2.3-beta.1', '*', 'latest', 'next', '>=1 <2', '1 || 2', '1.x', 'X', '', '  ^2.0.0 ', 'npm:left-pad@^1.3.0', 'npm:@scope/pkg@1', 'npm:other', 'npm:string-width@^4.2.0', 'npm:@scope/pkg']) {
     assert.equal(isRegistrySpec(spec), true, spec);
   }
 });
@@ -36,6 +36,14 @@ test('isRegistrySpec rejects git, file, link, workspace, URLs, shorthands and pa
     '..',
     'npm:../escape', // alias range must be a registry range too
     'npm:git+ssh://x',
+    'foo.tgz',
+    '.tgz',
+    'a.tar',
+    'b.tar.gz',
+    '.jsonfile',
+    'npm:b.tgz',
+    'npm:.tar.gz',
+    'npm:@scope/n.tgz',
   ]) {
     assert.equal(isRegistrySpec(spec), false, spec);
   }
@@ -68,4 +76,42 @@ test('assertRegistryLockfile refuses git entries in a v1 lockfile', () => {
 test('assertRegistryLockfile allows a registry lockfile and ignores non-JSON', () => {
   assert.doesNotThrow(() => assertRegistryLockfile(JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/x': { version: '1.0.0', resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz', integrity: 'sha512-x' } } })));
   assert.doesNotThrow(() => assertRegistryLockfile('not json at all'));
+});
+
+// Property fuzz: isRegistrySpec must never accept a spec that npm's own npm-package-arg classifies as
+// anything but a registry version/range/tag or an alias to one. npa is npm's parser, so agreement
+// means the allowlist cannot be slipped a git/file/directory/remote spec. (Uses the npm on PATH.)
+test('isRegistrySpec never accepts a spec npm-package-arg calls non-registry (fuzz, fixed seed)', async () => {
+  const { execSync } = await import('node:child_process');
+  const { createRequire } = await import('node:module');
+  const { dirname, join } = await import('node:path');
+  const { realpathSync } = await import('node:fs');
+  let npa: { resolve(name: string, spec: string): { type: string; subSpec?: { type: string } } };
+  try {
+    const root = dirname(dirname(realpathSync(execSync('command -v npm').toString().trim())));
+    npa = createRequire(join(root, 'package.json'))(join(root, 'node_modules', 'npm-package-arg'));
+  } catch {
+    return; // no npm on PATH: skip (covered by the explicit cases above)
+  }
+  const registryType = (t: string) => t === 'version' || t === 'range' || t === 'tag';
+  const parts = ['^', '~', '1', '2', '.', '0', 'x', '*', '|', ' ', '>', '<', '=', '-', '+', 'latest', 'next', 'beta', ':', '/', '\\', 'git+', 'ssh', 'file', 'link', 'http', '://', 'github', 'workspace', 'npm:', '@scope/n', 'a', 'b', '.tgz', '..'];
+  let seed = 0x1234;
+  const rnd = () => ((seed = (Math.imul(seed ^ (seed >>> 15), 0x2c9277b5) + 0x6d2b79f5) | 0) >>> 0) / 4294967296;
+  for (let i = 0; i < 50_000; i++) {
+    let spec = '';
+    const n = Math.floor(rnd() * 6);
+    for (let k = 0; k < n; k++) spec += parts[Math.floor(rnd() * parts.length)];
+    if (!isRegistrySpec(spec)) continue;
+    let type: string | null = null;
+    let sub: string | undefined;
+    try {
+      const r = npa.resolve("p", spec.trim());
+      type = r.type;
+      sub = r.subSpec?.type;
+    } catch {
+      continue; // npa could not parse it; npm would reject it too, no fetch
+    }
+    const ok = registryType(type) || (type === 'alias' && (sub === undefined || registryType(sub)));
+    assert.ok(ok, `isRegistrySpec accepted ${JSON.stringify(spec)} but npa calls it ${type}${sub ? `/${sub}` : ''}`);
+  }
 });

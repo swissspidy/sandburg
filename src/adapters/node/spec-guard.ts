@@ -16,18 +16,34 @@
 
 /** Semver ranges, versions and dist-tags: npm's own range characters, letters and digits. No path or protocol. */
 const RANGE = /^[\w.\-+~^><=*|\sxX]*$/;
-
+/** A package name, optionally scoped (npm's rules, loosely): no leading dot, no path or protocol characters. */
+const NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+/** A local-tarball extension: npm treats a spec ending in one as a file, whatever else it looks like. */
+const TARBALL = /\.(tgz|tar|tar\.gz)$/i;
 /** An `npm:` alias to a registry package: `npm:name` or `npm:@scope/name@range`. */
 const ALIAS = /^npm:((?:@[^/@\s]+\/)?[^@/\s:]+)(?:@(.*))?$/s;
+
+/**
+ * A semver range, version or dist-tag, and nothing npm would treat as a path or a local tarball: a
+ * leading "." (`.`, `..`, `./x`) is a directory, and a `.tgz`/`.tar`/`.tar.gz` suffix is a file, even
+ * without a slash or a protocol.
+ */
+function isRegistryRange(range: string): boolean {
+  if (range.startsWith('.') || TARBALL.test(range)) return false;
+  return RANGE.test(range);
+}
 
 /** Whether `spec` (a dependency value) resolves to a registry package, and nothing a fetcher would prepare. */
 export function isRegistrySpec(spec: string): boolean {
   const s = spec.trim();
   const alias = ALIAS.exec(s);
-  const range = alias ? (alias[1] === undefined ? '' : (alias[2] ?? '')) : s;
-  // A lone "." or ".." is a directory install; a range never is.
-  if (range === '.' || range === '..') return false;
-  return RANGE.test(range);
+  if (alias) {
+    const [, name, range] = alias;
+    // The aliased package must be a name, not a path or a local tarball (npm reparses it: `npm:.tgz` is a file).
+    if (!NAME.test(name) || TARBALL.test(name)) return false;
+    return range === undefined ? true : isRegistryRange(range);
+  }
+  return isRegistryRange(s);
 }
 
 /** Thrown when a project asks for a dependency the host does not install (not a registry version). */
