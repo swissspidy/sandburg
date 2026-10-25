@@ -12,6 +12,7 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { request as playwrightRequest, type APIRequestContext, type BrowserContext, type CDPSession, type Frame, type Page } from 'playwright-core';
 import type { NetworkEntry } from '../types.ts';
+import { traceTransfer } from '../transfer-trace.ts';
 
 export interface EgressOptions {
   cacheDir: string;
@@ -267,7 +268,9 @@ export class EgressGateway {
       if (headers.origin && headers.origin.trim() !== new URL(request.url).origin && !('access-control-allow-origin' in responseHeaders)) {
         fulfilled.push({ name: 'access-control-allow-origin', value: headers.origin }, { name: 'access-control-allow-credentials', value: 'true' }, { name: 'vary', value: 'Origin' });
       }
+      const t0 = performance.now();
       await session.send('Fetch.fulfillRequest', { requestId, responseCode: status, responsePhrase: STATUS_CODES[status] ?? '', responseHeaders: fulfilled, body: body.toString('base64') });
+      traceTransfer({ hop: 'host→page cdp', what: request.url, bytes: body.length, encoding: 'base64', ms: performance.now() - t0 });
     } catch {
       // the request is gone (its page closed or it was cancelled)
     }
