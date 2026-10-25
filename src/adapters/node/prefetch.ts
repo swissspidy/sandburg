@@ -38,9 +38,11 @@ export class Prefetcher {
   /** Files transformed, in the order they were found, and raw files read (package.json, JSON modules). */
   readonly transformed: string[] = [];
   readonly raw = new Set<string>();
+  /** The installed files each scanned file requires, as resolved here (see pushAhead in index.ts). */
+  readonly requires = new Map<string, string[]>();
   private installer: Installer;
   private key: string;
-  private index: FileIndex;
+  readonly index: FileIndex;
   private seen = new Set<string>();
   private queue: string[] = [];
   private running = 0;
@@ -102,10 +104,14 @@ export class Prefetcher {
     try {
       const conditions = code.startsWith(ESM_MARKER) ? IMPORT_CONDITIONS : REQUIRE_CONDITIONS;
       const dir = rel.slice(0, rel.lastIndexOf('/'));
+      const found: string[] = [];
       for (const m of code.matchAll(REQUIRE)) {
-        const found = await this.resolve(m[2], dir, conditions).catch(() => null);
-        if (found) this.add(found);
+        const file = await this.resolve(m[2], dir, conditions).catch(() => null);
+        if (!file) continue;
+        found.push(file);
+        this.add(file);
       }
+      this.requires.set(rel, found);
     } finally {
       this.scans--;
       this.checkIdle();

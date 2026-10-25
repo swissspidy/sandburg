@@ -41,12 +41,66 @@ test('installed files: the preload bundle, shared with threads, and single files
   // The thread reads the bundled package in its parent's shared memory, and asks for the rest
   // through its parent's channel; nothing installed is asked for over HTTP but the bundle.
   assert.deepEqual(h.asked.filter((a) => a.includes('/nm/')).sort(), [
-    `ws ${nm}/f/node_modules/single/package.json`,
-    `ws ${nm}/f/node_modules/single/package.json`,
-    `ws ${nm}/t/node_modules/single/index.js`,
-    `ws ${nm}/t/node_modules/single/index.js`,
+    `ws ${nm}/f/node_modules/single/package.json?ahead=1`,
+    `ws ${nm}/f/node_modules/single/package.json?ahead=1`,
+    `ws ${nm}/t/node_modules/single/index.js?ahead=1`,
+    `ws ${nm}/t/node_modules/single/index.js?ahead=1`,
   ]);
   assert.equal(h.asked.filter((a) => a.startsWith('http /__sandburg/preload/')).length, 1);
+});
+
+test('installed files: raw files read one after another come with the files after them in their directory', async () => {
+  const icons = {
+    files: {
+      'node_modules/icons/package.json': JSON.stringify({ name: 'icons' }),
+      'node_modules/icons/esm/a.js': 'A',
+      'node_modules/icons/esm/a.js.map': 'A-map',
+      'node_modules/icons/esm/b.js': 'B',
+      'node_modules/icons/esm/c.js': 'C',
+      'node_modules/icons/esm/d.js': 'D',
+    },
+    bundled: [],
+  };
+  // Read out of order once the channel is open, as a bundler does: c.js comes with d.js; a.js with
+  // a.js.map and b.js, up to c.js (the runtime has it); each file is read once, and its use told.
+  const main = {
+    'main.js': `
+      const fs = require('fs');
+      setTimeout(() => {
+        const read = (f) => fs.readFileSync('/app/node_modules/icons/esm/' + f, 'utf8');
+        console.log(['c.js', 'a.js', 'd.js', 'b.js', 'a.js.map'].map(read).join(' '));
+      }, 300);`,
+  };
+  const out = await h.runInstalled(main, icons, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'C A D B A-map\n');
+  const nm = `/__sandburg/nm/${INSTALL_KEY}/f/node_modules/icons/esm`;
+  assert.deepEqual(h.asked.filter((a) => a.includes('/icons/esm/')).sort(), [
+    `ws ${nm}/a.js.map?used=1`,
+    `ws ${nm}/a.js?ahead=1&until=c.js`,
+    `ws ${nm}/b.js?used=1`,
+    `ws ${nm}/c.js?ahead=1`,
+    `ws ${nm}/d.js?used=1`,
+  ]);
+});
+
+test('installed files: modules pushed with a transformed file are loaded without asking, and their use told', async () => {
+  const tool = {
+    files: {
+      'node_modules/tool/package.json': JSON.stringify({ name: 'tool', main: 'index.js' }),
+      'node_modules/tool/index.js': `module.exports = 'tool ' + require('./a.js');`,
+      'node_modules/tool/a.js': `module.exports = 'a ' + require('./b.js');`,
+      'node_modules/tool/b.js': `module.exports = 'b';`,
+    },
+    bundled: [],
+    pushes: { 'node_modules/tool/index.js': ['node_modules/tool/a.js', 'node_modules/tool/b.js'] },
+  };
+  const main = { 'main.js': `setTimeout(() => console.log(require('tool')), 300);` };
+  const out = await h.runInstalled(main, tool, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'tool a b\n');
+  const nm = `/__sandburg/nm/${INSTALL_KEY}/t/node_modules/tool`;
+  assert.deepEqual(h.asked.filter((a) => a.includes('/t/')).sort(), [`ws ${nm}/a.js?used=1`, `ws ${nm}/b.js?used=1`, `ws ${nm}/index.js?ahead=1`]);
 });
 
 test('installed files: a preload bundle the page downloaded is not requested again', async () => {

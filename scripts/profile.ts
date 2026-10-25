@@ -1,10 +1,11 @@
 /**
- * Where a run's time goes in the browser: runs a project once to warm it, then again under Chromium's
+ * Where a run's time goes in the browser: runs a project once to warm it (not with --cold, which
+ * profiles the session's first run: clear .sandburg/ first for a never-run app), then again under Chromium's
  * tracing with V8's sampling CPU profiler, and prints, for each busy thread (the runtime's worker,
  * its threads, the page), self time by package (node_modules/<name>), by Sandburg's own runtime,
  * WebAssembly and GC; then the runtime's own functions by self time.
  *
- *   node scripts/profile.ts <project> [--checks file] [--trace out.json] [--top 15]
+ *   node scripts/profile.ts <project> [--checks file] [--trace out.json] [--top 15] [--cold]
  *
  * See ADR 0017 for what it found.
  */
@@ -13,10 +14,10 @@ import { parseArgs } from 'node:util';
 import type { Browser } from 'playwright-core';
 import { Session } from '../src/index.ts';
 
-const { values: args, positionals } = parseArgs({ allowPositionals: true, options: { checks: { type: 'string' }, trace: { type: 'string' }, top: { type: 'string', default: '15' } } });
+const { values: args, positionals } = parseArgs({ allowPositionals: true, options: { checks: { type: 'string' }, trace: { type: 'string' }, top: { type: 'string', default: '15' }, cold: { type: 'boolean', default: false } } });
 const project = positionals[0];
 if (!project) {
-  console.error('usage: node scripts/profile.ts <project> [--checks file] [--trace out.json] [--top n]');
+  console.error('usage: node scripts/profile.ts <project> [--checks file] [--trace out.json] [--top n] [--cold]');
   process.exit(64);
 }
 const top = Number(args.top);
@@ -24,7 +25,7 @@ const top = Number(args.top);
 const session = new Session();
 await session.open();
 const browser = (session as unknown as { browser: Browser }).browser;
-await session.run(project, { checks: args.checks });
+if (!args.cold) await session.run(project, { checks: args.checks });
 await browser.startTracing(undefined, { categories: ['v8', 'disabled-by-default-v8.cpu_profiler'] });
 const result = await session.run(project, { checks: args.checks });
 const trace = await browser.stopTracing();

@@ -510,7 +510,7 @@ const umask = (() => {
 })();
 
 /** Hard-links every file of a store directory into `dest` (copies where links cannot be made). */
-function linkTree(from: string, to: string): void {
+export function linkTree(from: string, to: string): void {
   mkdirSync(to, { recursive: true });
   for (const entry of readdirSync(from, { withFileTypes: true })) {
     const src = join(from, entry.name);

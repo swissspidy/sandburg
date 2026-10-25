@@ -16,9 +16,9 @@ import { projectFromFiles } from '../../project.ts';
 import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticInstall, subProject } from './plan.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
-import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, type CompileKind } from './compile.ts';
+import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
 import { CompileCache } from './compile-cache.ts';
-import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix } from './install.ts';
+import { TRANSFORM_VERSION, sharedInstaller, tmpSuffix, type FileIndex } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
 import { diskCompileStore, sweepCompiles } from './compile-store.ts';
 import type { HostInstall } from './browser.ts';
@@ -458,6 +458,126 @@ async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | n
 }
 
 /**
+ * Read-ahead of raw installed files: a runtime that reads a raw file missing from its preload bundle
+ * asks for it with `?ahead=1`, and gets a bundle (status 207, the preload format) of that file and the
+ * files after it in its directory, by name: a dev server's first pre-bundle reads a package's files in
+ * turn (Vite's esbuild read lucide-react's icons and their source maps, 3,100 requests). Files this
+ * install's runs loaded before are left out (they are in its preload bundle), as are large ones;
+ * the answer stays under the file channel's MAX_BODY. The runtime tells which ones it read
+ * (`?used=1`), and only those are recorded as loaded.
+ */
+const AHEAD_BUDGET = 512 << 10;
+const AHEAD_FILE_MAX = 64 << 10;
+const AHEAD_FILES = 512;
+/** File names by directory, sorted, per install. */
+const directories = new Map<string, Promise<Map<string, string[]>>>();
+
+function directoriesOf(key: string): Promise<Map<string, string[]>> {
+  let dirs = directories.get(key);
+  if (!dirs) {
+    dirs = installer.index(key).then((index) => {
+      const out = new Map<string, string[]>();
+      for (const rel of Object.keys(index)) {
+        const at = rel.lastIndexOf('/');
+        const list = out.get(rel.slice(0, at));
+        if (list) list.push(rel.slice(at + 1));
+        else out.set(rel.slice(0, at), [rel.slice(at + 1)]);
+      }
+      for (const list of out.values()) list.sort();
+      return out;
+    });
+    directories.set(key, dirs);
+    for (const old of directories.keys()) if (directories.size > BUNDLES_KEPT) directories.delete(old);
+  }
+  return dirs;
+}
+
+/**
+ * The read-ahead answer for raw `rel` (its bytes `first`): the files after it, up to the name
+ * `until` (the runtime has the files from there), or null when nothing comes with it.
+ */
+async function readAhead(key: string, rel: string, first: Buffer, until: string | null): Promise<Buffer | null> {
+  if (first.length >= AHEAD_BUDGET) return null;
+  const at = rel.lastIndexOf('/');
+  const names = (await directoriesOf(key)).get(rel.slice(0, at)) ?? [];
+  const index = await installer.index(key);
+  const loaded = await preloadList(key);
+  const header: [string, string, number][] = [['f', rel, first.length]];
+  const bodies: Buffer[] = [first];
+  let bytes = first.length;
+  for (let i = names.indexOf(rel.slice(at + 1)) + 1; i > 0 && i < names.length && header.length < AHEAD_FILES; i++) {
+    if (until !== null && names[i] >= until) break;
+    const next = `${rel.slice(0, at)}/${names[i]}`;
+    const size = index[next] ?? 0;
+    if (size > AHEAD_FILE_MAX || loaded.has(`f:${next}`)) continue;
+    if (bytes + size > AHEAD_BUDGET) break;
+    const body = installer.rawSync(key, next, index);
+    if (!body) continue;
+    header.push(['f', next, body.length]);
+    bodies.push(body);
+    bytes += body.length;
+  }
+  if (header.length === 1) return null;
+  const json = Buffer.from(JSON.stringify(header));
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(json.length);
+  return Buffer.concat([length, json, ...bodies]);
+}
+
+/**
+ * Transforms pushed ahead, for an install never run (its prefetcher, prefetch.ts, knows what each
+ * module requires): a runtime asks for a transformed file with `?ahead=1` over its file channel,
+ * and gets it with the modules it requires, and theirs, breadth first, whose transforms are done (in
+ * memory), and each one's nearest package.json, up to AHEAD_BUDGET; each is sent once per channel.
+ * A cold start loaded its first modules one request each (astro dev ~600, waiting for the host), and
+ * the predicted bundle comes seconds later. What the runtime reads from them it tells as read-ahead
+ * files (?used=1); the rest is dropped.
+ */
+const pushed = new WeakMap<object, Set<string>>();
+
+export function pushAhead(key: string, rel: string, first: Buffer, prefetcher: Prefetcher, channel: object): Buffer | null {
+  if (first.length >= AHEAD_BUDGET) return null;
+  let sent = pushed.get(channel);
+  if (!sent) pushed.set(channel, (sent = new Set()));
+  sent.add(`t:${rel}`);
+  const header: [string, string, number][] = [['t', rel, first.length]];
+  const bodies: Buffer[] = [first];
+  let bytes = first.length;
+  const add = (mode: string, path: string, body: Buffer) => {
+    sent.add(`${mode}:${path}`);
+    header.push([mode, path, body.length]);
+    bodies.push(body);
+    bytes += body.length;
+  };
+  const queue = [...(prefetcher.requires.get(rel) ?? [])];
+  for (let i = 0; i < queue.length && header.length < AHEAD_FILES; i++) {
+    const dep = queue[i];
+    if (sent.has(`t:${dep}`)) continue;
+    const body = installer.remembered(key, dep);
+    if (!body) continue;
+    if (bytes + body.length > AHEAD_BUDGET) break;
+    add('t', dep, body);
+    const pkg = nearestPackageJson(prefetcher.index, dep);
+    const raw = pkg && !sent.has(`f:${pkg}`) ? installer.rawSync(key, pkg, prefetcher.index) : null;
+    if (raw && bytes + raw.length <= AHEAD_BUDGET) add('f', pkg!, raw);
+    queue.push(...(prefetcher.requires.get(dep) ?? []));
+  }
+  if (header.length === 1) return null;
+  const json = Buffer.from(JSON.stringify(header));
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(json.length);
+  return Buffer.concat([length, json, ...bodies]);
+}
+
+/** The package.json Node reads for a module's "type": the nearest one up its directories. */
+function nearestPackageJson(index: FileIndex, rel: string): string | null {
+  for (let dir = rel.slice(0, rel.lastIndexOf('/')); dir.includes('/'); dir = dir.slice(0, dir.lastIndexOf('/'))) {
+    if (`${dir}/package.json` in index) return `${dir}/package.json`;
+  }
+  return null;
+}
+
+/**
  * Next.js' webpack cache, seeded per version (ADR 0014). In an app's first compile, almost every
  * module is the framework's (React, Next.js' client and server runtimes), the same in every app with
  * the same versions. For each set of versions, the session runs Sandburg's own seed app once; the
@@ -662,7 +782,28 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   const m = /^\/__sandburg\/nm\/([0-9a-f]{24})\/(f|t)\/(.+)$/.exec(req.path);
   if (m) {
     const [, key, mode, rel] = m;
+    // A file the runtime read from a read-ahead answer: recorded as loaded, as if it had been asked for.
+    if (req.query.get('used') === '1') {
+      if (decodeURIComponent(rel) in (await installer.index(key))) void recordLoad(key, mode, decodeURIComponent(rel));
+      return { status: 204, headers: {}, body: '' };
+    }
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
+    if (file && mode === 'f' && req.query.get('ahead') === '1') {
+      const body = await readAhead(key, decodeURIComponent(rel), file.body, req.query.get('until'));
+      if (body) {
+        void recordLoad(key, mode, decodeURIComponent(rel));
+        return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
+      }
+    }
+    if (file && mode === 't' && req.channel && req.query.get('ahead') === '1') {
+      const prefetcher = await prefetchers.get(key);
+      const body = prefetcher ? pushAhead(key, decodeURIComponent(rel), file.body, prefetcher, req.channel) : null;
+      if (body) {
+        void recordLoad(key, mode, decodeURIComponent(rel));
+        void prefetcher!.loaded(decodeURIComponent(rel), file.body.toString('utf8'));
+        return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
+      }
+    }
     if (file) void recordLoad(key, mode, decodeURIComponent(rel));
     if (file && mode === 't') void prefetchers.get(key)?.then((p) => p.loaded(decodeURIComponent(rel), file.body.toString('utf8')));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
@@ -767,5 +908,8 @@ export const node: AdapterDescriptor = {
   serve,
   warmups,
   isWarm: (project) => installer.installed(project, extraDependencies(project)),
-  prepare: () => installer.prepare(),
+  prepare: () => {
+    installer.prepare();
+    warmCompiler();
+  },
 };

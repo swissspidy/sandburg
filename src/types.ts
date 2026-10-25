@@ -102,6 +102,8 @@ export interface HostRequest {
    * larger one is refused with a 413 as soon as its Content-Length or the bytes received exceed it.
    */
   body(max?: number): Promise<Buffer>;
+  /** The file channel (one per runtime and its threads) the request came on; absent over HTTP. */
+  channel?: object;
 }
 
 export interface HostResponse {
