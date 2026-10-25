@@ -69,19 +69,25 @@ whether *how* code gets into V8 could change that. Measured in Chromium 153 (Chr
   lazy compiles ~650 → ~430, `ParseProgram` 47-64 → 13-15 ms, `PreParse` 46-64 → 10-12 ms,
   `CollectSourcePositions` 40-70 → ~3 ms, and the module itself 20-25 → 2 ms (deserialized). The
   program's own runtime is the context's first: it compiles as before, at page load of the spare tab.
-- **Interleaved warm A/B** against origin/quality-structure (`scripts/bench.ts`, both sides as refs,
-  5 rounds, medians of the time to the result; each side's `.sandburg/` carried over between rounds):
+- **Interleaved warm A/B** of the branch against origin/quality-structure (`scripts/bench.ts`, both
+  sides as refs, 5 rounds, medians of the time to the result; each side's `.sandburg/` carried over
+  between rounds):
 
   | Fixture | Total | Start | Ready |
   |---|---|---|---|
-  | vite-react-counter | 1.83 → 1.76 s (−4%) | 0.78 → 0.76 s | 0.36 → 0.34 s |
-  | lit-vite | 1.34 → 1.39 s (+4%) | 0.54 → 0.54 s | 0.29 → 0.30 s |
-  | sveltekit-app | 3.48 → 3.37 s (−3%) | 1.44 → 1.34 s (−7%) | 1.08 → 1.08 s |
-  | astro-app | 4.33 → 4.04 s (−7%) | 1.28 → 1.20 s (−6%) | 2.11 → 1.97 s (−6%) |
+  | vite-react-counter | 1.90 → 1.79 s (−6%) | 0.85 → 0.68 s (−20%) | 0.36 → 0.38 s |
+  | lit-vite | 1.47 → 1.38 s (−6%) | 0.57 → 0.54 s | 0.31 → 0.28 s |
+  | sveltekit-app | 3.77 → 3.51 s (−7%) | 1.59 → 1.41 s (−12%) | 1.16 → 1.06 s (−9%) |
+  | astro-app | 4.34 → 4.36 s (+1%) | 1.33 → 1.35 s | 2.12 → 2.15 s |
+  | next-app-router | 5.53 → 5.32 s (−4%) | 1.18 → 1.10 s (−6%) | 2.91 → 2.88 s |
+  | node-express | 0.68 → 0.64 s (−6%) | 0.14 → 0.11 s (−22%) | 0.13 → 0.12 s |
 
-  An earlier series of 3 rounds (with next-app-router, 5.34 → 5.53 s, +3%; `lit-vite` −10%,
-  `vite-react-counter` +7%) moved the other way for the two smallest fixtures: single rounds vary by
-  ±0.2 s, and a run's other runtimes are mostly off its critical path. The saving is CPU.
+  Earlier series of the first commit (with the service worker claiming the page as it activated)
+  moved by as much the other way for single fixtures (5 rounds: `astro-app` −7%, `lit-vite` +4%;
+  3 rounds: `vite-react-counter` +7%, `lit-vite` −10%): single rounds vary by ±0.2 s, and a run's other
+  runtimes are mostly off its critical path. The start phase of apps with one runtime (node-express)
+  gains too: the app's start no longer registers the service worker (the page did as it loaded).
+  The saving that holds across series is CPU.
 - **A batch** (`scripts/bench-batch.ts`, 12 corpus apps of seed 1, 3 tabs, warm, 3 rounds): wall
   24.43 → 24.17 s (−1%), per-app median 5.81 → 5.79 s, **the renderers' CPU 62.8 → 61.0 s (−3%)**,
   **peak memory of the renderers 3157 → 2870 MB (−9%)** (every head round below every base round:
@@ -149,7 +155,14 @@ whether *how* code gets into V8 could change that. Measured in Chromium 153 (Chr
   they need the functions' positions in each build of the script.
 - **The runtime's libraries** (`node-wasi.js`, 0.1 MB, in every WebAssembly thread) are still classic
   scripts loaded with `importScripts`, compiled in each thread (2-5 ms).
-- **Compiling the program's node_modules while the install runs**: the program's runtime waits idle for
-  the install (0.2-0.5 s of a warm run) and then compiles the top level of every file it loads (~0.1 s
-  of `ParseProgram` in a warm Vite run, ~0.4 s in Next.js under tracing). Knowing the install early (the
-  project's last install) would let it compile them ahead, and start the preload bundle's download.
+- **Compiling the program's node_modules ahead.** The program's runtime runs the program's start in
+  one long task (440 ms in a warm `vite-react-counter` run, traced), more than half of it compiling:
+  `CompileCode` 139 ms (1,283 lazy compiles), `ParseProgram` 87 ms (119 files), `CompileEval` 9 ms.
+  It waits idle before that, for the install (0.2-0.5 s of a warm run), and a session's next tab waits
+  idle for seconds. Evaluating the wrappers of the files it will load (the preload bundle) in that time
+  would take the top-level compile (~0.1 s for Vite, more for Next.js) off the start; their functions
+  still compile as they first run. Not done: the runtime knows its install only from its init message,
+  after the install; and a next tab compiling the previous run's install would put one run's
+  dependency set (and the install's files) in another sandbox's memory, a flow between runs that the
+  boundaries of ADR 0001 do not have today (the preload route is keyed by the install, not bound to a
+  sandbox). Starting the preload bundle's download early (ADR 0041's largest wait left) would go with it.
