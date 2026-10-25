@@ -21,6 +21,11 @@
       }
     },
     "previousAttempts": { "type": "array", "items": { "type": "string" } },
+    "memory": {
+      "type": "object",
+      "required": ["rendererPeakBytes"],
+      "properties": { "rendererPeakBytes": { "type": "integer", "minimum": 0 } }
+    },
     "runtime": {
       "type": "object",
       "required": ["name", "version"],

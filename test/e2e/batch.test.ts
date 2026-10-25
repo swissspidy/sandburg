@@ -73,6 +73,12 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
     assert.equal(summary.totals.passed, 10, JSON.stringify(results.filter((r) => r.status !== 'passed').map((r) => [r.failure, r.checks.filter((c) => c.status !== 'passed')]), null, 2));
     assert.equal(summary.runs.length, 10);
     assert.equal(new Set(summary.runs.map((r) => r.snapshotId)).size, 10);
+    // Each run found its own renderer (one per sandbox) and read its memory: an app's peak is a few
+    // hundred MB, never the browser's whole.
+    if (process.platform === 'linux') {
+      for (const r of summary.runs) assert.ok(r.rendererPeakBytes! > 50 * 2 ** 20 && r.rendererPeakBytes! < 2 * 2 ** 30, `${r.label}: ${r.rendererPeakBytes}`);
+      assert.equal(new Set(results.map((r) => r.memory?.rendererPeakBytes)).size > 1, true, 'each its own renderer');
+    }
     // One install on the host serves all ten (they share their dependencies): the runs that start
     // after it finished take it from the cache. How long the install itself takes depends on npm's
     // cache, so its time is not checked.
@@ -92,6 +98,8 @@ async function canary(): Promise<{ server: Server; port: number; connections: ()
   let count = 0;
   const server = createServer((socket) => {
     count++;
+    // A browser that closes resets its connections; that is not the test's failure.
+    socket.on('error', () => {});
     socket.end('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
