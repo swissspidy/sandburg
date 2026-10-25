@@ -96,10 +96,13 @@ Three findings shaped what followed:
 ## Security
 
 - **Read reports** (`/__sandburg/nm/<install>/read`, over the file channel or HTTP from a sandbox's
-  own origin): a report names files of an install key, as `?used=1` does. The host keeps only entries
-  in that install's index (mode `f` or `t`, the path as indexed), at most 1,000 a report. A run can
-  only shrink or reorder what later runs of the same install preload: a file missing from a bundle is
-  asked for, never wrong. `test/unit/preload-reads.test.ts` tries other installs, modes and escapes.
+  own origin) shape an install's bundles only when they come from the sandbox of a run the install
+  was made for (`grantReads` at hostInstall, bound once the run's tab is known, dropped after 6
+  hours), as do the files such a run asks for one by one. Files are still served by key to any
+  sandbox (ADR 0040). The host keeps only entries in that install's index (mode `f` or `t`, the path
+  as indexed), at most 1,000 a report. A file missing from a bundle is asked for, never wrong.
+  `test/unit/preload-reads.test.ts` tries other installs, modes and escapes, another sandbox's reports
+  and requests, and a sandbox granted for another install.
 - **The binary cache write** keeps the route's per-run token (issued for one key to one sandbox, once),
   its 256 MB limit, and the filter on what is kept (under the grant's directories, no `..`). A bundle
   whose lengths do not add up, or whose header is not a list of files, is refused and the token kept.
