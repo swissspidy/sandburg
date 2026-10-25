@@ -298,10 +298,44 @@ async function recordLoad(key: string, mode: string, rel: string): Promise<void>
 }
 
 /**
- * The files to preload for an install: those its runs loaded, then those that runs of other installs
- * loaded from the same package versions, where this install has them.
+ * The files of an install that its runs read, by "mode:path": loaded one by one, or read from a
+ * preload bundle (the runtime tells the host, see noteRead in node-runtime/host-files.ts). A
+ * bundle holds every file runs ever loaded, and what was predicted for a first run (prefetch.ts):
+ * a warm next-app-router run read 16 of its 43 MB, and the browser's transfer of a bundle (~150-250
+ * MB/s here) is most of a warm run's start. Once runs have said what they read, bundles hold that.
  */
-async function preloadEntries(key: string): Promise<string[]> {
+const readList = (key: string) => preloadList(`${key}-read`);
+
+/** Most files a report may name (the runtime sends 100 at a time). */
+const READ_REPORT_MAX = 1000;
+
+async function markRead(key: string, entries: string[]): Promise<void> {
+  const index = await installer.index(key).catch(() => null);
+  if (!index) return;
+  const read = await readList(key);
+  for (const entry of entries.slice(0, READ_REPORT_MAX)) {
+    const mode = entry[0];
+    const rel = entry.slice(2);
+    if ((mode !== 'f' && mode !== 't') || entry[1] !== '/' || !(rel in index) || read.has(`${mode}:${rel}`)) continue;
+    read.set(`${mode}:${rel}`, true);
+    markDirty(`${key}-read`);
+  }
+}
+
+/** A file a runtime asked for: loaded (recordLoad), and read. */
+async function recordRead(key: string, mode: string, rel: string): Promise<void> {
+  await recordLoad(key, mode, rel);
+  await markRead(key, [`${mode}/${rel}`]);
+}
+
+/**
+ * The files to preload for an install: those its runs loaded, then those that runs of other installs
+ * loaded from the same package versions, where this install has them. Once its runs have said what
+ * they read (markRead), only that.
+ */
+export async function preloadEntries(key: string): Promise<string[]> {
+  const read = await readList(key);
+  if (read.size) return [...(await preloadList(key)).keys()].filter((e) => read.has(e));
   const own = [...(await preloadList(key)).keys()];
   const byPackage = new Map<string, string[]>();
   for (const e of (await preloadList(PACKAGE_LIST)).keys()) {
@@ -787,19 +821,25 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     const bundle = await preloadBundle(pre[1], pre[2]);
     return bundle ? { status: 200, headers: { 'content-type': 'application/octet-stream', 'cache-control': 'max-age=31536000, immutable' }, body: bundle } : null;
   }
+  // The preload bundle's files a runtime read (see markRead).
+  const reads = /^\/__sandburg\/nm\/([0-9a-f]{24})\/read$/.exec(req.path);
+  if (reads) {
+    await markRead(reads[1], (req.query.get('files') ?? '').split('\n'));
+    return { status: 204, headers: {}, body: '' };
+  }
   const m = /^\/__sandburg\/nm\/([0-9a-f]{24})\/(f|t)\/(.+)$/.exec(req.path);
   if (m) {
     const [, key, mode, rel] = m;
     // A file the runtime read from a read-ahead answer: recorded as loaded, as if it had been asked for.
     if (req.query.get('used') === '1') {
-      if (decodeURIComponent(rel) in (await installer.index(key))) void recordLoad(key, mode, decodeURIComponent(rel));
+      if (decodeURIComponent(rel) in (await installer.index(key))) void recordRead(key, mode, decodeURIComponent(rel));
       return { status: 204, headers: {}, body: '' };
     }
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
     if (file && mode === 'f' && req.query.get('ahead') === '1') {
       const body = await readAhead(key, decodeURIComponent(rel), file.body, req.query.get('until'));
       if (body) {
-        void recordLoad(key, mode, decodeURIComponent(rel));
+        void recordRead(key, mode, decodeURIComponent(rel));
         return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
       }
     }
@@ -807,12 +847,12 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
       const prefetcher = await prefetchers.get(key);
       const body = prefetcher ? pushAhead(key, decodeURIComponent(rel), file.body, prefetcher, req.channel) : null;
       if (body) {
-        void recordLoad(key, mode, decodeURIComponent(rel));
+        void recordRead(key, mode, decodeURIComponent(rel));
         void prefetcher!.loaded(decodeURIComponent(rel), file.body.toString('utf8'));
         return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
       }
     }
-    if (file) void recordLoad(key, mode, decodeURIComponent(rel));
+    if (file) void recordRead(key, mode, decodeURIComponent(rel));
     if (file && mode === 't') void prefetchers.get(key)?.then((p) => p.loaded(decodeURIComponent(rel), file.body.toString('utf8')));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
