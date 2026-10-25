@@ -10,7 +10,8 @@ session, the second and later runs; full Chromium) took: nuxt-app ~5.6 s, solid-
 angular-tasks ~4.3 s, astro-app ~3.7 s, sveltekit-app ~2.8 s, react-router-app ~2.0 s, against
 1.2-1.5 s for vite-react-counter and lit-vite. CPU profiles of every thread (`scripts/profile.ts`,
 plus a script that also records the app frame's requests, `devtools.timeline`) and a log of every
-timer of 50 ms or more the runtime armed, with its stack, showed three kinds of time:
+timer of 50 ms or more the runtime armed, with its stack (a temporary patch of the runtime's timers),
+showed three kinds of time:
 
 - **Waits on timers, with every thread idle.**
   - Nitro's dev server (Nuxt) holds a request that comes before its worker is ready and checks again
@@ -80,6 +81,11 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   its own there by name (Nitro's rollup cache).
 - **jiti's cache is kept** with the dev-server caches (`node_modules/.cache/jiti` added to
   `DEV_CACHE_DIRS`): jiti names an entry by a hash of the file's source and its version.
+- **A dev-server cache file written over and back again is no change** (`Vfs.track`, ADR 0036): the
+  Vfs keeps, for a tracked file written over, the bytes it had before its first write since tracking
+  began, and a file that ends with them is no change. The Angular CLI writes its `.tsbuildinfo` twice
+  per start, ending as it was: every warm run read its 4.8 MB cache back at dispose to find it
+  unchanged.
 
 ## Consequences
 
@@ -133,6 +139,7 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   | | nuxt-app | 4.55 → 4.45 s (−2%) | |
   | jiti's cache | nuxt-app | 4.42 → 4.28 s (−3%, n=6) | start 0.61 → 0.48 s |
   | Nitro's rollup cache | nuxt-app | 4.09 → 3.81 s (−7%, n=6) | checks 0.73 → 0.46 s; Nitro's build 703 → ~280 ms |
+  | Written over and back | angular-tasks | 3.88 → 3.81 s (−2%, n=5) | dispose 0.06 → 0.01 s |
 
 - The transform cache grows a SolidStart project's stored dev-server cache from 0.8 to 6.1 MB (213
   entries), and Nitro's rollup cache a Nuxt project's by 5.3 MB: mount +0.03 s and install +0.04 s in
@@ -156,6 +163,8 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   - Nitro's dev build of a Nuxt app reuses the modules of the project's last run whose loaded code is
     unchanged (and their resolutions), and a rollup watch given a cache starts from it.
   - `globalThis[Symbol.for('sandburg.transformCache')]` exists in the runtime.
+  - A restored dev-server cache whose files end the run with the bytes they started with is not read
+    back at dispose, however often they were written.
 
 ## Security
 
@@ -176,7 +185,8 @@ compiles of the code it loads, on the program's one busy thread; the Angular CLI
   (each patch applies to the published code; the router's first listing dispatches nothing and later
   changes do; each builtin plugin's hooks and filters, and an unknown plugin keeps all; rollup's Task
   takes a cache object only; Nitro's watcher starts from the stored cache, writes it only when a module
-  changed, and drops it after a failed build), and an e2e test in
+  changed, and drops it after a failed build), `test/unit/vfs-track.test.ts` (written over and back is
+  no change, in place or not; a new file is a change even if written twice), and an e2e test in
   `test/e2e/vite-frameworks.test.ts`: a SolidStart project's cache holds its compile of src/app.tsx,
   and a copy with that file edited gets a cache of its own, with only compiles of its own source,
   while the first project's is unchanged.
