@@ -38,6 +38,7 @@ import ShaHash from 'sha.js/hash.js';
 import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
 import { CRYPTO_LIB_KEYS, LIBS_KEY, ZLIB_CONSTANTS, ZLIB_LIB_KEYS, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
+import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
 import type { FileTree } from '../types.ts';
 
 export type ToWorker =
@@ -876,6 +877,7 @@ let threads: ReturnType<typeof createWorkerThreads>;
 let childProcess: ReturnType<typeof createChildProcess>;
 let nodeModulesIndex: Record<string, number> | null = null;
 let nodeModulesWrites: Int32Array | undefined;
+let transformCache: TransformCache | null = null;
 
 function write(stream: 'stdout' | 'stderr', text: string) {
   post({ type: 'log', stream, text });
@@ -1493,6 +1495,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     setImmediate: timers.setImmediate,
     clearImmediate: timers.clearImmediate,
   });
+  // Dev server plugins look their compiles up here (see transform-cache.ts); not enumerable.
+  transformCache = createTransformCache(vfs, () => (proc.cwd as () => string)());
+  Object.defineProperty(g, TRANSFORM_CACHE, { value: transformCache });
 
   // Uncaught errors and rejections go through process events, as in Node.
   self.addEventListener('error', (e) => {
@@ -1731,52 +1736,56 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'ws-open') wsOpen(msg);
   else if (msg.type.startsWith('lb-')) loopbackReply(msg as Extract<ToWorker, { type: `lb-${string}` }>);
-  // Nothing changed under the tracked directories since the program started: no need to read them.
-  else if (msg.type === 'read-tree' && msg.ifChanged && !msg.match && vfs.trackedChanged() === false) post({ type: 'tree', id: msg.id, files: {}, unchanged: true });
   else if (msg.type === 'read-tree') {
-    const files: Record<string, string | { base64: string }> = {};
-    const utf8 = new TextDecoder('utf-8', { fatal: true });
-    const walk = (dir: string) => {
-      for (const name of vfs.readdir(dir)) {
-        const path = `${dir}/${name}`;
-        const st = vfs.stat(path);
-        if (st.kind === 'dir') walk(path);
-        else if (st.size < 64 << 20) {
-          const bytes = vfs.read(path);
-          let text: string | null = null;
-          try {
-            text = utf8.decode(bytes);
-          } catch {
-            // binary (webpack's cache packs)
-          }
-          files[path.slice(projectRoot.length + 1)] = text ?? { base64: Buffer.from(bytes).toString('base64') };
-        }
-      }
-    };
-    for (const dir of msg.dirs) {
-      try {
-        walk(`${projectRoot}/${dir}`);
-      } catch {
-        // not there
-      }
-    }
-    if (msg.match) {
-      const pattern = new RegExp(msg.match);
-      const find = (dir: string) => {
+    // Before the caches are read to be kept: compiles this run did not use go (see transform-cache.ts).
+    transformCache?.prune();
+    // Nothing changed under the tracked directories since the program started: no need to read them.
+    if (msg.ifChanged && !msg.match && vfs.trackedChanged() === false) post({ type: 'tree', id: msg.id, files: {}, unchanged: true });
+    else {
+      const files: Record<string, string | { base64: string }> = {};
+      const utf8 = new TextDecoder('utf-8', { fatal: true });
+      const walk = (dir: string) => {
         for (const name of vfs.readdir(dir)) {
           const path = `${dir}/${name}`;
           const st = vfs.stat(path);
-          if (st.kind === 'dir') {
-            if (name !== 'node_modules' && !name.startsWith('.')) find(path);
-          } else if (pattern.test(path.slice(projectRoot.length + 1))) {
-            // Whole, whatever the size: a database without its journal would lose committed data.
-            files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
+          if (st.kind === 'dir') walk(path);
+          else if (st.size < 64 << 20) {
+            const bytes = vfs.read(path);
+            let text: string | null = null;
+            try {
+              text = utf8.decode(bytes);
+            } catch {
+              // binary (webpack's cache packs)
+            }
+            files[path.slice(projectRoot.length + 1)] = text ?? { base64: Buffer.from(bytes).toString('base64') };
           }
         }
       };
-      find(projectRoot);
+      for (const dir of msg.dirs) {
+        try {
+          walk(`${projectRoot}/${dir}`);
+        } catch {
+          // not there
+        }
+      }
+      if (msg.match) {
+        const pattern = new RegExp(msg.match);
+        const find = (dir: string) => {
+          for (const name of vfs.readdir(dir)) {
+            const path = `${dir}/${name}`;
+            const st = vfs.stat(path);
+            if (st.kind === 'dir') {
+              if (name !== 'node_modules' && !name.startsWith('.')) find(path);
+            } else if (pattern.test(path.slice(projectRoot.length + 1))) {
+              // Whole, whatever the size: a database without its journal would lose committed data.
+              files[path.slice(projectRoot.length + 1)] = { base64: Buffer.from(vfs.read(path)).toString('base64') };
+            }
+          }
+        };
+        find(projectRoot);
+      }
+      post({ type: 'tree', id: msg.id, files });
     }
-    post({ type: 'tree', id: msg.id, files });
   }
     else if (msg.type === 'write-file') {
     const abs = msg.path.startsWith('/') ? msg.path : `${projectRoot}/${msg.path}`;

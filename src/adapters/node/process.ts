@@ -95,6 +95,27 @@ export function prefetchBundle(url: string | null | undefined): SharedArrayBuffe
 /** How long a server on a port the system picked waits before it may be taken for the app (see 'listening'). */
 const EPHEMERAL_PATIENCE_MS = 5_000;
 
+/** How much of a body without a Content-Type is read to tell whether it is HTML. */
+const SNIFF_BYTES = 512;
+const DOCUMENT_STARTS = ['<!doctype html', '<html', '<head', '<body', '<!--'];
+
+/**
+ * Whether a body without a Content-Type is HTML (as a browser sniffs it): its first tag is one of a
+ * document's, or a comment. null while the bytes so far are only the start of one (a streamed
+ * body's first chunk can end inside its first tag).
+ */
+export function sniffHtml(bytes: Uint8Array): boolean | null {
+  const head = new TextDecoder().decode(bytes.subarray(0, SNIFF_BYTES)).replace(/^\uFEFF/, '').trimStart().toLowerCase();
+  if (/^<(?:(?:!doctype html|html|head|body)[\s>]|!--)/.test(head)) return true;
+  if (bytes.length >= SNIFF_BYTES) return false;
+  return DOCUMENT_STARTS.some((start) => start.startsWith(head)) ? null : false;
+}
+
+/** Whether a whole body without a Content-Type is HTML (see sniffHtml). */
+export function looksLikeHtml(bytes: Uint8Array): boolean {
+  return sniffHtml(bytes) === true;
+}
+
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
   readonly ports: number[] = [];
@@ -172,14 +193,32 @@ export class NodeProcess {
       probed.add(port);
       lastPort = Date.now();
       const channel = new MessageChannel();
+      const done = (page: boolean) => {
+        if (page && found === null) found = port;
+        settled++;
+        channel.port1.close();
+        for (const w of this.waiters) w();
+      };
+      // An answer without a Content-Type (a hand-written http server) is a page if its body starts as HTML does.
+      // Its first bytes are kept until they tell (a chunk can end inside the first tag), or it ends.
+      let sniffed: Uint8Array | null = null;
       channel.port1.onmessage = (e) => {
-        const m = e.data as { type: string; status?: number; headers?: [string, string][] };
+        const m = e.data as { type: string; status?: number; headers?: [string, string][]; body?: ArrayBuffer; chunk?: Uint8Array };
+        if (sniffed) {
+          if (m.type !== 'chunk') return done(m.type === 'end' && looksLikeHtml(sniffed));
+          const joined = new Uint8Array(Math.min(sniffed.length + m.chunk!.length, SNIFF_BYTES));
+          joined.set(sniffed);
+          joined.set(m.chunk!.subarray(0, joined.length - sniffed.length), sniffed.length);
+          sniffed = joined;
+          const page = sniffHtml(sniffed);
+          return page === null ? undefined : done(page);
+        }
         if (m.type === 'start' || m.type === 'full' || m.type === 'error') {
-          const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
-          if (m.type !== 'error' && m.status! < 400 && /html/.test(type) && found === null) found = port;
-          settled++;
-          channel.port1.close();
-          for (const w of this.waiters) w();
+          const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1];
+          if (m.type === 'error' || m.status! >= 400) return done(false);
+          if (type !== undefined) return done(/html/.test(type));
+          if (m.type === 'full') return done(!!m.body && looksLikeHtml(new Uint8Array(m.body)));
+          sniffed = new Uint8Array(0);
         }
       };
       this.request(port, { method: 'GET', url: '/', headers: [['accept', 'text/html']], body: null }, channel.port2);

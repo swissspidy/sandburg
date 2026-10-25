@@ -40,11 +40,13 @@ const WS_SHIM = source('adapters/node/ws-shim.js');
  * vite-plugin-svelte's _svelte_metadata.json, SvelteKit re-optimized on every start), where Vite
  * (node_modules/.vite), Nuxt (node_modules/.cache/vite) and the Angular CLI (.angular/cache) put it.
  * Vite checks that a cache matches the lockfile and its config before it uses one, so a stale cache
- * costs a re-optimization, not a wrong result. A run writes its cache from the page, which runs the
+ * costs a re-optimization, not a wrong result. Also jiti's (node_modules/.cache/jiti: the config
+ * files it compiled, nuxt.config.ts, under a hash of their source), which spares a warm run loading
+ * jiti's Babel, and the runtime's transform cache (node_modules/.vite/sandburg-transforms). A run writes its cache from the page, which runs the
  * project's code, so a cache is only ever used by runs of the same project (its installed packages
  * and every file): one project cannot plant pre-bundled code in another's run.
  */
-const DEV_CACHE_DIRS = ['node_modules/.vite', 'node_modules/.cache/vite', '.angular/cache'];
+const DEV_CACHE_DIRS = ['node_modules/.vite', 'node_modules/.cache/vite', 'node_modules/.cache/jiti', '.angular/cache'];
 const devCacheRoot = () => join(installer.root, '..', 'dev-cache');
 
 function devCacheKey(project: Project, installKey: string): string {
