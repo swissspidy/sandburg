@@ -32,11 +32,15 @@ export const ESM_DEFINE: Record<string, string> = {
 };
 
 /**
- * Whether converted code (`source` before, `code` after) would not parse in its wrapper: it declares
- * one of the wrapper's names where esbuild did not rename it. Parsed, never run.
+ * Whether converted code would not parse in its wrapper: it declares one of the wrapper's
+ * parameters where esbuild did not rename it. Only a lexical declaration (let, const, class) of a
+ * parameter's name clashes with it (var and function may redeclare one), and only in the converted
+ * code (esbuild renames what it uses itself, and imports become vars), so only code that has one is
+ * parsed (V8's parser, never run): the source's `function (module, exports)` and `import`s sent ~15%
+ * of an Astro install's ES modules to the parser before, for one that clashed.
  */
-export function collidesWithWrapper(source: string, code: string): boolean {
-  if (!DECLARES.test(source)) return false;
+export function collidesWithWrapper(code: string): boolean {
+  if (!LEXICAL.test(code)) return false;
   try {
     new Function(...ESM_WRAPPER_PARAMS, code);
     return false;
@@ -44,7 +48,12 @@ export function collidesWithWrapper(source: string, code: string): boolean {
     return e instanceof SyntaxError;
   }
 }
-const DECLARES = new RegExp(`\\b(?:const|let|var|function|class|as|import)\\s*\\{?[^;=]*?\\b(?:${RESERVED.join('|')})\\b`);
+const PARAMS = ESM_WRAPPER_PARAMS.join('|');
+// A name as the first one declared, or after a `,`, `{` or `:` later in the declaration
+// (`const a = 1, require = 2`, `const { a = 1, module } = x`): the first stops at `=` so that
+// `const x = require(...)` is not parsed. DECLARES likewise.
+const LEXICAL = new RegExp(`\\b(?:const|let|class)\\s*\\{?[^;=]*?\\b(?:${PARAMS})\\b|\\b(?:const|let)\\b[^;]*?[,{:]\\s*(?:${PARAMS})\\s*(?:[=,};]|$)`);
+const DECLARES = new RegExp(`\\b(?:const|let|var|function|class|as|import)\\s*\\{?[^;=]*?\\b(?:${RESERVED.join('|')})\\b|\\b(?:const|let|var)\\b[^;]*?[,{:]\\s*(?:${RESERVED.join('|')})\\s*(?:[=,};]|$)`);
 
 type Node = acorn.Node & Record<string, unknown>;
 

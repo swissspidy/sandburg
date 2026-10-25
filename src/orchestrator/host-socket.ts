@@ -39,6 +39,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   (socket as Duplex & { setNoDelay?: (on: boolean) => void }).setNoDelay?.(true);
   socket.on('error', () => socket.destroy());
+  const channel = {};
   readFrames(socket, (opcode, payload) => {
     if (opcode === 0x8) return void socket.end(frame(0x8, Buffer.alloc(0)));
     if (opcode === 0x9) return void socket.write(frame(0xa, payload));
@@ -46,7 +47,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
     const text = payload.toString('utf8');
     const space = text.indexOf(' ');
     const id = Number(text.slice(0, space));
-    void answer(text.slice(space + 1), serve).then((res) => {
+    void answer(text.slice(space + 1), serve, channel).then((res) => {
       const head = Buffer.alloc(8);
       head.writeUInt32LE(id >>> 0, 0);
       head.writeUInt32LE(res.status, 4);
@@ -55,12 +56,12 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   });
 }
 
-async function answer(target: string, serve: (req: HostRequest) => Promise<HostResponse | null>): Promise<{ status: number; body: Buffer }> {
+async function answer(target: string, serve: (req: HostRequest) => Promise<HostResponse | null>, channel: object): Promise<{ status: number; body: Buffer }> {
   const empty = Buffer.alloc(0);
   try {
     const url = new URL(target, 'http://x');
     if (!SERVED.test(url.pathname)) return { status: 0, body: empty };
-    const out = await serve({ method: 'GET', path: url.pathname, query: url.searchParams, body: async () => empty });
+    const out = await serve({ method: 'GET', path: url.pathname, query: url.searchParams, body: async () => empty, channel });
     if (!out) return { status: 404, body: empty };
     const body = typeof out.body === 'string' ? Buffer.from(out.body) : Buffer.from(out.body.buffer, out.body.byteOffset, out.body.byteLength);
     return body.length > MAX_BODY ? { status: 0, body: empty } : { status: out.status, body };
