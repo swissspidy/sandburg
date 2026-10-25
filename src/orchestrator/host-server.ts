@@ -129,16 +129,25 @@ function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
   });
 }
 
+/** The most file-channel WebSockets one sandbox may hold open at once (a run opens one per runtime helper). */
+const MAX_FILE_CHANNELS = 256;
+
 export class HostServer {
   private server: Server;
   private sandboxes = new Map<string, AdapterDescriptor>();
+  /** Open file-channel connections per sandbox, to bound a sandbox's file descriptors (see the upgrade handler). */
+  private fileChannels = new Map<string, number>();
+  /** The per-sandbox file-channel bound in force (MAX_FILE_CHANNELS unless the constructor lowers it). */
+  private readonly maxFileChannels: number;
   port = 0;
 
   /**
    * `onError` gets what failed while answering a request (logged on the host's stderr by default);
    * the page gets a 500 without it: an error's message and stack name the host's paths.
+   * `maxFileChannels` bounds the file channels one sandbox may hold open (its default is the cap used in production).
    */
-  constructor({ onError = (err: unknown, path: string) => console.error(`sandburg: the host server failed to answer ${path}:`, err) } = {}) {
+  constructor({ onError = (err: unknown, path: string) => console.error(`sandburg: the host server failed to answer ${path}:`, err), maxFileChannels = MAX_FILE_CHANNELS } = {}) {
+    this.maxFileChannels = maxFileChannels;
     this.server = createServer((req, res) => {
       this.handle(req, res).catch((err) => {
         try {
@@ -162,6 +171,25 @@ export class HostServer {
           socket.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
           return;
         }
+        // A sandbox's own pages open a few file channels (one per runtime helper); a bound keeps one
+        // sandbox from opening enough to exhaust the host's file descriptors and starve other runs.
+        const open = this.fileChannels.get(id) ?? 0;
+        if (open >= this.maxFileChannels) {
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
+        this.fileChannels.set(id, open + 1);
+        // A hijacked upgrade socket signals the client's disconnect with `end` (and later `close`);
+        // release the slot on whichever comes first, once, so slots never leak over a run.
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          const n = (this.fileChannels.get(id) ?? 1) - 1;
+          if (n <= 0) this.fileChannels.delete(id);
+          else this.fileChannels.set(id, n);
+        };
+        socket.on('end', release).on('close', release);
         acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!({ ...r, sandbox: id }));
       } catch {
         socket.destroy();

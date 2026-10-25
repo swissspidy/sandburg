@@ -181,3 +181,49 @@ test('a request the host fails to answer gets a 500 without the error: its detai
     await host.close();
   }
 });
+
+test('a sandbox cannot hold more than its file-channel bound open at once', async () => {
+  const host = new HostServer({ maxFileChannels: 2 });
+  await host.listen();
+  const origin = host.register('cap', adapter('cap'));
+  const other = host.register('other', adapter('other'));
+  const channels: { status: number; socket: ReturnType<typeof connect> }[] = [];
+  // Opens a file channel and keeps it open; resolves once the status line is in.
+  const openChannel = (o: string): Promise<{ status: number; socket: ReturnType<typeof connect> }> =>
+    new Promise((resolve, reject) => {
+      const socket = connect(host.port, '127.0.0.1', () => {
+        socket.write(`GET ${FILE_CHANNEL_PATH} HTTP/1.1\r\nHost: ${new URL(o).host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: ${o}\r\n\r\n`);
+      });
+      let head = '';
+      socket.on('data', (d) => {
+        head += d.toString('latin1');
+        const line = /^HTTP\/1\.1 (\d+)/.exec(head);
+        if (line) {
+          const channel = { status: Number(line[1]), socket };
+          channels.push(channel);
+          resolve(channel);
+        }
+      });
+      socket.on('error', reject);
+    });
+  // A masked WebSocket close frame, as a browser sends to close cleanly (the host then ends the socket).
+  const closeFrame = Buffer.from([0x88, 0x80, 0, 0, 0, 0]);
+  const waitClosed = (socket: ReturnType<typeof connect>) => new Promise<void>((r) => socket.on('close', () => r()));
+  try {
+    assert.equal((await openChannel(origin)).status, 101);
+    assert.equal((await openChannel(origin)).status, 101);
+    // The third is refused while two are open.
+    assert.equal((await openChannel(origin)).status, 503);
+    // Another sandbox has its own budget.
+    assert.equal((await openChannel(other)).status, 101);
+    // Closing one cleanly frees a slot.
+    const first = channels.find((c) => c.status === 101)!;
+    first.socket.write(closeFrame);
+    await waitClosed(first.socket);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await openChannel(origin)).status, 101);
+  } finally {
+    await Promise.all(channels.filter((c) => !c.socket.closed).map((c) => (c.socket.write(closeFrame), waitClosed(c.socket))));
+    await host.close();
+  }
+});
