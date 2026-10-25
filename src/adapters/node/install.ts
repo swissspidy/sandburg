@@ -19,6 +19,7 @@ import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-name
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
 import type { Project } from '../../types.ts';
+import { deferImports } from './deferred-imports.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
@@ -27,7 +28,7 @@ import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhe
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 22;
+export const TRANSFORM_VERSION = 23;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 16;
 
@@ -416,7 +417,8 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
   const convert = async (code: string) => {
     const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
-    return esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+    const cjs = esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+    return esm ? deferImports(cjs, path) : cjs;
   };
   try {
     return mark(await convert(source));
