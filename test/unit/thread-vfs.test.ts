@@ -65,12 +65,13 @@ test('a thread whose parent is slow waits for it on paths its snapshot does not 
 // A parent that never answers is blocked, not slow: after a few seconds even a cache path is answered
 // from the snapshot (Tailwind v4's scanner, a WebAssembly thread, runs while its parent waits on it).
 test('a thread whose parent is blocked answers from its snapshot after all', () => {
-  const thread = new ThreadVfs(() => {}, new Vfs(() => new Uint8Array()), '/app', { '/app/src/main.ts': new TextEncoder().encode('') });
+  // Blocked after 1 s here (5 s in the runtime), so that the test does not wait out the runtime's.
+  const thread = new ThreadVfs(() => {}, new Vfs(() => new Uint8Array()), '/app', { '/app/src/main.ts': new TextEncoder().encode('') }, undefined, 1000);
   const started = performance.now();
   assert.equal(thread.exists('/app/node_modules/.cache/vite'), false);
-  assert.ok(performance.now() - started >= 4500);
+  assert.ok(performance.now() - started >= 900);
   assert.equal(thread.exists('/app/.nuxt/nuxt.d.ts'), false); // at once now: the parent is known to be blocked
-  assert.ok(performance.now() - started < 6000);
+  assert.ok(performance.now() - started < 2000);
 });
 
 // Module resolution in a thread looks for many node_modules paths the install does not have

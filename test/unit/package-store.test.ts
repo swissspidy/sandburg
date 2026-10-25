@@ -180,3 +180,20 @@ test('the store sweep removes old packages no install links, and unfinished unpa
   await sweepStore(store);
   assert.deepEqual(readdirSync(store).sort(), ['install-copy.json', 'sha512-linked', 'sha512-new']);
 });
+
+// The install rules' shims (a WebAssembly build in place of a native binding) replace files of
+// packages that come from the store as hard links: written in place, they would change the store's
+// copy, and every install linked to it.
+test("an install rule's shim replaces a linked file without writing the store's copy", async () => {
+  const { replaceFile } = await import('../../src/adapters/node/install.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-replace-'));
+  const stored = join(dir, 'store-index.js');
+  const installed = join(dir, 'installed-index.js');
+  await writeFile(stored, 'module.exports = require("./binding.node");');
+  await link(stored, installed);
+  await replaceFile(installed, 'module.exports = require("binding-wasm32-wasi");');
+  assert.equal(readFileSync(stored, 'utf8'), 'module.exports = require("./binding.node");');
+  assert.equal(readFileSync(installed, 'utf8'), 'module.exports = require("binding-wasm32-wasi");');
+  assert.notEqual(statSync(stored).ino, statSync(installed).ino);
+  assert.equal(statSync(stored).nlink, 1);
+});

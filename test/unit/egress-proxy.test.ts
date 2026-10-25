@@ -27,7 +27,8 @@ function connectVia(proxyPort: number, target: string): Promise<{ status: string
 }
 
 test('the egress proxy tunnels only to allowlisted origins and records the rest', async () => {
-  const echo = createServer((s) => s.on('data', (d) => s.write(`echo:${d}`)));
+  let connections = 0;
+  const echo = createServer((s) => (connections++, s.on('data', (d) => s.write(`echo:${d}`))));
   await new Promise<void>((r) => echo.listen(0, '127.0.0.1', r));
   const port = (echo.address() as { port: number }).port;
   const saved = process.env.HTTPS_PROXY;
@@ -45,11 +46,19 @@ test('the egress proxy tunnels only to allowlisted origins and records the rest'
     assert.deepEqual(stats.blocked.map((b) => [b.method, b.url]), [['CONNECT', 'https://example.com']]);
     assert.equal(stats.tunneled, 1);
 
-    // Plain HTTP proxying is refused outright.
-    const status = await new Promise<number>((resolve) => {
-      request({ host: '127.0.0.1', port: proxy.port, path: 'http://example.com/', headers: { host: 'example.com' } }, (res) => resolve(res.statusCode!)).end();
-    });
-    assert.equal(status, 403);
+    // Plain HTTP proxying is refused outright, to an allowlisted host too, and to any method.
+    for (const [method, url] of [['GET', 'http://example.com/'], ['GET', `http://127.0.0.1:${port}/`], ['POST', `http://127.0.0.1:${port}/`]]) {
+      const status = await new Promise<number>((resolve) => {
+        request({ host: '127.0.0.1', port: proxy.port, method, path: url, headers: { host: new URL(url).host } }, (res) => resolve(res.statusCode!)).end();
+      });
+      assert.equal(status, 403, `${method} ${url}`);
+    }
+    // An allowlisted host on another port, loopback by other names, and a sandbox's own host.
+    for (const target of [`127.0.0.1:${port + 1}`, `localhost:${port}`, `ip6-localhost:${port}`, `one.sandburg.localhost:${port}`]) {
+      assert.match((await connectVia(proxy.port, target)).status, / 403 /, target);
+    }
+    assert.equal(stats.tunneled, 1);
+    assert.equal(connections, 1, 'only the allowlisted tunnel reached the server');
   } finally {
     if (saved) process.env.HTTPS_PROXY = saved;
     await proxy.close();
