@@ -21,10 +21,15 @@ let waiting = [];
 const hooks = self.sandburgHooks ?? {};
 
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
-
+/**
+ * The host page registers this worker as it loads, and is its client once it gives a port for an app
+ * (it claims the page then): until an app starts, the page's own requests go to the host. The
+ * workers the page starts are clients from their start either way (a dedicated worker is matched by
+ * its own URL), and load the runtime through it (runtimeModule).
+ */
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'sandburg-port' && event.ports[0]) {
+    event.waitUntil(self.clients.claim());
     port = event.ports[0];
     // Replies to requests sent on any port the page gave, the current one or an earlier one.
     port.onmessage = (e) => replies.get(e.data.id)?.(e.data);

@@ -62,7 +62,8 @@ function category(cf: Node['callFrame']): string {
   const url = cf.url ?? '';
   if (!url) return cf.functionName.startsWith('(') ? cf.functionName : '(no url: native or evaluated)';
   if (url.startsWith('wasm://') || url.endsWith('.wasm')) return 'WebAssembly';
-  if (url.includes('/__sandburg/node-worker.js')) return 'Sandburg runtime';
+  // The runtime's module (node-runtime/runtime-module.ts), or its classic script on a static deployment.
+  if (url.includes('/__sandburg/runtime/') || url.includes('/__sandburg/node-worker.js')) return 'Sandburg runtime';
   const pkg = /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(url);
   if (pkg) return pkg[1] === 'next' && url.includes('/compiled/webpack/') ? 'next (webpack)' : pkg[1];
   if (url.startsWith('/app/')) return 'project';
@@ -91,7 +92,7 @@ for (const p of [...profiles.values()].sort((a, b) => b.samples.length - a.sampl
   console.log(`Thread busy ${fmt(busy).trim()}`);
   for (const [cat, ms] of [...byCategory].sort((a, b) => b[1] - a[1]).slice(0, top)) console.log(`  ${fmt(ms)}  ${cat}`);
   if (runtime.size) {
-    console.log('  Sandburg runtime, by function (line in /__sandburg/node-worker.js):');
+    console.log('  Sandburg runtime, by function (line in the runtime\'s script):');
     for (const [fn, ms] of [...runtime].sort((a, b) => b[1] - a[1]).slice(0, top)) console.log(`    ${fmt(ms)}  ${fn}`);
   }
   console.log();

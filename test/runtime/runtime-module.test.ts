@@ -50,16 +50,21 @@ after(async () => {
   server.close();
 });
 
-/** A host page controlled by the service worker, in a browser context of its own. */
+/**
+ * A host page that registered the service worker, in a browser context of its own, as the host page
+ * does as it loads (adapters/sw-bridge.ts): the page is not its client until an app starts, the
+ * workers it starts are.
+ */
 async function hostPage(): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(`${origin}/__sandburg/`);
-  await page.evaluate(async () => {
+  const controlled = await page.evaluate(async () => {
     await navigator.serviceWorker.register('/__sw__.js', { scope: '/' });
     await navigator.serviceWorker.ready;
-    if (!navigator.serviceWorker.controller) await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
+    return !!navigator.serviceWorker.controller;
   });
+  assert.equal(controlled, false);
   return { context, page };
 }
 

@@ -5,7 +5,7 @@
  */
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, Framework, InstallReport } from '../../types.ts';
-import { connectServiceWorker, controlledByServiceWorker } from '../sw-bridge.ts';
+import { connectServiceWorker, registerServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort } from './process.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
@@ -168,8 +168,8 @@ function startsThreads(tree: FileTree, framework: Framework): boolean {
 let prepared: { worker: Worker; failed: boolean } | null = null;
 
 /**
- * Started once the service worker controls the page: a runtime is its client from its start, and
- * imports the runtime's module through it, from Cache Storage, where V8's code for the module is
+ * Started once the service worker is active: a runtime is its client from its start, and imports
+ * the runtime's module through it, from Cache Storage, where V8's code for the module is
  * kept for the run's other runtimes (node-runtime/runtime-module.ts). Without a service worker, as
  * before.
  */
@@ -189,7 +189,7 @@ export function prepare(): void {
     };
     prepared = p;
   };
-  controlledByServiceWorker().then(start, start);
+  registerServiceWorker().then(start, start);
 }
 
 function preparedWorker(): Worker | undefined {
