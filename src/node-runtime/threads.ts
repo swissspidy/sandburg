@@ -12,7 +12,8 @@ import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
-import type { ToParent, VfsCall, ToWorker } from './messages.ts';
+import type { ToParent, VfsCall } from './messages.ts';
+import type { ToWorker } from './worker.ts';
 
 /** How a thread started: what its parent passed (worker.ts init message). */
 export interface ThreadInit {

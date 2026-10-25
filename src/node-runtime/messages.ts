@@ -1,6 +1,5 @@
 import type { Mailbox } from './message-ports.ts';
-import type { VfsOp, ThreadInit } from './threads.ts';
-import type { FileTree } from '../types.ts';
+import type { VfsOp } from './threads.ts';
 
 /** What a runtime worker (worker.ts) posts to its host page or parent runtime. */
 export type FromWorker =
@@ -59,77 +58,3 @@ export type ToParent =
   | VfsCall;
 
 export type VfsCall = { type: 'vfs-rpc'; sab: SharedArrayBuffer; op: VfsOp; args: unknown[] };
-
-export type ToWorker =
-  | {
-      type: 'init';
-      cwd: string;
-      env: Record<string, string>;
-      files: FileTree;
-      installKey: string | null;
-      /** A bundle of the install's files that runs load (see adapters/node/index.ts). */
-      preload?: string | null;
-      /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
-      filesBundle?: string | null;
-      /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
-      compileCache?: { key: string; bundle: string | null } | null;
-      /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
-      prefetched?: Record<string, SharedArrayBuffer>;
-      nodeModules: Record<string, number> | null;
-      /** node_modules installed in the browser (npm/install.ts): shared memory and its index. */
-      pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
-      /** The preload bundle's files, as the parent runtime read them: shared memory and its index (see sharedPreload). */
-      shared?: SharedPreload | null;
-      /** A port to the parent's file channel (see openChannel) and its ready flag. */
-      filesChannel?: { port: MessagePort; ready: SharedArrayBuffer } | null;
-      /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
-      compilePort?: MessagePort | null;
-      base: string;
-      ipc?: boolean;
-      tsRunner?: boolean;
-      /** The program's node options (`node --conditions=development …`): its --conditions apply. */
-      execArgv?: string[];
-      /** Set when this runtime is a worker thread (worker_threads.Worker) of another. */
-      thread?: ThreadInit;
-      /** A thread inherits these from its parent instead of scanning files it does not have. */
-      inherit?: { asyncModules: boolean; usesSqlite: boolean };
-      /** Raised once anything but the install wrote in node_modules (see trackNodeModulesWrites); the main runtime's, for threads. */
-      nodeModulesWrites?: Int32Array;
-    }
-  /** From the parent thread to this worker thread's parentPort. */
-  | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }
-  /** `track`: project directories whose files the runtime notes changes to from now on (see read-tree's ifChanged). */
-  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
-  /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
-  | { type: 'spares' }
-  /** The parent closed this child process's IPC channel. */
-  | { type: 'disconnect' }
-  /** A net connection between runtimes (see netMessage). */
-  | NetMessage
-  | { type: 'request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
-  /** A message for the program (with init.ipc): process.on('message'). */
-  | { type: 'message'; data: unknown }
-  /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
-  /** Writes a project file, as an editor would (file watchers see the change). */
-  | { type: 'write-file'; path: string; content: string }
-  /**
-   * The files under some directories (dev servers' caches, kept for the next run); with match, also
-   * the project's files whose path matches it, outside node_modules and dot directories (an app's databases).
-   */
-  | { type: 'read-tree'; id: number; dirs: string[]; match?: string; ifChanged?: boolean }
-  | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
-  | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
-  | { type: 'ws-close'; id: number; code?: number; reason?: string }
-  /** The reply to a loopback request this runtime sent its parent (see loopback.route). */
-  | { type: 'lb-start'; id: number; status: number; statusText: string; headers: [string, string][] }
-  | { type: 'lb-chunk'; id: number; chunk: ArrayBuffer }
-  | { type: 'lb-end'; id: number }
-  | { type: 'lb-error'; id: number; message: string; code?: string };
-
-/**
- * The preload bundle as its runtime read it, in shared memory for the runtime's threads and child
- * processes: they read its files there instead of asking the host for each (each of rolldown's
- * WebAssembly threads asked for the same ~30 files, ~250 ms per thread). Copied from the bundle when
- * the first one starts, once per runtime; a runtime passes on what it was given.
- */
-export type SharedPreload = { sab: SharedArrayBuffer; index: Record<string, [number, number]> };

@@ -5,7 +5,8 @@
  */
 import { AdapterError, type Activity } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
-import type { FromWorker, ToWorker } from '../../node-runtime/messages.ts';
+import type { FromWorker } from '../../node-runtime/messages.ts';
+import type { ToWorker } from '../../node-runtime/worker.ts';
 import type { BridgeReply, BridgedRequest } from '../sw-bridge.ts';
 
 export interface NodeProcessOptions {
