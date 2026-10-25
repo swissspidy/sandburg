@@ -1092,3 +1092,19 @@ test('crypto: ripemd160, ECDH, Diffie-Hellman, RSA sign and encrypt, as in Node'
     },
   );
 });
+
+// url.parse(…, true) and url.format use node:querystring's rules, not qs's (url-querystring.cjs).
+test('url: a parsed query and a formatted one, as in Node', async () => {
+  const inputs = ['/p?a[b]=1&c=2&c=3&d', `/p?${Array.from({ length: 25 }, (_, i) => `k=${i}`).join('&')}`, '/p?x=%20y+z&e=&=f', 'http://u:p@h.test:81/a/b?q=1#h'];
+  const formats = [{ pathname: '/p', query: { c: ['1', '2'], x: 'y z', 'a[b]': '1' } }, { protocol: 'https', host: 'h.test', query: {} }];
+  const program = `
+    const url = require('url');
+    console.log(JSON.stringify({ parsed: ${JSON.stringify(inputs)}.map((s) => url.parse(s, true).query), formatted: ${JSON.stringify(formats)}.map((o) => url.format(o)) }));`;
+  const r = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(r.fatal, null, r.fatal ?? '');
+  const nodeUrl = await import('node:url');
+  assert.deepEqual(JSON.parse(r.stdout), {
+    parsed: inputs.map((s) => ({ ...nodeUrl.parse(s, true).query })),
+    formatted: formats.map((o) => nodeUrl.format(o)),
+  });
+});

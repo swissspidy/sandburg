@@ -12,6 +12,7 @@
     "src/node-runtime/globals-shim.ts",
     "src/node-runtime/lib-globals.js",
     "src/node-runtime/process-alias.cjs",
+    "src/node-runtime/url-querystring.cjs",
     "src/host/host.ts",
     "src/adapters/node/browser.ts",
     "src/adapters/node/compile-worker.ts",
