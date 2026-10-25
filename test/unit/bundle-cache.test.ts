@@ -94,3 +94,27 @@ test('a directory it cannot write: built each time, the output as usual', async 
     await rm(p.root, { recursive: true, force: true });
   }
 });
+
+test('built again when the TypeScript configuration it applies changes, also one it extends', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sandburg-bundle-cache-ts-'));
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src/entry.ts'), 'class A { x = 1; constructor() { console.log(this.x); } }\nnew A();\n');
+    await writeFile(join(root, 'tsconfig.json'), JSON.stringify({ extends: './tsconfig.base.json' }));
+    const base = (useDefineForClassFields: boolean) => writeFile(join(root, 'tsconfig.base.json'), `// shared\n${JSON.stringify({ compilerOptions: { useDefineForClassFields } })}`);
+    await base(false);
+    let builds = 0;
+    const get = () =>
+      cachedBuild('ts', 's', root, () => (builds++, esbuild.build({ entryPoints: ['src/entry.ts'], absWorkingDir: root, bundle: true, write: false, metafile: true, format: 'iife', target: 'es2022', logLevel: 'silent' })), undefined, join(root, 'cache'));
+    const assigned = await get();
+    assert.equal(await get(), assigned);
+    assert.equal(builds, 1);
+    // Only the extended configuration changes: class fields become defined, not assigned.
+    await base(true);
+    const defined = await get();
+    assert.equal(builds, 2);
+    assert.notEqual(defined, assigned);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

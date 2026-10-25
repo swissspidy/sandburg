@@ -100,6 +100,7 @@ export class CodeCache {
 /** Compiles the script eagerly in a context of its own and returns V8's code cache for it (base64). */
 async function produce(browser: Browser, source: string): Promise<string | null> {
   const context = await browser.newContext();
+  let timer: NodeJS.Timeout | undefined;
   try {
     const url = `${PRODUCER_ORIGIN}/script.js`;
     await context.route('**/*', (route) =>
@@ -111,7 +112,6 @@ async function produce(browser: Browser, source: string): Promise<string | null>
     const cdp = await context.newCDPSession(page);
     await cdp.send('Page.enable');
     await page.goto(`${PRODUCER_ORIGIN}/`);
-    let timer: NodeJS.Timeout | undefined;
     const produced = new Promise<string | null>((resolve) => {
       cdp.on('Page.compilationCacheProduced', (e) => e.url === url && resolve(e.data));
       timer = setTimeout(() => resolve(null), PRODUCE_TIMEOUT_MS);
@@ -120,9 +120,10 @@ async function produce(browser: Browser, source: string): Promise<string | null>
     // The script runs too (the code is produced as it compiles, before it runs); whether it works here does not matter.
     await page.evaluate(loadClassic, url).catch(() => {});
     const data = await produced;
-    clearTimeout(timer);
     return data || null;
   } finally {
+    // Also when a command fails (a browser without Page.produceCompilationCache): the timer would hold the process.
+    clearTimeout(timer);
     await context.close().catch(() => {});
   }
 }
