@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser } from 'playwright-core';
-import { Session } from '../../src/orchestrator/session.ts';
+import { Session, launchOptions } from '../../src/orchestrator/session.ts';
 import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
 import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
 import { EgressProxy } from '../../src/orchestrator/egress-proxy.ts';
@@ -21,7 +21,6 @@ import { loadProject, projectFromFiles } from '../../src/project.ts';
 import { sharedInstaller } from '../../src/adapters/node/install.ts';
 import { extraDependencies } from '../../src/adapters/node/install-rules.ts';
 import type { Project } from '../../src/types.ts';
-import { launchOptions } from '../../src/orchestrator/launch.ts';
 
 const fixtureDir = fileURLToPath(new URL('../../fixtures/vite-react-counter', import.meta.url));
 const outDir = fileURLToPath(new URL('../../.sandburg/test-runs', import.meta.url));

@@ -29,8 +29,6 @@
     "scripts/split-module.ts",
     "scripts/split-worker.ts",
     "scripts/split-page-checks.ts",
-    "scripts/split-session.ts",
-    "scripts/split-node-adapter.ts",
     "scripts/test-times.ts",
     "pages/compile.ts",
     "pages/generate",
