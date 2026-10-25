@@ -52,7 +52,7 @@ export type ToWorker =
       /** A bundle of project files to start with (a dev server's cache from an earlier run), same format. */
       filesBundle?: string | null;
       /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
-      compileCache?: { key: string; bundle: string | null } | null;
+      compileCache?: { key: string; bundle: string | null; token?: string } | null;
       /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
       prefetched?: Record<string, SharedArrayBuffer>;
       nodeModules: Record<string, number> | null;
@@ -526,7 +526,7 @@ function syncGet(url: string, binary: boolean): { status: number; body: Uint8Arr
  * What the host compiled for earlier runs of the project (Vite's SSR modules, the project's own
  * files): fetched at the first compile, and looked up before asking the host.
  */
-let compileCache: { key: string; bundle: string | null } | null = null;
+let compileCache: { key: string; bundle: string | null; token?: string } | null = null;
 let compilesLoaded = false;
 
 function loadCompiles(into: Map<string, string>, asyncModules: boolean): void {
@@ -1270,6 +1270,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       } else {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}${compileCache ? `&cache=${compileCache.key}` : ''}`, false);
+        // The run's capability to record compiles under its key (a header: recorded demos key requests by their URL).
+        if (compileCache?.token) xhr.setRequestHeader('x-sandburg-token', compileCache.token);
         // As a Blob: a string body was slower to reach the host (the 8 MB chunk: ~0.85 s -> ~0.5 s).
         xhr.send(new Blob([code]));
         if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
