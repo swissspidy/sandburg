@@ -186,7 +186,42 @@ function takeCacheWrite(key: string, token: string | null | undefined, sandbox: 
   return { ...grant, token: token! };
 }
 
-async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: number) => Promise<Buffer>): Promise<boolean> {
+/**
+ * The files of a cache the page sends as a bundle (the preload format: u32 header length, JSON
+ * header [[mode, path, length], …], the bytes; see node-runtime/cache-tree.ts), as the stored form
+ * has them: UTF-8 text, or binary as { base64 }. Null if it is not one: a header that is not a list
+ * of files, or whose lengths do not add up to the body's.
+ */
+export function bundledEntries(body: Buffer): Record<string, string | { base64: string }> | null {
+  if (body.length < 4) return null;
+  const length = body.readUInt32LE(0);
+  if (4 + length > body.length) return null;
+  let header: unknown;
+  try {
+    header = JSON.parse(body.subarray(4, 4 + length).toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(header)) return null;
+  const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const out: Record<string, string | { base64: string }> = {};
+  let at = 4 + length;
+  for (const entry of header as unknown[]) {
+    if (!Array.isArray(entry) || entry.length !== 3 || typeof entry[1] !== 'string' || !Number.isSafeInteger(entry[2]) || entry[2] < 0 || at + entry[2] > body.length) return null;
+    const bytes = body.subarray(at, at + entry[2]);
+    at += entry[2];
+    let text: string | null = null;
+    try {
+      text = utf8.decode(bytes);
+    } catch {
+      // binary (webpack's cache packs)
+    }
+    out[entry[1]] = text ?? { base64: bytes.toString('base64') };
+  }
+  return at === body.length ? out : null;
+}
+
+async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: number) => Promise<Buffer>, binary = false): Promise<boolean> {
   const { key, dirs } = grant;
   const restore = () => cacheWrites.set(grant.token, { key, dirs, sandbox: grant.sandbox });
   // A body over the limit is answered by the host server (a 413).
@@ -195,7 +230,10 @@ async function writeDevCache(grant: CacheWrite & { token: string }, body: (max: 
     throw err;
   });
   try {
-    const files = cacheEntries(JSON.parse(text.toString('utf8')), dirs);
+    // A bundle (the page's form), or JSON: path → text or { base64 }. Only files under the grant's directories are kept.
+    const sent: unknown = binary ? bundledEntries(text) : JSON.parse(text.toString('utf8'));
+    if (sent === null) throw new Error('not a bundle of files');
+    const files = cacheEntries(sent, dirs);
     await mkdir(devCacheRoot(), { recursive: true });
     const file = join(devCacheRoot(), `${key}.json`);
     const tmp = `${file}.${tmpSuffix()}.tmp`;
@@ -299,10 +337,68 @@ async function recordLoad(key: string, mode: string, rel: string): Promise<void>
 }
 
 /**
- * The files to preload for an install: those its runs loaded, then those that runs of other installs
- * loaded from the same package versions, where this install has them.
+ * The files of an install that its runs read, by "mode:path": loaded one by one, or read from a
+ * preload bundle (the runtime tells the host, see noteRead in node-runtime/host-files.ts). A
+ * bundle holds every file runs ever loaded, and what was predicted for a first run (prefetch.ts):
+ * a warm next-app-router run read 16 of its 43 MB, and the browser's transfer of a bundle (~150-250
+ * MB/s here) is most of a warm run's start. Once runs have said what they read, bundles hold that.
  */
-async function preloadEntries(key: string): Promise<string[]> {
+const readList = (key: string) => preloadList(`${key}-read`);
+
+/** Most files a report may name (the runtime sends 100 at a time). */
+const READ_REPORT_MAX = 1000;
+
+/**
+ * The sandboxes whose runtimes' reads shape an install's bundles: those of the runs it was installed
+ * for (hostInstall), by key, bound once the run's tab is known. Files are served by key to any
+ * sandbox (ADR 0040); only these say what the install's runs read.
+ */
+const readers = new Map<string, Set<string>>();
+
+/** Lets the run whose page will be in `sandbox` say what it read of install `key` (see markRead). */
+export function grantReads(key: string, sandbox: Promise<string> | undefined): void {
+  void sandbox?.then(
+    (id) => {
+      let set = readers.get(key);
+      if (!set) readers.set(key, (set = new Set()));
+      set.add(id);
+      setTimeout(() => {
+        set.delete(id);
+        if (!set.size && readers.get(key) === set) readers.delete(key);
+      }, TOKEN_TTL_MS).unref();
+    },
+    () => {},
+  );
+}
+
+async function markRead(key: string, entries: string[], sandbox: string | undefined): Promise<void> {
+  if (!sandbox || !readers.get(key)?.has(sandbox)) return;
+  const index = await installer.index(key).catch(() => null);
+  if (!index) return;
+  const read = await readList(key);
+  for (const entry of entries.slice(0, READ_REPORT_MAX)) {
+    const mode = entry[0];
+    const rel = entry.slice(2);
+    if ((mode !== 'f' && mode !== 't') || entry[1] !== '/' || !(rel in index) || read.has(`${mode}:${rel}`)) continue;
+    read.set(`${mode}:${rel}`, true);
+    markDirty(`${key}-read`);
+  }
+}
+
+/** A file a runtime asked for: loaded (recordLoad), and read if the runtime's sandbox is one of the install's (markRead). */
+async function recordRead(key: string, mode: string, rel: string, sandbox: string | undefined): Promise<void> {
+  await recordLoad(key, mode, rel);
+  await markRead(key, [`${mode}/${rel}`], sandbox);
+}
+
+/**
+ * The files to preload for an install: those its runs loaded, then those that runs of other installs
+ * loaded from the same package versions, where this install has them. Once its runs have said what
+ * they read (markRead), only that.
+ */
+export async function preloadEntries(key: string): Promise<string[]> {
+  const read = await readList(key);
+  if (read.size) return [...(await preloadList(key)).keys()].filter((e) => read.has(e));
   const own = [...(await preloadList(key)).keys()];
   const byPackage = new Map<string, string[]>();
   for (const e of (await preloadList(PACKAGE_LIST)).keys()) {
@@ -796,7 +892,7 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   const cache = /^\/__sandburg\/dev-cache\/([0-9a-f]{24})$/.exec(req.path);
   if (cache && req.method === 'POST') {
     const grant = takeCacheWrite(cache[1], req.headers?.['x-sandburg-token'], req.sandbox);
-    const saved = !!grant && (await writeDevCache(grant, req.body));
+    const saved = !!grant && (await writeDevCache(grant, req.body, req.headers?.['content-type'] === 'application/octet-stream'));
     return saved ? { status: 200, headers: { 'content-type': 'text/plain' }, body: 'saved' } : { status: 403, headers: { 'content-type': 'text/plain' }, body: 'not a cache of this run' };
   }
   const pre = /^\/__sandburg\/preload\/([0-9a-f]{24})\/([0-9a-f]{16})$/.exec(req.path);
@@ -804,19 +900,25 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     const bundle = await preloadBundle(pre[1], pre[2]);
     return bundle ? { status: 200, headers: { 'content-type': 'application/octet-stream', 'cache-control': 'max-age=31536000, immutable' }, body: bundle } : null;
   }
+  // The preload bundle's files a runtime read (see markRead).
+  const reads = /^\/__sandburg\/nm\/([0-9a-f]{24})\/read$/.exec(req.path);
+  if (reads) {
+    await markRead(reads[1], (req.query.get('files') ?? '').split('\n'), req.sandbox);
+    return { status: 204, headers: {}, body: '' };
+  }
   const m = /^\/__sandburg\/nm\/([0-9a-f]{24})\/(f|t)\/(.+)$/.exec(req.path);
   if (m) {
     const [, key, mode, rel] = m;
     // A file the runtime read from a read-ahead answer: recorded as loaded, as if it had been asked for.
     if (req.query.get('used') === '1') {
-      if (decodeURIComponent(rel) in (await installer.index(key))) void recordLoad(key, mode, decodeURIComponent(rel));
+      if (decodeURIComponent(rel) in (await installer.index(key))) void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
       return { status: 204, headers: {}, body: '' };
     }
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));
     if (file && mode === 'f' && req.query.get('ahead') === '1') {
       const body = await readAhead(key, decodeURIComponent(rel), file.body, req.query.get('until'));
       if (body) {
-        void recordLoad(key, mode, decodeURIComponent(rel));
+        void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
         return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
       }
     }
@@ -824,12 +926,12 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
       const prefetcher = await prefetchers.get(key);
       const body = prefetcher ? pushAhead(key, decodeURIComponent(rel), file.body, prefetcher, req.channel) : null;
       if (body) {
-        void recordLoad(key, mode, decodeURIComponent(rel));
+        void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
         void prefetcher!.loaded(decodeURIComponent(rel), file.body.toString('utf8'));
         return { status: 207, headers: { 'content-type': 'application/octet-stream' }, body };
       }
     }
-    if (file) void recordLoad(key, mode, decodeURIComponent(rel));
+    if (file) void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
     if (file && mode === 't') void prefetchers.get(key)?.then((p) => p.loaded(decodeURIComponent(rel), file.body.toString('utf8')));
     return file ? { status: 200, headers: { 'content-type': file.type, 'cache-control': 'max-age=31536000, immutable' }, body: file.body } : null;
   }
@@ -926,6 +1028,7 @@ export const node: AdapterDescriptor = {
       devCache = { ...devCache, files: {}, digests: cacheDigests(devCache.files) };
     }
     if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
+    grantReads(key, options?.sandbox);
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
     return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, compileCache: compiles, preload: await preloadUrl(key, entry) };

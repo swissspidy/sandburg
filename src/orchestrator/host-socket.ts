@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { HostRequest, HostResponse } from '../types.ts';
+import { traceTransfer } from '../transfer-trace.ts';
 
 export const FILE_CHANNEL_PATH = '/__sandburg/files';
 /** Larger bodies are answered with status 0 (over a WebSocket, 40 MB took 4x as long as over HTTP). */
@@ -47,11 +48,13 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
     const text = payload.toString('utf8');
     const space = text.indexOf(' ');
     const id = Number(text.slice(0, space));
+    const t0 = performance.now();
     void answer(text.slice(space + 1), serve, channel).then((res) => {
       const head = Buffer.alloc(8);
       head.writeUInt32LE(id >>> 0, 0);
       head.writeUInt32LE(res.status, 4);
       if (!socket.destroyed) socket.write(frame(0x2, Buffer.concat([head, res.body])));
+      traceTransfer({ hop: 'host→runtime ws', what: text.slice(space + 1), bytes: res.body.length, encoding: 'binary', ms: performance.now() - t0 });
     });
   });
 }

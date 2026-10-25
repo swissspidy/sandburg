@@ -6,7 +6,8 @@
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, Framework, InstallReport } from '../../types.ts';
 import { connectServiceWorker, registerServiceWorker } from '../sw-bridge.ts';
-import { NodeProcess, exposeWebSockets, hostBase, webSocketPort } from './process.ts';
+import { NodeProcess, exposeWebSockets, hostBase, webSocketPort, type CacheSnapshot } from './process.ts';
+import type { CacheEntry } from '../../node-runtime/cache-tree.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
 import { Registry } from '../../node-runtime/npm/registry.ts';
@@ -137,10 +138,29 @@ const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit' }
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
 
-/** The SHA-256 (hex) of a file read from the runtime (text, or binary as base64). */
-async function sha256(file: string | { base64: string }): Promise<string> {
-  const bytes = typeof file === 'string' ? new TextEncoder().encode(file) : Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
-  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+/** The SHA-256 (hex) of a file of a cache. */
+async function sha256(bytes: Uint8Array): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** The files of a cache's bundle (readCache), as [path, bytes] (views of the bundle). */
+function bundleFiles(bundle: ArrayBuffer): [string, Uint8Array][] {
+  const length = new DataView(bundle).getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(bundle, 4, length))) as [string, string, number][];
+  let at = 4 + length;
+  return header.map(([, path, size]) => [path, new Uint8Array(bundle, (at += size) - size, size)]);
+}
+
+/** Whether two looks at a cache found the same files with the same sizes. */
+function sameFiles(a: CacheEntry[], b: CacheEntry[] | undefined): boolean {
+  return !!b && a.length === b.length && a.every(([path, size], i) => b[i][0] === path && b[i][1] === size);
+}
+
+/** Whether a file the run started with (text, or binary as base64) has these bytes. */
+function sameBytes(file: string | { base64: string } | undefined, bytes: Uint8Array): boolean {
+  if (file === undefined) return false;
+  const had = typeof file === 'string' ? new TextEncoder().encode(file) : Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+  return had.length === bytes.length && had.every((b, i) => b === bytes[i]);
 }
 
 /**
@@ -339,7 +359,7 @@ export function createAdapter(): RuntimeAdapter {
       // Edits to the running app (sandburg open, checks that exercise hot reloading).
       (window as unknown as Record<string, unknown>).__sandburgWriteFile = (path: string, content: string) => p.writeFile(path, content);
       // Files the app wrote (a page that runs the project again keeps its SQLite databases).
-      (window as unknown as Record<string, unknown>).__sandburgReadFiles = (match: string) => p.readTree([], match);
+      (window as unknown as Record<string, unknown>).__sandburgReadFiles = (match: string) => p.readTree(match);
       // WebSockets (e.g. Next.js' HMR at /_next/webpack-hmr) go to the app's server too.
       exposeWebSockets((url) => {
         const target = webSocketPort(url, p.ports, (path) => {
@@ -371,45 +391,48 @@ export function createAdapter(): RuntimeAdapter {
     async dispose() {
       // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
       if (proc && devCache && !proc.failure) {
-        const timeout = () => new Promise<null>((r) => setTimeout(() => r(null), 5000));
-        const read = () => Promise.race([proc!.readTree(devCache!.dirs), timeout()]);
-        // A cache restored from an earlier run, whose directories the runtime tracked (see start), is
-        // read only if the run changed a file there: null when it did not (nothing to store).
-        let tree = devCache.digests && !devCache.waitFor ? await Promise.race([proc.readTree(devCache.dirs, undefined, true), timeout()]) : await read();
-        /** For a cache that waits (waitFor): whether its tree settled (every file there, none mid-write, unchanged since the last look). */
-        let settled = false;
-        if (devCache.waitFor) {
-          // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment).
-          // At most 40 s, however long each read takes (a read gives up after 5 s).
+        const p = proc;
+        const { dirs, waitFor, digests } = devCache;
+        // A look gives up after 5 s.
+        const look = (bytes: boolean, ifChanged = false) => Promise.race([p.readCache(dirs, { bytes, ifChanged }), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+        let cache: CacheSnapshot | null;
+        /** Whether the cache is complete: for one that waits (waitFor), its tree settled (every file there, none mid-write, unchanged since the last look). */
+        let complete = false;
+        if (waitFor) {
+          // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment):
+          // its list of files and sizes, then its bytes once. At most 40 s, however long each look takes.
+          // webpack writes each pack under a temporary name (<name>_), then renames it.
           const deadline = performance.now() + 40_000;
-          const size = (t: typeof tree) => (t ? Object.values(t).reduce((n, f) => n + (typeof f === 'string' ? f.length : f.base64.length), 0) : -1);
-          // The same files as well: webpack writes each pack under a temporary name (<name>_), then renames it.
-          const same = (a: typeof tree, b: typeof tree) => size(a) === size(b) && Object.keys(a ?? {}).sort().join('\0') === Object.keys(b ?? {}).sort().join('\0');
-          while (performance.now() < deadline) {
+          let last = await look(false);
+          while (performance.now() < deadline && !complete) {
             await new Promise((r) => setTimeout(r, 250));
-            const next = await read();
-            const ready = next && devCache.waitFor.every((f) => f in next) && !Object.keys(next).some((f) => f.endsWith('_'));
-            const stable = ready && same(next, tree);
-            tree = next;
-            if (stable) {
-              settled = true;
-              break;
-            }
+            const next = await look(false);
+            const names = new Set(next?.files.map(([path]) => path));
+            complete = !!next && waitFor.every((f) => names.has(f)) && !next.files.some(([path]) => path.endsWith('_')) && sameFiles(next.files, last?.files);
+            last = next;
           }
+          cache = complete ? await look(true) : null;
+          // One that changed again as its bytes were read is not stored: it may hold a pack webpack was still writing.
+          complete = !!cache && sameFiles(cache.files, last?.files);
+        } else {
+          // A cache restored from an earlier run, whose directories the runtime tracked (see start), is
+          // read only if the run changed a file there: null when it did not (nothing to store).
+          cache = await look(true, !!digests);
+          // Vite writes an optimized environment's _metadata.json last.
+          complete = !!cache && cache.files.some(([path]) => path.endsWith('/_metadata.json'));
         }
-        // Vite writes an optimized environment's _metadata.json last.
-        // One that never settled is not stored: it may hold a pack webpack was still writing.
-        const complete = tree && (devCache.waitFor ? settled : Object.keys(tree).some((p) => p.endsWith('/_metadata.json')));
-        const same = (a: string | { base64: string } | undefined, b: string | { base64: string }) => (typeof a === 'string' || typeof b === 'string' ? a === b : a?.base64 === b.base64);
-        const digests = devCache.digests;
+        const files = complete && cache?.bundle ? bundleFiles(cache.bundle) : null;
         const changed =
-          complete &&
+          !!files &&
           // A file the run deleted counts as a change too.
           (digests
-            ? Object.keys(digests).length !== Object.keys(tree!).length ||
-              (await Promise.all(Object.entries(tree!).map(async ([p, f]) => digests[p] === (await sha256(f))))).includes(false)
-            : Object.keys(devCache.files).length !== Object.keys(tree!).length || Object.keys(tree!).some((p) => !same(devCache!.files[p], tree![p])));
-        if (changed && devCache.token) await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', headers: { 'x-sandburg-token': devCache.token }, body: new Blob([JSON.stringify(tree)]) }).catch(() => {});
+            ? Object.keys(digests).length !== files.length || (await Promise.all(files.map(async ([path, bytes]) => digests[path] === (await sha256(bytes))))).includes(false)
+            : Object.keys(devCache.files).length !== files.length || files.some(([path, bytes]) => !sameBytes(devCache!.files[path], bytes)));
+        if (changed && devCache.token) {
+          // A Blob, not the ArrayBuffer: DevTools (Playwright's Network domain) is handed an ArrayBuffer
+          // body as the request's post data, which took a 27 MB cache's upload from 0.4 to 1.6 s.
+          await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', headers: { 'x-sandburg-token': devCache.token, 'content-type': 'application/octet-stream' }, body: new Blob([cache!.bundle!]) }).catch(() => {});
+        }
       }
       proc?.terminate();
       proc = null;
