@@ -90,6 +90,12 @@ Each has a fast fixed-seed unit test and was run longer by hand while writing it
   iterations.
 - **CONNECT target parser.** Mutated targets from a bracket/colon/port/host alphabet. Fixed seed:
   200,000 iterations in CI (~0.2 s). Checks no throw and the host/port invariants.
+- **Registry-spec allowlist.** Mutated dependency specs cross-checked against npm's own
+  `npm-package-arg` (`unit/spec-guard`): every spec the allowlist accepts, npa must classify as a
+  registry version/range/tag or an alias to one. Fixed seed: 50,000 iterations in CI (skipped where
+  npm is not on PATH). It found that a `.tgz`/`.tar`/`.tar.gz` suffix or a leading `.` makes npm treat
+  a spec as a local tarball or directory even without a slash or protocol; the allowlist now rejects
+  those shapes.
 
 ## Open items from ADR 0040, decided
 
