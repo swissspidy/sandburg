@@ -85,6 +85,28 @@ test('requests outside the allowlist are blocked and recorded', async () => {
   assert.equal(networkCheck?.blocking, false);
 });
 
+test('a popup to an IPv6 literal is refused, and the session goes on running apps', async () => {
+  // A popup's first request reaches the run's egress proxy (ADR 0030) as `CONNECT [::1]:443`: parsing
+  // it threw, and the host process exited.
+  const result = await session.run(counter, {
+    outDir,
+    checks: {
+      'opens popups the gateway does not see': async ({ app }) => {
+        await app.evaluate(() => {
+          for (const url of ['https://[::1]/', 'https://[::1]:8443/x', 'https://[0:0:0:0:0:ffff:7f00:1]/']) window.open(url);
+        });
+        await new Promise((r) => setTimeout(r, 2000));
+      },
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks, null, 2));
+  const blocked = result.network.blocked.map((b) => b.url);
+  assert.ok(blocked.includes('https://[::1]'), JSON.stringify(result.network));
+  assert.ok(blocked.includes('https://[::1]:8443'), JSON.stringify(result.network));
+  const again = await session.run(counter, { checks: `${fixtureDir}/checks.spec.ts`, outDir });
+  assert.equal(again.status, 'passed', JSON.stringify(again.failure ?? again.checks, null, 2));
+});
+
 test('importing an undeclared package is an app bug, not a runtime limitation', async () => {
   const project = variant('undeclared', {
     // Used, so TypeScript import elision keeps it.

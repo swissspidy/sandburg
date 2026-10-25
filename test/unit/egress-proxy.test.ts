@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, connect } from 'node:net';
 import { request } from 'node:http';
-import { EgressProxy } from '../../src/orchestrator/egress-proxy.ts';
+import { EgressProxy, parseConnectTarget } from '../../src/orchestrator/egress-proxy.ts';
 import { newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
 
 function connectVia(proxyPort: number, target: string): Promise<{ status: string; echo?: string }> {
@@ -75,4 +75,63 @@ test('a proxy without tunnels refuses allowlisted origins too, and records why',
   } finally {
     await proxy.close();
   }
+});
+
+test('CONNECT targets are parsed strictly: a host or bracketed IPv6 literal, and a port 1-65535 without leading zeros', () => {
+  assert.deepEqual(parseConnectTarget('example.com:443'), { host: 'example.com', port: 443 });
+  assert.deepEqual(parseConnectTarget('Example.COM:8443'), { host: 'example.com', port: 8443 });
+  assert.deepEqual(parseConnectTarget('127.0.0.1:1'), { host: '127.0.0.1', port: 1 });
+  assert.deepEqual(parseConnectTarget('[::1]:443'), { host: '::1', port: 443 });
+  assert.deepEqual(parseConnectTarget('[2001:db8::1]:65535'), { host: '2001:db8::1', port: 65535 });
+  for (const target of ['', '[', '[::1', '[::1]', '[::1]:', '[nope]:443', '[fe80::1%25eth0]:443', 'host', 'host:', ':443', 'host:0', 'host:0443', 'host:65536', 'host:99999', 'host:+443', 'host:44 3', 'host:443:443', 'a..b:443', '-a:443', 'a b:443', 'a/b:443', 'user@host:443', `${'a'.repeat(64)}:443`, `${'a.'.repeat(200)}a:443`]) {
+    assert.equal(parseConnectTarget(target), null, target);
+  }
+});
+
+/** Sends a raw request to the proxy and resolves with its status line (or '' when the proxy closed without one). */
+function rawRequest(port: number, text: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const sock = connect(port, '127.0.0.1', () => sock.write(text));
+    let buf = '';
+    sock.on('data', (d) => (buf += d.toString('latin1')));
+    sock.on('close', () => resolve(buf.split('\r\n')[0]));
+    sock.on('error', reject);
+  });
+}
+
+test('malformed CONNECT targets get a 400 and are recorded, and the proxy keeps serving', async () => {
+  const echo = createServer((s) => s.on('data', (d) => s.write(`echo:${d}`)));
+  await new Promise<void>((r) => echo.listen(0, '127.0.0.1', r));
+  const port = (echo.address() as { port: number }).port;
+  const saved = process.env.HTTPS_PROXY;
+  delete process.env.HTTPS_PROXY;
+  const stats = newEgressStats();
+  // A wildcard entry: the matcher parses what it is given (`https://[` threw there, and the process exited).
+  const proxy = new EgressProxy(originMatcher([`https://127.0.0.1:${port}`, 'https://*.sandburg.test']), stats);
+  await proxy.listen();
+  try {
+    const malformed = ['[', '[::1', 'host:', 'host:0443', 'host:99999', `${'a'.repeat(5000)}:443`];
+    for (const target of malformed) assert.match((await connectVia(proxy.port, target)).status, / 400 /, target);
+    // An empty target.
+    assert.match(await rawRequest(proxy.port, 'CONNECT  HTTP/1.1\r\nHost: x\r\n\r\n'), / 400 /);
+    assert.deepEqual(stats.blocked.map((b) => b.reason), [...malformed, ''].map(() => 'malformed CONNECT target'));
+    assert.ok(stats.blocked.every((b) => b.url.length <= 300));
+    // An IPv6 literal that is well formed but not allowlisted.
+    assert.match((await connectVia(proxy.port, '[::1]:443')).status, / 403 /);
+    assert.equal(stats.blocked.at(-1)!.url, 'https://[::1]');
+    // Still serving.
+    const allowed = await connectVia(proxy.port, `127.0.0.1:${port}`);
+    assert.match(allowed.status, / 200 /);
+    assert.equal(allowed.echo, 'echo:ping');
+  } finally {
+    if (saved) process.env.HTTPS_PROXY = saved;
+    await proxy.close();
+    echo.close();
+  }
+});
+
+test('the origin matcher matches nothing for an origin that is not a URL', () => {
+  const allow = originMatcher(['https://esm.sh', 'https://*.sandburg.test']);
+  for (const origin of ['https://[', 'https://[::1', 'http://a b', 'https://']) assert.equal(allow(origin), false, origin);
+  assert.equal(allow('https://a.sandburg.test'), true);
 });

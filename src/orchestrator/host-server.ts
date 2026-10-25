@@ -81,19 +81,26 @@ export class HostServer {
   constructor() {
     this.server = createServer((req, res) => {
       this.handle(req, res).catch((err) => {
+        // After the headers went out, the connection is all that is left to end.
+        if (res.headersSent) return void res.destroy();
         res.writeHead(500, { 'content-type': 'text/plain' });
         res.end(String(err?.stack ?? err));
       });
     });
     // The runtime's file requests over a WebSocket (host-socket.ts).
+    // One connection's handling never takes the process down: a fault closes that connection only.
     this.server.on('upgrade', (req: IncomingMessage, socket: Duplex) => {
-      const id = this.sandboxOf(req);
-      const adapter = id ? this.sandboxes.get(id) : undefined;
-      if (!id || !adapter?.serve || new URL(req.url ?? '/', 'http://x').pathname !== FILE_CHANNEL_PATH) {
-        socket.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
-        return;
+      try {
+        const id = this.sandboxOf(req);
+        const adapter = id ? this.sandboxes.get(id) : undefined;
+        if (!id || !adapter?.serve || URL.parse(req.url ?? '/', 'http://x')?.pathname !== FILE_CHANNEL_PATH) {
+          socket.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
+        acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!(r));
+      } catch {
+        socket.destroy();
       }
-      acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!(r));
     });
   }
 

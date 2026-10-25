@@ -97,7 +97,9 @@ export function originMatcher(allow: string[]): OriginMatcher {
     if (exact.has(origin)) return true;
     // Opaque origins ("null": data:, blob:, about:) never match.
     if (!/^https?:\/\//.test(origin)) return false;
-    const url = new URL(origin);
+    // Callers pass what a page asked for: an origin that is not a URL matches nothing.
+    const url = URL.parse(origin);
+    if (!url) return false;
     return suffixes.some((s) => url.protocol === `${s.scheme}:` && url.hostname.endsWith(s.suffix) && url.port === '');
   };
 }
@@ -139,10 +141,15 @@ export class EgressGateway {
       await context.route('**/*', async (route) => {
         const req = route.request();
         stats.requests++;
-        if (new URL(req.url()).origin === localOrigin) return route.continue();
-        const answer = await this.answer(req.method(), req.url(), await req.allHeaders(), allowed, stats);
-        if ('abort' in answer) return route.abort(answer.abort).catch(() => {});
-        return await route.fulfill({ status: answer.response.status, headers: answer.response.headers, body: answer.response.body });
+        try {
+          if (new URL(req.url()).origin === localOrigin) return await route.continue();
+          const answer = await this.answer(req.method(), req.url(), await req.allHeaders(), allowed, stats);
+          if ('abort' in answer) return await route.abort(answer.abort);
+          return await route.fulfill({ status: answer.response.status, headers: answer.response.headers, body: answer.response.body });
+        } catch {
+          // the request is gone, or could not be answered: it fails, and nothing else does
+          await route.abort('failed').catch(() => {});
+        }
       });
     } else {
       context.on('request', () => stats.requests++);
@@ -188,7 +195,8 @@ export class EgressGateway {
     allowed: OriginMatcher,
     stats: EgressStats,
   ): Promise<{ abort: 'blockedbyclient' | 'internetdisconnected' | 'failed' } | { response: CachedResponse }> {
-    if (!allowed(new URL(url).origin)) {
+    const origin = URL.parse(url)?.origin;
+    if (!origin || !allowed(origin)) {
       stats.blocked.push({ url, method, reason: 'origin not allowlisted' });
       return { abort: 'blockedbyclient' };
     }
