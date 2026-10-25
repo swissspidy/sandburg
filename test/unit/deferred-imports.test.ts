@@ -57,3 +57,11 @@ test('imports are deferred only in the listed files, and only the listed ones', 
   assert.deepEqual(evaluate(elsewhere, { svgo: {}, other: {} }).loaded, ['svgo', 'other']);
   assert.doesNotMatch(elsewhere, /__sandburgDefer/);
 });
+
+test('every import of a deferred module is deferred (a namespace and a named import)', async () => {
+  const source = `import * as babel from "@babel/core";\nimport { types } from "@babel/core";\nexport const f = () => [babel.version, types.kind];\n`;
+  const out = await transformForRuntime(source, 'node_modules/@vitejs/plugin-vue-jsx/dist/index.mjs', true);
+  const { exports, loaded } = evaluate(out, { '@babel/core': { version: '7', types: { kind: 't' } } });
+  assert.deepEqual(loaded, []);
+  assert.deepEqual((exports.f as () => unknown[])(), ['7', 't']);
+});

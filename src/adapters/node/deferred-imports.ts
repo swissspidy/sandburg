@@ -3,7 +3,9 @@
  * module is loaded at its first use instead (ADR NNNN). Astro's config entry point re-exports the svgo
  * optimizer (svgo, csso, css-tree: ~0.13 s of a warm start, for the `svgOptimizer` option); its fonts
  * plugin imports unifont and capsize (for the `fonts` option); its Markdown processor the MDX
- * compiler, whose import instantiates Sätteri's WebAssembly build (for .mdx files).
+ * compiler, whose import instantiates Sätteri's WebAssembly build (for .mdx files). Nuxt's dev server
+ * loads Babel for Vue's JSX plugin (~0.15 s), every Nitro preset's dependencies (the Azure preset's
+ * archiver), node-forge and youch.
  *
  * Applied to the CommonJS the host's transform makes of an ES module (transformForRuntime): a
  * listed `var import_x = require("…")` becomes a namespace that requires the module when one of its
@@ -14,6 +16,12 @@ export const DEFERRED_IMPORTS: { file: RegExp; specifiers: string[] }[] = [
   { file: /(^|\/)node_modules\/astro\/dist\/assets\/svg\/svgo\.js$/, specifiers: ['svgo'] },
   { file: /(^|\/)node_modules\/astro\/dist\/assets\/fonts\/vite-plugin-fonts\.js$/, specifiers: ['./infra/unifont-font-resolver.js', './infra/capsize-font-metrics-resolver.js'] },
   { file: /(^|\/)node_modules\/@astrojs\/markdown-satteri\/dist\/processor\.js$/, specifiers: ['./mdx/create-processor.js'] },
+  // Nuxt: Vue's JSX plugin compiles .jsx/.tsx with Babel; Nitro's Azure preset zips with archiver,
+  // listhen makes HTTPS certificates with node-forge, and youch renders an error page.
+  { file: /(^|\/)node_modules\/@vitejs\/plugin-vue-jsx\/dist\/index\.mjs$/, specifiers: ['@babel/core', '@vue/babel-plugin-jsx'] },
+  { file: /(^|\/)node_modules\/nitropack\/dist\/presets\/azure\/utils\.mjs$/, specifiers: ['archiver'] },
+  { file: /(^|\/)node_modules\/listhen\/dist\/shared\/listhen\.[\w-]+\.mjs$/, specifiers: ['node-forge'] },
+  { file: /(^|\/)node_modules\/(nitropack\/dist\/runtime\/internal\/error\/dev|@nuxt\/cli\/dist\/dev-[\w-]+)\.mjs$/, specifiers: ['youch'] },
 ];
 
 /**
@@ -40,7 +48,8 @@ export function deferImports(code: string, path: string): string {
   for (const rule of DEFERRED_IMPORTS) {
     if (!rule.file.test(path)) continue;
     for (const spec of rule.specifiers) {
-      const require = new RegExp(`^var (import_\\w+) = ((?:__toESM\\()?require\\(${escape(JSON.stringify(spec))}\\)(?:, 1\\))?);$`, 'm');
+      // Every import of it: \`import * as babel\` and \`import { types }\` from one module are two requires.
+      const require = new RegExp(`^var (\\w+) = ((?:__toESM\\()?require\\(${escape(JSON.stringify(spec))}\\)(?:, 1\\))?);$`, 'gm');
       code = code.replace(require, (_, name: string, load: string) => {
         deferred = true;
         return `var ${name} = __sandburgDefer(() => ${load});`;
