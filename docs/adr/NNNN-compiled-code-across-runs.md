@@ -51,11 +51,6 @@ What Chromium can reuse across contexts (ADR 0028 measured Chromium 141; this ro
     axe-core has loaded. The checks load axe-core from there beside the screenshot and the
     accessibility snapshot, as before; without code (the first run of a session that has none on
     disk yet, a page with a Content-Security-Policy), as before.
-- **node:crypto without crypto-browserify for what most programs use** (`node-runtime/worker.ts`,
-  `libs.ts`). A new runtime library, `node-hash.js` (140 KB: create-hash, create-hmac, randombytes,
-  randomfill), gives node:crypto its hashes, HMACs and random bytes; crypto-browserify's other
-  exports (ciphers, signatures, key exchange, pbkdf2) are getters that load `node-crypto.js` the first
-  time one is read. Vite, Next.js and most dev tools only hash.
 - **The runtime's scripts from disk** (`node-runtime/bundle-cache.ts`). esbuild's output for the
   runtime's script and its libraries is kept in `.sandburg/bundles/` with the digest of every file the
   build read (its metafile), of the package.json of each package those come from, and of the build's
@@ -81,9 +76,10 @@ What Chromium can reuse across contexts (ADR 0028 measured Chromium 141; this ro
   | next-app-router | 4.64 → 4.64 s (+0%) | 1.05 → 0.96 s | 2.57 → 2.54 s | 0.55 → 0.53 s (−4%) |
 
   The checks are shorter in every fixture. The start and ready phases move by ±0.1 s between A/Bs of
-  the same revisions (the single changes' A/Bs at n=4 are in their commit messages: node:crypto's
-  start −6 to −11% for vite-react-counter, lit-vite and next-app-router). None of the five loads
-  crypto-browserify any more (only `node-hash.js`).
+  the same revisions. This series included a node:crypto change (hashes without crypto-browserify;
+  start −6 to −11% for vite-react-counter, lit-vite and next-app-router at n=4), reverted on this
+  branch because perf-runtime-hotpaths does the same; the head side of this table and of the CLI and
+  batch numbers below had it.
 - **A `sandburg run` from the CLI**, end to end, origin/main and the branch each in its own worktree
   (its own `.sandburg/`, warm), interleaved, 7 rounds, medians: `lit-vite` 3.06 → 2.70 s (−12%),
   `node-express` 2.30 → 1.84 s (−20%). Of that, the runtime's scripts from disk: lit-vite 2.60 →
@@ -102,10 +98,6 @@ What Chromium can reuse across contexts (ADR 0028 measured Chromium 141; this ro
   - A session opens one more browser context, once, to produce axe-core's code (~0.2 s of CPU) when
     `.sandburg/code-cache` has none for its browser; `codeCacheDir: null` keeps it in memory only.
     Each tab gets a DevTools session of its own until axe-core has loaded.
-  - node:crypto's hashes, HMACs and random bytes come from `/__sandburg/node-hash.js`; the first read
-    of any other export loads `/__sandburg/node-crypto.js`. A host that serves the runtime itself
-    serves `node-hash.js` next to `node-worker.js` (the static site does), or `require('crypto')`
-    fails.
   - `.sandburg/` holds `code-cache/` (1.3 MB), `bundles/` (2.6 MB) and `node-compile-cache/`
     (1.6 MB) besides the other caches. A new entry replaces the script's entries for other builds
     (another browser, flags, or version of Sandburg).
@@ -138,8 +130,7 @@ What Chromium can reuse across contexts (ADR 0028 measured Chromium 141; this ro
 - Tests: `test/runtime/code-cache.test.ts` (the code is used by another context for its URL only and
   not after the load; code that does not fit is not used; damaged, truncated and junk entries; the
   disk key), `test/unit/bundle-cache.test.ts` (changed inputs, package versions, salt, damaged
-  entries, an unwritable directory), `test/runtime/core.test.ts` (node:crypto loads crypto-browserify
-  only when needed).
+  entries, an unwritable directory).
 
 ## What did not help
 
