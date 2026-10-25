@@ -28,7 +28,7 @@ import type {
 import type { HostApi, RpcResult } from '../host/types.ts';
 import { loadChecks, runChecks, type Checks, type ChecksOutput } from './checks.ts';
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
-import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
+import { EgressGateway, newEgressStats, originMatcher, record, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
 import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { SANDBURG_VERSION } from '../version.ts';
@@ -675,7 +675,7 @@ function recordRequestFailures(context: BrowserContext, run: RunState): void {
   context.on('requestfailed', (req) => {
     const reason = req.failure()?.errorText ?? 'failed';
     if (/ERR_BLOCKED_BY_CLIENT|ERR_ABORTED/.test(reason) || !run.network || run.network.failed.length >= 100) return;
-    run.network.failed.push({ url: req.url(), method: req.method(), reason: `browser: ${reason}` });
+    record(run.network.failed, { url: req.url(), method: req.method(), reason: `browser: ${reason}` });
   });
 }
 

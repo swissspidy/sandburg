@@ -14,7 +14,7 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { connect, isIPv6, type Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
-import type { EgressStats, OriginMatcher } from './egress.ts';
+import { record, type EgressStats, type OriginMatcher } from './egress.ts';
 
 interface Policy {
   allow: OriginMatcher;
@@ -39,7 +39,7 @@ export class EgressProxy {
     this.http = createServer((req, res) => {
       // Plain-HTTP proxying (absolute-URI requests): never allowed.
       const policy = this.policy;
-      policy.stats.blocked.push({ url: req.url ?? '', method: req.method ?? 'GET', reason: 'plain HTTP through the egress proxy is not allowed' });
+      record(policy.stats.blocked, { url: req.url ?? '', method: req.method ?? 'GET', reason: 'plain HTTP through the egress proxy is not allowed' });
       res.writeHead(403);
       res.end();
     });
@@ -75,7 +75,7 @@ export class EgressProxy {
     policy.stats.requests++;
     const target = parseConnectTarget(req.url ?? '');
     if (!target) {
-      policy.stats.blocked.push({ url: (req.url ?? '').slice(0, 300), method: 'CONNECT', reason: 'malformed CONNECT target' });
+      record(policy.stats.blocked, { url: req.url ?? '', method: 'CONNECT', reason: 'malformed CONNECT target' });
       socket.end('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n');
       return;
     }
@@ -84,7 +84,7 @@ export class EgressProxy {
     const origin = port === 443 ? `https://${authority}` : `https://${authority}:${port}`;
     if (!policy.allow(origin) || policy.noTunnels) {
       const reason = !policy.allow(origin) ? 'origin not allowlisted' : 'HTTPS the gateway did not intercept (a popup or frame before its interception)';
-      policy.stats.blocked.push({ url: origin, method: 'CONNECT', reason });
+      record(policy.stats.blocked, { url: origin, method: 'CONNECT', reason });
       socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
       return;
     }
@@ -104,7 +104,7 @@ export class EgressProxy {
         socket.on('error', close);
       })
       .catch((err: Error) => {
-        policy.stats.failed.push({ url: origin, method: 'CONNECT', reason: err.message });
+        record(policy.stats.failed, { url: origin, method: 'CONNECT', reason: err.message });
         socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
       });
   }

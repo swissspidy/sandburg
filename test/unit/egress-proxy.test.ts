@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, connect } from 'node:net';
 import { request } from 'node:http';
 import { EgressProxy, parseConnectTarget } from '../../src/orchestrator/egress-proxy.ts';
-import { newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
+import { MAX_ENTRIES, MAX_URL, newEgressStats, originMatcher, record } from '../../src/orchestrator/egress.ts';
 
 function connectVia(proxyPort: number, target: string): Promise<{ status: string; echo?: string }> {
   return new Promise((resolve, reject) => {
@@ -115,7 +115,7 @@ test('malformed CONNECT targets get a 400 and are recorded, and the proxy keeps 
     // An empty target.
     assert.match(await rawRequest(proxy.port, 'CONNECT  HTTP/1.1\r\nHost: x\r\n\r\n'), / 400 /);
     assert.deepEqual(stats.blocked.map((b) => b.reason), [...malformed, ''].map(() => 'malformed CONNECT target'));
-    assert.ok(stats.blocked.every((b) => b.url.length <= 300));
+    assert.ok(stats.blocked.every((b) => b.url.length <= MAX_URL));
     // An IPv6 literal that is well formed but not allowlisted.
     assert.match((await connectVia(proxy.port, '[::1]:443')).status, / 403 /);
     assert.equal(stats.blocked.at(-1)!.url, 'https://[::1]');
@@ -134,4 +134,23 @@ test('the origin matcher matches nothing for an origin that is not a URL', () =>
   const allow = originMatcher(['https://esm.sh', 'https://*.sandburg.test']);
   for (const origin of ['https://[', 'https://[::1', 'http://a b', 'https://']) assert.equal(allow(origin), false, origin);
   assert.equal(allow('https://a.sandburg.test'), true);
+});
+
+test('a run\'s blocked and failed requests are kept up to MAX_ENTRIES, with URLs up to MAX_URL', async () => {
+  const stats = newEgressStats();
+  const proxy = new EgressProxy(originMatcher([]), stats);
+  await proxy.listen();
+  try {
+    // A page can make blocked requests without end, each with a long URL.
+    const host = `${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.example`;
+    for (let i = 0; i < MAX_ENTRIES + 50; i++) assert.match((await connectVia(proxy.port, `${host}:${1000 + i}`)).status, / 403 /);
+    assert.equal(stats.requests, MAX_ENTRIES + 50);
+    assert.equal(stats.blocked.length, MAX_ENTRIES);
+  } finally {
+    await proxy.close();
+  }
+  const failed: { url: string; method: string; reason: string }[] = [];
+  for (let i = 0; i < MAX_ENTRIES + 1; i++) record(failed, { url: `https://x.test/${'p'.repeat(1 << 20)}`, method: 'GET', reason: 'r'.repeat(1 << 20) });
+  assert.equal(failed.length, MAX_ENTRIES);
+  assert.ok(failed.every((f) => f.url.length === MAX_URL && f.reason.length === MAX_URL));
 });
