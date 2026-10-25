@@ -23,7 +23,7 @@ test('a phase that throws records the error with its name, message, code and sta
 
 test('what a program throws that is not an Error, or a code that is not a string, is recorded as text', async () => {
   const r = run();
-  await assert.rejects(r.phase('start', 1000, () => Promise.reject('exit 1' as unknown as Error)));
+  await assert.rejects(r.phase('start', 1000, () => Promise.reject('exit 1')));
   await assert.rejects(r.phase('ready', 1000, () => Promise.reject(Object.assign(new TypeError('x is not a function'), { code: 42 }))));
   assert.deepEqual(r.phases[0].error, { name: 'Error', message: 'exit 1' });
   assert.equal(r.phases[1].error?.name, 'TypeError');
