@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
-import { chromium, type Browser, type BrowserContext, type Frame, type LaunchOptions, type Page } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Frame, type LaunchOptions, type Page } from 'playwright-core';
 import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
 import type { AdapterDescriptor } from '../types.ts';
 import { classify } from '../classify.ts';
@@ -33,6 +33,7 @@ import { EgressProxy } from './egress-proxy.ts';
 import { HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { SANDBURG_VERSION } from '../version.ts';
 import { SnapshotStore } from '../store.ts';
+import { RendererMemory } from './renderer-memory.ts';
 
 export interface SessionOptions {
   /** Directory for the HTTP cache. Default: .sandburg/cache */
@@ -145,6 +146,12 @@ export interface RunOptions {
   onAppFiles?: (files: FileTree) => void;
   /** Called as each lifecycle phase of the run starts (a batch starts its next app when one reaches its checks). */
   onPhase?: (phase: PhaseName) => void;
+  /**
+   * Called once the run has its tab, with a function that reads the memory its renderer uses now
+   * (bytes; null until the renderer is found, and where its memory cannot be read: not Linux). A
+   * batch's memory guard counts what an app has yet to allocate with it.
+   */
+  onRendererMemory?: (used: () => number | null) => void;
 }
 
 export const DEFAULT_TIMEOUTS: Record<PhaseName | 'check' | 'expect', number> = {
@@ -187,6 +194,8 @@ export class Session {
   private host = new HostServer();
   private egress: EgressGateway;
   readonly store: SnapshotStore;
+  /** The browser's own DevTools session (the renderers' pids and CPU times; see rendererMemory). */
+  private browserCdp: Promise<CDPSession> | null = null;
 
   constructor(options: SessionOptions = {}) {
     this.options = options;
@@ -277,6 +286,34 @@ export class Session {
     }
   }
 
+  /**
+   * The memory of a tab's renderer (see RendererMemory), read from /proc: Linux only. The page's
+   * DevTools session is the tab's own and ends with its context.
+   */
+  private rendererMemory(tab: Tab): RendererMemory | null {
+    const browser = this.browser;
+    if (process.platform !== 'linux' || !browser) return null;
+    let page: Promise<CDPSession> | null = null;
+    return new RendererMemory({
+      pageCpu: async () => {
+        page ??= tab.context.newCDPSession(tab.page).then(async (s) => (await s.send('Performance.enable'), s));
+        const { metrics } = await (await page).send('Performance.getMetrics');
+        const cpu = metrics.find((m) => m.name === 'ProcessTime')?.value;
+        if (cpu === undefined) throw new Error('no ProcessTime');
+        return cpu;
+      },
+      renderers: async () => {
+        this.browserCdp ??= browser.newBrowserCDPSession();
+        const { processInfo } = (await (await this.browserCdp).send('SystemInfo.getProcessInfo')) as { processInfo: { type: string; id: number; cpuTime: number }[] };
+        return processInfo.filter((p) => p.type === 'renderer').map((p) => ({ pid: p.id, cpuSeconds: p.cpuTime }));
+      },
+      release: () => {
+        void page?.then((s) => s.detach()).catch(() => {});
+        page = null;
+      },
+    });
+  }
+
   private async closeTab(tab: Tab): Promise<void> {
     await tab.context.close().catch(() => {});
     await tab.proxy.close();
@@ -292,6 +329,7 @@ export class Session {
     const spare = await this.spare?.catch(() => null);
     this.spare = null;
     if (spare) await this.closeTab(spare);
+    this.browserCdp = null;
     await this.browser?.close();
     await this.host.close();
     await this.egress.close();
@@ -374,6 +412,8 @@ export class Session {
     let context: BrowserContext | null = null;
     let proxy: EgressProxy | null = null;
     let tab: Tab | null = null;
+    let memory: RendererMemory | null = null;
+    let sampler: NodeJS.Timeout | undefined;
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -418,6 +458,21 @@ export class Session {
       if (!options.seed && !options.hold) this.prepareTab(adapter!);
       ({ context, proxy } = tab);
       const { page, origin } = tab;
+      memory = this.rendererMemory(tab);
+      if (memory) {
+        const m = memory;
+        const sample = () => void m.locate().then((found) => found && m.used());
+        // Looked for as the app starts: its renderer holds ~50 MB until then (the host page), and
+        // looking costs the page a little while it mounts and installs. Then its peak is kept.
+        run.onPhase = (phase) => {
+          options.onPhase?.(phase);
+          if (phase !== 'start' || sampler) return;
+          sample();
+          sampler = setInterval(sample, RENDERER_SAMPLE_MS);
+        };
+      }
+      options.onRendererMemory?.(() => memory?.used() ?? null);
+      run.memory = memory;
       run.network = tab.network;
       recordRequestFailures(context, run);
       recordDocuments(context, run);
@@ -473,6 +528,8 @@ export class Session {
       run.skipRemaining();
       return await run.finish(outDir);
     } finally {
+      clearInterval(sampler);
+      memory?.stop();
       if (tab) await this.closeTab(tab);
       else {
         await context?.close().catch(() => {});
@@ -587,6 +644,9 @@ export const PAGE_QUIET_SCRIPT = `(() => {
 const SETTLE_QUIET_MS = 100;
 const SETTLE_LONG_MS = 1_000;
 const SETTLE_MAX_MS = 3_000;
+
+/** How often a run looks for its renderer until found, then reads its memory (for the peak). */
+const RENDERER_SAMPLE_MS = 1_000;
 
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;
@@ -714,6 +774,8 @@ class RunState {
   infraError: { phase: PhaseName; message: string } | null = null;
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];
+  /** The run's renderer, once it has a tab (RunResult.memory). */
+  memory: RendererMemory | null = null;
   private startedAt = new Date();
   private t0 = performance.now();
   private runId: string;
@@ -847,6 +909,8 @@ class RunState {
       network: this.network ?? { requests: 0, cacheHits: 0, cacheMisses: 0, failed: [], blocked: [] },
       artifacts: this.checksOutput?.artifacts ?? {},
     };
+    this.memory?.used(); // a last look, for the peak
+    if (this.memory?.peak) result.memory = { rendererPeakBytes: this.memory.peak };
     if (this.runtimeLogs.length) {
       result.artifacts.runtimeLog = join(outDir, 'runtime.log');
       await writeFile(result.artifacts.runtimeLog, this.runtimeLogs.join('\n') + '\n');
