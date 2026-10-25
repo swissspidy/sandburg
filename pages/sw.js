@@ -47,7 +47,7 @@ const HEADERS = { 'cross-origin-resource-policy': 'same-origin', 'cross-origin-e
  * and then answered from memory, as sw-core.js does for the runtime's worker: a run starts dozens
  * of workers, often while their parent is blocked.
  */
-const RUNTIME_FILES = { 'node-worker.js': 'text/javascript; charset=utf-8', 'node-spare.js': 'text/javascript; charset=utf-8', 'node-crypto.js': 'text/javascript; charset=utf-8', 'node-hash.js': 'text/javascript; charset=utf-8', 'node-wasi.js': 'text/javascript; charset=utf-8', 'node-zlib.js': 'text/javascript; charset=utf-8', 'compile-worker.js': 'text/javascript; charset=utf-8', 'ws-shim.js': 'text/javascript; charset=utf-8', 'sqlite3.js': 'text/javascript; charset=utf-8', 'esbuild.wasm': 'application/wasm', 'sqlite3.wasm': 'application/wasm' };
+const RUNTIME_FILES = { 'node-worker.js': 'text/javascript; charset=utf-8', 'node-spare.js': 'text/javascript; charset=utf-8', 'node-crypto.js': 'text/javascript; charset=utf-8', 'node-wasi.js': 'text/javascript; charset=utf-8', 'node-zlib.js': 'text/javascript; charset=utf-8', 'compile-worker.js': 'text/javascript; charset=utf-8', 'ws-shim.js': 'text/javascript; charset=utf-8', 'sqlite3.js': 'text/javascript; charset=utf-8', 'esbuild.wasm': 'application/wasm', 'sqlite3.wasm': 'application/wasm' };
 const runtimeFiles = new Map();
 async function runtimeFile(name) {
   let body = runtimeFiles.get(name);

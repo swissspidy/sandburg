@@ -132,8 +132,6 @@ const libs = new Map<RuntimeLib, Promise<string>>();
 /** Each library's script: what the runtime takes from the package. */
 const LIB_ENTRY: Record<RuntimeLib, (libs: string) => string> = {
   crypto: (libs) => `(${libs} ??= {}).crypto = require(${JSON.stringify(RUNTIME_LIBS.crypto)});`,
-  // What node:crypto takes without loading crypto-browserify (worker.ts): its hashes and random bytes.
-  hash: (libs) => `const fill = require('randomfill');\n(${libs} ??= {}).hash = { createHash: require('create-hash'), createHmac: require('create-hmac'), randomBytes: require('randombytes'), randomFill: fill.randomFill, randomFillSync: fill.randomFillSync };`,
   zlib: (libs) => `(${libs} ??= {}).zlib = require(${JSON.stringify(RUNTIME_LIBS.zlib)});`,
   // napi-rs' runtime re-exports WASI from @tybys/wasm-util; the rest of it is emnapi, which node:wasi does not use.
   wasi: (libs) => `import { WASI } from '@tybys/wasm-util';\n(${libs} ??= {}).wasi = { WASI };`,
