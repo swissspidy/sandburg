@@ -1036,3 +1036,59 @@ test('stream: Readable.fromWeb of a stream that errors ends in an error event, w
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.equal(out.stdout, 'error broken\ndone\n');
 });
+
+// crypto-browserify's public-key parts share one copy of bn.js and readable-stream 2 in the
+// library's script (bundle-dedupe.ts): their results are Node's.
+test('crypto: ripemd160, ECDH, Diffie-Hellman, RSA sign and encrypt, as in Node', async () => {
+  const nodeCrypto = await import('node:crypto');
+  const { publicKey, privateKey } = nodeCrypto.generateKeyPairSync('rsa', {
+    modulusLength: 1024,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+  });
+  const ecA = '1'.repeat(64);
+  const ecB = '2'.repeat(64);
+  const dh = nodeCrypto.getDiffieHellman('modp2');
+  const [prime, generator] = [dh.getPrime('hex'), dh.getGenerator('hex')];
+  const program = `
+    const crypto = require('crypto');
+    const a = crypto.createECDH('secp256k1'); a.setPrivateKey(${JSON.stringify(ecA)}, 'hex');
+    const b = crypto.createECDH('secp256k1'); b.setPrivateKey(${JSON.stringify(ecB)}, 'hex');
+    const d1 = crypto.createDiffieHellman(${JSON.stringify(prime)}, 'hex', ${JSON.stringify(generator)}, 'hex'); d1.setPrivateKey('05', 'hex'); d1.generateKeys();
+    const d2 = crypto.createDiffieHellman(${JSON.stringify(prime)}, 'hex', ${JSON.stringify(generator)}, 'hex'); d2.setPrivateKey('07', 'hex'); d2.generateKeys();
+    const publicKey = ${JSON.stringify(publicKey)}, privateKey = ${JSON.stringify(privateKey)};
+    const signature = crypto.createSign('RSA-SHA256').update('signed').sign(privateKey, 'hex');
+    console.log(JSON.stringify({
+      ripemd160: crypto.createHash('ripemd160').update('abc').digest('hex'),
+      ecdh: a.computeSecret(b.getPublicKey()).toString('hex'), ecdhPublic: a.getPublicKey('hex'),
+      dh: d1.computeSecret(d2.getPublicKey()).toString('hex'), dhAgree: d1.computeSecret(d2.getPublicKey()).equals(d2.computeSecret(d1.getPublicKey())),
+      signature, verified: crypto.createVerify('RSA-SHA256').update('signed').verify(publicKey, signature, 'hex'),
+      encrypted: crypto.publicEncrypt(publicKey, Buffer.from('secret')).toString('base64'),
+    }));`;
+  const r = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(r.fatal, null, r.fatal ?? '');
+  const got = JSON.parse(r.stdout) as Record<string, unknown>;
+  const ea = nodeCrypto.createECDH('secp256k1');
+  ea.setPrivateKey(ecA, 'hex');
+  const eb = nodeCrypto.createECDH('secp256k1');
+  eb.setPrivateKey(ecB, 'hex');
+  const n1 = nodeCrypto.createDiffieHellman(prime, 'hex', generator, 'hex');
+  n1.setPrivateKey(Buffer.from('05', 'hex'));
+  n1.generateKeys();
+  const n2 = nodeCrypto.createDiffieHellman(prime, 'hex', generator, 'hex');
+  n2.setPrivateKey(Buffer.from('07', 'hex'));
+  n2.generateKeys();
+  assert.deepEqual(
+    { ...got, encrypted: nodeCrypto.privateDecrypt(privateKey, Buffer.from(got.encrypted as string, 'base64')).toString() },
+    {
+      ripemd160: nodeCrypto.createHash('ripemd160').update('abc').digest('hex'),
+      ecdh: ea.computeSecret(eb.getPublicKey()).toString('hex'),
+      ecdhPublic: ea.getPublicKey('hex'),
+      dh: n1.computeSecret(n2.getPublicKey()).toString('hex'),
+      dhAgree: true,
+      signature: nodeCrypto.createSign('RSA-SHA256').update('signed').sign(privateKey, 'hex'),
+      verified: true,
+      encrypted: 'secret',
+    },
+  );
+});

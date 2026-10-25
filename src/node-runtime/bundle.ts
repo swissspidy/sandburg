@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { cachedBuild } from './bundle-cache.ts';
+import { dedupedPath } from './bundle-dedupe.ts';
 import { dirname, join, relative, sep } from 'node:path';
 import { source } from '../sources.ts';
 import { LIBS_KEY, MODULES_KEY, RUNTIME_LIBS, type RuntimeLib } from './libs.ts';
@@ -68,6 +69,21 @@ const aliases: esbuild.Plugin = {
   },
 };
 
+/** A package npm installed more than once at one version is bundled once (bundle-dedupe.ts). */
+const dedupe: esbuild.Plugin = {
+  name: 'dedupe',
+  setup(build) {
+    build.onResolve({ filter: /.*/ }, async (args) => {
+      // An inner resolve (its own, or another plugin's: the outer one is deduplicated) is left as it is.
+      if (args.pluginData !== undefined || args.kind === 'entry-point' || !args.resolveDir.includes(`${sep}node_modules${sep}`)) return undefined;
+      const r = await build.resolve(args.path, { resolveDir: args.resolveDir, kind: args.kind, importer: args.importer, pluginData: 'dedupe' });
+      if (r.errors.length || r.external || r.namespace !== 'file') return undefined;
+      const path = dedupedPath(r.path);
+      return path === r.path ? undefined : { ...r, path };
+    });
+  },
+};
+
 /**
  * esbuild's CommonJS wrapper, as it opens each module of the runtime's script, with the module's path.
  * The runtime's script registers each module under its path, so that a library's script uses the
@@ -83,9 +99,9 @@ let cached: Promise<string> | null = null;
 
 /**
  * What a build's output depends on besides the files it reads: this module (the builds' options,
- * plugins and post-processing) and the libraries' table.
+ * plugins and post-processing), the libraries' table and how packages are deduplicated.
  */
-const BUILD_SALT = [import.meta.url, here('libs.ts')].map((u) => readFileSync(u.startsWith('file:') ? fileURLToPath(u) : u, 'utf8')).join('\0');
+const BUILD_SALT = [import.meta.url, here('libs.ts'), here('bundle-dedupe.ts')].map((u) => readFileSync(u.startsWith('file:') ? fileURLToPath(u) : u, 'utf8')).join('\0');
 
 export function bundleNodeRuntime(): Promise<string> {
   cached ??= cachedBuild('node-worker', BUILD_SALT, ROOT, () => esbuild
@@ -112,6 +128,7 @@ export function bundleNodeRuntime(): Promise<string> {
             build.onResolve({ filter: new RegExp(`^(${names.join('|')})/?$`) }, (args) => ({ errors: [{ text: `${args.path} is a runtime library (RUNTIME_LIBS): load it with runtimeLib()` }] }));
           },
         },
+        dedupe,
         aliases,
       ],
     }), (text) => {
@@ -169,8 +186,9 @@ export function bundleRuntimeLib(name: RuntimeLib): Promise<string> {
                 if (args.pluginData === 'runtime-modules' || args.pluginData === 'sandburg-inner' || args.kind === 'entry-point') return undefined;
                 const r = await build.resolve(args.path, { resolveDir: args.resolveDir, kind: args.kind, importer: args.importer, pluginData: 'runtime-modules' });
                 if (r.errors.length) return undefined; // esbuild's own answer (a require in a try block may fail)
-                const path = relative(ROOT, r.path).split(sep).join('/');
-                return shared.has(path) ? { path, namespace: 'runtime-module' } : r;
+                const file = dedupedPath(r.path);
+                const path = relative(ROOT, file).split(sep).join('/');
+                return shared.has(path) ? { path, namespace: 'runtime-module' } : { ...r, path: file };
               });
               build.onLoad({ filter: /.*/, namespace: 'runtime-module' }, (args) => ({ contents: `module.exports = ${key(MODULES_KEY)}[${JSON.stringify(args.path)}]();`, loader: 'js' }));
             },

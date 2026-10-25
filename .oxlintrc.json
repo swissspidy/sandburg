@@ -182,7 +182,8 @@
       "files": [
         "src/node-runtime/bundle.ts",
         "src/node-runtime/polyfills.d.ts",
-        "src/node-runtime/bundle-cache.ts"
+        "src/node-runtime/bundle-cache.ts",
+        "src/node-runtime/bundle-dedupe.ts"
       ],
       "rules": {
         "eslint/no-restricted-imports": "off"
