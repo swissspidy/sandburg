@@ -62,3 +62,45 @@ test("SolidStart's server functions manifest waits 100 ms for more server functi
   assert.match(out, /\}, 100\);/);
   assert.doesNotMatch(out, /1000/);
 });
+
+// @solidjs/start 2.1's file-system router, as published (dist/config/fs-routes/router.js), without its imports.
+const SOLID_ROUTER = `
+class BaseFileSystemRouter extends EventTarget {
+    routes = [];
+    glob() {
+        return "src/routes/**/*.tsx";
+    }
+    async buildRoutes() {
+        for (var src of glob(this.glob())) {
+            await this.addRoute(src);
+        }
+        return this.routes;
+    }
+    async addRoute(src) {
+        this.routes.push(src);
+        this.reload(src, "add");
+    }
+    reload(route, type) {
+        this.dispatchEvent(new CustomEvent("reload", {
+            detail: {
+                route,
+                type,
+            },
+        }));
+    }
+}
+module.exports = BaseFileSystemRouter;
+`;
+
+test("SolidStart's router tells no one about the routes it lists first, and tells about later changes", async () => {
+  const out = await transformForRuntime(SOLID_ROUTER, 'node_modules/@solidjs/start/dist/config/fs-routes/router.js', false);
+  const module = { exports: {} as new () => EventTarget & { buildRoutes(): Promise<string[]>; addRoute(src: string): Promise<void> } };
+  new Function('module', 'exports', 'glob', out)(module, module.exports, () => ['src/routes/index.tsx', 'src/routes/about.tsx']);
+  const router = new module.exports();
+  const events: string[] = [];
+  router.addEventListener('reload', (e) => events.push((e as CustomEvent<{ route: string; type: string }>).detail.route));
+  assert.deepEqual(await router.buildRoutes(), ['src/routes/index.tsx', 'src/routes/about.tsx']);
+  assert.deepEqual(events, []);
+  await router.addRoute('src/routes/new.tsx');
+  assert.deepEqual(events, ['src/routes/new.tsx']);
+});

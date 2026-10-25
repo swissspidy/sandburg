@@ -328,6 +328,21 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     to: '$1100); // sandburg: see SOURCE_PATCHES',
   },
   {
+    // SolidStart's file-system router lists the routes when its routes module first loads, and told
+    // the dev server each route had just been added: in the client, 200 ms later, a hot update of the
+    // routes module (and of app.tsx) re-rendered the page. A page that had connected to the dev server
+    // by then lost what the checks had typed (1 run in ~20 once runs got faster). The first listing
+    // tells no one; later changes to routes do, as before.
+    file: /(^|\/)node_modules\/@solidjs\/start\/dist\/config\/fs-routes\/router\.js$/,
+    from: /async buildRoutes\(\) \{\n(\s*)for \(var src of glob\(this\.glob\(\)\)\) \{\n\s*await this\.addRoute\(src\);\n\s*\}\n/,
+    to: 'async buildRoutes() {\n$1this.sandburgListing = true; // sandburg: see SOURCE_PATCHES\n$1try {\n$1    for (var src of glob(this.glob())) {\n$1        await this.addRoute(src);\n$1    }\n$1} finally {\n$1    this.sandburgListing = false;\n$1}\n',
+  },
+  {
+    file: /(^|\/)node_modules\/@solidjs\/start\/dist\/config\/fs-routes\/router\.js$/,
+    from: /reload\(route, type\) \{\n(\s*)this\.dispatchEvent\(/,
+    to: 'reload(route, type) {\n$1if (this.sandburgListing) return; // sandburg: see SOURCE_PATCHES\n$1this.dispatchEvent(',
+  },
+  {
     file: /(^|\/)node_modules\/piscina\/dist\/(esm-)?worker\.m?js$/,
     from: /useAtomics = useAtomics !== false && message\.atomics !== 'disabled';/,
     to: "useAtomics = false; // sandburg: no receiveMessageOnPort in the browser runtime",
