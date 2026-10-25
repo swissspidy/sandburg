@@ -11,10 +11,10 @@
  * proxy credentials with a service worker's script fetch.)
  */
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { connect, type Socket } from 'node:net';
+import { connect, isIPv6, type Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
-import type { EgressStats, OriginMatcher } from './egress.ts';
+import { record, type EgressStats, type OriginMatcher } from './egress.ts';
 
 interface Policy {
   allow: OriginMatcher;
@@ -39,11 +39,18 @@ export class EgressProxy {
     this.http = createServer((req, res) => {
       // Plain-HTTP proxying (absolute-URI requests): never allowed.
       const policy = this.policy;
-      policy.stats.blocked.push({ url: req.url ?? '', method: req.method ?? 'GET', reason: 'plain HTTP through the egress proxy is not allowed' });
+      record(policy.stats.blocked, { url: req.url ?? '', method: req.method ?? 'GET', reason: 'plain HTTP through the egress proxy is not allowed' });
       res.writeHead(403);
       res.end();
     });
-    this.http.on('connect', (req, socket, head) => this.onConnect(req, socket, head));
+    // One connection's handling never takes the process down: a fault closes that connection only.
+    this.http.on('connect', (req, socket, head) => {
+      try {
+        this.onConnect(req, socket, head);
+      } catch {
+        socket.destroy();
+      }
+    });
   }
 
   async listen(): Promise<void> {
@@ -65,13 +72,19 @@ export class EgressProxy {
   private onConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     this.track(socket);
     const policy = this.policy;
-    const [host, portText] = (req.url ?? '').split(':');
-    const port = Number(portText || 443);
-    const origin = port === 443 ? `https://${host}` : `https://${host}:${port}`;
     policy.stats.requests++;
-    if (!host || !policy.allow(origin) || policy.noTunnels) {
-      const reason = !host || !policy.allow(origin) ? 'origin not allowlisted' : 'HTTPS the gateway did not intercept (a popup or frame before its interception)';
-      policy.stats.blocked.push({ url: origin, method: 'CONNECT', reason });
+    const target = parseConnectTarget(req.url ?? '');
+    if (!target) {
+      record(policy.stats.blocked, { url: req.url ?? '', method: 'CONNECT', reason: 'malformed CONNECT target' });
+      socket.end('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+    const { host, port } = target;
+    const authority = host.includes(':') ? `[${host}]` : host;
+    const origin = port === 443 ? `https://${authority}` : `https://${authority}:${port}`;
+    if (!policy.allow(origin) || policy.noTunnels) {
+      const reason = !policy.allow(origin) ? 'origin not allowlisted' : 'HTTPS the gateway did not intercept (a popup or frame before its interception)';
+      record(policy.stats.blocked, { url: origin, method: 'CONNECT', reason });
       socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
       return;
     }
@@ -91,7 +104,7 @@ export class EgressProxy {
         socket.on('error', close);
       })
       .catch((err: Error) => {
-        policy.stats.failed.push({ url: origin, method: 'CONNECT', reason: err.message });
+        record(policy.stats.failed, { url: origin, method: 'CONNECT', reason: err.message });
         socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
       });
   }
@@ -103,16 +116,52 @@ export class EgressProxy {
   }
 }
 
+/** The longest CONNECT target taken: a DNS name (253) or a bracketed IPv6 literal, a colon and a port. */
+const MAX_TARGET = 261;
+/** A DNS name: dot-separated labels of letters, digits, '-' and '_' (1-63 characters each). */
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*$/;
+/** A port: decimal, 1-65535, no sign and no leading zero. */
+const PORT = /^[1-9][0-9]{0,4}$/;
+
+/**
+ * A CONNECT request's target (authority form, RFC 9110 9.3.6): `host:port`, with an IPv6 literal in
+ * brackets (`[::1]:443`). Null for anything else, such as a missing or zero-padded port (`host:0443`
+ * is not port 443) or a bracket without its IPv6 literal. The host comes back lowercase, without brackets.
+ */
+export function parseConnectTarget(target: string): { host: string; port: number } | null {
+  if (target.length > MAX_TARGET) return null;
+  const colon = target.lastIndexOf(':');
+  if (colon === -1) return null;
+  const hostText = target.slice(0, colon).toLowerCase();
+  const portText = target.slice(colon + 1);
+  if (!PORT.test(portText)) return null;
+  const port = Number(portText);
+  if (port > 65535) return null;
+  if (hostText.startsWith('[')) {
+    if (!hostText.endsWith(']')) return null;
+    const ip = hostText.slice(1, -1);
+    // Zone IDs (`fe80::1%eth0`) name an interface of this machine: never a target.
+    return isIPv6(ip) && !ip.includes('%') ? { host: ip, port } : null;
+  }
+  return HOSTNAME.test(hostText) ? { host: hostText, port } : null;
+}
+
 /** TCP connection to host:port, through the host's own HTTPS proxy when one is configured. */
 function openUpstream(host: string, port: number): Promise<Socket> {
   const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy;
   if (!proxy || noProxy(host)) return tcp(host, port);
-  const p = new URL(proxy);
+  let p: URL;
+  try {
+    p = new URL(proxy);
+  } catch {
+    return Promise.reject(new Error('HTTPS_PROXY is not a URL'));
+  }
+  const authority = host.includes(':') ? `[${host}]` : host;
   return tcp(p.hostname, Number(p.port || 80)).then(
     (sock) =>
       new Promise<Socket>((resolve, reject) => {
         const auth = p.username ? `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(p.username)}:${decodeURIComponent(p.password)}`).toString('base64')}\r\n` : '';
-        sock.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n${auth}\r\n`);
+        sock.write(`CONNECT ${authority}:${port} HTTP/1.1\r\nHost: ${authority}:${port}\r\n${auth}\r\n`);
         let buf = '';
         const onData = (chunk: Buffer) => {
           buf += chunk.toString('latin1');
@@ -124,7 +173,7 @@ function openUpstream(host: string, port: number): Promise<Socket> {
           sock.pause();
           if (!/^HTTP\/1\.[01] 200/.test(buf)) {
             sock.destroy();
-            reject(new Error(`upstream proxy refused CONNECT ${host}:${port}: ${buf.split('\r\n')[0]}`));
+            reject(new Error(`upstream proxy refused CONNECT ${authority}:${port}: ${buf.split('\r\n')[0]}`));
             return;
           }
           const rest = Buffer.from(buf.slice(end + 4), 'latin1');

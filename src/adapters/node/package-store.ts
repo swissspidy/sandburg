@@ -39,7 +39,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { lstat, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, posix, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { TarReader, type TarFile } from '../../node-runtime/npm/tar.ts';
 
 interface LockEntry {
@@ -89,7 +89,7 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
   if (!lock.packages || (lock.lockfileVersion ?? 1) < 2) return false;
   // Without --omit=optional, npm installs the optional packages that pass its platform checks: npm's.
   if (!omitOptional && Object.values(lock.packages).some((e) => e.optional)) return false;
-  if (Object.entries(lock.packages).some(([location, e]) => location !== '' && (!location.startsWith('node_modules/') || e.link || e.hasShrinkwrap))) return false;
+  if (Object.entries(lock.packages).some(([location, e]) => location !== '' && (!isInstallLocation(location) || e.link || e.hasShrinkwrap))) return false;
   const { installed, omitted } = partition(lock.packages);
   // npm writes no node_modules (nor its hidden lockfile) for an empty tree.
   if (!installed.length && !omitted.length) return true;
@@ -157,6 +157,20 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
     return false;
   }
   return true;
+}
+
+/** A package name's segment: not empty, `.` or `..`, and without separators, NUL or a drive colon. */
+const SEGMENT = String.raw`(?!\.\.?(?:/|$))[^/\\\0:]+`;
+const PACKAGE = String.raw`(?:@${SEGMENT}/)?${SEGMENT}`;
+const LOCATION = new RegExp(String.raw`^node_modules/${PACKAGE}(?:/node_modules/${PACKAGE})*$`);
+
+/**
+ * Whether a lockfile location is a package's place strictly inside the install's node_modules
+ * (`node_modules/a`, `node_modules/@s/a/node_modules/b`): never `..`, `.`, an empty segment, an
+ * absolute path or a backslash, which would put files outside it.
+ */
+export function isInstallLocation(location: string): boolean {
+  return location.length <= 4096 && LOCATION.test(location);
 }
 
 interface Lockfile {
@@ -454,6 +468,10 @@ async function unpack(job: Job): Promise<void> {
       path = npmignore;
     }
     const abs = join(tmp, path);
+    // The reader drops `..` and absolute names; a separator of this platform in a name (`\` on
+    // Windows) must not lead out either.
+    const inside = relative(tmp, abs);
+    if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return;
     const parent = dirname(abs);
     if (!made.has(parent)) {
       mkdirSync(parent, { recursive: true });

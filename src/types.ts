@@ -82,13 +82,26 @@ export interface HostInstallOptions {
   runSeed?(project: Project, checks: unknown): Promise<void>;
   /** Where dependencies are installed: by npm on the host (default), or in the browser (opt-in). */
   installIn?: 'host' | 'browser';
+  /**
+   * The sandbox (HostServer id) the run's page is in, once its tab is known. Write capabilities the
+   * install issues to the run are bound to it (HostRequest.sandbox).
+   */
+  sandbox?: Promise<string>;
 }
 
 export interface HostRequest {
   method: string;
   path: string;
   query: URLSearchParams;
-  body(): Promise<Buffer>;
+  /** The sandbox the request came from (by its origin), set by the host server. */
+  sandbox?: string;
+  /** Request headers, lowercase names. */
+  headers?: Record<string, string | undefined>;
+  /**
+   * The request's body, at most `max` bytes (the host server's default, BODY_MAX, without one): a
+   * larger one is refused with a 413 as soon as its Content-Length or the bytes received exceed it.
+   */
+  body(max?: number): Promise<Buffer>;
   /** The file channel (one per runtime and its threads) the request came on; absent over HTTP. */
   channel?: object;
 }
