@@ -431,9 +431,19 @@ export function splitModule(fromPath: string, toPath: string, names: string[], d
     .map((f) => resolve(ROOT, f))
     .filter((f) => f !== from && f !== to);
   const importers: string[] = [];
+  const dynamicImporters: string[] = [];
   for (const file of repoFiles) {
     const text = readFileSync(file, 'utf8');
     if (!text.includes(basename(from))) continue;
+    // A file that imports the source with import() (a test that sets the environment first) may use
+    // any moved name it mentions: those stay exported, and the file is named for its author to update.
+    const dynamic = [...text.matchAll(/\bimport\(\s*(['"])([^'"]+)\1\s*\)/g)].some((m) => resolveImport(file, m[2]) === from);
+    if (dynamic) {
+      // As a property of the module (`node.name`) or destructured from it (`{ a, name } = await import(…)`).
+      const mentioned = [...movedNames].filter((n) => new RegExp(`\\.${n.replace(/\$/g, '\\$')}\\b|[{,]\\s*${n.replace(/\$/g, '\\$')}\\s*[,}:]`).test(text));
+      for (const n of mentioned) usedOutside.add(n);
+      if (mentioned.length) dynamicImporters.push(`${relative(ROOT, file)} (${mentioned.join(', ')})`);
+    }
     const { body: b } = parse(file, text);
     for (const imp of imports(b)) {
       if (resolveImport(file, imp.source) !== from) continue;
@@ -510,6 +520,7 @@ export function splitModule(fromPath: string, toPath: string, names: string[], d
     writeFileSync(file, mergeImport(text, file, add, relImport(file, to)));
   }
   console.log(`${relative(ROOT, from)} → ${relative(ROOT, to)}: ${[...found].join(', ')}${importers.length ? ` (importers: ${importers.map((f) => relative(ROOT, f)).join(', ')})` : ''}`);
+  if (dynamicImporters.length) console.log(`  import()ed from: ${dynamicImporters.join('; ')}: they take these from ${relative(ROOT, to)} now`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
