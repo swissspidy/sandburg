@@ -12,7 +12,7 @@
  * properties is first read. Only the time the module is evaluated changes: modules listed here
  * have no side effects at evaluation that the importer relies on.
  */
-export const DEFERRED_IMPORTS: { file: RegExp; specifiers: string[] }[] = [
+const DEFERRED_IMPORTS: { file: RegExp; specifiers: string[] }[] = [
   { file: /(^|\/)node_modules\/astro\/dist\/assets\/svg\/svgo\.js$/, specifiers: ['svgo'] },
   { file: /(^|\/)node_modules\/astro\/dist\/assets\/fonts\/vite-plugin-fonts\.js$/, specifiers: ['./infra/unifont-font-resolver.js', './infra/capsize-font-metrics-resolver.js'] },
   { file: /(^|\/)node_modules\/@astrojs\/markdown-satteri\/dist\/processor\.js$/, specifiers: ['./mdx/create-processor.js'] },
