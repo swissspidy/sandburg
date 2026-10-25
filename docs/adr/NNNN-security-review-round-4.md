@@ -52,8 +52,16 @@ and the host must hold against, each of these:
   fails the install as unsupported, as the browser installer already refuses (ADR 0018). The check is
   an allowlist of shapes, not a denylist of prefixes: a registry range is built from semver's own
   characters, so a spec with a `:` or a `/` outside an alias name, or a bare `.`/`..`, is not one
-  whatever it looks like. As a second layer, npm's `git` binary is pointed at a path that does not
-  exist, so a git dependency a registry package pulls in transitively cannot be cloned either.
+  whatever it looks like. The same check requires a lockfile's `resolved` tarball URLs to be on npm's
+  configured registry origin (the public registry by default) — any other host would be fetched by
+  `npm cache add` or by npm during the install — and rejects a `link` entry or a package whose declared
+  dependency ranges include a non-registry spec. It runs on the project's own lockfile and again, after
+  resolution, on the tree npm resolved, so a git, directory or off-registry dependency a registry
+  package pulls in transitively is refused before any package is unpacked or the full npm install
+  fetches it. The resolver worker rejects a non-registry dependency before pacote fetches its manifest
+  (which for a git or remote dependency is the clone or the tarball itself), so resolution never
+  reaches that host; and npm's `git` binary is pointed at a path that does not exist, so a transitive
+  git dependency cannot be cloned even on the CLI fallback path.
 
 - **The host's app-driven parsers are fuzzed** (`test/unit/parser-fuzz.test.ts`). The file channel's
   WebSocket frame reader runs in the `upgrade` handler's `data` listener, outside any try/catch, so a
@@ -66,7 +74,7 @@ and the host must hold against, each of these:
 
 | Boundary | Enforced in | Tested by |
 |---|---|---|
-| The host installs registry packages only (no git/dir/URL/file prepare on the host) | `spec-guard.ts`, `install.ts` | `unit/spec-guard` (the allowlist, manifest, overrides, v1/v3 lockfiles), `unit/install-specs` (the Installer refuses git/file/URL deps and a non-registry lockfile, writing nothing) |
+| The host installs registry packages only (no git/dir/URL/file prepare on the host) | `spec-guard.ts`, `install.ts`, `resolver.ts` | `unit/spec-guard` (the allowlist, manifest, overrides, v1/v3 lockfiles, registry-host resolved URLs), `unit/install-specs` (the Installer refuses git/file/URL deps and a non-registry lockfile, writing nothing), `unit/install-transitive` (a registry package's off-registry-tarball dep refused during resolution with no request to that host; its file: dep refused by the resolved-tree check; resolved URLs off the registry host refused) |
 | The file channel frame reader never crashes the host | `host-socket.ts` `readFrames` | `unit/parser-fuzz` (mutation fuzzing across chunk boundaries), `unit/host-socket` |
 | CONNECT targets parse to a bracketless host and a valid port, or nothing | `egress-proxy.ts` `parseConnectTarget` | `unit/parser-fuzz` (mutation fuzzing of the target), `unit/egress-proxy` |
 
@@ -107,7 +115,11 @@ Each has a fast fixed-seed unit test and was run longer by hand while writing it
 
 npm runs with `--ignore-scripts`, so the project's lifecycle scripts do not run on the host. The
 registry-only rule above closes the remaining way package *contents* could run code on the host (git
-and directory dependency preparation). Tarball unpacking keeps entries inside the package (ADR 0040
+and directory dependency preparation), transitively as well as at the top level, and keeps every fetch
+on the configured registry host. The in-browser installer (`src/node-runtime/npm`) was reviewed and
+already holds: it refuses non-registry specs (transitive ones included) and ignores a lockfile's
+`resolved` URL unless it is on `registry.npmjs.org`, re-resolving from the packument otherwise. Tarball
+unpacking keeps entries inside the package (ADR 0040
 F5) and verifies integrity before a package enters the store; bin links are normalized to stay inside
 the package (ADR 0032, 0043). Case-insensitive name clashes and `exports`/symlink handling were
 reviewed and are npm's own, over integrity-checked registry tarballs.
@@ -115,9 +127,11 @@ reviewed and are npm's own, over integrity-checked registry tarballs.
 ## Consequences
 
 - A project that declares a git, directory, URL or `file:`/`link:`/`workspace:` dependency, in its
-  `package.json`/`overrides` or its lockfile, now fails the install as `runtime-unsupported` (as the
-  browser installer already reported it) instead of the host cloning or reading it. No fixture or
-  corpus project uses such a spec.
+  `package.json`/`overrides` or its lockfile, or pulls one in transitively through a registry package,
+  now fails the install as `runtime-unsupported` (as the browser installer already reported it)
+  instead of the host cloning, fetching or reading it. A lockfile `resolved` on a host other than the
+  configured registry is refused. No fixture or corpus project uses such a spec (verified: e2e node,
+  run and browser-install all pass).
 - `INSTALL_FLAGS` gains `--git=<nonexistent>`; npm accepts it and a normal registry install is
   unchanged.
 - No run's speed changes: the spec check is a handful of regex tests over the manifest and lockfile
