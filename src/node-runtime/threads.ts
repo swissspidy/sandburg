@@ -10,28 +10,9 @@
  */
 import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, parent, type VStat } from './vfs.ts';
-import { adoptMailboxes, mailboxesFor, receiveMessageOnPort, type Mailbox } from './message-ports.ts';
+import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
-import type { ToParent, VfsCall } from './messages.ts';
-import type { ToWorker } from './worker.ts';
-
-/** How a thread started: what its parent passed (worker.ts init message). */
-export interface ThreadInit {
-  id: number;
-  workerData: unknown;
-  env: Record<string, string>;
-  argv: string[];
-  /** The thread's entry script; it starts right after init (the parent may be blocked meanwhile). */
-  main: string;
-  /** The project's files when the thread started (see projectSnapshot): reads of them while they are unchanged, and while the parent is blocked. */
-  snapshot?: ProjectSnapshot | Record<string, Uint8Array>;
-  /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
-  mailboxes?: (Mailbox | null)[];
-  /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
-  process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
-  /** A thread (at any depth) of the app's own process, not of a child process (see WASM_CRASH_CHANNEL). */
-  mainProcess?: boolean;
-}
+import type { ToParent, VfsCall, ThreadInit, VfsOp, ProjectSnapshot, ToWorker } from './messages.ts';
 
 /**
  * Where a thread of the app's own process reports a WebAssembly trap to the page directly: its
@@ -41,7 +22,6 @@ export const WASM_CRASH_CHANNEL = 'sandburg-wasm-thread-crash';
 
 // --- the shared VFS ----------------------------------------------------------------------
 
-export type VfsOp = 'exists' | 'stat' | 'read' | 'write' | 'writeAt' | 'mkdir' | 'readdir' | 'unlink' | 'rmdir' | 'rename';
 const HEADER = 16;
 const READ_OPS = new Set<VfsOp>(['exists', 'stat', 'read', 'readdir']);
 /** How long a thread waits for its parent before reading from its snapshot instead. */
@@ -357,21 +337,6 @@ const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.angular|\.next|\.nuxt|\.output|
 /** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
 const WRITTEN_DIRS = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)(?:\/|$)|\/(?:\.angular|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
 const SNAPSHOT_MAX_FILE = 4 << 20;
-/**
- * The project's files as a thread starts: their bytes, and the parent's stats and directory listings
- * of everything under the project's root but caches, build output and node_modules (SNAPSHOT_SKIP),
- * and of the directories above it. `stale` is raised in shared memory once anything it covers
- * changes in the parent (a file written, made, removed or renamed, or a directory's listing): until
- * then a thread answers reads of those paths from it, as the parent would (ThreadVfs.answerExactly).
- * Installed packages are registered (Vfs.addRemote, which no watcher sees) before any thread starts.
- */
-export interface ProjectSnapshot {
-  root: string;
-  files: Record<string, Uint8Array>;
-  stats: Record<string, VStat>;
-  dirs: Record<string, string[]>;
-  stale: Int32Array;
-}
 
 function isProjectSnapshot(s: unknown): s is ProjectSnapshot {
   return !!s && (s as { stale?: unknown }).stale instanceof Int32Array;
