@@ -205,7 +205,7 @@ test('large or await-dense code is lowered at once, not scanned (the host compil
   assert.ok(performance.now() - t0 < 15_000, `${(performance.now() - t0).toFixed(0)} ms`);
 });
 
-test("a wrapped for-of iterable: arrays, Sets and Maps pass through, anything whose iterator can close is wrapped", async () => {
+test('a wrapped for-of iterable: built-in iterables and iterators pass through, anything whose iterator can close is wrapped', async () => {
   // The rewrite wraps the iterable of a for-of loop whose body is not in braces (awaitContext.i):
   // only an iterator with a return() needs it, so the built-ins V8 has fast paths for pass through.
   const { awaitContext } = await import('../../src/node-runtime/async-context.ts');
@@ -213,11 +213,28 @@ test("a wrapped for-of iterable: arrays, Sets and Maps pass through, anything wh
   const arr = [1, 2];
   const set = new Set([1]);
   const map = new Map([[1, 2]]);
-  for (const xs of [arr, set, map]) assert.equal(awaitContext.i(st, xs as Iterable<unknown>), xs);
-  // A generator (its finally may run on an early exit) and a string (no fast path here) are wrapped.
+  const typed = new Uint8Array([1, 2]);
+  const plain = (): [string, Iterable<unknown>][] => [
+    ['array', arr],
+    ['Set', set],
+    ['Map', map],
+    ['string', 'ab'],
+    ['typed array', typed],
+    ['map.entries()', map.entries()],
+    ['map.values()', map.values()],
+    ['set.values()', set.values()],
+    ['arr.entries()', arr.entries()],
+    ["string's iterator", 'ab'[Symbol.iterator]()],
+  ];
+  for (const [name, xs] of plain()) assert.equal(awaitContext.i(st, xs), xs, name);
+  // A generator (its finally may run on an early exit), an iterator helper (it has a return()) and
+  // an iterator with a return() of its own are wrapped.
   const gen = (function* () {})();
   assert.notEqual(awaitContext.i(st, gen), gen);
-  assert.notEqual(awaitContext.i(st, 'ab'), 'ab');
+  const helper = (arr.values() as unknown as { map(f: (x: number) => number): Iterable<unknown> }).map((x) => x);
+  assert.notEqual(awaitContext.i(st, helper), helper);
+  const closing = Object.assign(arr.values(), { return: () => ({ done: true, value: undefined }) });
+  assert.notEqual(awaitContext.i(st, closing), closing);
   // Something for-of would refuse is passed on, so for-of throws its own error.
   const notIterable = {} as Iterable<unknown>;
   assert.equal(awaitContext.i(st, notIterable), notIterable);
@@ -234,27 +251,39 @@ test("a wrapped for-of iterable: arrays, Sets and Maps pass through, anything wh
   }
   const sub = new Sub();
   assert.notEqual(awaitContext.i(st, sub), sub);
-  // A return() on the iterator prototype (even one that cannot be read without calling a getter)
-  // takes an array off the fast path.
-  for (const descriptor of [{ value: () => ({ done: true }) }, { get: () => () => ({ done: true }) }]) {
-    const proto = Object.getPrototypeOf([][Symbol.iterator]()) as object;
-    Object.defineProperty(proto, 'return', { configurable: true, ...descriptor });
-    try {
-      assert.notEqual(awaitContext.i(st, arr), arr);
-    } finally {
-      delete (proto as { return?: unknown }).return;
+  // A return() on a built-in iterator prototype, or on %IteratorPrototype% under them all (even one
+  // that cannot be read without calling a getter), takes what iterates with it off the fast path.
+  const prototypes: [string, object, string[]][] = [
+    ['%ArrayIteratorPrototype%', Object.getPrototypeOf([][Symbol.iterator]()) as object, ['array', 'typed array', 'arr.entries()']],
+    ['%SetIteratorPrototype%', Object.getPrototypeOf(new Set()[Symbol.iterator]()) as object, ['Set', 'set.values()']],
+    ['%MapIteratorPrototype%', Object.getPrototypeOf(new Map()[Symbol.iterator]()) as object, ['Map', 'map.entries()', 'map.values()']],
+    ['%StringIteratorPrototype%', Object.getPrototypeOf(''[Symbol.iterator]()) as object, ['string', "string's iterator"]],
+    ['%IteratorPrototype%', Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())) as object, plain().map(([name]) => name)],
+  ];
+  for (const [protoName, proto, affected] of prototypes) {
+    for (const descriptor of [{ value: () => ({ done: true }) }, { get: () => () => ({ done: true }) }]) {
+      Object.defineProperty(proto, 'return', { configurable: true, ...descriptor });
+      try {
+        for (const [name, xs] of plain()) {
+          const kept = awaitContext.i(st, xs) === xs;
+          assert.equal(kept, !affected.includes(name), `${name}, with a return() on ${protoName} (${'get' in descriptor ? 'a getter' : 'a value'})`);
+        }
+      } finally {
+        delete (proto as { return?: unknown }).return;
+      }
     }
-    assert.equal(awaitContext.i(st, arr), arr);
   }
+  for (const [name, xs] of plain()) assert.equal(awaitContext.i(st, xs), xs, `${name}, once restored`);
 });
 
 test('a wrapped for-of iterable reads Symbol.iterator, next and return as for-of itself does', async () => {
   const { awaitContext } = await import('../../src/node-runtime/async-context.ts');
   const st = awaitContext.e();
   // Node: Symbol.iterator once per loop, next once per loop (the method, then called per step),
-  // return only when the loop ends early.
+  // return only when the loop ends early (a break, a throw from the body, a rejected await in it),
+  // and called once then.
   const counts = () => {
-    const reads = { iterator: 0, next: 0, return: 0 };
+    const reads = { iterator: 0, next: 0, return: 0, closed: 0 };
     let i = 0;
     const iterator = {
       get next() {
@@ -263,7 +292,10 @@ test('a wrapped for-of iterable reads Symbol.iterator, next and return as for-of
       },
       get return() {
         reads.return++;
-        return () => ({ done: true, value: undefined });
+        return () => {
+          reads.closed++;
+          return { done: true, value: undefined };
+        };
       },
     };
     const iterable = {
@@ -275,12 +307,24 @@ test('a wrapped for-of iterable reads Symbol.iterator, next and return as for-of
     return { reads, iterable: iterable as Iterable<unknown> };
   };
   for (const wrap of [false, true]) {
+    const as = wrap ? 'wrapped' : 'as it is';
+    const loop = (iterable: Iterable<unknown>) => (wrap ? awaitContext.i(st, iterable) : iterable);
     const whole = counts();
-    for (const _ of wrap ? awaitContext.i(st, whole.iterable) : whole.iterable) { /* to the end */ }
+    for (const _ of loop(whole.iterable)) { /* to the end */ }
+    assert.deepEqual(whole.reads, { iterator: 1, next: 1, return: 0, closed: 0 }, `to the end, ${as}`);
     const early = counts();
-    for (const _ of wrap ? awaitContext.i(st, early.iterable) : early.iterable) break;
-    assert.deepEqual(whole.reads, { iterator: 1, next: 1, return: 0 }, `whole, ${wrap ? 'wrapped' : 'as it is'}`);
-    assert.deepEqual(early.reads, { iterator: 1, next: 1, return: 1 }, `early, ${wrap ? 'wrapped' : 'as it is'}`);
+    for (const _ of loop(early.iterable)) break;
+    assert.deepEqual(early.reads, { iterator: 1, next: 1, return: 1, closed: 1 }, `break, ${as}`);
+    const thrown = counts();
+    assert.throws(() => {
+      for (const _ of loop(thrown.iterable)) throw new Error('from the body');
+    }, /from the body/);
+    assert.deepEqual(thrown.reads, { iterator: 1, next: 1, return: 1, closed: 1 }, `a throw from the body, ${as}`);
+    const rejected = counts();
+    await assert.rejects(async () => {
+      for (const _ of loop(rejected.iterable)) await Promise.reject(new Error('rejected'));
+    }, /rejected/);
+    assert.deepEqual(rejected.reads, { iterator: 1, next: 1, return: 1, closed: 1 }, `a rejected await, ${as}`);
   }
 });
 

@@ -57,20 +57,55 @@ interface AwaitState {
 }
 
 /**
- * Built-in iterables whose iterators have no return(), with their own iterator method as the runtime
- * started: for-of over one of them is passed on as it is, keeping V8's fast paths. `in` rather than a
- * read: a `return` added to one of those prototypes may be a getter, which for-of would not call.
+ * Built-in iterables and iterators whose iterators have no return(), with their own iterator method as
+ * the runtime started: for-of over one of them is passed on as it is, keeping V8's fast paths. `in`
+ * rather than a read: a `return` added to one of those prototypes (or to %IteratorPrototype%, or to
+ * an iterator itself) may be a getter, which for-of would not call.
  */
+const iteratorPrototypeOf = (x: Iterable<unknown>) => Object.getPrototypeOf(x[Symbol.iterator]()) as object;
+const ARRAY_ITERATOR = iteratorPrototypeOf([]);
+const SET_ITERATOR = iteratorPrototypeOf(new Set());
+const MAP_ITERATOR = iteratorPrototypeOf(new Map());
+const STRING_ITERATOR = iteratorPrototypeOf('');
 const arrayValues = Array.prototype[Symbol.iterator];
 const setValues = Set.prototype[Symbol.iterator];
 const mapEntries = Map.prototype[Symbol.iterator];
-const iteratorPrototypes = [[], new Set(), new Map()].map((x) => Object.getPrototypeOf(x[Symbol.iterator]()) as object);
+const stringValues = String.prototype[Symbol.iterator];
+const typedArrayValues = (Object.getPrototypeOf(Uint8Array.prototype) as Iterable<unknown>)[Symbol.iterator];
+/** %IteratorPrototype%[@@iterator]: a built-in iterator's own Symbol.iterator, which returns the iterator. */
+const iteratorSelf = (Object.getPrototypeOf(ARRAY_ITERATOR) as Iterable<unknown>)[Symbol.iterator];
 
 /** Whether for-of over `iterable` (whose Symbol.iterator is `values`) needs no wrapper. */
 function plainIterable(iterable: Iterable<unknown>, values: unknown): boolean {
-  const kind = values === arrayValues ? 0 : values === setValues ? 1 : values === mapEntries ? 2 : -1;
-  if (kind < 0 || 'return' in iteratorPrototypes[kind]) return false;
-  return kind === 0 ? Array.isArray(iterable) : kind === 1 ? iterable instanceof Set : iterable instanceof Map;
+  if (values === iteratorSelf) {
+    // A built-in iterator itself (`map.entries()`, `arr.entries()`, `set.values()`).
+    const proto = Object.getPrototypeOf(iterable) as object;
+    return (proto === ARRAY_ITERATOR || proto === MAP_ITERATOR || proto === SET_ITERATOR || proto === STRING_ITERATOR) && !('return' in iterable);
+  }
+  if (values === arrayValues) return Array.isArray(iterable) && !('return' in ARRAY_ITERATOR);
+  if (values === mapEntries) return iterable instanceof Map && !('return' in MAP_ITERATOR);
+  if (values === setValues) return iterable instanceof Set && !('return' in SET_ITERATOR);
+  if (values === stringValues) return typeof iterable === 'string' && !('return' in STRING_ITERATOR);
+  if (values === typedArrayValues) return ArrayBuffer.isView(iterable) && !(iterable instanceof DataView) && !('return' in ARRAY_ITERATOR);
+  return false;
+}
+
+/** An iterable whose iterator is `iterable`'s, with a return() that restores the call's context first. */
+function closingIterable(st: AwaitState, iterable: Iterable<unknown>, values: () => Iterator<unknown>): Iterable<unknown> {
+  return {
+    [Symbol.iterator]: () => {
+      const it = values.call(iterable);
+      const next = it.next;
+      return {
+        next: () => next.call(it),
+        return() {
+          awaitContext.k(st);
+          const close = it.return;
+          return close === undefined || close === null ? { done: true, value: undefined } : close.call(it);
+        },
+      };
+    },
+  };
 }
 
 /** What rewritten awaits call (await-context.ts explains the calls). */
@@ -103,28 +138,18 @@ export const awaitContext = {
   /**
    * The iterable of a for-of loop whose body is not in braces (or whose binding awaits): its
    * iterator, whose return() (a generator's finally, an iterator's cleanup) restores the function's
-   * context first when a rejected await unwinds the loop. Arrays, Sets and Maps with their own
-   * iterators, which have no return(), are passed on untouched, keeping V8's fast paths; so is
+   * context first when a rejected await unwinds the loop. Arrays, typed arrays, Sets, Maps and
+   * strings with their own iterators, and those built-in iterators themselves (`map.entries()`),
+   * have no return() and are passed on untouched, keeping V8's fast paths; so is
    * anything for-of would refuse (it throws its own error then). As for-of does, this reads
    * Symbol.iterator once, `next` once per loop and `return` only when the loop ends early.
    */
   i(st: AwaitState, iterable: Iterable<unknown>): Iterable<unknown> {
+    // Small, so that V8 inlines it into the loop (and an iterator made for the loop, `map.entries()`,
+    // stays unallocated): the wrapper is made apart.
     const values = (iterable as { [Symbol.iterator]?: unknown } | null | undefined)?.[Symbol.iterator];
     if (typeof values !== 'function' || plainIterable(iterable, values)) return iterable;
-    return {
-      [Symbol.iterator]: () => {
-        const it = (values as () => Iterator<unknown>).call(iterable);
-        const next = it.next;
-        return {
-          next: () => next.call(it),
-          return() {
-            awaitContext.k(st);
-            const close = it.return;
-            return close === undefined || close === null ? { done: true, value: undefined } : close.call(it);
-          },
-        };
-      },
-    };
+    return closingIterable(st, iterable, values as () => Iterator<unknown>);
   },
 };
 
