@@ -8,6 +8,7 @@
  * seed run (ADR 0041).
  */
 import type { Vfs } from './vfs.ts';
+import { bundleHead } from '../bundle-format.ts';
 
 /** Files this large are left out (as they were from the text form). */
 const FILE_MAX = 64 << 20;
@@ -46,11 +47,10 @@ export function bundleCache(vfs: Vfs, root: string, entries: CacheEntry[]): Arra
       // removed since
     }
   }
-  const header = new TextEncoder().encode(JSON.stringify(files.map(([path, bytes]) => ['f', path, bytes.length])));
-  const out = new Uint8Array(4 + header.length + files.reduce((n, [, bytes]) => n + bytes.length, 0));
-  new DataView(out.buffer).setUint32(0, header.length, true);
-  out.set(header, 4);
-  let at = 4 + header.length;
+  const head = bundleHead(files.map(([path, bytes]) => ['f', path, bytes.length]));
+  const out = new Uint8Array(head.length + files.reduce((n, [, bytes]) => n + bytes.length, 0));
+  out.set(head);
+  let at = head.length;
   for (const [, bytes] of files) {
     out.set(bytes, at);
     at += bytes.length;

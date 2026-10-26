@@ -7,6 +7,7 @@
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
 import { MAILBOX_BYTES, MAX_FRAME } from '../file-channel.ts';
+import { bundleHeader } from '../bundle-format.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
 let installedRequests = 0;
@@ -55,11 +56,9 @@ export function prefetchedBody(url: string): Uint8Array | null {
 }
 
 export function bundleFiles(bytes: Uint8Array): [string, Uint8Array, string][] {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const length = view.getUint32(0, true);
-  const header = JSON.parse(new TextDecoder().decode(bytes.slice(4, 4 + length))) as [string, string, number][];
+  const { header, body } = bundleHeader<[string, string, number]>(bytes);
   const files: [string, Uint8Array, string][] = [];
-  let at = 4 + length;
+  let at = body;
   for (const [mode, rel, size] of header) {
     // A negative size names a file that is not in the bundle (see downloadOnSide).
     if (size < 0) {
@@ -249,10 +248,9 @@ export function loadCompiles(into: Map<string, string>, asyncModules: boolean): 
     const res = requestSync(compileCache.bundle, true);
     if (res.status !== 200) return;
     const bytes = res.body as Uint8Array;
-    const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
     const decoder = new TextDecoder();
-    const header = JSON.parse(decoder.decode(bytes.subarray(4, 4 + length))) as [string, number, string, number, number][];
-    let at = 4 + length;
+    const { header, body } = bundleHeader<[string, number, string, number, number]>(bytes);
+    let at = body;
     for (const [kind, async, path, codeLength, outLength] of header) {
       // The same key as hostCompile's; compiled as an async module or not, as this runtime would ask.
       if (!!async === (asyncModules && kind !== 'cjs')) into.set(`${kind}:${path}\0${decoder.decode(bytes.subarray(at, at + codeLength))}`, decoder.decode(bytes.subarray(at + codeLength, at + codeLength + outLength)));

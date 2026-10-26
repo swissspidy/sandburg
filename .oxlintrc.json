@@ -174,7 +174,8 @@
         "src/adapters/node/ws-shim.js",
         "src/transfer-trace.ts",
         "src/file-channel.ts",
-        "src/framework.ts"
+        "src/framework.ts",
+        "src/bundle-format.ts"
       ],
       "rules": {
         "eslint/no-restricted-imports": [

@@ -13,6 +13,7 @@ import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-npm/install.ts';
 import { Registry } from './browser-npm/registry.ts';
 import { UnsupportedSpecError } from './browser-npm/resolve.ts';
+import { bundleHeader } from '../../bundle-format.ts';
 
 export interface HostInstall {
   key: string;
@@ -120,9 +121,8 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 /** The files of a cache's bundle (readCache), as [path, bytes] (views of the bundle). */
 function bundleFiles(bundle: ArrayBuffer): [string, Uint8Array][] {
-  const length = new DataView(bundle).getUint32(0, true);
-  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(bundle, 4, length))) as [string, string, number][];
-  let at = 4 + length;
+  const { header, body } = bundleHeader<[string, string, number]>(new Uint8Array(bundle));
+  let at = body;
   return header.map(([, path, size]) => [path, new Uint8Array(bundle, (at += size) - size, size)]);
 }
 

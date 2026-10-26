@@ -67,7 +67,8 @@ gone, so that the list only shrinks.
 | the page and a runtime; a runtime and its threads | postMessage | node-runtime/messages.ts (`ToWorker`, `FromWorker`, `ToParent`) |
 | the service worker and the page | a MessagePort | adapters/sw-bridge.ts (`BridgedRequest`, `BridgeReply`) |
 | a runtime and the host | HTTP under /__sandburg/ | the adapter's `serve()` (adapters/node/index.ts) |
-| a runtime's helper and the host | the file channel (WebSocket) | host-socket.ts and host-files.ts |
+| a runtime's helper and the host | the file channel (WebSocket) | src/file-channel.ts (its format and bounds; ends: host-socket.ts, host-files.ts) |
+| whoever writes a bundle of files and whoever reads it | a header and bodies | src/bundle-format.ts (preload, read-ahead and files bundles, dev caches, compiles, cache snapshots) |
 | the host and the app's frame | the page checks | page-checks/types.ts |
 
 The messages are typed, not validated: they come from Sandburg's own code (an app cannot post
