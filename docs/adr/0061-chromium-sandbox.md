@@ -48,8 +48,9 @@ Three other launch switches came under review:
   It would also turn a security default into one that degrades without anyone choosing it, on
   exactly the hosts (containers, CI runners) where runs go unwatched and a recorded field is easy to
   miss. The explicit opt-out costs one flag or one environment variable, once per host.
-- **The choice is recorded.** Each `result.json` has `environment.browserSandbox` (required in
-  result-schema.json), a batch's `summary.json` has `browserSandbox`, the CLI warns on stderr when a
+- **The choice is recorded.** Each `result.json` has `environment.browserSandbox` (optional in
+  result-schema.json, so results written before it still validate; one without it ran without the
+  sandbox), a batch's `summary.json` has `browserSandbox`, the CLI warns on stderr when a
   session starts without the sandbox, and a run's summary says so.
 - **`--site-per-process`** is always passed.
 - **`--enable-unsafe-swiftshader` is left out** (`ignoreDefaultArgs`). It gave runs nothing the
@@ -83,7 +84,9 @@ unprivileged user namespaces: `kernel.apparmor_restrict_unprivileged_userns` is 
 Testing has no AppArmor profile that allows them. Each workflow job that starts Chromium first prints
 the setting. If it is 1, the job sets it to 0, which keeps the sandbox on rather than opting out. No workflow uses `--no-browser-sandbox`.
 `test/runtime/browser-sandbox.test.ts` launches Chromium with Sandburg's options and reads each
-renderer's `Seccomp:` line in `/proc/<pid>/status` (2: a seccomp-bpf filter; 0 without the sandbox).
+renderer's `/proc/<pid>/status`. Sandboxed, a renderer has a seccomp-bpf filter (`Seccomp: 2`) and
+pid namespaces of its own under the browser's (more entries in `NSpid:`). Without the sandbox it has
+what the test process has (a container's seccomp profile, if any) and the browser's namespaces.
 It also checks that a cross-site frame is a target of its own, and under `CI` it fails if the
 sandbox was turned off.
 

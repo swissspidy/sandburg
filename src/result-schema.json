@@ -33,11 +33,11 @@
     },
     "environment": {
       "type": "object",
-      "required": ["sandburgVersion", "browser", "browserSandbox", "platform", "offline"],
+      "required": ["sandburgVersion", "browser", "platform", "offline"],
       "properties": {
         "sandburgVersion": { "type": "string" },
         "browser": { "type": "string" },
-        "browserSandbox": { "type": "boolean" },
+        "browserSandbox": { "type": "boolean", "description": "The browser ran inside Chromium's OS sandbox. Sandburg writes it in every result; a result without it is from before ADR 0061, and ran without the sandbox." },
         "platform": { "type": "string" },
         "offline": { "type": "boolean" }
       }

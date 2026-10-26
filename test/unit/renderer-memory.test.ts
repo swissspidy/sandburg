@@ -129,9 +129,10 @@ test("where the page cannot read its CPU time (the OS sandbox), its renderer is 
 
 test("a process's main thread's CPU time is read from /proc, null for none", { skip: process.platform !== 'linux' }, () => {
   const start = mainThreadCpu(process.pid)!;
-  const until = performance.now() + 100;
-  while (performance.now() < until);
-  // Clock ticks of 10 ms: at least 80 ms more after 100 ms of work on this thread.
+  // Work on this thread until /proc counts 80 ms more (clock ticks of 10 ms), however long a busy
+  // machine takes to give it that much CPU; 5 s at most.
+  const deadline = performance.now() + 5_000;
+  while (mainThreadCpu(process.pid)! - start < 0.08 && performance.now() < deadline);
   assert.ok(mainThreadCpu(process.pid)! - start >= 0.08);
   assert.equal(mainThreadCpu(2 ** 22 + 1), null);
 });
