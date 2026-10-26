@@ -1,4 +1,4 @@
-# ADR NNNN: Test reliability under load: waits for the thing, not for a time
+# ADR 0060: Test reliability under load: waits for the thing, not for a time
 
 - Status: Accepted
 - Date: 2026-10-26
