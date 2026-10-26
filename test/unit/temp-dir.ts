@@ -10,7 +10,13 @@ import { join } from 'node:path';
 const dirs: string[] = [];
 
 process.on('exit', () => {
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Left behind: not the tests' failure.
+    }
+  }
 });
 
 /** A new directory under the system's temp directory, named `prefix` and a random suffix. */

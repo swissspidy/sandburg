@@ -15,7 +15,7 @@
  * Example: `node scripts/flakes.ts --runs 10 --cpu 4 --disk test/runtime/*.test.ts`.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -29,20 +29,35 @@ if (!files.length) {
   console.error('usage: node scripts/flakes.ts [--runs 10] [--cpu 4] [--disk] [--copies 1] <test files…>');
   process.exit(2);
 }
-const runs = Number(values.runs);
-const copies = Number(values.copies);
+const count = (name: 'runs' | 'cpu' | 'copies', min: number) => {
+  const n = Number(values[name]);
+  if (!Number.isInteger(n) || n < min) {
+    console.error(`--${name}: a whole number of at least ${min}, not ${JSON.stringify(values[name])}`);
+    process.exit(2);
+  }
+  return n;
+};
+const runs = count('runs', 1);
+const copies = count('copies', 1);
+const cpu = count('cpu', 0);
 const out = mkdtempSync(join(tmpdir(), 'sandburg-flakes-'));
 
+// Each load process ends when this one is gone, however it ended (a kill, a cancelled job): it
+// looks at its parent's pid as it goes.
+const orphaned = 'const parent = process.ppid; const gone = () => process.ppid !== parent;';
 const load: ChildProcess[] = [];
-for (let i = 0; i < Number(values.cpu); i++) load.push(spawn(process.execPath, ['-e', 'for (;;);'], { stdio: 'ignore' }));
+for (let i = 0; i < cpu; i++) load.push(spawn(process.execPath, ['-e', `${orphaned} for (let i = 0; ; i++) if ((i & 0xffffff) === 0 && gone()) process.exit();`], { stdio: 'ignore' }));
+const file = join(out, 'disk-load.bin');
 if (values.disk) {
-  const file = join(out, 'disk-load.bin');
-  const writer = `const fs = require('fs'); const b = Buffer.alloc(1 << 20); for (;;) { const fd = fs.openSync(${JSON.stringify(file)}, 'w'); for (let i = 0; i < 64; i++) fs.writeSync(fd, b); fs.fsyncSync(fd); fs.closeSync(fd); fs.rmSync(${JSON.stringify(file)}); }`;
+  const writer = `${orphaned} const fs = require('fs'); const b = Buffer.alloc(1 << 20); while (!gone()) { const fd = fs.openSync(${JSON.stringify(file)}, 'w'); for (let i = 0; i < 64; i++) fs.writeSync(fd, b); fs.fsyncSync(fd); fs.closeSync(fd); fs.rmSync(${JSON.stringify(file)}); }`;
   load.push(spawn(process.execPath, ['-e', writer], { stdio: 'ignore' }));
 }
-const stopLoad = () => load.forEach((p) => p.kill());
+const stopLoad = () => {
+  load.forEach((p) => p.kill());
+  rmSync(file, { force: true });
+};
 process.on('exit', stopLoad);
-process.on('SIGINT', () => process.exit(130));
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const) process.on(signal, () => process.exit(code));
 
 /** One run of the files: the tests that failed ("file › name"), and its spec output. */
 async function once(): Promise<{ failed: string[]; log: string }> {

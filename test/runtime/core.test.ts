@@ -669,8 +669,10 @@ test('child_process: a shell script ends with its foreground command, not with a
         const c = require('child_process').spawn('node seed.js & node server.js', { shell: true, stdio: 'inherit' });
         c.on('exit', (code) => console.log('script exited', code));`,
       'seed.js': `console.log('seeded');\nrequire('fs').writeFileSync('/app/seeded', '');`,
-      // Ends after the background command (however long that takes to start), with a code of its own.
-      'server.js': `const end = setInterval(() => require('fs').existsSync('/app/seeded') && (clearInterval(end), console.log('server done'), process.exit(3)), 20);`,
+      // Ends after the background command (however long that takes to start), and 300 ms after it has
+      // written its file, so that the background command has ended by then (a shell that ends with it
+      // prints "script exited 0" first), with a code of its own. A slow machine can only hide the bug.
+      'server.js': `const end = setInterval(() => require('fs').existsSync('/app/seeded') && (clearInterval(end), setTimeout(() => (console.log('server done'), process.exit(3)), 300)), 20);`,
     },
     '/app/main.js',
   );

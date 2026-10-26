@@ -295,6 +295,7 @@ const settle = (shared, status, body) => {
   Atomics.store(state, 0, 1);
   Atomics.notify(state, 0);
 };
+// Called once per helper (a second socket's old onclose would clear the new one's notes).
 function open(url, ready) {
   socket = new WebSocket(url);
   socket.binaryType = 'arraybuffer';

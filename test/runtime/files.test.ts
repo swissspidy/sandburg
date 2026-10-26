@@ -34,7 +34,7 @@ const program = {
 };
 
 /** Both runtimes have told the host what they read of the bundle (the thread does not exit: see threads.ts). */
-const bothReported = ({ asked }: { asked: string[] }) => asked.filter((a) => a.includes('/read?')).length === 2;
+const bothReported = ({ asked }: { asked: string[] }) => asked.filter((a) => a.includes('/read?')).length >= 2;
 
 test('installed files: the preload bundle, shared with threads, and single files over the file channel', async () => {
   const out = await h.runInstalled(program, install, '/app/main.js', { holdChannel: true, until: bothReported });
@@ -92,7 +92,7 @@ test('installed files: raw files read one after another come with the files afte
         console.log(['c.js', 'a.js', 'd.js', 'b.js', 'a.js.map'].map(read).join(' '));
       });`,
   };
-  const out = await h.runInstalled(main, icons, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length === 3 });
+  const out = await h.runInstalled(main, icons, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length >= 3 });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'C A D B A-map\n');
   const nm = `/__sandburg/nm/${INSTALL_KEY}/f/node_modules/icons/esm`;
@@ -117,7 +117,7 @@ test('installed files: modules pushed with a transformed file are loaded without
     pushes: { 'node_modules/tool/index.js': ['node_modules/tool/a.js', 'node_modules/tool/b.js'] },
   };
   const main = { 'main.js': `${CHANNEL_OPEN}\nsetInterval(() => {}, 1000);\nchannelOpen().then(() => console.log(require('tool')));` };
-  const out = await h.runInstalled(main, tool, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length === 2 });
+  const out = await h.runInstalled(main, tool, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length >= 2 });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'tool a b\n');
   const nm = `/__sandburg/nm/${INSTALL_KEY}/t/node_modules/tool`;

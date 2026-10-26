@@ -310,7 +310,8 @@ export class RuntimeHarness {
   private async until<T>(run: Promise<T>, done?: (state: RunState) => boolean): Promise<T> {
     if (!done) return run;
     let over = false;
-    void run.finally(() => (over = true));
+    const end = () => (over = true);
+    run.then(end, end);
     while (!over) {
       const stdout = await this.page.evaluate(() => (window as unknown as { current?: { out: { stdout: string } } }).current?.out.stdout ?? '');
       if (done({ stdout, asked: this.asked })) {
@@ -324,6 +325,8 @@ export class RuntimeHarness {
 
   run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean } = {}) {
     const { until, ...rest } = options;
+    this.asked = [];
+    this.release();
     return this.until(this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, { ...(execArgv ? { execArgv } : {}), ...rest }] as const) as Promise<{
       stdout: string;
       stderr: string;

@@ -59,13 +59,17 @@ fixed allowance. The page-checks suite left one per run too.
   both instead of 300 ms timers.
 - **Clients that ask again, and commands that wait for each other**: the API test's client asks
   again while the API refuses connections (at most 10 s), as a dev proxy does; the shell test's
-  foreground command ends once the background one has written a file.
+  foreground command ends 300 ms after the background one has written its file (so the background
+  one has ended first; a slow machine can only hide a regression, not fail a correct shell).
 - **The unit batch test's slow app waits for the others** (or 5 s), instead of 200 ms.
 - **Mocked timers for the preload-list writers** (`mock.timers`, advanced by the test), and polls
   with a deadline where a test waited 50 ms for a record.
-- **The batch e2e checks the order, not the time**: it records when the batch's install on the host
-  was done and when each run asked for its install, and checks that the two later runs asked after
-  it was done (with parallel 10, it fails).
+- **The batch e2e checks the order, and the time with a measured margin**: it records when the
+  batch's own install on the host was done (its key only) and when each of the batch's runs asked for
+  its install (not the session's Vite seed run, which asks for the same install on a cold
+  `.sandburg/`), and checks that the two later runs asked after it was done (with parallel 10, it
+  fails). Their install phase must stay under 10 s instead of 5 s: 0.3-1.7 s idle, 5.1 s at most with
+  two batches at once and two spinners on 4 cores; a cache hit made to wait 11 s fails it.
 - **The node e2e's seed test** removes seeds with `force` and skips one removed while it lists them.
 - **Read reports wait for the channel** (`src/node-runtime/host-files.ts`): the helper keeps notes
   made while its socket is connecting (at most 256) and sends them when it opens; a socket that closes
@@ -79,10 +83,15 @@ fixed allowance. The page-checks suite left one per run too.
   (`--cpu`), a disk writer (`--disk`) or N copies at once (`--copies`); it counts failures per test and
   keeps each run's output. The page says how to look for flakes and the patterns that fix them.
 
-No test's assertions were loosened; the two wall-time checks in the runtime suite (zlib streams under
+One bound was widened, with the measurement above: the batch's later runs' install phase, 5 s → 10 s.
+No other assertion was loosened; the two wall-time checks in the runtime suite (zlib streams under
 2 s, fs streamed writes under 3 s) stay: they measured 64-69 ms and 553-640 ms, idle and loaded alike.
-Each fix was checked to fail without what it checks (the read-report test, the batch tests, the
-preload-list test).
+Each changed test was checked to fail with the bug it guards put back: the read-report test
+(notes dropped again), the shell test (a script that ends with its background command: 3 of 3 fail),
+the files and native-transform tests (requests never over the channel), read-ahead and
+preload-reads (loads and reads not recorded), the preload-list test (no merge of the other
+process's entries), the unit batch test (a slot freed at a run's end), and the batch e2e (parallel
+10; a cache hit delayed 11 s).
 
 ## Consequences
 
