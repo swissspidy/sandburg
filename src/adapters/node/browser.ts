@@ -9,9 +9,9 @@ import { connectServiceWorker, registerServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort, type CacheSnapshot } from './process.ts';
 import type { CacheEntry } from '../../node-runtime/cache-tree.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
-import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
-import { Registry } from '../../node-runtime/npm/registry.ts';
-import { UnsupportedSpecError } from '../../node-runtime/npm/resolve.ts';
+import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-npm/install.ts';
+import { Registry } from './browser-npm/registry.ts';
+import { UnsupportedSpecError } from './browser-npm/resolve.ts';
 
 export interface HostInstall {
   key: string;

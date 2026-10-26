@@ -6,7 +6,7 @@
  * and the index of package binaries. The result is the files of node_modules, in memory.
  */
 import semver from 'semver';
-import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from '../../adapters/node/install-rules.ts';
+import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from '../install-rules.ts';
 import type { Registry } from './registry.ts';
 import { resolveTree, type Placed, type RootPackage } from './resolve.ts';
 

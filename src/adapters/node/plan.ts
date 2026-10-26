@@ -72,7 +72,7 @@ export function packageDirs(project: Project): string[] {
 }
 
 /**
- * An install the page does itself (opt-in, see node-runtime/npm/install.ts): what to install for each
+ * An install the page does itself (opt-in, see browser-npm/install.ts): what to install for each
  * package of the project, and how to start it. Package binaries are found after the install.
  */
 export function browserInstall(project: Project): HostInstall {

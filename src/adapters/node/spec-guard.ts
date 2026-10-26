@@ -10,7 +10,7 @@
  * This is an allowlist of shapes, not a denylist of prefixes: a range contains only semver's own
  * characters, so a spec with a `:` or a `/` outside an alias name, or a bare `.`/`..`, is not a
  * registry spec whatever its prefix. The browser installer applies the same rule (see
- * node-runtime/npm/resolve.ts); this is its host-side twin, covering the lockfile a project may carry
+ * browser-npm/resolve.ts); this is its host-side twin, covering the lockfile a project may carry
  * as well as its package.json.
  */
 

@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { TarReader, untar } from '../../src/node-runtime/npm/tar.ts';
-import { Registry, type Fetch, type Manifest } from '../../src/node-runtime/npm/registry.ts';
-import { resolveTree, UnsupportedSpecError } from '../../src/node-runtime/npm/resolve.ts';
-import { installInBrowser, packFiles } from '../../src/node-runtime/npm/install.ts';
+import { TarReader, untar } from '../../src/adapters/node/browser-npm/tar.ts';
+import { Registry, type Fetch, type Manifest } from '../../src/adapters/node/browser-npm/registry.ts';
+import { resolveTree, UnsupportedSpecError } from '../../src/adapters/node/browser-npm/resolve.ts';
+import { installInBrowser, packFiles } from '../../src/adapters/node/browser-npm/install.ts';
 
 /** A tar archive (ustar, one pax long name when a path needs it), as npm pack writes them. */
 function tar(entries: Record<string, string>): Uint8Array {
