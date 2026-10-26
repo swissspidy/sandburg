@@ -102,6 +102,15 @@ interface Install {
 }
 export const INSTALL_KEY = 'a'.repeat(24);
 
+/** The compile route's answer (as the node adapter's, without the compile cache). */
+function compileAnswer(code: Buffer, query: URLSearchParams): { status: number; body: string } {
+  try {
+    return { status: 200, body: compileForRuntime(code.toString(), query.get('path') ?? '/x.js', (query.get('kind') ?? 'cjs') as CompileKind, { asyncModules: query.get('async') === '1' }) };
+  } catch (e) {
+    return { status: 400, body: String((e as Error).message) };
+  }
+}
+
 export class RuntimeHarness {
   private server!: Server;
   private browser!: Browser;
@@ -220,14 +229,9 @@ export class RuntimeHarness {
         this.asked.push(`http POST ${url.pathname}?path=${url.searchParams.get('path')}`);
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
-        try {
-          const out = compileForRuntime(Buffer.concat(chunks).toString(), url.searchParams.get('path') ?? '/x.js', (url.searchParams.get('kind') ?? 'cjs') as CompileKind, { asyncModules: url.searchParams.get('async') === '1' });
-          res.writeHead(200, { 'content-type': 'text/javascript' });
-          return res.end(out);
-        } catch (e) {
-          res.writeHead(400);
-          return res.end(String((e as Error).message));
-        }
+        const out = compileAnswer(Buffer.concat(chunks), url.searchParams);
+        res.writeHead(out.status, { 'content-type': 'text/javascript' });
+        return res.end(out.body);
       }
       res.writeHead(200, { 'content-type': 'text/html', 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp' });
       res.end(PAGE);
@@ -239,6 +243,7 @@ export class RuntimeHarness {
         this.asked.push(`ws ${r.path}${query ? `?${query}` : ''}`);
         if (r.query.get('used') === '1') return { status: 204, body: '' };
         if (r.path === '/__sandburg/esbuild-transform') return nativeTransform({ ...r, sandbox: 'harness' });
+        if (r.path === '/__sandburg/compile') return compileAnswer(await r.body(), r.query);
         const body = this.installed(r.path);
         const ahead = body && r.query.get('ahead') === '1' ? (r.path.includes('/t/') ? this.pushed(r.path) : this.ahead(r.path, r.query.get('until'))) : null;
         return ahead ? { status: 207, body: ahead } : body ? { status: 200, body } : null;

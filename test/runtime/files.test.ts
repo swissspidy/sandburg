@@ -129,7 +129,9 @@ const writesChunks = {
 };
 
 test('installed files: CommonJS files written under the directories named are compiled as they are written, and only used as written', async () => {
-  const compiles = (file: string) => h.asked.flatMap((a, i) => (a === `http POST /__sandburg/compile?path=/app/.next/dev/server/${file}` ? [i] : []));
+  // A compile ahead goes over HTTP (compile-ahead.ts); one when a file is required, over the file channel.
+  const compiles = (file: string) =>
+    h.asked.flatMap((a, i) => (a === `http POST /__sandburg/compile?path=/app/.next/dev/server/${file}` || (a.startsWith('ws /__sandburg/compile?') && a.includes(`path=${encodeURIComponent(`/app/.next/dev/server/${file}`)}`)) ? [i] : []));
   const marker = () => h.asked.findIndex((a) => a.includes('node_modules/single/'));
   let out = await h.runInstalled(writesChunks, install, '/app/main.js', { compileAhead: ['.next/dev/server'] });
   assert.equal(out.fatal, null);
@@ -198,6 +200,56 @@ test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare run
   // The program's spares (and their replacements) are the same in both runs.
   const warm = await h.page.evaluate(() => Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4)));
   assert.equal(other - wasi, warm, `spares started: ${other} with another thread, ${wasi} with a WebAssembly thread`);
+});
+
+test("the runtime's compiles go over the file channel once it is open, with their errors", async () => {
+  // An ES module over ~131 KB (Chromium sends it in fragments; under COMPILE_POST_MAX) and a TypeScript file that does not parse.
+  const main = {
+    'main.js': `
+      setTimeout(() => {
+        console.log(require('./big.mjs').size);
+        try {
+          require('./bad.ts');
+        } catch (e) {
+          console.log(e.code, /Expected/.test(e.message));
+        }
+        process.exit(0);
+      }, 300);`,
+    'big.mjs': `export const size = ${JSON.stringify('x'.repeat(200_000))}.length;\n`,
+    'bad.ts': 'const = 1;\n',
+  };
+  const out = await h.runInstalled(main, { files: {}, bundled: [] }, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, '200000\nERR_COMPILE true\n');
+  const compiles = h.asked.filter((a) => a.includes('/__sandburg/compile'));
+  assert.deepEqual(compiles.map((a) => a.split('?')[0]), ['ws /__sandburg/compile', 'ws /__sandburg/compile']);
+});
+
+test('installed files over the channel\'s bound are asked for over HTTP at once', async () => {
+  const big = 'x'.repeat((1 << 20) + 1);
+  const install = {
+    files: {
+      'node_modules/big/package.json': JSON.stringify({ name: 'big' }),
+      'node_modules/big/blob.bin': big,
+      'node_modules/big/small.bin': 'small',
+    },
+    bundled: [],
+  };
+  const main = {
+    'main.js': `
+      const fs = require('fs');
+      setTimeout(() => {
+        console.log(fs.readFileSync('/app/node_modules/big/blob.bin', 'utf8').length + ' ' + fs.readFileSync('/app/node_modules/big/small.bin', 'utf8'));
+        process.exit(0);
+      }, 300);`,
+  };
+  const out = await h.runInstalled(main, install, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, `${big.length} small\n`);
+  const nm = `/__sandburg/nm/${INSTALL_KEY}/f/node_modules/big`;
+  // Not over the channel first (whose answer would be "too large", status 0), then over HTTP.
+  assert.deepEqual(h.asked.filter((a) => a.includes(`${nm}/blob.bin`)), [`http ${nm}/blob.bin`]);
+  assert.ok(h.asked.some((a) => a.startsWith(`ws ${nm}/small.bin`)));
 });
 
 test('installed files: the bundle files a runtime read are told in reports that fit a frame of the file channel', async () => {

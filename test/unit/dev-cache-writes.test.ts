@@ -104,6 +104,54 @@ test('compiles are recorded under a project\'s key only with its run\'s token, f
   assert.deepEqual(paths, ['/own.js']);
 });
 
+test('over the file channel, compiles are recorded only with the run\'s token, from its sandbox\'s channel', async () => {
+  const { createServer } = await import('node:http');
+  const { acceptFileChannel } = await import('../../src/orchestrator/host-socket.ts');
+  const key = 'e'.repeat(24);
+  const token = node.issueCompileWrite(key, Promise.resolve('s-chan'));
+  await new Promise((r) => setImmediate(r));
+  const origin = 'http://box.sandburg.localhost:1';
+  // A channel bound to a sandbox, as the host server binds each (HostServer's upgrade handler).
+  const server = createServer((_req, res) => res.end());
+  let sandbox = '';
+  server.on('upgrade', (req, socket) => acceptFileChannel(req, socket, origin, (r) => node.serve({ ...r, sandbox })));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const compileOver = async (as: string, t: string | undefined, path: string) => {
+    sandbox = as;
+    const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/__sandburg/files`, { headers: { origin } } as unknown as string[]);
+    ws.binaryType = 'arraybuffer';
+    await new Promise((r) => (ws.onopen = r));
+    const target = new TextEncoder().encode(`/__sandburg/compile?kind=cjs&path=${encodeURIComponent(path)}&cache=${key}${t ? `&token=${t}` : ''}`);
+    const body = new TextEncoder().encode(`module.exports = ${JSON.stringify(path)};`);
+    const frame = new Uint8Array(8 + target.length + body.length);
+    new DataView(frame.buffer).setUint32(0, 1, true);
+    new DataView(frame.buffer).setUint32(4, target.length, true);
+    frame.set(target, 8);
+    frame.set(body, 8 + target.length);
+    const status = await new Promise<number>((resolve) => {
+      ws.onmessage = (e) => resolve(new DataView(e.data as ArrayBuffer).getUint32(4, true));
+      ws.send(frame);
+    });
+    ws.close();
+    return status;
+  };
+  // Compiled for every channel; recorded only for the run's own sandbox with its token.
+  assert.equal(await compileOver('s-other', token, '/other-sandbox.js'), 200);
+  assert.equal(await compileOver('s-chan', undefined, '/no-token.js'), 200);
+  assert.equal(await compileOver('s-chan', 'A'.repeat(43), '/guessed.js'), 200);
+  assert.equal(await compileOver('s-chan', token, '/own.js'), 200);
+  server.close();
+  let paths: string[] = [];
+  for (let i = 0; i < 50 && !paths.length; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+    const res = await node.serve({ method: 'GET', path: `/__sandburg/compile-cache/${key}`, query: new URLSearchParams(), sandbox: 's-chan', body: async () => Buffer.alloc(0) });
+    if (!res) continue;
+    const bundle = Buffer.from(res.body as Uint8Array);
+    paths = (JSON.parse(bundle.subarray(4, 4 + bundle.readUInt32LE(0)).toString('utf8')) as [string, number, string][]).map((e) => e[2]);
+  }
+  assert.deepEqual(paths, ['/own.js']);
+});
+
 test('a stored cache\'s digests are kept beside it, and computed again once the cache is written again', async () => {
   const { createHash } = await import('node:crypto');
   const { writeFile } = await import('node:fs/promises');
@@ -211,4 +259,18 @@ test('bundledEntries reads what bundleCache writes', async () => {
   while (Date.now() <= before) await new Promise((r) => setTimeout(r, 1));
   vfs.write('/app/.next/dev/cache/webpack/x.json', new TextEncoder().encode('{"a":2}'));
   assert.notEqual(listCache(vfs, '/app', ['.next/dev/cache'])[1][2], before);
+});
+
+test('an install key with no install is not remembered, by an index asked for or a note of a file used', async () => {
+  const { sharedInstaller } = await import('../../src/adapters/node/install.ts');
+  const installer = sharedInstaller() as unknown as { index(key: string): Promise<unknown>; indexes: Map<string, unknown> };
+  const unknown = '9'.repeat(24);
+  await assert.rejects(installer.index(unknown));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(installer.indexes.has(unknown), false);
+  // A note of a file used of a key with no install: answered, and the key not remembered.
+  const other = '8'.repeat(24);
+  const res = await node.serve({ method: 'GET', path: `/__sandburg/nm/${other}/t/node_modules/a/index.js`, query: new URLSearchParams({ used: '1' }), sandbox: 's-none', body: async () => Buffer.alloc(0) });
+  assert.equal(res?.status, 204);
+  assert.equal(installer.indexes.has(other), false);
 });

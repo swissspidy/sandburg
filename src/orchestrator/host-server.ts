@@ -203,7 +203,9 @@ export class HostServer {
           if (n <= 0) this.fileChannels.delete(id);
           else this.fileChannels.set(id, n);
         };
-        socket.on('end', release).on('close', release);
+        // A client that ends its side (half-closes) ends the channel: the host's side goes with the slot,
+        // so a half-open socket cannot outlive the bound it no longer counts against.
+        socket.on('end', () => (release(), socket.destroy())).on('close', release);
         // A refused handshake frees its slot now: the peer may never close its side.
         if (!acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!({ ...r, sandbox: id }))) release();
       } catch {
