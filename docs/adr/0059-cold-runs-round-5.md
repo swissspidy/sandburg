@@ -58,7 +58,7 @@ answered (over HTTP and over the file channel, with its latency) showed:
 - **The channel's reader, bounded throughout** (`host-socket.ts`, `host-server.ts`): a frame in many
   chunks put together once; nothing read after a close frame; a request taken only while the answers
   waiting to be sent and `MAX_BODY` for each request in progress fit in `MAX_UNSENT`; a channel whose
-  answers do not drain within `DRAIN_TIMEOUT_MS` closed; a half-closed socket closed by the host too
+  answers make no progress for `DRAIN_TIMEOUT_MS` closed; a half-closed socket closed by the host too
   (see Security).
 - **Installed files over the channel's bound go over HTTP at once** (`syncGet` in `host-files.ts`):
   the runtime knows each file's size from the install's index.
@@ -129,8 +129,10 @@ answered (over HTTP and over the file channel, with its latency) showed:
   waiting to be sent, plus `MAX_BODY` (1 MB) for each request in progress and for the new one, fit
   in `MAX_UNSENT` (8 MB), so at most 8 requests are in progress and at most 8 MB of answers (plus
   frame headers) wait per channel; with the per-sandbox bound on channels (256, ADR 0054), at most
-  ~2 GB per sandbox while every one of them is stalled. A channel whose answers have not drained
-  within `DRAIN_TIMEOUT_MS` (30 s) is closed, which frees its slot (a client that ends its side while
+  ~2 GB per sandbox while every one of them is stalled. The runtime's notes (what it read, a file
+  sent ahead that it used: two fixed forms, answered 204 by the host) are served without an answer;
+  any other request is answered and reserved for. A channel whose answers have sent nothing for
+  `DRAIN_TIMEOUT_MS` (30 s) while not drained is closed (one that reads, slowly, is not), which frees its slot (a client that ends its side while
   its socket is paused is not read until then). A client that ends its side of the socket ends the
   channel, so a socket never outlives its slot. Each has a test in
   `test/unit/host-socket.test.ts` or `test/unit/host-server.test.ts` that fails without it.

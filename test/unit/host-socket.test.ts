@@ -417,7 +417,10 @@ test('a note (id 0) is served and not answered; notes in progress are bounded to
   const pending: (() => void)[] = [];
   acceptFileChannel(req, socket, ORIGIN, () => ((served++), new Promise((r) => pending.push(() => r({ status: 204, body: '' })))));
   const handshake = written.length;
-  socket.push(Buffer.concat(Array.from({ length: 500 }, (_, i) => clientFrame(true, 0x1, new TextEncoder().encode(`0 /__sandburg/nm/k/read?files=f${i}`)))));
+  // The runtime's two kinds of note: the files it read, a file sent ahead that it used.
+  const key = 'a'.repeat(24);
+  const notes = Array.from({ length: 500 }, (_, i) => (i % 2 ? `0 /__sandburg/nm/${key}/read?files=t%2Fnode_modules%2Fa%2Ff${i}.js` : `0 http://box.sandburg.localhost:1/__sandburg/nm/${key}/t/node_modules/a/f${i}.js?used=1`));
+  socket.push(Buffer.concat(notes.map((n) => clientFrame(true, 0x1, new TextEncoder().encode(n)))));
   await new Promise((r) => setTimeout(r, 100));
   // Taken while fewer than a bounded number are in progress (they wait on the host here).
   assert.ok(served > 0 && served < 500, `served ${served}`);
@@ -430,5 +433,39 @@ test('a note (id 0) is served and not answered; notes in progress are bounded to
   assert.equal(served, 500);
   // No answer was written for any of them.
   assert.equal(written.length, handshake);
+  socket.destroy();
+});
+
+test('a request with id 0 that is not one of the runtime\'s notes is answered (and reserved for) as any other', { timeout: 20_000 }, async () => {
+  const { socket, written } = await memoryChannel(async () => ({ status: 200, body: 'transformed' }));
+  const handshake = written.length;
+  const key = 'a'.repeat(24);
+  for (const path of [`/__sandburg/nm/${key}/t/node_modules/a/index.js`, `/__sandburg/nm/${key}/f/node_modules/a/index.js?ahead=1`, `/__sandburg/nm/${key}/read?files=x&used=1&ahead=1`, `/__sandburg/nm/${key}/t/a.js?used=1&ahead=1`]) {
+    socket.push(clientFrame(true, 0x1, new TextEncoder().encode(`0 ${path}`)));
+  }
+  for (let i = 0; i < 100 && written.length < handshake + 4; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(written.length, handshake + 4);
+  socket.destroy();
+});
+
+test('a client that reads more slowly than the host writes, but reads, is not closed by the drain timeout', { timeout: 20_000 }, async () => {
+  const { Duplex } = await import('node:stream');
+  const held: (() => void)[] = [];
+  let done = 0;
+  // Takes one write every 40 ms; bytesWritten counts what was taken and what waits, as a net.Socket's does.
+  const socket = new Duplex({ read() {}, write(chunk: Buffer, _e, cb) { held.push(() => ((done += chunk.length), cb())); } });
+  Object.defineProperty(socket, 'bytesWritten', { get: () => done + socket.writableLength });
+  const timer = setInterval(() => held.shift()?.(), 40);
+  const req = { headers: { origin: ORIGIN, 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', upgrade: 'websocket' } } as unknown as import('node:http').IncomingMessage;
+  let closed = false;
+  socket.on('close', () => (closed = true));
+  let served = 0;
+  acceptFileChannel(req, socket, ORIGIN, async () => ((served++), { status: 200, body: 'x'.repeat(256 << 10) }), { drainTimeoutMs: 150 });
+  socket.push(gets(30));
+  // ~1.2 s to take 30 answers: several timeouts' worth, each with progress.
+  for (let i = 0; i < 300 && (served < 30 || held.length || socket.writableLength); i++) await new Promise((r) => setTimeout(r, 10));
+  clearInterval(timer);
+  assert.equal(closed, false);
+  assert.equal(served, 30);
   socket.destroy();
 });

@@ -61,13 +61,20 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   let stalled: ReturnType<typeof setTimeout> | null = null;
   const send = (data: Buffer) => {
     if (socket.destroyed || socket.writableEnded) return;
-    if (!socket.write(data) && !stalled) {
-      stalled = setTimeout(() => {
-        stalled = null;
-        if (socket.writableNeedDrain) socket.destroy();
-      }, options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS);
-      stalled.unref?.();
-    }
+    if (!socket.write(data) && !stalled) arm(sent());
+  };
+  /** Bytes that left the socket's buffer (net.Socket's bytesWritten counts what is still buffered too). */
+  const sent = () => ((socket as Duplex & { bytesWritten?: number }).bytesWritten ?? 0) - socket.writableLength;
+  // On expiry: still not drained, and nothing sent since the timer was armed: closed. A client that
+  // reads, more slowly than the host writes, is given another period.
+  const arm = (from: number) => {
+    stalled = setTimeout(() => {
+      stalled = null;
+      if (!socket.writableNeedDrain) return;
+      if (sent() > from) arm(sent());
+      else socket.destroy();
+    }, options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS);
+    stalled.unref?.();
   };
   const unstall = () => {
     if (stalled) clearTimeout(stalled);
@@ -79,8 +86,9 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
     if (opcode === 0x9) return send(frame(0xa, payload));
     if (opcode !== 0x1 && opcode !== 0x2) return;
     const t0 = performance.now();
-    // A note (id 0: a GET whose answer the runtime does not read) is served, and not answered.
-    const note = opcode === 0x1 && payload[0] === 0x30 && payload[1] === 0x20;
+    // A note (id 0: what the runtime read, or used of what came ahead; it does not read the answer)
+    // is served and not answered. Only those two: any other request is answered, and reserved for.
+    const note = opcode === 0x1 && isNote(payload);
     inFlight++;
     if (!note) answering++;
     const reply = (id: number, what: string) => (res: { status: number; body: Buffer }) => {
@@ -106,6 +114,13 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   });
   socket.on('drain', () => (unstall(), reader.resume()));
   return true;
+}
+
+/** The runtime's notes: `0 <base>/nm/<install>/read?files=…` and `0 <base>/nm/<install>/<f|t>/<path>?used=1`. */
+const NOTE = /^0 \S*?\/__sandburg\/nm\/[0-9a-f]{24}\/(?:read\?files=[^&?#\s]*|[ft]\/[^?#\s]+\?used=1)$/;
+
+function isNote(payload: Buffer): boolean {
+  return payload[0] === 0x30 && payload[1] === 0x20 && NOTE.test(payload.toString('utf8'));
 }
 
 /** A POST's target as traces show it: the compile cache's write token (a capability) left out. */
