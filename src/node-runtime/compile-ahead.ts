@@ -13,7 +13,8 @@ import { NEEDS_LOWERING } from './loader.ts';
 import { base, compileCache, vfs } from './worker.ts';
 import { traceTransfer } from '../transfer-trace.ts';
 
-const HELPER = `onmessage = async ({ data: { path, bytes, shared, compiled, compile, token } }) => {
+const HELPER = `onmessage = async ({ data: { alive, path, bytes, shared, compiled, compile, token } }) => {
+  if (alive) return void Atomics.store(new Int32Array(alive), 0, 1);
   const state = new Int32Array(shared, 0, 2);
   const settle = (status, out) => {
     if (out) {
@@ -52,6 +53,11 @@ const workerHref = globalThis.location?.href;
 
 let dirs: string[] = [];
 let helper: Worker | null | undefined;
+/**
+ * Set once the helper runs. A worker this runtime starts does not start while the runtime blocks, so
+ * the runtime never waits for one that has not: Pages Router chunks are required as soon as written.
+ */
+const alive = new Int32Array(new SharedArrayBuffer(4));
 const pending = new Map<string, { data: Uint8Array; shared: SharedArrayBuffer }>();
 const toSend = new Set<string>();
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
@@ -59,6 +65,8 @@ const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 /** Compiles ahead the CommonJS files written under `under` (absolute directories). */
 export function compileAhead(under: string[]): void {
   dirs = under.map((d) => (d.endsWith('/') ? d : `${d}/`));
+  // Started now, to be running by the program's first write.
+  startHelper();
 }
 
 /** A file was written: sent once the program's current task ends (a chunk is written in pieces). */
@@ -72,6 +80,7 @@ function startHelper(): Worker | null {
   if (helper !== undefined) return helper;
   try {
     helper = new NativeWorker(URL.createObjectURL(new Blob([HELPER], { type: 'text/javascript' })));
+    helper.postMessage({ alive: alive.buffer });
   } catch {
     helper = null;
   }
@@ -119,6 +128,7 @@ export function compiledAhead(path: string): string | null {
   const entry = pending.get(path);
   if (!entry) return null;
   pending.delete(path);
+  if (Atomics.load(alive, 0) !== 1) return null;
   try {
     if (vfs.read(path) !== entry.data) return null;
   } catch {

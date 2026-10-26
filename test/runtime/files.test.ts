@@ -145,6 +145,25 @@ test('installed files: CommonJS files written under the directories named are co
   assert.ok(compiles('chunk.js')[0] > marker(), h.asked.join('\n'));
 });
 
+test('installed files: a CommonJS file required as soon as written does not wait for a compile helper that has not started', async () => {
+  // As next dev's Pages Router does: its chunks are written and required in one go. A worker the
+  // runtime starts does not start while the runtime blocks, so waiting for it would wait it out.
+  const main = {
+    'main.js': `
+      const fs = require('fs');
+      fs.mkdirSync('/app/.next/server', { recursive: true });
+      fs.writeFileSync('/app/.next/server/page.js', 'module.exports = async () => "now";');
+      const t0 = Date.now();
+      require('/app/.next/server/page.js')().then((v) => {
+        console.log(v, Date.now() - t0 < 5000);
+        process.exit(0);
+      });`,
+  };
+  const out = await h.runInstalled(main, install, '/app/main.js', { compileAhead: ['.next/server'] });
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'now true\n');
+});
+
 test('installed files: a preload bundle the page downloaded is not requested again', async () => {
   const out = await h.runInstalled(program, install, '/app/main.js', { prefetch: true });
   assert.equal(out.fatal, null);
