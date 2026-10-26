@@ -1,4 +1,4 @@
-# ADR NNNN: Known bugs (round 5): a dev script's page port, requests no app made, late allocators
+# ADR 0055: Known bugs (round 5): a dev script's page port, requests no app made, late allocators
 
 - Status: Accepted
 - Date: 2026-10-26
