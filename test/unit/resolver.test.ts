@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cachedBody, PackumentCache, revalidates, trimPackument } from '../../src/adapters/node/resolver.ts';
+import { tempDir } from './temp-dir.ts';
 
 test('the resolver keeps packuments by their size, least recently used out first', () => {
   const cache = new PackumentCache(100);
@@ -89,8 +90,7 @@ async function registry(): Promise<{ url: string; asked: string[]; close(): Prom
 }
 
 test('the resolver writes the lockfile npm does, and reads ahead only what npm reads', async () => {
-  const { mkdir, mkdtemp, writeFile, readFile } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
+  const { mkdir, writeFile, readFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
@@ -98,7 +98,7 @@ test('the resolver writes the lockfile npm does, and reads ahead only what npm r
   const reg = await registry();
   const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
   try {
-    const root = await mkdtemp(join(tmpdir(), 'sandburg-resolver-'));
+    const root = tempDir('sandburg-resolver-');
     process.env.npm_config_registry = reg.url;
     process.env.npm_config_cache = join(root, 'npm-cache');
     const flags = ['--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
@@ -155,8 +155,7 @@ test('a trimmed packument keeps what npm resolves and writes in lockfiles', () =
 });
 
 test('packuments are trimmed into npm\'s cache; a later resolution reads them, and a changed one is refused', async () => {
-  const { mkdir, mkdtemp, writeFile, readFile } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
+  const { mkdir, writeFile, readFile } = await import('node:fs/promises');
   const { join, dirname } = await import('node:path');
   const { execFile, execFileSync } = await import('node:child_process');
   const { promisify } = await import('node:util');
@@ -171,7 +170,7 @@ test('packuments are trimmed into npm\'s cache; a later resolution reads them, a
   const reg = await registry();
   const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
   try {
-    const root = await mkdtemp(join(tmpdir(), 'sandburg-trim-'));
+    const root = tempDir('sandburg-trim-');
     process.env.npm_config_registry = reg.url;
     process.env.npm_config_cache = join(root, 'npm-cache');
     const cache = join(root, 'npm-cache', '_cacache');
@@ -226,14 +225,12 @@ test('packuments are trimmed into npm\'s cache; a later resolution reads them, a
 });
 
 test('the resolver answers whether a version matches, as npm view does', async () => {
-  const { mkdtemp } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { Resolver } = await import('../../src/adapters/node/resolver.ts');
   const reg = await registry();
   const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
   try {
-    const root = await mkdtemp(join(tmpdir(), 'sandburg-view-'));
+    const root = tempDir('sandburg-view-');
     process.env.npm_config_registry = reg.url;
     process.env.npm_config_cache = join(root, 'npm-cache');
     const resolver = new Resolver(join(root, 'resolver'), ['--package-lock-only', '--ignore-scripts', '--loglevel=error']);

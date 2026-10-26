@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Resolver } from '../../src/adapters/node/resolver.ts';
 import { assertRegistryLockfile, registryOrigins, UnsupportedDependencyError } from '../../src/adapters/node/spec-guard.ts';
+import { tempDir } from './temp-dir.ts';
 
 // A registry package may declare a transitive git, directory or off-registry-tarball dependency. The
 // host must not fetch it during resolution and must not install it. A remote-tarball dependency is
@@ -43,7 +43,7 @@ test('a registry package depending on an off-registry tarball is refused during 
   const reg = await fakeRegistry({ badremote: { '1.0.0': { dependencies: { planted: `${evilOrigin}/planted.tgz` } } } });
   const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
   try {
-    const root = await mkdtemp(join(tmpdir(), 'sandburg-transitive-'));
+    const root = tempDir('sandburg-transitive-');
     process.env.npm_config_registry = reg.url;
     process.env.npm_config_cache = join(root, 'npm-cache');
     const resolver = new Resolver(join(root, 'resolver'), ['--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error']);
@@ -63,7 +63,7 @@ test('a registry package depending on a file: path resolves to a tree the lockfi
   const reg = await fakeRegistry({ badfile: { '1.0.0': { dependencies: { planted: 'file:../planted' } } } });
   const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
   try {
-    const root = await mkdtemp(join(tmpdir(), 'sandburg-transitive-file-'));
+    const root = tempDir('sandburg-transitive-file-');
     process.env.npm_config_registry = reg.url;
     process.env.npm_config_cache = join(root, 'npm-cache');
     const resolver = new Resolver(join(root, 'resolver'), ['--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error']);

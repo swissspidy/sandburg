@@ -1,16 +1,15 @@
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from './temp-dir.ts';
 
 // The node adapter serves from the shared installer, rooted here (set before it is loaded).
-const root = mkdtempSync(join(tmpdir(), 'sandburg-ahead-'));
+const root = tempDir('sandburg-ahead-');
 process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
 const { serve } = await import('../../src/adapters/node/index.ts');
 const { MAX_BODY } = await import('../../src/orchestrator/host-socket.ts');
 const { preloadList } = await import('../../src/adapters/node/preload.ts');
-after(() => rmSync(root, { recursive: true, force: true }));
 
 const key = 'c'.repeat(24);
 const files: Record<string, string> = {
