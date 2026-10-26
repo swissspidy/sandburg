@@ -55,7 +55,7 @@ export function diskCompileStore(dir: string, max = COMPILED_MAX): Pick<CompileS
 export async function sweepCompiles(dir: string, max = COMPILED_MAX, now = Date.now()): Promise<void> {
   const root = dirname(dir);
   for (const version of await readdir(root).catch(() => [] as string[])) {
-    if (version === basename(dir) || !/^v\d+$/.test(version)) continue;
+    if (version === basename(dir) || !/^v\d+(-[0-9a-f]+)?$/.test(version)) continue;
     const s = await stat(join(root, version)).catch(() => null);
     if (s && now - s.mtimeMs > 24 * 3600_000) await rm(join(root, version), { recursive: true, force: true }).catch(() => {});
   }

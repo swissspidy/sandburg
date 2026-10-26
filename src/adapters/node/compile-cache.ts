@@ -21,7 +21,7 @@ import type { CompileKind } from './compile.ts';
 import { bundleHead, bundleHeader } from '../../bundle-format.ts';
 
 /** What the stored outputs depend on besides the code: the compiler's own sources. */
-const COMPILER = createHash('sha256')
+export const COMPILER = createHash('sha256')
   .update(['compile.ts', 'interop.ts', 'tla.ts', 'esm-names.ts'].map((f) => readFileSync(source(`adapters/node/${f}`), 'utf8')).join('\0'))
   .digest('hex')
   .slice(0, 12);
