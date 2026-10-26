@@ -35,7 +35,7 @@ const NO_GIT = '/nonexistent/sandburg-git-is-disabled';
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error', `--git=${NO_GIT}`];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 25;
+export const TRANSFORM_VERSION = 26;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 17;
 

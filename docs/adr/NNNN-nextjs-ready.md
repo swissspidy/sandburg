@@ -38,7 +38,7 @@ the seed was 27 MB of gzip (78 MB inflated for the client), inflated and restore
   (SWC is not asked for a map, webpack keeps a plain source), and emitted as webpack's `eval` devtool
   emits them: `eval("<code>\n//# sourceURL=webpack-internal:///<module id>")`. Their stack frames keep
   their `webpack-internal:///…/node_modules/…` URLs, so Next.js ignore-lists them by path as before and
-  `classify.ts` reads them as before. The project's modules keep their maps. `TRANSFORM_VERSION` 25.
+  `classify.ts` reads them as before. The project's modules keep their maps. `TRANSFORM_VERSION` 26.
 - **The server's chunks compiled on the host as next dev writes them**
   (`node-runtime/compile-ahead.ts`): for Next.js the adapter names `.next/dev/server` and
   `.next/server`; a helper worker, started with the runtime, sends each CommonJS file the program
@@ -86,7 +86,7 @@ the seed was 27 MB of gzip (78 MB inflated for the client), inflated and restore
     is unchanged.
   - next dev's server chunks go to the host's compiler as they are written, not when required; a
     chunk written and never required is compiled anyway (the host's compile cache keeps it).
-  - Transforms and Next.js seeds are made again once (`TRANSFORM_VERSION` 25).
+  - Transforms and Next.js seeds are made again once (`TRANSFORM_VERSION` 26).
 - Fewer bytes per Next.js run: the seed's bundle 27 → 9.5 MB, the client's main chunk 12.0 → 4.6 MB,
   its vendor server chunks ~2.5 MB each (all three are held in the runtime's file system).
 

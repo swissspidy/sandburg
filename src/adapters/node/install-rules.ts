@@ -389,6 +389,15 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
       '$1if (!sourceMap) {\n$1    return result(source);\n',
   },
   {
+    // Next.js 16.4's dev server asks npm's security advisories about its own version as it starts
+    // (experimental.agentUpgrade, 'security' by default): a POST to the registry, which the egress
+    // gateway refuses and the network check counted against the app. Off by default here, as with
+    // `experimental: { agentUpgrade: false }` in next.config; an app that sets it still gets it.
+    file: /(^|\/)node_modules\/next\/dist\/(esm\/)?server\/config-shared\.js$/,
+    from: /(\n\s*)agentUpgrade: 'security',/,
+    to: '$1agentUpgrade: false, // sandburg: see SOURCE_PATCHES',
+  },
+  {
     // Next.js 16 runs Turbopack unless told otherwise, and Turbopack has no WebAssembly build: with
     // SWC's WebAssembly build (NEXT_TEST_WASM), no bundler flag means webpack. `--turbopack` stays.
     file: /(^|\/)node_modules\/next\/dist\/(esm\/)?lib\/bundler\.js$/,

@@ -137,7 +137,7 @@ http
 /** A dev script with several commands (or other packages' scripts), run by the runtime's shell as npm runs it. */
 const shellStart = (script: string) => `// Sandburg: the dev script, run as npm runs it.
 const { spawn } = require('node:child_process');
-const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit' });
+const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit', sandburgDevScript: true });
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
 

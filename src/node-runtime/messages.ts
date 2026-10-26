@@ -28,6 +28,8 @@ export type FromWorker =
   | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
   /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
   | { type: 'process-exit'; command: string; code: number; stderr: string }
+  /** How many of this runtime's processes (it and its child processes, at any depth) are still starting: see process-tree.ts. */
+  | { type: 'starting'; count: number }
   | { type: 'tree'; id: number; files: Record<string, { base64: string }> }
   /** read-cache's answer: the files, and their bytes as a bundle when asked (cache-tree.ts); `unchanged` as tree's. */
   | { type: 'cache'; id: number; files: CacheEntry[]; bundle: ArrayBuffer | null; unchanged?: boolean };
