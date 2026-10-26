@@ -56,6 +56,17 @@ test('installed files: the preload bundle, shared with threads, and single files
   assert.equal(h.asked.filter((a) => a.startsWith('http /__sandburg/preload/')).length, 1);
 });
 
+test('installed files: what a runtime read before its file channel opened is told to the host once it is open', async () => {
+  // The read is reported 500 ms after it (noteRead); the channel opens only after that, when the
+  // program asks for it. Before, such a report was dropped: a run whose channel opened late (a
+  // loaded machine) left out of its install's next bundle the files it read first.
+  const main = { 'main.js': `${CHANNEL_OPEN}\nconsole.log(require('bundled'));\nsetInterval(() => {}, 1000);\nsetTimeout(channelOpen, 700);` };
+  const out = await h.runInstalled(main, install, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.some((a) => a.includes('/read?')) });
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'from the bundle\n');
+  assert.deepEqual(h.asked.filter((a) => a.startsWith('ws ')), [`ws /__sandburg/nm/${INSTALL_KEY}/read?files=${encodeURIComponent('f/node_modules/bundled/package.json\nt/node_modules/bundled/index.js')}`]);
+});
+
 test('installed files: raw files read one after another come with the files after them in their directory', async () => {
   const icons = {
     files: {
