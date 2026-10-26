@@ -5,7 +5,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,13 @@ before(async () => {
   counter = await loadProject(fixtureDir);
   dir = await mkdtemp(join(tmpdir(), 'sandburg-page-checks-'));
 });
-after(() => session.close());
+after(async () => {
+  try {
+    await session?.close();
+  } finally {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  }
+});
 
 const functional = (r: RunResult) => Object.fromEntries(r.checks.filter((c) => c.kind === 'functional').map((c) => [c.name, c]));
 
