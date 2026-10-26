@@ -106,3 +106,71 @@ test('a compound dev script whose server sends HTML without a Content-Type is fo
   assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
   assert.ok(result.timings.startMs! < 10_000, `start took ${result.timings.startMs} ms`);
 });
+
+test('a compound dev script whose server sends a page no browser would take for a document, without a Content-Type, is taken once it is up, not after 60 s', async () => {
+  // A fragment (`<h1>`, which browsers sniff as HTML but pagePort does not take for a document) and plain text.
+  for (const [name, body] of [
+    ['fragment', '<h1>Hello</h1>'],
+    ['text', 'Hello'],
+  ]) {
+    const files = {
+      'package.json': JSON.stringify({ name: `no-content-type-${name}`, private: true, scripts: { dev: 'node prep.js && node server.js' } }),
+      'prep.js': "console.log('prepared');",
+      'server.js': `require('http').createServer((req, res) => { res.end(${JSON.stringify(body)}); }).listen(3000);`,
+    };
+    const result = await session.run(projectFromFiles(files, { name: `no-content-type-${name}`, path: fixture('node-express') }), {
+      outDir,
+      checks: { 'the page shows': async ({ app, expect }) => void (await expect(app.getByText('Hello')).toBeVisible()) },
+    });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+    assert.ok(result.timings.startMs! < 10_000, `${name}: start took ${result.timings.startMs} ms`);
+  }
+});
+
+test('a dev script whose API answers first, with its page server still to start after a pause, gets the page', async () => {
+  // While the shell sleeps the API is the only port, and answers no HTML: it is not the app.
+  const files = {
+    'package.json': JSON.stringify({ name: 'api-then-page', private: true, scripts: { dev: 'node api.js & sleep 3 && node page.js' } }),
+    'api.js': "require('http').createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{\"ok\":true}'); }).listen(3001);",
+    'page.js': "require('http').createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><h1>The page</h1>'); }).listen(3000);",
+  };
+  const result = await session.run(projectFromFiles(files, { name: 'api-then-page', path: fixture('node-express') }), {
+    outDir,
+    checks: { 'the page renders': async ({ app, expect }) => void (await expect(app.getByRole('heading', { name: 'The page' })).toBeVisible()) },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+});
+
+test('a dev script program that forks an API and then starts its own page server gets the page', async () => {
+  // dev.js has a child that listens at once (the API); its own server, the page's, comes 3 s later.
+  const files = {
+    'package.json': JSON.stringify({ name: 'fork-then-page', private: true, scripts: { dev: 'node prep.js && node dev.js' } }),
+    'prep.js': "console.log('prepared');",
+    'api.js': "require('http').createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{\"ok\":true}'); }).listen(3001);",
+    'dev.js':
+      "require('child_process').fork('api.js');\n" +
+      "setTimeout(() => require('http').createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><h1>The page</h1>'); }).listen(3000), 3000);",
+  };
+  const result = await session.run(projectFromFiles(files, { name: 'fork-then-page', path: fixture('node-express') }), {
+    outDir,
+    checks: { 'the page renders': async ({ app, expect }) => void (await expect(app.getByRole('heading', { name: 'The page' })).toBeVisible()) },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+});
+
+test('a dev script program that serves its API and then, seconds later, its page gets the page', async () => {
+  // One process: the API (JSON) at once, the page's server 3 s later (as Vite's createServer takes).
+  const files = {
+    'package.json': JSON.stringify({ name: 'api-then-page-one-process', private: true, scripts: { dev: 'node prep.js && node server.js' } }),
+    'prep.js': "console.log('prepared');",
+    'server.js':
+      "const http = require('http');\n" +
+      "http.createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{\"ok\":true}'); }).listen(3001);\n" +
+      "setTimeout(() => http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><h1>The page</h1>'); }).listen(3000), 3000);",
+  };
+  const result = await session.run(projectFromFiles(files, { name: 'api-then-page-one-process', path: fixture('node-express') }), {
+    outDir,
+    checks: { 'the page renders': async ({ app, expect }) => void (await expect(app.getByRole('heading', { name: 'The page' })).toBeVisible()) },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+});

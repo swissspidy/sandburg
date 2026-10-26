@@ -269,7 +269,7 @@ export class Server extends EventEmitter {
   listening = false;
   private port: number | string = 0;
   /** Listening on a port the system picked (port 0): a tool's probe or internal server, not the app's. */
-  private ephemeral = false;
+  ephemeral = false;
   timeout = 0;
   keepAliveTimeout = 5000;
   headersTimeout = 60000;
@@ -320,6 +320,7 @@ export class Server extends EventEmitter {
   close(cb?: (e?: Error) => void) {
     if (servers.get(this.port) === this) servers.delete(this.port);
     this.listening = false;
+    serverEvents.emit('closed', this.port);
     queueMicrotask(() => {
       this.emit('close');
       cb?.();

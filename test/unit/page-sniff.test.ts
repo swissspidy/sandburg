@@ -1,7 +1,7 @@
 /** pagePort's test for a page whose server sends no Content-Type (src/adapters/node/process.ts). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { looksLikeHtml, sniffHtml } from '../../src/adapters/node/process.ts';
+import { looksLikeHtml, pagePortSettled, probeAnswer, sniffHtml } from '../../src/adapters/node/process.ts';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 
@@ -19,3 +19,39 @@ test("a streamed body's first bytes decide only once they tell", () => {
   for (const part of ['{', '<d', '<?xml', 'He']) assert.equal(sniffHtml(enc(part)), false, part);
   assert.equal(sniffHtml(enc(' '.repeat(512))), false, 'whitespace only, up to the limit');
 });
+
+test("pagePort takes a port that sent no HTML once no process is starting, unless a port said it is no page", () => {
+  const at = { now: 10_000, lastPort: 8_000, patience: 60_000, starting: 0 as number | null, startingSince: 8_500, notPage: false };
+  assert.equal(pagePortSettled(at), true, '1 s after the last port and report, nothing starting');
+  assert.equal(pagePortSettled({ ...at, startingSince: 9_500 }), false, 'a report less than 1 s ago');
+  assert.equal(pagePortSettled({ ...at, starting: 1 }), false, 'a process still starting');
+  assert.equal(pagePortSettled({ ...at, starting: null }), false, 'a runtime that does not report');
+  // A port that answered JSON (or 404) is an API: its process may start the page's server later.
+  assert.equal(pagePortSettled({ ...at, notPage: true }), false);
+  // The patience ends any wait.
+  assert.equal(pagePortSettled({ ...at, starting: 1, notPage: true, now: 68_001 }), true);
+  assert.equal(pagePortSettled({ ...at, starting: 1, notPage: true, now: 68_000 }), false);
+});
+
+test("the head of an answer to pagePort's probe: the page, an API's, or the body tells", () => {
+  const page = { page: true, notPage: false };
+  const other = { page: false, notPage: true };
+  const text = { page: false, notPage: false };
+  const sniff = { page: null, notPage: false };
+  for (const [status, type, expected] of [
+    [200, 'text/html', page],
+    [200, 'text/html; charset=utf-8', page],
+    [200, 'TEXT/HTML', page],
+    [200, 'application/xhtml+xml', page],
+    [200, 'application/json', other],
+    [200, 'Application/JSON; charset=utf-8', other],
+    [200, 'image/svg+xml', other],
+    [200, 'text/plain', text],
+    [200, 'Text/Plain; charset=utf-8', text],
+    [200, undefined, sniff],
+    [404, undefined, other],
+    [500, 'text/html', other],
+    [302, undefined, sniff],
+  ] as const) assert.deepEqual(probeAnswer(status, type), expected, `${status} ${type}`);
+});
+

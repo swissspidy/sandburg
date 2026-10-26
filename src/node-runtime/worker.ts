@@ -19,6 +19,7 @@ import pathBrowserify from 'path-browserify';
 import { installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
+import { initProcessTree, serversChanged } from './process-tree.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive } from './builtins/process.ts';
 import { netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
@@ -532,7 +533,13 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       write('stderr', `Uncaught (in promise) ${e.reason?.stack ?? e.reason}\n`);
     }
   });
-  serverEvents.on('listening', (port: number | string, ephemeral?: boolean) => announce(port, ephemeral));
+  serverEvents.on('listening', (port: number | string, ephemeral?: boolean) => {
+    announce(port, ephemeral);
+    serversChanged();
+  });
+  serverEvents.on('closed', serversChanged);
+  // A server on a TCP port the program chose (not a probe on one the system picked) is up.
+  initProcessTree({ process: !thread || !!thread.process, serving: () => [...servers].some(([port, s]) => typeof port === 'number' && !s.ephemeral), post: (m) => post(m) });
   installNodeMessagePorts();
   hideWorkerGlobals();
   post({ type: 'ready' });

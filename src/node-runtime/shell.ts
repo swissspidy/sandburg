@@ -18,6 +18,11 @@ export interface ShellHost {
   exists(path: string): boolean;
   write(fd: 1 | 2, text: string): void;
   onExit(code: number): void;
+  /**
+   * A step with more steps after it started (+1) or ended (-1): the script has commands still to
+   * start (`tsc && node server.js` while tsc runs; `sleep 2 && vite`), see process-tree.ts.
+   */
+  stepsAhead?(delta: 1 | -1): void;
 }
 
 type Token = { op: '&&' | '||' | ';' | '&' | '|' | '>' } | { word: string; assign?: boolean };
@@ -342,7 +347,10 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         });
         return next(i + 1, false);
       }
+      const ahead = i < list.length - 1;
+      if (ahead) host.stepsAhead?.(1);
       command(step.words, cwd, { ...env, ...shellEnv }, (code, newDir) => {
+        if (ahead) host.stepsAhead?.(-1);
         last = code;
         if (newDir) cwd = newDir;
         next(i + 1, step.then === '&&' ? code !== 0 : step.then === '||' ? code === 0 : false);
