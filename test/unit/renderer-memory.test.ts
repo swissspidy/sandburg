@@ -115,7 +115,6 @@ function marking(looks: Record<number, number>[]) {
   let page = 0;
   let look = 0;
   return new RendererMemory({
-    pageCpu: () => Promise.reject(new Error('not read where the page works instead')),
     mark: async (read) => {
       const used = look < looks.length ? looks[look++] : { 11: 0.04 };
       const first = { from: page, renderers: await read(), to: page };
@@ -169,11 +168,14 @@ test('inside the OS sandbox, when no renderer fits the looks start again rather 
 });
 
 test("a process's main thread's CPU time is read from /proc, null for none", { skip: process.platform !== 'linux' }, () => {
-  const start = mainThreadCpu(process.pid)!;
-  // Work on this thread until /proc counts 80 ms more (clock ticks of 10 ms), however long a busy
-  // machine takes to give it that much CPU; 5 s at most.
+  const cpu = () => mainThreadCpu(process.pid)!.seconds;
+  const start = cpu();
+  // Work on this thread until /proc counts 80 ms more, however long a busy machine takes to give it
+  // that much CPU; 5 s at most.
   const deadline = performance.now() + 5_000;
-  while (mainThreadCpu(process.pid)! - start < 0.08 && performance.now() < deadline);
-  assert.ok(mainThreadCpu(process.pid)! - start >= 0.08);
+  while (cpu() - start < 0.08 && performance.now() < deadline);
+  assert.ok(cpu() - start >= 0.08);
+  // In nanoseconds (schedstat, a few ms either way), or in clock ticks of 10 ms (stat, 15 ms).
+  assert.ok([0.003, 0.015].includes(mainThreadCpu(process.pid)!.toleranceSeconds));
   assert.equal(mainThreadCpu(2 ** 22 + 1), null);
 });

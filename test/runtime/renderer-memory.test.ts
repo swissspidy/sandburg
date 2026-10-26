@@ -65,3 +65,38 @@ test(`pages that look for their renderers at once, on busy cores, each find thei
     await Promise.all(pages.map((p) => p.context().close()));
   }
 });
+
+test(`pages opened together, each with an app at work, find their renderers within a short run (${browserSandbox({}) ? 'inside' : 'outside'} the OS sandbox)`, { skip: process.platform !== 'linux', timeout: 60_000 }, async () => {
+  // As a batch opens its first tabs: all at once, alike, and looked for in step.
+  const pages = await Promise.all(
+    Array.from({ length: PAGES }, async (_, i) => {
+      const page = await (await browser.newContext()).newPage();
+      await page.setContent('<p>page</p>');
+      await page.evaluate((bytes) => void ((window as unknown as { held: Uint8Array }).held = new Uint8Array(bytes).fill(1)), (i + 1) * STEP);
+      // An app at work on the page's main thread: 10 ms every 50 ms, as alike as the pages are.
+      await page.evaluate(() => void setInterval(() => { const until = performance.now() + 10; while (performance.now() < until); }, 50));
+      return page;
+    }),
+  );
+  // The cores busy too, as with the apps' dev servers.
+  const stop = load();
+  try {
+    const found = await Promise.all(
+      pages.map(async (page) => {
+        const memory = pageRendererMemory(page, () => (cdp ??= browser.newBrowserCDPSession()), browserSandbox({}))!;
+        // A warm run's checks are over within a few seconds of its start phase.
+        const deadline = performance.now() + 2_000;
+        while (!(await memory.locate()) && performance.now() < deadline) await new Promise((r) => setTimeout(r, 250));
+        return memory.used();
+      }),
+    );
+    const mb = found.map((b) => (b === null ? null : Math.round(b / 2 ** 20)));
+    for (const [i, bytes] of found.entries()) {
+      const held = (i + 1) * STEP;
+      assert.ok(bytes !== null && bytes >= held && bytes < held + STEP * 0.8, `page ${i}: holds ${held / 2 ** 20} MB, its renderer was read as ${mb[i]} MB (${mb})`);
+    }
+  } finally {
+    await stop();
+    await Promise.all(pages.map((p) => p.context().close()));
+  }
+});

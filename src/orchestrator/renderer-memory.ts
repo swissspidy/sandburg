@@ -32,6 +32,8 @@ export interface ProcessCpu {
   pid: number;
   /** CPU seconds the process (or with RendererMemorySource.mark, its main thread) has used. */
   cpuSeconds: number;
+  /** How far off cpuSeconds may be, either way (with RendererMemorySource.mark; default MARK_TOLERANCE_S). */
+  toleranceSeconds?: number;
 }
 
 /** Chromium reports CPU time in clock ticks (10 ms) or finer: a reading may be one tick short. */
@@ -56,8 +58,10 @@ function fittingRenderers(pageCpuS: number, before: ProcessCpu[], after: Process
 /** CPU seconds the page works on its main thread for each look inside the OS sandbox: drawn between these. */
 const MARK_MIN_S = 0.03;
 const MARK_MAX_S = 0.09;
-/** /proc counts in clock ticks of 10 ms: a reading is up to a tick short, and a tick may be charged late. */
+/** /proc/<pid>/stat counts in clock ticks of 10 ms: a reading is up to a tick short, and a tick may be charged late. */
 const MARK_TOLERANCE_S = 0.015;
+/** /proc/<pid>/schedstat counts in nanoseconds: what is off is the page's own reading of its clock (well under 1 ms). */
+const SCHEDSTAT_TOLERANCE_S = 0.003;
 /** Looks inside the OS sandbox before RendererMemory gives up (each takes up to MARK_MAX_S of the page's main thread). */
 const MARK_LOOKS = 8;
 
@@ -93,24 +97,32 @@ export function processMemory(pid: number): number | null {
 }
 
 /**
- * CPU seconds a process's main thread has used (/proc/<pid>/task/<pid>/stat: utime and stime, in
- * clock ticks of 10 ms), or null where /proc cannot say (not Linux, or the process has ended).
+ * CPU seconds a process's main thread has used, and how far off that may be either way: from
+ * /proc/<pid>/task/<pid>/schedstat (its run time in nanoseconds, where the kernel keeps scheduler
+ * statistics), else from /proc/<pid>/task/<pid>/stat (utime and stime, in clock ticks of 10 ms).
+ * Null where /proc cannot say (not Linux, or the process has ended).
  */
-export function mainThreadCpu(pid: number): number | null {
+export function mainThreadCpu(pid: number): { seconds: number; toleranceSeconds: number } | null {
+  try {
+    const ns = Number(readFileSync(`/proc/${pid}/task/${pid}/schedstat`, 'utf8').split(' ')[0]);
+    if (Number.isFinite(ns)) return { seconds: ns / 1e9, toleranceSeconds: SCHEDSTAT_TOLERANCE_S };
+  } catch {
+    // No scheduler statistics in this kernel: the clock ticks.
+  }
   try {
     const stat = readFileSync(`/proc/${pid}/task/${pid}/stat`, 'utf8');
     // The fields after the command (which may hold spaces and parentheses): state is the first, utime the 12th.
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
     const ticks = Number(fields[11]) + Number(fields[12]);
-    return Number.isFinite(ticks) ? ticks / 100 : null;
+    return Number.isFinite(ticks) ? { seconds: ticks / 100, toleranceSeconds: MARK_TOLERANCE_S } : null;
   } catch {
     return null;
   }
 }
 
 export interface RendererMemorySource {
-  /** The page's renderer's CPU seconds, as the page reports it. */
-  pageCpu(): Promise<number>;
+  /** The page's renderer's CPU seconds, as the page reports it (where it can: without mark). */
+  pageCpu?(): Promise<number>;
   /**
    * Where the page cannot report its process's CPU time (inside the OS sandbox): reads the
    * renderers' main threads (`read`) with the page's ThreadTime around it, has the page work on its
@@ -163,6 +175,7 @@ export class RendererMemory {
 
   /** A look by the page's CPU time: the renderer, once one alone fitted every look. */
   private async lookByCpu(): Promise<number | null> {
+    if (!this.source.pageCpu) return null;
     const before = await this.source.renderers();
     const fits = new Set(fittingRenderers(await this.source.pageCpu(), before, await this.source.renderers()));
     const kept = this.candidates ? new Set([...this.candidates].filter((p) => fits.has(p))) : fits;
@@ -184,8 +197,9 @@ export class RendererMemory {
       const next = new Map<number, [number, number]>();
       for (const r of reading.renderers) {
         // What the renderer's main thread used before the page's count started, if it is the page's.
-        const lo = r.cpuSeconds - reading.to - MARK_TOLERANCE_S;
-        const hi = r.cpuSeconds - reading.from + MARK_TOLERANCE_S;
+        const tolerance = r.toleranceSeconds ?? MARK_TOLERANCE_S;
+        const lo = r.cpuSeconds - reading.to - tolerance;
+        const hi = r.cpuSeconds - reading.from + tolerance;
         const was = this.offsets ? this.offsets.get(r.pid) : [lo, hi];
         // (A renderer started since the first reading is not the page's.)
         if (was && Math.max(lo, was[0]) <= Math.min(hi, was[1])) next.set(r.pid, [Math.max(lo, was[0]), Math.min(hi, was[1])]);
@@ -248,7 +262,6 @@ export function pageRendererMemory(page: Page, browserCdp: () => Promise<CDPSess
   }
   let frameId: string | undefined;
   return new RendererMemory({
-    pageCpu: () => metric('ThreadTime'),
     mark: async (read) => {
       const s = await pageSession();
       frameId ??= (await s.send('Page.getFrameTree')).frameTree.frame.id;
@@ -269,8 +282,8 @@ export function pageRendererMemory(page: Page, browserCdp: () => Promise<CDPSess
     },
     renderers: async () =>
       (await rendererProcesses(browserCdp)).flatMap((p) => {
-        const cpuSeconds = mainThreadCpu(p.id);
-        return cpuSeconds === null ? [] : [{ pid: p.id, cpuSeconds }];
+        const cpu = mainThreadCpu(p.id);
+        return cpu === null ? [] : [{ pid: p.id, cpuSeconds: cpu.seconds, toleranceSeconds: cpu.toleranceSeconds }];
       }),
     release,
   });

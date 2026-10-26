@@ -68,12 +68,14 @@ hundred for an app), and the e2e `run` and `batch` suites failed on `rendererPea
 
 Inside the sandbox the page's renderer can read its main thread's CPU time (ThreadTime, counted
 from `Performance.enable`), and the host can read every renderer's main thread from
-`/proc/<pid>/task/<pid>/stat` (clock ticks of 10 ms). For the page's renderer the two differ by a
-constant: what its main thread used before the count started. Each time the host reads the
-renderers, the page reads its ThreadTime just before and just after, which bounds each renderer's
-offset to within that span and 15 ms either way (a tick, and one charged late). Over the run the
-page's renderer's bounds overlap at every reading. Another renderer's part as soon as its main
-thread's use differs from the page's by more than about 30 ms. Between two readings of a look, the
+`/proc/<pid>/task/<pid>/schedstat` (its run time in nanoseconds), or from `/proc/<pid>/task/<pid>/stat`
+(clock ticks of 10 ms) where the kernel keeps no scheduler statistics. For the page's renderer the
+two differ by a constant: what its main thread used before the count started (measured: steady to
+0.1 ms over a run). Each time the host reads the renderers, the page reads its ThreadTime just
+before and just after, which bounds each renderer's offset to within that span and 3 ms either way
+(15 ms with clock ticks: a tick, and one charged late). Over the run the page's renderer's bounds
+overlap at every reading. Another renderer's part as soon as its main thread's use differs from the
+page's by more than a few ms (about 30 ms with clock ticks). Between two readings of a look, the
 page works on its main thread in an isolated world (`Page.createIsolatedWorld`, so the app cannot
 change the clock the loop reads) until its ThreadTime has grown by an amount drawn between 30 and
 90 ms, so that renderers part soon even beside pages doing the same. The work is bound by CPU time,
@@ -90,13 +92,19 @@ in each round of an independent review. A second version, bound by CPU time but 
 look's growth on its own, took no wrong renderer. But in the batch e2e suite, which starts 8 tabs
 together, several renderers grew alike in every look (other apps' main threads working as much in
 the same span), and a run often ended before two looks agreed (one run in 10 without its renderer
-memory, in each of 3 runs of the suite).
+memory, in each of 3 runs of the suite). A third version, this one with clock ticks (`stat`), took no
+wrong renderer in 218 pages of an independent review. But tabs opened together start within 10 to
+40 ms of each other's offsets, and with bounds at least 30 ms wide, the batch e2e suite still had a
+run without its renderer memory in 8 of 10 runs: the offsets parted too slowly for a warm run of a
+second or two. Run time in nanoseconds (`schedstat`) narrows the bounds to a few ms.
 
 `test/runtime/renderer-memory.test.ts` holds 8 pages, each with 48 MB more memory than the one
-before, while every core is busy. It checks that a page's renderer, when one is taken, holds that
-page's memory. The first version failed it in 1 of 3 runs. This one found all 8 renderers in 9 of 9
-runs, and none wrong. The batch e2e suite (10 runs, 8 at a time, each run's renderer found) passed 3
-of 3 runs sandboxed.
+before, while every core is busy. Its first test has the pages look a little apart, and checks that
+a page's renderer, when one is taken, holds that page's memory: the first version failed it in 1 of
+3 runs. Its second has them opened together, each with an app at work on its main thread, and
+looking in step for 2 s: every page must find its own renderer. The third version (clock ticks)
+failed it in 2 of 4 runs; this one passed 6 of 6. The batch e2e suite (10 runs, 8 at a time, each
+run's renderer found) passed 10 runs in a row sandboxed.
 
 The cost inside the sandbox is the work. The app's frame is same-origin with the host page and
 shares its main thread, so each look blocks the app for 30 to 90 ms of CPU. Looks are 250 ms apart

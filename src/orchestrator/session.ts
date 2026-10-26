@@ -317,7 +317,6 @@ export class Session {
     return pageRendererMemory(tab.page, () => (this.browserCdp ??= browser.newBrowserCDPSession()), this.browserSandbox);
   }
 
-
   private async closeTab(tab: Tab): Promise<void> {
     await tab.context.close().catch(() => {});
     await tab.proxy.close();
