@@ -118,12 +118,13 @@ export function createNativeTransform(t: Transport): (version: unknown, input: u
       // Options no plain object would have (a proxy that throws): the app's own esbuild reads them.
       return null;
     }
-    // Characters, a cheap first bound: the host checks the bytes.
-    if (body.length > NATIVE_MAX_BYTES) return null;
+    // Bytes, as the host and the file channel count them: a frame over the channel's bound closes it.
+    const bytes = new TextEncoder().encode(body);
+    if (bytes.length > NATIVE_MAX_BYTES) return null;
     const url = `${t.base}${NATIVE_TRANSFORM_PATH}?v=${version as string}`;
     const http = () => t.fetch(url, { method: 'POST', body, headers: { 'content-type': 'application/json' } }).then(async (res) => (res.status === 200 ? await res.text() : null));
     t.pending.count++;
-    const viaChannel = t.post?.(url, new TextEncoder().encode(body));
+    const viaChannel = t.post?.(url, bytes);
     return (viaChannel ? viaChannel.then((r) => (r ? (r.status === 200 ? new TextDecoder().decode(r.body) : null) : http())) : http())
       .then((text) => {
         if (text === null) return null;

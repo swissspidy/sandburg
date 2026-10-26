@@ -64,15 +64,18 @@ export function createConfigBundles(vfs: Vfs, cache: TransformCache, cwd: () => 
       return null;
     }
   };
-  /** What a bundle depends on: its files, and the settings files of their directories up to the project's. */
+  /**
+   * What a bundle depends on: its files, and the settings files of their directories up to the
+   * project's (for a file outside the project, up to the root).
+   */
   const inputsOf = (bundle: Bundle, dir: string): Record<string, string | null> => {
     const inputs: Record<string, string | null> = {};
     for (const dep of bundle.dependencies) {
       const path = dep.startsWith('/') ? dep : `${dir}/${dep}`;
       inputs[path] = text(path);
-      for (let d = path.slice(0, path.lastIndexOf('/')); d.startsWith(dir); d = d.slice(0, d.lastIndexOf('/'))) {
+      for (let d = path.slice(0, path.lastIndexOf('/')); ; d = d.slice(0, d.lastIndexOf('/'))) {
         for (const name of SETTINGS) inputs[`${d}/${name}`] ??= text(`${d}/${name}`);
-        if (d === dir) break;
+        if (d === dir || d === '') break;
       }
     }
     return inputs;
@@ -89,11 +92,20 @@ export function createConfigBundles(vfs: Vfs, cache: TransformCache, cwd: () => 
     } catch {
       // no entry, or not one of these: bundled as before
     }
-    const result = await bundle();
-    // Only a bundle of files that are all there (the config itself among them) is kept.
+    // The files written while it is made: their text now may not be what was bundled.
+    const written = new Set<string>();
+    const unwatch = vfs.watch((_, path) => written.add(path));
+    let result: Bundle;
+    try {
+      result = await bundle();
+    } finally {
+      unwatch();
+    }
+    // Only a bundle of files that are all there (the config itself among them), none written since
+    // it was begun, is kept.
     if (keepable(result) && result.dependencies.length) {
       const inputs = inputsOf(result, dir);
-      if (result.dependencies.every((d) => inputs[d.startsWith('/') ? d : `${dir}/${d}`] !== null)) {
+      if (result.dependencies.every((d) => inputs[d.startsWith('/') ? d : `${dir}/${d}`] !== null) && !Object.keys(inputs).some((path) => written.has(path))) {
         cache.setFile('vite-config', name, JSON.stringify({ fileName, isESM, cwd: dir, inputs, bundle: result } satisfies Entry));
       }
     }
