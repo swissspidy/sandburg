@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, parent, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
+import { nestedEnded, nestedStarted } from './process-tree.ts';
 import type { ToParent, VfsCall, ThreadInit, VfsOp, ProjectSnapshot, ToWorker } from './messages.ts';
 
 /**
@@ -574,9 +575,11 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   const ports = [message.compilePort, message.filesChannel?.port].filter((p): p is MessagePort => !!p);
   worker.postMessage(message, [...transfer, ...ports]);
   liveRuntimes.add(worker);
+  nestedStarted(worker, !!init.process);
   const terminate = worker.terminate.bind(worker);
   worker.terminate = () => {
     liveRuntimes.delete(worker);
+    nestedEnded(worker);
     terminate();
   };
   return worker;

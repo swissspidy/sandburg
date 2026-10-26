@@ -307,3 +307,23 @@ test("Nitro's dev build starts from the project's rollup cache and keeps it when
     delete (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.transformCache')];
   }
 });
+
+// Next.js 16.4's defaults (dist/server/config-shared.js), as published, in part.
+const NEXT_DEFAULTS = `const defaultConfig = {
+    experimental: {
+        agentUpgrade: 'security',
+        serverActions: undefined
+    }
+};
+exports.defaultConfig = defaultConfig;
+`;
+
+test("Next.js' dev server does not ask npm's security advisories by default (a POST the egress gateway refuses)", async () => {
+  for (const path of ['node_modules/next/dist/server/config-shared.js', 'node_modules/next/dist/esm/server/config-shared.js']) {
+    const out = await transformForRuntime(NEXT_DEFAULTS, path, path.includes('/esm/'));
+    assert.match(out, /agentUpgrade: false/);
+    assert.doesNotMatch(out, /agentUpgrade: "security"|agentUpgrade: 'security'/);
+  }
+  const other = await transformForRuntime(NEXT_DEFAULTS, 'node_modules/other/dist/server/config-shared.js', false);
+  assert.match(other, /agentUpgrade: "security"|agentUpgrade: 'security'/);
+});

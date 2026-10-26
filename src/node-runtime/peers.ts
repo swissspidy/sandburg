@@ -6,6 +6,7 @@ import type { NetMessage, ToParent, ToWorker } from './messages.ts';
 import { loopback, servers, type BridgeResponse } from './builtins/http.ts';
 import { netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { thread, realPostMessage, post, announce } from './worker.ts';
+import { nestedReported } from './process-tree.ts';
 
 type Send = (m: NetMessage, transfer?: Transferable[]) => void;
 
@@ -193,6 +194,9 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
   switch (m.type) {
     case 'process-exit':
       post(m);
+      return true;
+    case 'starting':
+      nestedReported(from, m.count);
       return true;
     case 'lb-request':
       loopbackRequest(m, from);
