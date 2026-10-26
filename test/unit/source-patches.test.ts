@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { transformForRuntime } from '../../src/adapters/node/install.ts';
+import './await-context-stub.ts'; // compiled code runs here
 
 // nitropack 2.13's dev server, as published.
 const NITRO_GET_WORKER = `class DevServer {

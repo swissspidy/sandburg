@@ -18,6 +18,7 @@ import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
+import { contextAwaits } from '../../node-runtime/await-context.ts';
 import type { Project } from '../../types.ts';
 import { deferImports } from './deferred-imports.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
@@ -35,7 +36,7 @@ const NO_GIT = '/nonexistent/sandburg-git-is-disabled';
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error', `--git=${NO_GIT}`];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 24;
+export const TRANSFORM_VERSION = 25;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 const LAYOUT_VERSION = 17;
 
@@ -424,9 +425,10 @@ const MEMORY_MAX = 256 << 20;
 
 /**
  * Compiles a module for the browser runtime. ESM becomes CommonJS (the loader
- * is CommonJS, like Node's require()); async functions and generators are
- * lowered to generator-based code, whose awaits go through Promise.then, which
- * the runtime patches to carry AsyncLocalStorage context.
+ * is CommonJS, like Node's require()); async generators are lowered to
+ * generator-based code, whose awaits go through Promise.then, which the runtime
+ * patches to carry AsyncLocalStorage context, and the awaits of async functions
+ * restore that context themselves (await-context.ts).
  */
 export async function transformForRuntime(source: string, path: string, esm: boolean): Promise<string> {
   for (const patch of SOURCE_PATCHES) if (patch.file.test(path)) source = source.replace(patch.from, patch.to);
@@ -435,10 +437,12 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   // Code from an ES module is marked: the loader resolves its requests with import conditions.
   const mark = (code: string) => patchInterop(esm ? `${ESM_MARKER}\n${code}` : code);
   // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
-  const convert = async (code: string) => {
-    const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
-    const cjs = esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
-    return esm ? deferImports(cjs, path) : cjs;
+  // Awaits that cannot be rewritten to carry the async context: their async functions lowered instead.
+  const convert = async (code: string, lowerAsync = false): Promise<string> => {
+    const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm, lowerAsync))).code;
+    const cjs = esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm, lowerAsync))).code : out;
+    const done = esm ? deferImports(cjs, path) : cjs;
+    return lowerAsync ? done : (contextAwaits(done) ?? convert(code, true));
   };
   try {
     return mark(await convert(source));
@@ -456,13 +460,14 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   }
 }
 
-const TRANSFORM_OPTIONS = (path: string, esm: boolean): esbuild.TransformOptions => ({
+const TRANSFORM_OPTIONS = (path: string, esm: boolean, lowerAsync: boolean): esbuild.TransformOptions => ({
   loader: 'js',
   format: esm ? 'cjs' : undefined,
   sourcefile: esm ? esmSourcefile(path) : path,
   target: 'es2022',
-  // import() goes through the runtime's loader (require), like everything else.
-  supported: { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false },
+  // import() goes through the runtime's loader (require), like everything else. Async functions stay
+  // native (their awaits rewritten: await-context.ts) unless lowerAsync.
+  supported: { ...(lowerAsync ? { 'async-await': false } : {}), 'async-generator': false, 'for-await': false, 'dynamic-import': false },
   define: esm ? ESM_DEFINE : undefined,
   logLevel: 'silent',
 });
