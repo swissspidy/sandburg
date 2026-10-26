@@ -18,10 +18,10 @@ const ASYNC_FUNCTION_CONSTRUCTOR =
   /\bObject\.getPrototypeOf\(\s*async\s+function\s*\(\s*\)\s*\{\s*\}\s*\)\.constructor\b|\(\s*async\s+function\s*\(\s*\)\s*\{\s*\}\s*\)\.constructor\b|\basync\s+function\s*\(\s*\)\s*\{\s*\}\.constructor\b|\(\s*async\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)\.constructor\b/g;
 
 /**
- * The runtime lowers async functions (for AsyncLocalStorage), so `(async function () {}).constructor`
- * would be plain Function, and `new AsyncFunction(…, body)` (Vite's SSR module runner) would reject
- * `await` in the body. Such expressions become the runtime's AsyncFunction, which lowers the body too.
- * Runs on source, before lowering.
+ * `new AsyncFunction(…, body)` (Vite's SSR module runner) compiles its body at run time, past the
+ * host's rewrite of awaits (node-runtime/await-context.ts) and its lowering, so its awaits would not
+ * restore AsyncLocalStorage's context. Such expressions become the runtime's AsyncFunction, which has
+ * the host compile the body as all other code. Runs on source, before compiling.
  */
 export function patchAsyncFunction(source: string): string {
   if (!source.includes('async')) return source;

@@ -38,7 +38,7 @@ const LOCAL = '__sbac';
 const G = AWAIT_CONTEXT_GLOBAL;
 
 /** What a rewrite inserts, by kind; at one position, in this order. */
-const Edit = { AwaitClose: 0, BodyEnd: 1, ExpressionEnd: 2, BodyStart: 3, ExpressionStart: 4, AwaitOpen: 5, AwaitOperand: 6, Resumed: 7 } as const;
+const Edit = { AwaitClose: 0, BodyEnd: 1, ExpressionEnd: 2, BodyStart: 3, ExpressionStart: 4, Resumed: 5, AwaitOpen: 6, AwaitOperand: 7 } as const;
 type Edit = (typeof Edit)[keyof typeof Edit];
 const BODY_START = `const ${LOCAL} = ${G}.e(); try { `;
 const BODY_END = ` } finally { ${G}.x(${LOCAL}); }`;
@@ -72,15 +72,20 @@ type T = (typeof T)[keyof typeof T];
 interface Frame {
   /** An async function's frame: its awaits are rewritten. */
   async: boolean;
+  /** A generator's (`yield` is a keyword in it). */
+  generator: boolean;
+  /** Its index in the scan's edits (EditList's frame of each edit). */
+  id: number;
   /** An expression body (an arrow's): it ends at a `,`, `;`, `:` or closing bracket of its depth. */
   expression: boolean;
   /** Bracket depth of the body's contents. */
   depth: number;
   bodyStart: number;
-  edits: [number, Edit][];
   awaits: number;
   /** Open `?`s of conditionals at an expression body's depth. */
   conditionals: number;
+  /** It has a catch parameter with a pattern (its defaults would run before the context is restored). */
+  unsafe?: boolean;
 }
 
 interface PendingAwait {
@@ -88,6 +93,8 @@ interface PendingAwait {
   depth: number;
   /** 0: prefix operators, before the primary; 1: the postfix chain; 2: after `.` or `?.` (a name follows); 3: in a function or class expression (until its body closes). */
   phase: number;
+  /** In phase 3: the bodies still to close (`class extends class {} {}` has two). */
+  bodies: number;
 }
 
 interface Group {
@@ -96,10 +103,13 @@ interface Group {
   brace?: 'block' | 'object' | 'class' | 'fn' | 'template';
   /** `(`: the keyword before it (if, for, catch …), when it is not a property. */
   before?: string;
-  /** `(`: a function's or method's parameters (its body follows), whether that function is async, and whether it is an expression (an operator may follow its body). */
+  /** `(`: a function's or method's parameters (its body follows), whether that function is async (or a generator), and whether it is an expression (an operator may follow its body). */
   params?: boolean;
   async?: boolean;
+  generator?: boolean;
   expression?: boolean;
+  /** `(` of a for head: its `of` or `in` was read. */
+  iterates?: boolean;
   /** `{` of a function body: its frame. */
   frame?: Frame;
   /** `}`: whether an operator may follow (the braces were an expression). */
@@ -117,6 +127,8 @@ interface Group {
  */
 export function rewriteAwaits(code: string): string | null {
   if (!code.includes('await')) return code;
+  // Larger code is lowered: the scan and the check of its output run on the host's thread.
+  if (code.length > MAX_CODE) return null;
   try {
     return new Scanner(code).run();
   } catch {
@@ -131,6 +143,24 @@ export function rewriteAwaits(code: string): string | null {
  * time on the host; real code has a handful. More, and the code is lowered instead.
  */
 const MAX_PENDING = 64;
+
+/**
+ * Bounds on what the host rewrites (the compile route takes 32 MB from an app): code larger, or
+ * with more awaits, is lowered instead. Vite's largest chunk is 1.4 MB with ~1,500 awaits.
+ */
+const MAX_CODE = 4 << 20;
+const MAX_AWAITS = 50_000;
+
+/**
+ * Whether code (before esbuild) is within the rewrite's bounds: callers lower larger code at once,
+ * rather than transforming it twice.
+ */
+export function mayRewrite(code: string): boolean {
+  if (code.length > MAX_CODE) return false;
+  let n = 0;
+  for (let at = code.indexOf('await'); at >= 0; at = code.indexOf('await', at + 5)) if (++n > MAX_AWAITS) return false;
+  return true;
+}
 
 /**
  * rewriteAwaits, checked: the rewritten code must parse (compiled, never called, here). Null to
@@ -179,12 +209,15 @@ class Scanner {
 
   private groups: Group[] = [];
   private frames: Frame[] = [];
-  private done: Frame[] = [];
+  /** Every frame by id: whether its edits apply (async, and awaits) is known once it closes. */
+  private all: Frame[] = [];
+  private edits = new EditList();
+  private awaits = 0;
   private pending: PendingAwait[] = [];
   /** After `function` (and `*`, a name): its parameters' `(` follows at this depth. */
-  private functionDue: { async: boolean; expression: boolean; depth: number } | null = null;
-  /** After `class`: its body's `{` follows at this depth. */
-  private classDue: { expression: boolean; depth: number } | null = null;
+  private functionDue: { async: boolean; generator: boolean; expression: boolean; depth: number } | null = null;
+  /** After `class`: its body's `{` follows at this depth (a class in another's `extends` is above it). */
+  private classDue: { expression: boolean; depth: number }[] = [];
   /** After `=>`: an arrow's body follows. */
   private arrowDue: { async: boolean } | null = null;
   /** The `(` group that closed last. */
@@ -200,7 +233,7 @@ class Scanner {
   }
 
   run(): string {
-    this.frames.push({ async: false, expression: false, depth: 0, bodyStart: 0, edits: [], awaits: 0, conditionals: 0 });
+    this.frames.push(this.newFrame(false, false, false, 0));
     for (;;) {
       this.next();
       if (this.type === T.Eof) break;
@@ -208,18 +241,20 @@ class Scanner {
     }
     this.endPending(0);
     while (this.frame.expression) this.endExpressionBody();
-    if (this.groups.length || this.frames.length !== 1 || this.functionDue || this.classDue || this.arrowDue) throw new Unsupported('unbalanced');
-    const edits: [number, Edit][] = [];
-    for (const f of this.done) if (f.async && f.awaits) for (const e of f.edits) edits.push(e);
-    if (!edits.length) return this.code;
-    edits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    let out = '';
+    if (this.groups.length || this.frames.length !== 1 || this.functionDue || this.classDue.length || this.arrowDue) throw new Unsupported('unbalanced');
+    // An edit by position and kind (the order at one position), in one number.
+    const keys = this.edits.keys((frame) => this.all[frame].async && this.all[frame].awaits > 0);
+    if (!keys.length) return this.code;
+    keys.sort();
+    const parts: string[] = [];
     let at = 0;
-    for (const [pos, kind] of edits) {
-      out += this.code.slice(at, pos) + TEXT[kind];
+    for (const key of keys) {
+      const pos = Math.floor(key / 8);
+      parts.push(this.code.slice(at, pos), TEXT[(key % 8) as Edit]);
       at = pos;
     }
-    return out + this.code.slice(at);
+    parts.push(this.code.slice(at));
+    return parts.join('');
   }
 
   private get frame(): Frame {
@@ -230,8 +265,23 @@ class Scanner {
     return this.groups[this.groups.length - 1];
   }
 
-  private newFrame(async: boolean, expression: boolean, bodyStart: number): Frame {
-    return { async, expression, depth: this.groups.length, bodyStart, edits: [], awaits: 0, conditionals: 0 };
+  private newFrame(async: boolean, generator: boolean, expression: boolean, bodyStart: number): Frame {
+    const frame: Frame = { async, generator, id: this.all.length, expression, depth: this.groups.length, bodyStart, awaits: 0, conditionals: 0 };
+    this.all.push(frame);
+    return frame;
+  }
+
+  private edit(frame: Frame, pos: number, kind: Edit): void {
+    this.edits.add(pos * 8 + kind, frame.id);
+  }
+
+  /**
+   * Whether the current word is a member's name (or a modifier) in a class body or an object
+   * literal: there `class`, `function`, `await`, `with` … are names, not keywords.
+   */
+  private memberName(): boolean {
+    const top = this.top;
+    return !!top?.member && !top.member.assigned;
   }
 
   /** Whether the previous token leaves the scan at the start of a statement. */
@@ -270,12 +320,12 @@ class Scanner {
       const { async } = this.arrowDue;
       this.arrowDue = null;
       if (type === T.Open && value === '{') {
-        const frame = this.newFrame(async, false, this.afterDirectives(this.end));
+        const frame = this.newFrame(async, false, false, this.afterDirectives(this.end));
         frame.depth++;
         this.push({ kind: 123, brace: 'fn', frame, exprAfter: true });
         return;
       }
-      const frame = this.newFrame(async, true, this.start);
+      const frame = this.newFrame(async, false, true, this.start);
       frame.depth = this.depth;
       this.frames.push(frame);
     }
@@ -311,9 +361,12 @@ class Scanner {
       // A label: a statement follows.
       this.caseColon = true;
     }
+    if (value === '*' && this.functionDue && this.prevType === T.Word && this.prevValue === 'function') this.functionDue.generator = true;
     if (top?.member) {
       if (value === ',' || value === ';') resetMember(top.member);
-      else if (value !== '*') noteMember(top.member, value);
+      else if (value === '*' && !top.member.assigned) top.member.star = true;
+      else if (value === '...') top.member.assigned = true; // a spread: an expression, not a member
+      else noteMember(top.member, value);
     }
   }
 
@@ -325,21 +378,28 @@ class Scanner {
   private word(): void {
     const { value } = this;
     this.wordAtStatement = !this.property && this.atStatement();
-    if (!this.property) {
-      if (value === 'function' && this.peek() !== ':') {
+    if (!this.property && !this.memberName()) {
+      if (value === 'function') {
         const async = this.prevType === T.Word && this.prevValue === 'async' && !this.prevProperty && !this.newlineBefore;
-        this.functionDue = { async, expression: !(async ? this.asyncAtStatement : this.atStatement()), depth: this.groups.length };
-      } else if (value === 'class' && this.peek() !== ':') {
-        this.classDue = { expression: !this.atStatement(), depth: this.groups.length };
+        this.functionDue = { async, generator: false, expression: !(async ? this.asyncAtStatement : this.atStatement()), depth: this.groups.length };
+      } else if (value === 'class') {
+        this.classDue.push({ expression: !this.atStatement(), depth: this.groups.length });
       } else if (value === 'async') {
         this.asyncAtStatement = this.atStatement();
       } else if ((value === 'case' || value === 'default') && this.top?.brace === 'block') {
         this.top.caseDue = true;
-      } else if (value === 'await' && this.frame.async && this.peek() !== ':') {
+      } else if ((value === 'of' || value === 'in') && this.top?.kind === 40 && this.top.before === 'for' && !this.exprEnd) {
+        this.top.iterates = true;
+      } else if (value === 'with') {
+        // In `with (o) { … }`, the names the rewrite adds would resolve through o.
+        throw new Unsupported('with');
+      } else if (value === 'await' && this.frame.async) {
+        if (++this.awaits > MAX_AWAITS) throw new Unsupported('awaits');
         this.frame.awaits++;
-        this.frame.edits.push([this.start, Edit.AwaitOpen], [this.end, Edit.AwaitOperand]);
+        this.edit(this.frame, this.start, Edit.AwaitOpen);
+        this.edit(this.frame, this.end, Edit.AwaitOperand);
         if (this.pending.length >= MAX_PENDING) throw new Unsupported('awaits');
-        this.pending.push({ frame: this.frame, depth: this.groups.length, phase: 0 });
+        this.pending.push({ frame: this.frame, depth: this.groups.length, phase: 0, bodies: 0 });
       }
     }
     if (!this.property) this.memberToken(value);
@@ -353,6 +413,7 @@ class Scanner {
       if (this.functionDue && this.functionDue.depth === this.groups.length) {
         g.params = true;
         g.async = this.functionDue.async;
+        g.generator = this.functionDue.generator;
         g.expression = this.functionDue.expression;
         this.functionDue = null;
       } else if (top?.member && top.member.n && !top.member.assigned && (this.prevType === T.Word || this.prevType === T.Str || this.prevType === T.Num || (this.prevType === T.Close && this.prevValue === ']'))) {
@@ -360,11 +421,15 @@ class Scanner {
         g.params = true;
         // `async` before the name (the last token, or a computed key) is the modifier.
         g.async = top.member.asyncAt >= 0 && top.member.asyncAt < top.member.n - 1;
+        g.generator = top.member.star;
         g.expression = true;
       } else {
         // `async (…) =>` (an arrow's parameters, or a call of a function named async).
         g.async = this.prevType === T.Word && this.prevValue === 'async' && !this.prevProperty && !this.newlineBefore;
       }
+      // A catch parameter with a pattern (`catch ({ m = f() })`) runs code before its block, where
+      // the context is restored: the function is lowered instead.
+      if (g.before === 'catch' && /^\s*[[{]/.test(this.code.slice(this.end, this.end + 64))) this.frame.unsafe = true;
       this.memberToken('(');
       return this.push(g);
     }
@@ -373,14 +438,14 @@ class Scanner {
       return this.push({ kind: 91 });
     }
     // `{`
-    if (this.classDue && this.classDue.depth === this.groups.length) {
-      const g: Group = { kind: 123, brace: 'class', member: newMember(), exprAfter: this.classDue.expression };
-      this.classDue = null;
-      return this.push(g);
+    const classDue = this.classDue.at(-1);
+    if (classDue && classDue.depth === this.groups.length) {
+      this.classDue.pop();
+      return this.push({ kind: 123, brace: 'class', member: newMember(), exprAfter: classDue.expression });
     }
     if (this.prevType === T.Close && this.prevValue === ')' && this.lastParen?.params) {
       // A function's or method's body.
-      const frame = this.newFrame(!!this.lastParen.async, false, this.afterDirectives(this.end));
+      const frame = this.newFrame(!!this.lastParen.async, !!this.lastParen.generator, false, this.afterDirectives(this.end));
       frame.depth++;
       this.memberToken('{');
       return this.push({ kind: 123, brace: 'fn', frame, exprAfter: !!this.lastParen.expression });
@@ -388,7 +453,7 @@ class Scanner {
     if (this.atStatement() || (this.prevType === T.Close && this.prevValue === ')') || (this.prevType === T.Word && !this.prevProperty && (this.prevValue === 'try' || this.prevValue === 'finally' || this.prevValue === 'catch' || this.prevValue === 'static'))) {
       // A block: a catch or finally block is where a rejected await resumes.
       const resumes = (this.prevType === T.Word && !this.prevProperty && (this.prevValue === 'finally' || this.prevValue === 'catch')) || (this.prevType === T.Close && this.prevValue === ')' && this.lastParen?.before === 'catch');
-      if (resumes) this.frame.edits.push([this.end, Edit.Resumed]);
+      if (resumes) this.edit(this.frame, this.end, Edit.Resumed);
       this.memberToken('{');
       return this.push({ kind: 123, brace: 'block' });
     }
@@ -442,22 +507,27 @@ class Scanner {
       // The group was the operand's primary, a call's arguments or an index; or a function or class
       // expression's parameters (still in it) or body (the chain follows).
       if (p.phase === 3) {
-        if (g.kind === 123) p.phase = 1;
+        if ((g.brace === 'class' || g.brace === 'fn') && --p.bodies === 0) p.phase = 1;
       } else p.phase = 1;
     }
   }
 
   private finish(frame: Frame, end: number): void {
-    if (frame.async && frame.awaits) frame.edits.push([frame.bodyStart, Edit.BodyStart], [end, Edit.BodyEnd]);
-    this.done.push(frame);
+    if (frame.async && frame.awaits) {
+      if (frame.unsafe) throw new Unsupported('catch pattern');
+      this.edit(frame, frame.bodyStart, Edit.BodyStart);
+      this.edit(frame, end, Edit.BodyEnd);
+    }
   }
 
   private endExpressionBody(): void {
     const frame = this.frames.pop()!;
     // The body ends after the previous token: an await in it closes there first.
     for (let i = this.pending.length - 1; i >= 0; i--) if (this.pending[i].frame === frame) this.endAwait(i, this.prevEnd);
-    if (frame.async && frame.awaits) frame.edits.push([frame.bodyStart, Edit.ExpressionStart], [this.prevEnd, Edit.ExpressionEnd]);
-    this.done.push(frame);
+    if (frame.async && frame.awaits) {
+      this.edit(frame, frame.bodyStart, Edit.ExpressionStart);
+      this.edit(frame, this.prevEnd, Edit.ExpressionEnd);
+    }
   }
 
   private peek(): string {
@@ -479,9 +549,13 @@ class Scanner {
       const { type, value } = this;
       switch (p.phase) {
         case 0:
-          if (type === T.Word && (PREFIX_WORDS.has(value) || value === 'async')) continue;
+          // `async` before `function` is part of the primary that follows; otherwise it is a name.
+          if (type === T.Word && (PREFIX_WORDS.has(value) || (value === 'async' && /^[ \t]*function\b/.test(this.code.slice(this.end, this.end + 16))))) continue;
           if (type === T.Punct && (value === '!' || value === '~' || value === '+' || value === '-' || value === '++' || value === '--')) continue;
-          if (type === T.Word && (value === 'function' || value === 'class')) p.phase = 3;
+          if (type === T.Word && (value === 'function' || value === 'class')) {
+            p.phase = 3;
+            p.bodies = 1;
+          }
           else if (type === T.Word || type === T.Num || type === T.Str || type === T.Template) p.phase = 1;
           else if (type !== T.Open) throw new Unsupported('await operand');
           continue;
@@ -490,6 +564,7 @@ class Scanner {
           else if (type !== T.Open) throw new Unsupported('member');
           continue;
         case 3:
+          if (type === T.Word && (value === 'function' || value === 'class') && !this.property) p.bodies++;
           continue;
       }
       // The postfix chain: members, calls, indexes, tagged templates, a postfix ++/--.
@@ -503,7 +578,7 @@ class Scanner {
   private endAwait(i: number, at: number): void {
     const p = this.pending[i];
     this.pending.splice(i, 1);
-    p.frame.edits.push([at, Edit.AwaitClose]);
+    this.edit(p.frame, at, Edit.AwaitClose);
   }
 
   /** Ends the awaits deeper than `depth`: a bracket closed. */
@@ -572,7 +647,7 @@ class Scanner {
       this.type = T.Word;
       this.value = wordName(code, i, j);
       this.property = this.prevType === T.Punct && (this.prevValue === '.' || this.prevValue === '?.');
-      this.exprEnd = this.property || !BEFORE_EXPRESSION.has(this.value);
+      this.exprEnd = this.property || !this.startsExpression(this.value, j);
       return;
     }
     if ((c >= 48 && c <= 57) || (c === 46 && code.charCodeAt(i + 1) >= 48 && code.charCodeAt(i + 1) <= 57)) {
@@ -631,6 +706,32 @@ class Scanner {
     this.exprEnd = (this.value === '++' || this.value === '--') && this.prevExprEnd;
   }
 
+  /**
+   * Whether a word is one after which an expression starts (so a `/` after it begins a regular
+   * expression). Contextual ones are names where they are not keywords: `of` outside a for head,
+   * `await` outside an async function, `yield` outside a generator, `let` not declaring.
+   */
+  private startsExpression(value: string, end: number): boolean {
+    if (!BEFORE_EXPRESSION.has(value)) return false;
+    switch (value) {
+      case 'of': {
+        // The keyword right after a for head's binding (`for (const x of`), once; a name elsewhere.
+        const top = this.top;
+        return top?.kind === 40 && top.before === 'for' && !top.iterates && this.prevExprEnd && this.prevValue !== 'of';
+      }
+      case 'await':
+        return this.frame.async;
+      case 'yield':
+        return this.frame.generator;
+      case 'let': {
+        const c = this.code.charCodeAt(end + (this.code.charCodeAt(end) === 32 ? 1 : 0));
+        return c === 91 || c === 123 || isIdentStart(c);
+      }
+      default:
+        return true;
+    }
+  }
+
   /** A template's part, from after its backtick or `}`: up to its end (an expression end) or the next `${` (a group opens). */
   private template(i: number): number {
     const code = this.code;
@@ -661,14 +762,45 @@ interface Member {
   n: number;
   asyncAt: number;
   assigned: boolean;
+  /** A `*` before its name: a generator method. */
+  star: boolean;
 }
 
-const newMember = (): Member => ({ n: 0, asyncAt: -1, assigned: false });
+const newMember = (): Member => ({ n: 0, asyncAt: -1, assigned: false, star: false });
 
 function resetMember(m: Member): void {
   m.n = 0;
   m.asyncAt = -1;
   m.assigned = false;
+  m.star = false;
+}
+
+/** The scan's insertions: each a number (position × 8 + kind) and the frame it belongs to, in growing typed arrays. */
+class EditList {
+  private key = new Float64Array(1024);
+  private frame = new Int32Array(1024);
+  private n = 0;
+
+  add(key: number, frame: number): void {
+    if (this.n === this.key.length) {
+      const key = new Float64Array(this.n * 2);
+      key.set(this.key);
+      this.key = key;
+      const frame = new Int32Array(this.n * 2);
+      frame.set(this.frame);
+      this.frame = frame;
+    }
+    this.key[this.n] = key;
+    this.frame[this.n++] = frame;
+  }
+
+  /** The keys of the edits whose frame `applies`. */
+  keys(applies: (frame: number) => boolean): Float64Array {
+    const out = new Float64Array(this.n);
+    let m = 0;
+    for (let i = 0; i < this.n; i++) if (applies(this.frame[i])) out[m++] = this.key[i];
+    return out.subarray(0, m);
+  }
 }
 
 function noteMember(m: Member, value: string): void {
@@ -711,7 +843,12 @@ function numberEnd(code: string, i: number): number {
     while (j < code.length && /[0-9a-fA-F_n]/.test(code[j])) j++;
     return j;
   }
-  while (j < code.length && /[0-9_.]/.test(code[j])) j++;
+  // One `.` at most: `.5.of` is a number and a member, `1..p` likewise.
+  let dot = false;
+  while (j < code.length && (/[0-9_]/.test(code[j]) || (code[j] === '.' && !dot))) {
+    if (code[j] === '.') dot = true;
+    j++;
+  }
   if (/[eE]/.test(code[j] ?? '')) {
     j++;
     if (code[j] === '+' || code[j] === '-') j++;

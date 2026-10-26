@@ -76,3 +76,54 @@ test('an async function stays native: its stack has async frames, and its source
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.equal(out.stdout.trim(), 'true true');
 });
+
+// Shapes a review found the first await scan got wrong (each lost or leaked the context there, with
+// code that parsed): a class expression in an extends clause, members named class or function,
+// `of` as a name (a `/` after it divides; the string is data), and catch parameters with defaults
+// (lowered instead). The expected output is Node's.
+test('AsyncLocalStorage across awaits in the shapes the scan once misread', async () => {
+  const program = `
+    const { AsyncLocalStorage } = require('async_hooks');
+    const als = new AsyncLocalStorage();
+    const out = [];
+    const log = (...a) => out.push(a.join(':'));
+    const tick = () => new Promise((r) => setTimeout(r, 1));
+    const rej = () => new Promise((_, j) => setTimeout(() => j({}), 1));
+    // 1: a class expression in a heritage clause
+    const Mixin = (B) => class extends B {};
+    class Svc extends Mixin(class {}) { async handle() { await tick(); return als.getStore(); } }
+    // 1b: an object method named class, inside an async function
+    async function outer() {
+      const o = { async class() { await null; log('method', als.getStore()); } };
+      await null;
+      await als.run('B', () => o.class());
+      log('outer', als.getStore());
+    }
+    // 2: a member named function
+    class El { static function = 'f'; async load() { await tick(); return als.getStore(); } }
+    // 3: of as a name; a string that looks like an await
+    async function ofName(of) { const y = of / await tick() / 1; const a = [of / 2, "/ await y", /"/]; return als.getStore() + a[1]; }
+    // 5: catch parameters with defaults
+    async function caught() {
+      await tick();
+      try { await rej(); } catch ({ m = als.getStore() }) { log('param', m); }
+      try { await rej(); } catch ({ m = await tick() }) { log('after-param-await', als.getStore()); }
+      await tick();
+      log('later', als.getStore());
+    }
+    async function main() {
+      log('heritage', ...(await Promise.all(['A', 'B'].map((s) => als.run(s, () => new Svc().handle())))));
+      await als.run('A', outer);
+      log('member', ...(await Promise.all(['A', 'B'].map((s) => als.run(s, () => new El().load())))));
+      log('of', ...(await Promise.all(['A', 'B'].map((s) => als.run(s, () => ofName(2))))));
+      await Promise.all([als.run('A', caught), als.run('B', caught)]);
+      console.log(out.join(' '));
+    }
+    main();`;
+  const out = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(
+    out.stdout.trim(),
+    'heritage:A:B method:B outer:A member:A:B of:A/ await y:B/ await y param:A param:B after-param-await:A after-param-await:B later:A later:B',
+  );
+});

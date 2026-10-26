@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as esbuild from 'esbuild';
-import { contextAwaits, rewriteAwaits } from '../../src/node-runtime/await-context.ts';
+import { contextAwaits, mayRewrite, rewriteAwaits } from '../../src/node-runtime/await-context.ts';
+import { compileForRuntime } from '../../src/adapters/node/compile.ts';
 import { oracleRewrite } from './await-oracle.ts';
+import { programs } from './await-fuzz.ts';
 
 /** esbuild's output as the host compiles code for the runtime: async functions stay native. */
 const compiled = (code: string, format?: 'cjs') =>
@@ -39,6 +41,16 @@ const CASES = [
   'async function* g() { await a; yield b; }',
   'if (a) /re/.test(b); else c / d;',
   'async function f(){return await a}',
+  // What a review's differential fuzzing found the first scan got wrong:
+  'const Mixin = (B) => class extends B {}; class Svc extends Mixin(class {}) { async handle() { await t(); } }',
+  'class D extends f(class { async m() { await x; } }) { async n() { await y; } }',
+  'async function outer() { const o = { async class() { await null; }, function: 1, async function() { await 2; } }; await null; }',
+  'class El { static function = "f"; class = 1; class; function; async load() { await t(); } async class() { await u(); } }',
+  'async function f(of) { const y = of / await t() / 1; const a = [of / 2, "/ await y", /"/]; for (const i of of / 2) await i; for (const k in of / 2) await k; }',
+  'async function f(yield, let) { return yield / await a / let / await b; }',
+  'async function f() { return await async + await static?.p; }',
+  'async function f() { try { await a; } catch(e){await b} }',
+  'async function f() { return { ...async (x) => { await x; } }; }',
 ];
 
 test('the token scan rewrites awaits as the parse does (acorn), and the result parses', () => {
@@ -76,6 +88,10 @@ test('the rewritten code returns what it did, with the context calls in between'
 
 test('code the scan does not understand is left to the lowering (null), and code without await is returned as it is', () => {
   assert.equal(rewriteAwaits('const x = 1;'), 'const x = 1;');
+  // A catch parameter's defaults run before the catch block restores the context; in `with`, the
+  // names the rewrite adds would resolve through its object.
+  assert.equal(rewriteAwaits('async function f() { try { await a; } catch ({ m = g() }) {} }'), null);
+  assert.equal(rewriteAwaits('async function f(o) { with (o) { await a; } }'), null);
   assert.equal(rewriteAwaits('async function f() { await }'), null);
   assert.equal(rewriteAwaits('async function f() { await x; '), null);
   assert.equal(contextAwaits('async function f() { await x; '), null);
@@ -127,4 +143,44 @@ test('the scan never throws and stays linear on arbitrary or crafted input (the 
   const t0 = performance.now();
   assert.match(rewriteAwaits(many) ?? '', /__sandburg_ac\.r\(__sbac, await __sandburg_ac\.s\(__sbac, x\)\);/);
   assert.ok(performance.now() - t0 < 2000, `${(performance.now() - t0).toFixed(0)} ms`);
+});
+
+test('random async programs: the token scan rewrites as the parse does, or leaves the code to the lowering', () => {
+  // esbuild's output of generated programs (await-fuzz.ts), plain and minified. A null is allowed
+  // (the code is lowered); a rewrite that differs from the AST's is not.
+  const next = programs(0x5eed);
+  let checked = 0;
+  for (let i = 0; i < 4000; i++) {
+    const src = next();
+    let code: string;
+    try {
+      code = esbuild.transformSync(src, { loader: 'js', format: i % 2 ? 'cjs' : undefined, minify: i % 3 === 0, target: 'es2022', supported: { 'async-generator': false, 'for-await': false, 'dynamic-import': false }, logLevel: 'silent' }).code;
+    } catch {
+      continue; // not a valid program
+    }
+    let want: string;
+    try {
+      want = oracleRewrite(code);
+    } catch {
+      continue; // acorn reads a few of esbuild's outputs otherwise (sloppy-mode names)
+    }
+    const out = rewriteAwaits(code);
+    if (out === null) continue;
+    assert.equal(out, want, code);
+    checked++;
+  }
+  assert.ok(checked > 200, `${checked} programs`);
+});
+
+test('large or await-dense code is lowered at once, not scanned (the host compiles 32 MB from an app)', () => {
+  const unit = 'exports.f = async () => { await a; await b(await c); };\n';
+  const dense = unit.repeat(Math.ceil((1 << 20) / unit.length)); // 1 MB, ~60,000 awaits
+  const big = '/*' + 'x'.repeat(5 << 20) + '*/ async function f() { await a; }';
+  assert.equal(mayRewrite(dense), false);
+  assert.equal(mayRewrite(big), false);
+  assert.equal(rewriteAwaits(big), null);
+  const t0 = performance.now();
+  const out = compileForRuntime(unit.repeat(Math.ceil((8 << 20) / unit.length)), '/app/dense.js', 'cjs');
+  assert.doesNotMatch(out.slice(0, 2000), /__sandburg_ac/); // lowered
+  assert.ok(performance.now() - t0 < 15_000, `${(performance.now() - t0).toFixed(0)} ms`);
 });

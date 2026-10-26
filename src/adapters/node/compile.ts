@@ -17,7 +17,7 @@ import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
-import { contextAwaits } from '../../node-runtime/await-context.ts';
+import { contextAwaits, mayRewrite } from '../../node-runtime/await-context.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
@@ -263,7 +263,8 @@ function* compileOnce(code: string, path: string, kind: CompileKind, opts: { asy
     logLevel: 'silent',
   };
   // The eval literals' placeholders are strings: the rewrite leaves them as they are.
-  const transformed = contextAwaits(yield { code: skeleton, options }) ?? (yield { code: skeleton, options: { ...options, supported: LOWER_ASYNC } });
+  const lowered = { ...options, supported: LOWER_ASYNC };
+  const transformed = mayRewrite(skeleton) ? (contextAwaits(yield { code: skeleton, options }) ?? (yield { code: skeleton, options: lowered })) : yield { code: skeleton, options: lowered };
   out = transformed;
   if (literals.length) {
     let restored = 0;
@@ -272,7 +273,8 @@ function* compileOnce(code: string, path: string, kind: CompileKind, opts: { asy
     if (restored !== literals.length) {
       const whole = skeleton.replace(PLACEHOLDER_CALL, (_m, i: string) => `eval(${literals[Number(i)]})`);
       const wholeOptions: esbuild.TransformOptions = { loader, sourcefile: path, target: 'es2022', supported: LOWER, logLevel: 'silent' };
-      out = contextAwaits(yield { code: whole, options: wholeOptions }) ?? (yield { code: whole, options: { ...wholeOptions, supported: LOWER_ASYNC } });
+      const wholeLowered = { ...wholeOptions, supported: LOWER_ASYNC };
+      out = mayRewrite(whole) ? (contextAwaits(yield { code: whole, options: wholeOptions }) ?? (yield { code: whole, options: wholeLowered })) : yield { code: whole, options: wholeLowered };
     }
   }
   if (marked) out = `${ESM_MARKER}\n${out}`;
@@ -302,8 +304,9 @@ function* lowerEvalSteps(code: string): Generator<TransformStep, string, string>
       }
       if (inner !== null && /\basync\b|\bawait\b|\bimport\s*\(/.test(inner)) {
         const sourceUrl = /\n\/\/# sourceURL=[^\n]*$/.exec(inner)?.[0] ?? '';
-        let lowered: string | null = yield { code: inner, options: { loader: 'js', target: 'es2022', supported: LOWER, logLevel: 'silent' }, optional: true };
-        if (lowered !== null) lowered = contextAwaits(lowered) ?? (yield { code: inner, options: { loader: 'js', target: 'es2022', supported: LOWER_ASYNC, logLevel: 'silent' }, optional: true });
+        const rewrite = mayRewrite(inner);
+        let lowered: string | null = yield { code: inner, options: { loader: 'js', target: 'es2022', supported: rewrite ? LOWER : LOWER_ASYNC, logLevel: 'silent' }, optional: true };
+        if (lowered !== null && rewrite) lowered = contextAwaits(lowered) ?? (yield { code: inner, options: { loader: 'js', target: 'es2022', supported: LOWER_ASYNC, logLevel: 'silent' }, optional: true });
         if (lowered !== null) replacement = JSON.stringify(patchInterop(lowered) + sourceUrl);
       }
       loweredEvals.set(m[1], replacement);

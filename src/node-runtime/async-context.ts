@@ -60,6 +60,9 @@ interface AwaitState {
 const awaitContext = {
   e: (): AwaitState => ({ c: current, p: null, s: false }),
   s<V>(st: AwaitState, value: V): V {
+    // Suspended still: a rejected await resumed into code before a `k` (a lowered function has none;
+    // this keeps a stray one from taking the resuming microtask's context for the function's).
+    if (st.s) current = st.c;
     st.c = current;
     if (st.p !== null) current = st.p;
     st.s = true;

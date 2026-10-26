@@ -29,8 +29,8 @@ export function oracleRewrite(code: string): string {
           }
           edits.push([at, 3, BODY_START], [body.end - 1, 1, BODY_END]);
         } else edits.push([body.start, 4, `{ ${BODY_START}return `], [body.end, 2, `;${BODY_END} }`]);
-        for (const a of own.awaits) edits.push([a.start, 5, `${G}.r(${L}, `], [a.start + 5, 6, ` ${G}.s(${L},`], [a.end, 0, '))']);
-        for (const r of own.resumes) edits.push([r, 7, `${G}.k(${L});`]);
+        for (const a of own.awaits) edits.push([a.start, 6, `${G}.r(${L}, `], [a.start + 5, 7, ` ${G}.s(${L},`], [a.end, 0, '))']);
+        for (const r of own.resumes) edits.push([r, 5, `${G}.k(${L});`]);
       }
       return;
     }

@@ -18,7 +18,7 @@ import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
-import { contextAwaits } from '../../node-runtime/await-context.ts';
+import { contextAwaits, mayRewrite } from '../../node-runtime/await-context.ts';
 import type { Project } from '../../types.ts';
 import { deferImports } from './deferred-imports.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
@@ -445,7 +445,7 @@ export async function transformForRuntime(source: string, path: string, esm: boo
     return lowerAsync ? done : (contextAwaits(done) ?? convert(code, true));
   };
   try {
-    return mark(await convert(source));
+    return mark(await convert(source, !mayRewrite(source)));
   } catch {
     // Top-level await (e.g. vite/bin/vite.js): an async module (see tla.ts).
     if (esm && hasTopLevelAwait(source)) {

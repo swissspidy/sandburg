@@ -80,11 +80,24 @@ async function f(x) {                         async function f(x) {
   primary, then its postfix chain (members, calls, indexes, tagged templates, `++`). It runs at
   ~38 MB/s; acorn parses at ~9 MB/s (its tokenizer alone ~21).
 - **Checked.** The same rewrite done from acorn's AST (`test/unit/await-oracle.ts`) produced the
-  same text for every async file of nine fixtures' installs (3,386 files, 275 MB of esbuild's output)
-  and for handwritten shapes; the unit test keeps the shapes and this checkout's own async
-  dependencies. At run time, the host checks that the rewritten code parses (compiled with
-  `Function`, never called); code the scan does not understand, or whose result does not parse, is
-  lowered as before. Every place that lowered does this: installed files (`install.ts`), the host's
+  same text for every async file of nine fixtures' installs (3,386 files, 275 MB of esbuild's output),
+  for handwritten shapes, and for random async programs (`test/unit/await-fuzz.ts`: esbuild's output
+  of them, plain and minified; the unit test runs a fixed seed, and ~43,000 valid programs were run while
+  fixing the scan). A review's differential fuzzing found shapes the first scan misread with code
+  that still parsed (so the parse check passed it): a class expression in another's `extends`
+  (`class S extends Mixin(class {}) {…}`: its body read as a block, its methods' awaits left
+  alone, or using an outer function's state), members named `class` or `function` (`static
+  function = 'f';`), `of`, `yield`, `let` and `await` used as names (a `/` after them divides; one
+  case rewrote text inside a string), `async` as a name in an await's operand, a number followed
+  by a member (`.5.of`). All are fixed and are shapes in the tests now, and a runtime test runs
+  them against Node's output. At run time, the host checks that the rewritten code parses
+  (compiled with `Function`, never called); code the scan does not understand, or whose result
+  does not parse, is lowered as before.
+- **Lowered on purpose**: a catch parameter with a pattern (`catch ({ m = f() })`: its defaults
+  run before the catch block, where a rejected await's context is restored), code with `with`
+  (the names the rewrite adds would resolve through its object), and code over 4 MB or with more
+  than 50,000 awaits (see Security). `s` also restores the function's context if it finds the
+  call still marked suspended. Every place that lowered does this: installed files (`install.ts`), the host's
   compile of project files, Vite's SSR modules and webpack's `eval` literals (`compile.ts`), and the
   page's compiler for installs in the browser. `TRANSFORM_VERSION` and the compile cache's key change.
 
@@ -143,12 +156,15 @@ the time the program reads a file downloaded on the side.
 No boundary moves. The host still never runs app code: it compiles the rewritten text with `Function`
 to check that it parses and never calls the function (as acorn and esbuild parse app code today); the
 rewrite only inserts fixed text at token boundaries, and code it does not understand goes to esbuild's
-lowering as before. The scan is a new parser of app-controlled input on the host, so it is bounded: it
-does not recurse, its work is linear in the input except for awaits whose operands are open at once
-(each token moves every open one on), which it caps at 64 before giving the code to the lowering
-(`await await …` 100,000 times would otherwise be quadratic), and any failure of its own, not only
-what it does not understand, lowers the code. A fixed-seed fuzz test feeds it token soups and the
-crafted inputs. The transform caches stay keyed by content digests (and by the compiler's sources,
+lowering as before. The scan is a new parser of app-controlled input on the host (the compile route
+takes up to 32 MB), so it is bounded: it does not recurse; its work is linear in the input except for
+awaits whose operands are open at once (each token moves every open one on), which it caps at 64
+(`await await …` 100,000 times would otherwise be quadratic); code over 4 MB or with more than 50,000
+awaits is not scanned at all but lowered in one esbuild pass (as before this change: 8 MB of
+await-dense code compiles in ~1.2 s and ~190 MB, as on main; the first version of the scan took
+8.2 s and 877 MB, and was OOM-killed at 60 MB); its edits are kept in typed arrays and its output
+joined once; and any failure of its own lowers the code. Fixed-seed fuzz tests feed it token soups,
+random programs and the crafted inputs. The transform caches stay keyed by content digests (and by the compiler's sources,
 which now include `await-context.ts`). The global the rewritten code calls is each runtime's own,
 defined before any program code, frozen and not writable, in each sandbox's own runtime. The `prepare`
 message comes from the sandbox's own host page to the runtime it created, and only starts the
