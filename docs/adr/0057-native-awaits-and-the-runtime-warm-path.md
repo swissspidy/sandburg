@@ -1,4 +1,4 @@
-# ADR NNNN: Native awaits that carry the async context; the runtime's warm path against Node's
+# ADR 0057: Native awaits that carry the async context; the runtime's warm path against Node's
 
 - Status: Accepted
 - Date: 2026-10-26

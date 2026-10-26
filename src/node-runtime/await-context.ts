@@ -1,5 +1,5 @@
 /**
- * AsyncLocalStorage across native `await` (ADR NNNN).
+ * AsyncLocalStorage across native `await` (ADR 0057).
  *
  * The runtime carries async context itself (async-context.ts): it captures the context when a
  * callback is scheduled (Promise.prototype.then, queueMicrotask, timers) and restores it when the
