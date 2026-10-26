@@ -324,14 +324,25 @@ test('a large frame that comes in small chunks is put together once, not copied 
   let served = 0;
   const { socket } = await memoryChannel(async () => ((served++), { status: 200, body: 'ok' }));
   const bytes = clientFrame(true, 0x2, postMessage(1, '/__sandburg/esbuild-transform', new Uint8Array(4_100_000)));
+  // Copies of what came are counted: one per chunk (~2,800 at TCP's segment size) was quadratic in
+  // the frame's size (~1.3 s of the host's thread for this one).
+  const concat = Buffer.concat;
+  let copies = 0;
+  Buffer.concat = (list: readonly Uint8Array[], length?: number) => ((copies++), concat(list, length));
   const t0 = performance.now();
-  // TCP's segment size: ~2,950 reads. Copying what came at each read was ~1.3 s of the host's thread.
-  for (let at = 0; at < bytes.length; at += 1460) socket.push(bytes.subarray(at, at + 1460));
-  for (let i = 0; i < 200 && !served; i++) await new Promise((r) => setTimeout(r, 5));
+  try {
+    for (let at = 0; at < bytes.length; at += 1460) socket.push(bytes.subarray(at, at + 1460));
+    for (let i = 0; i < 400 && !served; i++) await new Promise((r) => setTimeout(r, 5));
+  } finally {
+    Buffer.concat = concat;
+  }
   const ms = performance.now() - t0;
   socket.destroy();
   assert.equal(served, 1);
-  assert.ok(ms < 400, `${ms.toFixed(0)} ms`);
+  // Put together once (and the answer's own few), not once per chunk.
+  assert.ok(copies <= 8, `${copies} copies`);
+  // The time it takes, only where asked for (it depends on the machine).
+  if (process.env.SANDBURG_PERF_TESTS === '1') assert.ok(ms < 400, `${ms.toFixed(0)} ms`);
 });
 
 test('nothing after a close frame is served: not a message it left unfinished, nor a later request', { timeout: 20_000 }, async () => {
