@@ -319,3 +319,17 @@ test('a large frame that comes in small chunks is put together once, not copied 
   assert.equal(served, 1);
   assert.ok(ms < 400, `${ms.toFixed(0)} ms`);
 });
+
+test('nothing after a close frame is served: not a message it left unfinished, nor a later request', { timeout: 20_000 }, async () => {
+  const asked: string[] = [];
+  const { socket, written } = await memoryChannel(async (req) => (asked.push(`${req.method} ${req.path}`), { status: 200, body: 'ok' }));
+  const post = postMessage(1, '/__sandburg/esbuild-transform', new Uint8Array(10));
+  // A fragment, a close frame, the fragment's continuation, then a GET.
+  socket.push(Buffer.concat([clientFrame(false, 0x2, post.subarray(0, 8)), clientFrame(true, 0x8, new Uint8Array(0)), clientFrame(true, 0x0, post.subarray(8)), clientFrame(true, 0x1, new TextEncoder().encode('2 /__sandburg/nm/k/t/node_modules/a/index.js'))]));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(asked, []);
+  // The host's answer to the close: a close frame (after the 101), and its side ended.
+  assert.equal(written.at(-1)?.[0], 0x88);
+  assert.ok(socket.writableEnded);
+  socket.destroy();
+});

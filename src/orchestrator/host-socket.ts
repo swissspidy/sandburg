@@ -49,7 +49,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
       const head = Buffer.alloc(ANSWER_HEADER);
       head.writeUInt32LE(id >>> 0, 0);
       head.writeUInt32LE(res.status, 4);
-      if (!socket.destroyed) socket.write(frame(0x2, Buffer.concat([head, res.body])));
+      if (!socket.destroyed && !socket.writableEnded) socket.write(frame(0x2, Buffer.concat([head, res.body])));
       traceTransfer({ hop: 'host→runtime ws', what, bytes: res.body.length, encoding: 'binary', ms: performance.now() - t0 });
     };
     if (opcode === 0x2) {
@@ -118,6 +118,8 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
   let need = 2;
   /** The data message being received in fragments: its opcode, the fragments, their length. */
   let message: { opcode: number; parts: Buffer[]; length: number } | null = null;
+  /** A close frame came: nothing after it is read. */
+  let closed = false;
   const fail = () => {
     chunks = [];
     pending = 0;
@@ -170,6 +172,15 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
         for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
       }
       buf = buf.subarray(end);
+      if (opcode === 0x8) {
+        // The client's last frame: what came after it, and a message it left unfinished, are dropped.
+        closed = true;
+        chunks = [];
+        pending = 0;
+        message = null;
+        onMessage(opcode, payload);
+        return;
+      }
       if (control) {
         onMessage(opcode, payload);
       } else if (!fin) {
@@ -192,6 +203,7 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
     }
   };
   socket.on('data', (chunk: Buffer) => {
+    if (closed) return;
     chunks.push(chunk);
     pending += chunk.length;
     if (pending >= need) read();
