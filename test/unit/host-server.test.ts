@@ -78,7 +78,7 @@ test('a sandbox that ended is not served any more', async () => {
 test('requests from another site are refused before the adapter sees them', async () => {
   served.length = 0;
   for (const site of ['same-site', 'cross-site']) {
-    for (const path of ['/', '/__sandburg/host.js', '/__sandburg/dev-cache/0123456789abcdef01234567', '/__sandburg/compile', '/__sw__.js']) {
+    for (const path of ['/', '/__sandburg/host.js', '/__sandburg/dev-cache/0123456789abcdef01234567', '/__sandburg/compile', '/__sw__.js', '/__sandburg/node-worker.js', `/__sandburg/runtime/${'0'.repeat(64)}.mjs`]) {
       for (const method of ['GET', 'POST']) {
         const res = await get(path, { host: hostOf(one), 'sec-fetch-site': site, origin: two }, method);
         assert.deepEqual(res, { status: 403, body: 'requests from another site are refused' }, `${method} ${path} (${site})`);

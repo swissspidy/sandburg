@@ -21,10 +21,15 @@ let waiting = [];
 const hooks = self.sandburgHooks ?? {};
 
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
-
+/**
+ * The host page registers this worker as it loads, and is its client once it gives a port for an app
+ * (it claims the page then): until an app starts, the page's own requests go to the host. The
+ * workers the page starts are clients from their start either way (a dedicated worker is matched by
+ * its own URL), and load the runtime through it (runtimeModule).
+ */
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'sandburg-port' && event.ports[0]) {
+    event.waitUntil(self.clients.claim());
     port = event.ports[0];
     // Replies to requests sent on any port the page gave, the current one or an earlier one.
     port.onmessage = (e) => replies.get(e.data.id)?.(e.data);
@@ -62,6 +67,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(runtimeScript(event.request, url.pathname));
     return;
   }
+  if (RUNTIME_MODULE.test(url.pathname)) {
+    event.respondWith(runtimeModule(event.request, url.pathname));
+    return;
+  }
   if (url.pathname.startsWith('/__sandburg/') || url.pathname === '/__sw__.js') return;
   // Top-level navigations are the host page; the app navigates inside its frame.
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
@@ -96,6 +105,40 @@ async function runtimeScript(request, path) {
     return new Response(body, { headers });
   } catch (e) {
     runtime.delete(path);
+    return new Response(String(e?.message ?? e), { status: 502 });
+  }
+}
+
+/**
+ * The runtime's module (node-runtime/runtime-module.ts), by the digest of its text: answered from
+ * Cache Storage, the one place Chromium keeps V8's code for a worker's script in this browser
+ * context. The first runtime of the run compiles it; the code is kept beside the entry, and the
+ * run's other runtimes (spares, threads, child processes) start from it.
+ */
+const RUNTIME_MODULE = /^\/__sandburg\/runtime\/[0-9a-f]{64}\.mjs$/;
+const RUNTIME_CACHE = 'sandburg-runtime';
+const modules = new Map();
+async function runtimeModule(request, path) {
+  try {
+    const cache = await caches.open(RUNTIME_CACHE);
+    let res = await cache.match(path);
+    if (!res) {
+      let stored = modules.get(path);
+      if (!stored) {
+        // The module's text, whatever asked: a HEAD's empty body cached under the path would be the
+        // module every later import got.
+        stored = fetch(path).then(async (got) => {
+          if (!got.ok) throw new Error(`${path}: ${got.status}`);
+          await cache.put(path, got);
+        });
+        modules.set(path, stored);
+      }
+      await stored;
+      res = (await cache.match(path)) ?? new Response(`${path}: not cached`, { status: 502 });
+    }
+    return request.method === 'HEAD' ? new Response(null, { status: res.status, headers: res.headers }) : res;
+  } catch (e) {
+    modules.delete(path);
     return new Response(String(e?.message ?? e), { status: 502 });
   }
 }

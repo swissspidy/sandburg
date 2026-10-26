@@ -7,6 +7,7 @@
 import { source } from '../../sources.ts';
 import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SPARE_SCRIPT, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { RUNTIME_LIBS, type RuntimeLib } from '../../node-runtime/libs.ts';
+import { RUNTIME_MODULE, runtimeBootstrap } from '../../node-runtime/runtime-module.ts';
 import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-wasm-bundle.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -813,9 +814,25 @@ async function resolveBin(installDir: string, name: string): Promise<string | nu
   return null;
 }
 
+let runtimeText: Promise<{ text: string; digest: string }> | null = null;
+
+/** The runtime's script and the digest it is served under (the bundle is built once per process). */
+function runtimeModule(): Promise<{ text: string; digest: string }> {
+  runtimeText ??= bundleNodeRuntime().then((text) => ({ text, digest: createHash('sha256').update(text).digest('hex') }));
+  runtimeText.catch(() => (runtimeText = null));
+  return runtimeText;
+}
+
 export async function serve(req: HostRequest): Promise<HostResponse | null> {
+  // The runtime: a classic script that imports it as a module, by the digest of its text (runtime-module.ts).
   if (req.path === '/__sandburg/node-worker.js') {
-    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleNodeRuntime() };
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: runtimeBootstrap((await runtimeModule()).digest) };
+  }
+  const module = RUNTIME_MODULE.exec(req.path);
+  if (module && (req.method === 'GET' || req.method === 'HEAD')) {
+    const { digest, text } = await runtimeModule();
+    if (module[1] !== digest) return null;
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'max-age=31536000, immutable' }, body: text };
   }
   // A spare runtime, which loads node-worker.js when it is used (threads.ts).
   if (req.path === '/__sandburg/node-spare.js') {
