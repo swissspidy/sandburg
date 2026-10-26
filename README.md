@@ -12,15 +12,16 @@ per run: one browser runs many sandboxes side by side, each on its own origin.
 Vue + Express + SQLite app, running in your browser.
 
 **[Generate an app →](https://swissspidy.github.io/sandburg/generate/)** Describe an app. Claude or Gemini, with
-your own API key, writes it with React, Vue, Angular, SvelteKit, SolidStart, Next.js, Nuxt or Astro, with a backend and SQLite. Your tab then installs it from npm and
+your own API key, writes it with React, Vue, Angular, SvelteKit, SolidStart, Next.js, Nuxt, Astro or plain
+HTML, CSS and JavaScript, with a backend and SQLite. Your tab then installs it from npm and
 runs it on its own dev server. Later requests change the running app, and errors go back to the model to fix
 ([ADR 0021](docs/adr/0021-generate-in-the-browser.md)).
 
 ## At a glance
 
-- **The project's own tools.** `next dev`, Vite 5–8 with its plugins, `ng serve`, Express, and a dev
-  script as written (`concurrently "vite" "node server"`). There is no reimplementation of a framework's build.
-- **Correct answers.** Tested on 100 generated apps with known faults, it gets 97 right, with no false
+- **The project's own tools.** `next dev`, Vite 5–8 with its plugins, `ng serve`, `nuxt dev`, `astro dev`,
+  Express, and a dev script as written (`concurrently "vite" "node server"`). There is no reimplementation of a framework's build.
+- **Correct answers.** Tested on 100 generated apps with known faults (study v6), it gets 97 right, with no false
   alarms. The three misses are mislabelled apps. `sandburg compare` measures agreement with a Docker
   reference.
 - **Fast after the first run.** Installs, compiled modules, and dev-server caches carry over between
@@ -28,7 +29,7 @@ runs it on its own dev server. Later requests change the running app, and errors
 - **Contained.** A sandbox reaches the network only through a caching gateway and a per-sandbox
   allowlist, and tests prove it.
 
-| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md)) | Median run, cold | Median run, warm |
+| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md), 2026-09-30, 4 vCPU, 3 tabs at a time) | Median run, cold | Median run, warm |
 |---|---|---|
 | Vite, vanilla (33 apps) | 3.4 s | 3.2 s |
 | Vite + React (34) | 16.1 s | 5.9 s |
@@ -37,11 +38,19 @@ runs it on its own dev server. Later requests change the running app, and errors
 | Whole corpus, 3 tabs | 533 s | 289 s |
 
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
-from empty Sandburg caches. A Next.js app that has never run, with a new install, runs in
-15.7 s, down from about 45 s. Its first compile takes 2.2 s, down from 18.3 s, because it starts
-from a webpack cache that Sandburg seeds with the framework's modules
-([ADR 0014](docs/adr/0014-node-runtime-only.md)). Since study v6, a profile of the runtime made warm
-Next.js runs a third faster, 11.9 s to 8.0 s ([ADR 0017](docs/adr/0017-runtime-profile.md)).
+from empty Sandburg caches (npm's own cache warm). The study predates the speed work in ADRs
+0017–0059. The fixtures on 2026-10-26, at 8dda85e: a one-off run of `node scripts/bench.ts` on a
+4-core, 15 GB Linux machine, 3 rounds ([command, setup and every run](docs/bench/2026-10-26.md)):
+
+| Fixture | Cold run | Warm run |
+|---|---|---|
+| vite-react-counter (Vite 8, React 19) | 5.2–5.5 s | 1.2–1.3 s |
+| lit-vite (Vite 8, Lit) | 4.4 s | 1.0 s |
+| next-app-router (Next.js 16) | 19.1–19.3 s | 3.9 s |
+
+Each cell is a median of three runs. The script measures two sides, here both 8dda85e, so a range
+gives the two sides' medians: the spread between runs of the same code. A warm run is a session's
+second run of the project. Each ADR records its own before-and-after measurements.
 
 ## Quick start
 
@@ -53,22 +62,23 @@ npx sandburg run ./my-app --checks checks.spec.ts
 ```
 
 Sandburg drives Chromium with the Playwright it installs. If that Playwright's Chromium is missing,
-the run stops and prints the command that installs it (`npx playwright@<version> install chromium`).
-`SANDBURG_CHROMIUM=/path/to/chrome` uses another Chromium instead.
+the run stops and prints the command that installs it (`npx playwright@<version> install chromium`; on
+Linux, add `--with-deps` for its system libraries). `SANDBURG_CHROMIUM=/path/to/chrome` uses another
+Chromium instead.
 
 From a checkout, Sandburg runs its TypeScript sources directly:
 
 ```sh
 npm install
 npx playwright install chromium
-node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts
+node bin/sandburg.js run fixtures/vite-react-counter --checks fixtures/vite-react-counter/checks.spec.ts   # or: npm run spike
 ```
 
 ## CLI
 
 ```sh
 sandburg run <project> [--checks checks.spec.ts]
-sandburg batch <dir> [--parallel 8]                     # each subdirectory is a project
+sandburg batch <dir> [--parallel 8]                     # each subdirectory, .zip or .json in <dir> is a project
 sandburg compare <dir> --reference docker [--report path]
 sandburg snapshot <project>                             # store it, print its snapshot id
 sandburg open <project>                                 # load it in a visible tab
@@ -81,7 +91,18 @@ sandburg open <project>                                 # load it in a visible t
 - `--install-in browser` (opt-in) has the page install the packages from the npm registry and
   compile modules itself: the host only serves static files ([ADR 0018](docs/adr/0018-browser-install.md),
   [ADR 0020](docs/adr/0020-compile-in-the-page.md)).
-- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks.
+- `batch` and `compare` run one tab per core, up to 8, by default. In `batch` and `compare`, a
+  project's own `checks.spec.ts` (or `app.checks.spec.ts` next to `app.zip`) takes precedence over
+  `--checks`. Directories whose name starts with `.`, and archives or JSON files whose name starts
+  with `.` or `_`, are skipped.
+- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a
+  usage error.
+- `sandburg --help` lists the other options (`--ready`, `--save-files`, `--headed`, `--json`, `--out`, …).
+
+Every run also has built-in checks, without a checks file ([`src/orchestrator/checks.ts`](src/orchestrator/checks.ts)).
+A page that is a server error, or an uncaught error in the app, fails the run. Failed or blocked
+requests are reported without failing it. A screenshot, the accessibility tree and an axe-core scan
+are recorded, not enforced.
 
 A checks file default-exports named checks. Each gets the app's frame, Playwright's `expect`, and
 `appUrl(path)`:
@@ -129,11 +150,11 @@ point at the file and line where the dev server reported them.
 
 | | |
 |---|---|
-| Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit, Astro, Nuxt, React Router, SolidStart; `next dev` (Next.js 15–16, webpack, SWC); `ng serve` (Angular 22); static sites |
+| Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit 2, Astro 7, Nuxt 4, React Router 8, SolidStart 2; `next dev` (Next.js 15–16, App and Pages Router, webpack, SWC); `ng serve` (Angular 22); static sites. Each framework is one entry of the table in [`src/framework.ts`](src/framework.ts), which also sets the order detection tries them in |
 | Back ends | Express and other Node servers next to the front end, reached through Vite's proxy, from the page (`http://localhost:<port>`) or over WebSockets; SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) |
 | Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn scripts, package binaries, `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly |
-| Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide; TypeScript 7's `tsc` runs tsrs ([ADR 0024](docs/adr/0024-typescript-7.md)) |
-| Not supported | Native addons without a WebAssembly build, synchronous child processes, programs other than Node (`git`, `python` exit with 127) |
+| Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, `AsyncLocalStorage` across native `await`s ([ADR 0057](docs/adr/0057-native-awaits-and-the-runtime-warm-path.md)), top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide; TypeScript 7's `tsc` runs tsrs ([ADR 0024](docs/adr/0024-typescript-7.md)) |
+| Not supported | Native addons without a WebAssembly build, synchronous child processes, programs other than Node (`git`, `python` exit with 127), dependencies that are not npm registry versions (git, URL, `file:`, `link:`, `workspace:`, `user/repo` shorthands: the install fails) |
 
 ## How it works
 
@@ -152,12 +173,18 @@ The map of the code (where each module runs, what may import what, the contracts
 where to add a framework) is [`docs/architecture.md`](docs/architecture.md), kept true by
 `test/unit/architecture.test.ts`. The design decisions are recorded in [`docs/adr`](docs/adr). [ADR 0006](docs/adr/0006-node-runtime.md)
 covers the runtime, and [ADR 0014](docs/adr/0014-node-runtime-only.md) covers the single runtime and the
-cold-start work. The study method and every report are in [`docs/fidelity`](docs/fidelity/README.md).
+cold-start work. [ADR 0001](docs/adr/0001-runtime-adapters-serving-results.md) gives each sandbox its own origin and
+routes every request through the egress gateway (allowlist, cache);
+[ADR 0005](docs/adr/0005-wordpress-playground.md) (named for an adapter since removed) adds a per-sandbox egress proxy
+for what the gateway cannot intercept; [ADR 0054](docs/adr/0054-security-review-round-4.md) maps every boundary an app
+can reach and how the host holds it.
+The study method and every report are in [`docs/fidelity`](docs/fidelity/README.md).
 
 ## Development
 
 ```sh
 npm test               # unit tests
+npm run lint           # oxlint (type-aware, with Sandburg's own rules) and knip
 npm run test:runtime   # the runtime's loader and built-ins, in Chromium
 npm run test:e2e       # fixtures end to end (the first run needs network access; Docker tests skip without Docker)
 npm run typecheck
@@ -167,8 +194,13 @@ node scripts/pages/build.ts --verify   # the demo site, into dist-pages/
 node scripts/profile.ts <project>      # where a run's time goes: V8 CPU profile of every thread, by package
 node scripts/bench.ts                   # A/B benchmark of two revisions (default origin/main vs this checkout), cold and warm
 node scripts/edit-loop.ts               # edit-to-render latency of the fixtures
-node scripts/flakes.ts --cpu 4 <files>  # run test files again and again under load, and count what fails (docs/testing.md)
+node scripts/flakes.ts --cpu 4 <files>  # run test files again and again under load, and count what fails
+node scripts/architecture.ts --update   # regenerate docs/architecture.md's tables (the unit tests compare them)
+node scripts/api-report.ts --update     # regenerate api/sandburg.api.md after a change to the public API
 ```
+
+How to keep tests reliable (waiting for the thing, not for a time; hermetic temp dirs and ports) is in
+[`docs/testing.md`](docs/testing.md) ([ADR 0060](docs/adr/0060-test-reliability-under-load.md)).
 
 The demo site replays the host's answers from static files, recorded when the site is built
 ([ADR 0015](docs/adr/0015-static-demos.md)). The generator page installs and compiles in the page, so it
@@ -176,9 +208,12 @@ only needs the runtime's own files ([ADR 0021](docs/adr/0021-generate-in-the-bro
 `--verify` runs each of its framework scaffolds, and `--only generate` builds it alone. A GitHub Actions
 workflow builds and deploys the site on every push to `main`.
 
-CI runs on every pull request and push to `main`. It runs typecheck and unit tests on Node 24 (LTS),
-the runtime tests in Chromium, the packed package, and each e2e file as its own job; the Docker reference tests run there
-too. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
+CI runs on every pull request and push to `main`. It runs typecheck, lint and unit tests on Node 24 (LTS),
+the runtime tests in Chromium, the packed package, and each e2e file as its own job; the Docker reference tests run there too. Each
+job reports its tests' times, with a warning annotation for a file over its budget in `test/budgets.json`.
+A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, `package-lock.json` or the perf workflow
+is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
+That job fails only when a median is more than 30% slower, or when a side has no result. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
 after a week's cooldown. Every action is pinned to a commit.
 
 A pull request that changes what the package does adds a changeset (`npx changeset`): the bump and a line

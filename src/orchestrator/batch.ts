@@ -142,7 +142,7 @@ function outstanding(app: { expected: number | null; used: number | null; peak: 
   return Math.max(0, (peak > expected ? peak * OUTGROWN_MARGIN : expected) - used);
 }
 
-/** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
+/** Each subdirectory (unless its name starts with "."), .zip or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
 export async function discoverProjects(dir: string): Promise<BatchItem[]> {
   const root = resolve(dir);
   const items: BatchItem[] = [];
