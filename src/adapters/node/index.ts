@@ -441,11 +441,15 @@ async function recordRead(key: string, mode: string, rel: string, sandbox: strin
 /**
  * The files to preload for an install: those its runs loaded, then those that runs of other installs
  * loaded from the same package versions, where this install has them. Once its runs have said what
- * they read (markRead), only that.
+ * they read (markRead), only that: in the order they were loaded, then those read from a bundle that
+ * this install's runs never asked for one by one (borrowed from another install's list).
  */
 export async function preloadEntries(key: string): Promise<string[]> {
   const read = await readList(key);
-  if (read.size) return [...(await preloadList(key)).keys()].filter((e) => read.has(e));
+  if (read.size) {
+    const own = await preloadList(key);
+    return [...own.keys()].filter((e) => read.has(e)).concat([...read.keys()].filter((e) => !own.has(e)));
+  }
   const own = [...(await preloadList(key)).keys()];
   const byPackage = new Map<string, string[]>();
   for (const e of (await preloadList(PACKAGE_LIST)).keys()) {

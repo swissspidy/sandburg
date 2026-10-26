@@ -151,9 +151,9 @@ function bundleFiles(bundle: ArrayBuffer): [string, Uint8Array][] {
   return header.map(([, path, size]) => [path, new Uint8Array(bundle, (at += size) - size, size)]);
 }
 
-/** Whether two looks at a cache found the same files with the same sizes. */
+/** Whether two looks at a cache found the same files, none written in between (same sizes and mtimes). */
 function sameFiles(a: CacheEntry[], b: CacheEntry[] | undefined): boolean {
-  return !!b && a.length === b.length && a.every(([path, size], i) => b[i][0] === path && b[i][1] === size);
+  return !!b && a.length === b.length && a.every(([path, size, mtimeMs], i) => b[i][0] === path && b[i][1] === size && b[i][2] === mtimeMs);
 }
 
 /** Whether a file the run started with (text, or binary as base64) has these bytes. */

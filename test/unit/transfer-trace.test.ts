@@ -32,3 +32,11 @@ test('large transfers are printed as they happen and in a table at exit, keys el
   assert.doesNotMatch(err, /small/);
   assert.match(err, /transfers of 64 KB or more \(2\)/);
 });
+
+test('a marked page message that is not a well-formed report is not kept (the table at exit formats each)', () => {
+  const err = run(`
+console.log(t.traceConsole('sandburg:transfer ' + JSON.stringify({ hop: 'x', what: 'y', bytes: 1 << 20, encoding: 'binary', ms: 'slow' })));
+console.log(t.traceConsole('sandburg:transfer ' + JSON.stringify({ bytes: 1 << 20 })));
+`, { SANDBURG_TRACE_TRANSFERS: '1' });
+  assert.doesNotMatch(err, /transfer/);
+});
