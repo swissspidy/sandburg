@@ -172,9 +172,14 @@ test('bundledEntries reads what bundleCache writes', async () => {
   vfs.write('/app/.next/dev/cache/webpack/index.pack.gz', Uint8Array.from([0x1f, 0x8b, 0xff]));
   vfs.write('/app/.next/dev/cache/webpack/x.json', new TextEncoder().encode('{"a":1}'));
   const files = listCache(vfs, '/app', ['.next/dev/cache', 'node_modules/.vite']);
-  assert.deepEqual(files, [['.next/dev/cache/webpack/index.pack.gz', 3], ['.next/dev/cache/webpack/x.json', 7]]);
+  assert.deepEqual(files.map(([path, size]) => [path, size]), [['.next/dev/cache/webpack/index.pack.gz', 3], ['.next/dev/cache/webpack/x.json', 7]]);
   assert.deepEqual(node.bundledEntries(Buffer.from(bundleCache(vfs, '/app', files))), {
     '.next/dev/cache/webpack/index.pack.gz': { base64: Buffer.from([0x1f, 0x8b, 0xff]).toString('base64') },
     '.next/dev/cache/webpack/x.json': '{"a":1}',
   });
+  // A rewrite of the same length is a change: its mtime moves.
+  const before = files[1][2];
+  while (Date.now() <= before) await new Promise((r) => setTimeout(r, 1));
+  vfs.write('/app/.next/dev/cache/webpack/x.json', new TextEncoder().encode('{"a":2}'));
+  assert.notEqual(listCache(vfs, '/app', ['.next/dev/cache'])[1][2], before);
 });
