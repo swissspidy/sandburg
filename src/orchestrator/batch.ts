@@ -115,18 +115,31 @@ const START_ALLOWANCE = 2 ** 30;
 const PEAK_MARGIN = 1.1;
 
 /**
- * What an open app has yet to allocate, which availableMemory does not show yet: until its checks,
- * its expected peak less what its renderer uses now; in its checks, nothing more (what it adds then,
- * 5-10% of its peak, the reserve covers). An app's renderer holds ~50 MB from when it opens through
- * its install (14-21 s on a cold Next.js app) and grows from its start on, to most of its peak by its
- * checks (warm `next-app-router`: 150 MB at start, 925 MB at checks; `vite-react-counter`: 109 and
- * 331 MB, peak 364 MB). Expected peak: the project's measured in the latest batches (plus
- * PEAK_MARGIN), else START_ALLOWANCE. Where the renderer's memory cannot be read (not Linux), the
- * whole expected peak until its checks.
+ * An app whose renderer passed its expected peak before its checks is still growing, by how much
+ * nothing measured: it is expected to reach this much of the most it used so far.
  */
-function outstanding(app: { expected: number | null; used: number | null; inChecks: boolean }): number {
-  if (app.inChecks) return 0;
-  return Math.max(0, (app.expected ?? START_ALLOWANCE) - (app.used ?? 0));
+const OUTGROWN_MARGIN = 1.5;
+
+/**
+ * What an open app has yet to allocate, which availableMemory does not show yet. An app's renderer
+ * holds ~50 MB from when it opens through its install (14-21 s on a cold Next.js app) and grows from
+ * its start on, to most of its peak by its checks (warm `next-app-router`: 150 MB at start, 925 MB at
+ * checks; `vite-react-counter`: 109 and 331 MB, peak 364 MB). Expected peak: the project's measured
+ * in the latest batches (plus PEAK_MARGIN), else START_ALLOWANCE.
+ * - Until its checks: its expected peak less what its renderer uses now, however long it takes to
+ *   get there (a slow install, a late compile). One that passed its expected peak is expected to
+ *   reach OUTGROWN_MARGIN times the most it used.
+ * - In its checks: what its earlier run reached beyond the most this one used (a route compiled when
+ *   the checks first visit it); with no earlier run, nothing more (it adds 5-10% of its peak then,
+ *   which the reserve covers). What a collection frees in its checks counts as free.
+ * Where the renderer's memory cannot be read (not Linux): the whole expected peak until its checks.
+ */
+function outstanding(app: { expected: number | null; used: number | null; peak: number | null; inChecks: boolean }): number {
+  const used = app.used ?? 0;
+  const peak = Math.max(app.peak ?? 0, used);
+  if (app.inChecks) return app.expected === null || app.used === null ? 0 : Math.max(0, app.expected / PEAK_MARGIN - peak);
+  const expected = app.expected ?? START_ALLOWANCE;
+  return Math.max(0, (peak > expected ? peak * OUTGROWN_MARGIN : expected) - used);
 }
 
 /** Each subdirectory, .zip, or .json file (unless its name starts with "." or "_") of `dir` is a project; `checks.spec.ts` inside a project directory, or `<name>.checks.spec.ts` next to an archive, is its checks file. */
@@ -175,7 +188,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const apps = new Set<OpenApp>();
   const available = () => {
     let free = memory();
-    for (const app of apps) free -= outstanding({ ...app, used: app.used() });
+    for (const app of apps) free -= outstanding({ ...app, used: app.used(), peak: app.peak() });
     return free;
   };
   // With an app open, the next opens only when there is memory for it; with none, it always opens.
@@ -210,7 +223,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
     open++;
     let counted = true;
     const peak = earlier[index]?.peak;
-    const app: OpenApp = { expected: peak ? peak * PEAK_MARGIN : null, used: () => app.renderer?.used() ?? null, inChecks: false, renderer: null, collectedAt: -Infinity };
+    const app: OpenApp = { expected: peak ? peak * PEAK_MARGIN : null, used: () => app.renderer?.used() ?? null, peak: () => app.renderer?.peak?.() ?? null, inChecks: false, renderer: null, collectedAt: -Infinity };
     apps.add(app);
     const done = () => {
       if (counted) starting--;
@@ -351,6 +364,8 @@ interface OpenApp {
   /** The peak it is expected to reach (from history), or null. */
   expected: number | null;
   used(): number | null;
+  /** The most its renderer used so far, or null. */
+  peak(): number | null;
   inChecks: boolean;
   renderer: RunRenderer | null;
   /** When the guard last had its isolates collect garbage. */

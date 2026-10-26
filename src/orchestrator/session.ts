@@ -153,6 +153,8 @@ export interface RunOptions {
 export interface RunRenderer {
   /** Bytes it uses now; null until it is found, and where its memory cannot be read (not Linux). */
   used(): number | null;
+  /** The most it was seen to use so far (bytes); null until it is found, and where its memory cannot be read. */
+  peak?(): number | null;
   /**
    * A full garbage collection in each of the run's isolates (collectGarbage), each given
    * GC_TIMEOUT_MS; resolves when done (never rejects; a no-op once the run is over).
@@ -493,6 +495,7 @@ export class Session {
       const t = tab;
       options.onRenderer?.({
         used: () => memory?.used() ?? null,
+        peak: () => memory?.peak || null,
         collectGarbage: async () => {
           if (t.page.isClosed()) return;
           const cdp = await t.context.newCDPSession(t.page).catch(() => null);

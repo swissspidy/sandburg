@@ -236,6 +236,7 @@ function runProject(project: string | Project, options?: RunOptions & SessionOpt
 
 interface RunRenderer {
     used(): number | null;
+    peak?(): number | null;
     collectGarbage(): Promise<void>;
 }
 

@@ -246,8 +246,11 @@ test('a project is expected to reach the peak its earlier run measured until its
       ({
         async run(project: string, options: RunOptions) {
           log.push(`start ${project}`);
-          options.onRenderer?.({ used: () => 0, collectGarbage: async () => {} });
+          // By its checks, its renderer has reached its earlier peak (2 GiB for "big").
+          let used = 0;
+          options.onRenderer?.({ used: () => used, peak: () => used, collectGarbage: async () => {} });
           await sleep(40);
+          used = project === 'big' ? 2 * GiB : 0;
           log.push(`checks ${project}`);
           options.onPhase?.('checks');
           await sleep(40);
@@ -263,6 +266,91 @@ test('a project is expected to reach the peak its earlier run measured until its
     const huge: string[] = [];
     await runBatch(session(huge), ['huge', 'small'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => 6 * GiB });
     assert.deepEqual(huge.slice(0, 3), ['start huge', 'start small', 'checks huge']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('an app that allocates past its expected peak before its checks is expected to go on growing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    const GiB = 2 ** 30;
+    let shown = 0;
+    const log: string[] = [];
+    let maxShown = 0;
+    const session = {
+      async run(project: string, options: RunOptions) {
+        log.push(`start ${project}`);
+        // A late allocator with no earlier run: past the 1 GiB expected of it (1.4 GiB), then on to
+        // 2 GiB before its checks. The others hold 0.5 GiB.
+        let used = 0;
+        const grow = (to: number) => {
+          shown += to - used;
+          used = to;
+          maxShown = Math.max(maxShown, shown);
+        };
+        options.onRenderer?.({ used: () => used * GiB, peak: () => used * GiB, collectGarbage: async () => {} });
+        grow(project === 'late' ? 1.4 : 0.5);
+        await sleep(100);
+        if (project === 'late') grow(2);
+        await sleep(20);
+        options.onPhase?.('checks');
+        log.push(`checks ${project}`);
+        grow(0);
+        return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: resolve(project), snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 120, checksMs: 1 } } as unknown as RunResult;
+      },
+    } as unknown as Session;
+    // 3.5 GiB: at 1.4 GiB, "late" leaves 2.1 GiB, which a guard that counts it as done growing takes
+    // for "b"; then "late" grows on, to 2.5 GiB of the 3.5 in use. Expected to reach 1.5 x 1.4 =
+    // 2.1 GiB, it leaves 1.4 GiB, under the 1.5 GiB reserve: "b" waits for its checks.
+    const memory = () => 3.5 * GiB - shown * GiB;
+    await runBatch(session, ['late', 'b'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: memory });
+    assert.deepEqual(log.slice(0, 3), ['start late', 'checks late', 'start b']);
+    assert.ok(maxShown <= 2, `at most 2 GiB in use at once, not ${maxShown}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('an app that allocates in its checks holds what its earlier run reached beyond its own peak', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    const GiB = 2 ** 30;
+    // Its earlier run reached 2 GiB: most of it in its checks (a route compiled on first visit).
+    await mkdir(join(dir, 'b-zzzzzzzz-000000'), { recursive: true });
+    await writeFile(join(dir, 'b-zzzzzzzz-000000', 'summary.json'), JSON.stringify({ runs: [{ project: resolve('late'), runtime: 'node', totalMs: 10, checksMs: 1, rendererPeakBytes: 2 * GiB }] }));
+    let shown = 0;
+    let maxShown = 0;
+    const log: string[] = [];
+    const session = {
+      async run(project: string, options: RunOptions) {
+        log.push(`start ${project}`);
+        let used = 0;
+        let peak = 0;
+        const grow = (to: number) => {
+          shown += to - used;
+          used = to;
+          peak = Math.max(peak, to);
+          maxShown = Math.max(maxShown, shown);
+        };
+        options.onRenderer?.({ used: () => used * GiB, peak: () => peak * GiB, collectGarbage: async () => {} });
+        grow(0.5);
+        options.onPhase?.('checks');
+        if (project === 'late') {
+          await sleep(50);
+          grow(2);
+          await sleep(50);
+        }
+        log.push(`end ${project}`);
+        grow(0);
+        return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: resolve(project), snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 100, checksMs: 100 } } as unknown as RunResult;
+      },
+    } as unknown as Session;
+    // 3 GiB: in its checks at 0.5 GiB, "late" leaves 2.5 GiB unless it holds the 1.5 GiB its
+    // earlier run reached beyond that; "b" (1 GiB expected, 0.5 used) waits for it to end.
+    await runBatch(session, ['late', 'b'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => 3 * GiB - shown * GiB });
+    assert.deepEqual(log, ['start late', 'end late', 'start b', 'end b']);
+    assert.ok(maxShown <= 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
