@@ -38,7 +38,9 @@ const LOCAL = '__sbac';
 const G = AWAIT_CONTEXT_GLOBAL;
 
 /** What a rewrite inserts, by kind; at one position, in this order. */
-const Edit = { AwaitClose: 0, BodyEnd: 1, ExpressionEnd: 2, BodyStart: 3, ExpressionStart: 4, Resumed: 5, AwaitOpen: 6, AwaitOperand: 7 } as const;
+const Edit = { AwaitClose: 0, IterClose: 1, LoopEnd: 2, BodyEnd: 3, ExpressionEnd: 4, BodyStart: 5, ExpressionStart: 6, Resumed: 7, LoopStart: 8, IterOpen: 9, AwaitOpen: 10, AwaitOperand: 11 } as const;
+/** Kinds per position in an edit's key (position × KINDS + kind). */
+const KINDS = 16;
 type Edit = (typeof Edit)[keyof typeof Edit];
 const BODY_START = `const ${LOCAL} = ${G}.e(); try { `;
 const BODY_END = ` } finally { ${G}.x(${LOCAL}); }`;
@@ -52,6 +54,14 @@ const TEXT: Record<Edit, string> = {
   [Edit.AwaitOpen]: `${G}.r(${LOCAL}, `,
   [Edit.AwaitOperand]: ` ${G}.s(${LOCAL},`,
   [Edit.Resumed]: `${G}.k(${LOCAL});`,
+  // A for-of body that awaits: a rejected await restores the context before the loop closes its
+  // iterator (its return(), a generator's finally), which runs before any catch around the loop.
+  [Edit.LoopStart]: 'try { ',
+  [Edit.LoopEnd]: ` } catch (__sbe) { ${G}.k(${LOCAL}); throw __sbe; }`,
+  // A for-of body not in braces (whose end the scan does not find): the loop's iterable is wrapped
+  // so that closing its iterator restores the context first.
+  [Edit.IterOpen]: ` ${G}.i(${LOCAL},`,
+  [Edit.IterClose]: ')',
 };
 
 /** Words after which an expression starts (so a `/` there begins a regular expression). */
@@ -84,7 +94,7 @@ interface Frame {
   awaits: number;
   /** Open `?`s of conditionals at an expression body's depth. */
   conditionals: number;
-  /** It has a catch parameter whose pattern runs code (a default, a computed key) before the context is restored. */
+  /** It has a catch parameter with a pattern: destructuring runs code (getters, iterators, defaults) before the context is restored. */
   unsafe?: boolean;
 }
 
@@ -108,10 +118,16 @@ interface Group {
   async?: boolean;
   generator?: boolean;
   expression?: boolean;
-  /** `(` of a catch parameter with a pattern: the frame of the catch (a default in it makes the frame unsafe). */
-  catchFrame?: Frame;
-  /** `(` of a for head: its `of` or `in` was read. */
+  /** `(` of a for head: its `of` or `in` was read, and whether it was `of`. */
   iterates?: boolean;
+  forOf?: boolean;
+  /** `(` of a for-of head: where its `of` ends and its iterable ends. */
+  ofEnd?: number;
+  headEnd?: number;
+  /** `{` of a for-of loop's body: the frame it is in, and whether an await of that frame is in it. */
+  loopFrame?: Frame;
+  loopAwaits?: boolean;
+  loopStart?: number;
   /** `{` of a function body: its frame. */
   frame?: Frame;
   /** `}`: whether an operator may follow (the braces were an expression). */
@@ -224,6 +240,8 @@ class Scanner {
   private arrowDue: { async: boolean } | null = null;
   /** The `(` group that closed last. */
   private lastParen: Group | null = null;
+  /** A for-of head just closed: its body follows. */
+  private forOfClosed: Group | null = null;
   /** At an `async` word: whether it began a statement (for `async function`'s kind). */
   private asyncAtStatement = false;
   /** Whether the previous token was a word at the start of a statement (a label's name, before its `:`). */
@@ -251,8 +269,8 @@ class Scanner {
     const parts: string[] = [];
     let at = 0;
     for (const key of keys) {
-      const pos = Math.floor(key / 8);
-      parts.push(this.code.slice(at, pos), TEXT[(key % 8) as Edit]);
+      const pos = Math.floor(key / KINDS);
+      parts.push(this.code.slice(at, pos), TEXT[(key % KINDS) as Edit]);
       at = pos;
     }
     parts.push(this.code.slice(at));
@@ -274,7 +292,7 @@ class Scanner {
   }
 
   private edit(frame: Frame, pos: number, kind: Edit): void {
-    this.edits.add(pos * 8 + kind, frame.id);
+    this.edits.add(pos * KINDS + kind, frame.id);
   }
 
   /**
@@ -307,6 +325,15 @@ class Scanner {
 
   private token(): void {
     this.advancePending();
+    const loop = this.forOfClosed;
+    if (loop) {
+      // A for-of body not in braces: its iterable is wrapped (if the function is rewritten).
+      this.forOfClosed = null;
+      if (!(this.type === T.Open && this.value === '{')) {
+        this.edit(this.frame, loop.ofEnd!, Edit.IterOpen);
+        this.edit(this.frame, loop.headEnd!, Edit.IterClose);
+      }
+    }
     const { type, value } = this;
     // An arrow's expression body ends at a `,`, `;` or unmatched `:` of its depth.
     while (this.frame.expression && this.depth === this.frame.depth && type === T.Punct) {
@@ -364,26 +391,12 @@ class Scanner {
       // A label: a statement follows.
       this.caseColon = true;
     }
-    // A default in a catch parameter's pattern (`catch ({ m = f() })`) runs before the catch block
-    // restores a rejected await's context: its function is lowered instead.
-    if (value === '=') this.unsafeCatch();
     if (value === '*' && this.functionDue && this.prevType === T.Word && this.prevValue === 'function') this.functionDue.generator = true;
     if (top?.member) {
       if (value === ',' || value === ';') resetMember(top.member);
       else if (value === '*' && !top.member.assigned) top.member.star = true;
       else if (value === '...') top.member.assigned = true; // a spread: an expression, not a member
       else noteMember(top.member, value);
-    }
-  }
-
-  /** Code in a catch parameter's pattern (a default, a computed key): the catch's function is lowered. */
-  private unsafeCatch(): void {
-    for (let i = this.groups.length - 1; i >= 0; i--) {
-      const f = this.groups[i].catchFrame;
-      if (f) {
-        f.unsafe = true;
-        return;
-      }
     }
   }
 
@@ -407,6 +420,10 @@ class Scanner {
         this.top.caseDue = true;
       } else if ((value === 'of' || value === 'in') && this.top?.kind === 40 && this.top.before === 'for' && !this.exprEnd) {
         this.top.iterates = true;
+        if (value === 'of') {
+          this.top.forOf = true;
+          this.top.ofEnd = this.end;
+        }
       } else if (value === 'with') {
         // In `with (o) { … }`, the names the rewrite adds would resolve through o.
         throw new Unsupported('with');
@@ -417,6 +434,8 @@ class Scanner {
         this.edit(this.frame, this.end, Edit.AwaitOperand);
         if (this.pending.length >= MAX_PENDING) throw new Unsupported('awaits');
         this.pending.push({ frame: this.frame, depth: this.groups.length, phase: 0, bodies: 0 });
+        // In for-of bodies (of this function): each restores the context on a rejection.
+        for (let i = this.groups.length - 1; i >= 0 && !this.groups[i].frame; i--) if (this.groups[i].loopFrame === this.frame) this.groups[i].loopAwaits = true;
       }
     }
     if (!this.property) this.memberToken(value);
@@ -444,15 +463,14 @@ class Scanner {
         // `async (…) =>` (an arrow's parameters, or a call of a function named async).
         g.async = this.prevType === T.Word && this.prevValue === 'async' && !this.prevProperty && !this.newlineBefore;
       }
-      // A catch parameter with a pattern (`catch ({ m = f() })`) runs code before its block, where
-      // the context is restored: the function is lowered instead.
-      if (g.before === 'catch' && /^\s*[[{]/.test(this.code.slice(this.end, this.end + 64))) g.catchFrame = this.frame;
+      // A catch parameter with a pattern runs code before its block, where a rejected await's
+      // context is restored: defaults, computed keys, getters (`{ message }` on a Proxy), iterators
+      // (`[m]`). Its function is lowered instead.
+      if (g.before === 'catch' && /^\s*[[{]/.test(this.code.slice(this.end, this.end + 64))) this.frame.unsafe = true;
       this.memberToken('(');
       return this.push(g);
     }
     if (value === '[') {
-      // A computed key in an object pattern (`catch ({ [k()]: m })`) runs code too.
-      if (top?.brace === 'object' && this.memberName()) this.unsafeCatch();
       this.memberToken('[');
       return this.push({ kind: 91 });
     }
@@ -476,7 +494,8 @@ class Scanner {
       const resumes = (this.prevType === T.Word && !this.prevProperty && (this.prevValue === 'finally' || this.prevValue === 'catch')) || (this.prevType === T.Close && this.prevValue === ')' && this.lastParen?.before === 'catch');
       if (resumes) this.edit(this.frame, this.end, Edit.Resumed);
       this.memberToken('{');
-      return this.push({ kind: 123, brace: 'block' });
+      const loop = this.prevType === T.Close && this.prevValue === ')' && this.lastParen?.forOf;
+      return this.push({ kind: 123, brace: 'block', ...(loop ? { loopFrame: this.frame, loopStart: this.end } : {}) });
     }
     this.memberToken('{');
     this.push({ kind: 123, brace: 'object', member: newMember(), exprAfter: true });
@@ -511,9 +530,17 @@ class Scanner {
     while (this.frame.expression && this.groups.length < this.frame.depth) this.endExpressionBody();
     if (g.kind === 40) {
       this.lastParen = g;
+      if (g.forOf) {
+        g.headEnd = this.prevEnd;
+        this.forOfClosed = g;
+      }
       this.exprEnd = !CONTROL.has(g.before ?? '') && g.before !== 'catch';
     } else if (g.kind === 91) this.exprEnd = true;
     else {
+      if (g.loopFrame && g.loopAwaits) {
+        this.edit(g.loopFrame, g.loopStart!, Edit.LoopStart);
+        this.edit(g.loopFrame, this.start, Edit.LoopEnd);
+      }
       if (g.frame) {
         const frame = this.frames.pop();
         if (frame !== g.frame) throw new Unsupported('frames');

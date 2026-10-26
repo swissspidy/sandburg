@@ -143,3 +143,49 @@ test('AsyncLocalStorage in a catch parameter\'s computed key', async () => {
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.equal(out.stdout.trim(), 'A B');
 });
+
+// A catch parameter's pattern runs a getter (\`{ message }\`) or an iterator (\`[m]\`) before the catch
+// block: the function is lowered. Node's output.
+test('AsyncLocalStorage in getters and iterators a catch parameter\'s pattern runs', async () => {
+  const program = `
+    const { AsyncLocalStorage } = require('async_hooks');
+    const als = new AsyncLocalStorage();
+    const out = [];
+    const tick = () => new Promise((r) => setTimeout(r, 1));
+    const fail = (e) => new Promise((_, j) => setTimeout(() => j(e), 1));
+    const withGetter = () => ({ get message() { out.push('getter:' + als.getStore()); return 'm'; } });
+    const withIterator = () => ({ *[Symbol.iterator]() { out.push('iterator:' + als.getStore()); yield 1; } });
+    async function getter() { await tick(); try { await fail(withGetter()); } catch ({ message }) { } }
+    async function iterator() { await tick(); try { await fail(withIterator()); } catch ([m]) { } }
+    (async () => {
+      await Promise.all([als.run('A', getter), als.run('B', getter)]);
+      await Promise.all([als.run('A', iterator), als.run('B', iterator)]);
+      console.log(out.join(' '));
+    })();`;
+  const out = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(out.stdout.trim(), 'getter:A getter:B iterator:A iterator:B');
+});
+
+// A rejected await in a for-of body unwinds the loop, which closes its iterator (return(), a
+// generator's finally) before any catch of the function runs: with the store of the call. Node's output.
+test('AsyncLocalStorage in an iterator a for-of loop closes when an await in its body rejects', async () => {
+  const program = `
+    const { AsyncLocalStorage } = require('async_hooks');
+    const als = new AsyncLocalStorage();
+    const out = [];
+    const tick = () => new Promise((r) => setTimeout(r, 1));
+    const fail = () => new Promise((_, j) => setTimeout(() => j(new Error('x')), 1));
+    const closing = (tag) => ({ [Symbol.iterator]() { let n = 0; return { next: () => ({ done: n++ > 2, value: n }), return() { out.push(tag + ':' + als.getStore()); return { done: true }; } }; } });
+    function* gen(tag) { try { yield 1; yield 2; } finally { out.push(tag + ':' + als.getStore()); } }
+    async function block() { await tick(); try { for (const x of closing('block-return')) { await fail(); } } catch {} }
+    async function bare() { await tick(); try { for (const x of gen('bare-finally')) await fail(); } catch {} }
+    async function broken() { await tick(); for (const x of closing('break-return')) { await tick(); break; } }
+    (async () => {
+      for (const f of [block, bare, broken]) await Promise.all([als.run('A', f), als.run('B', f)]);
+      console.log(out.join(' '));
+    })();`;
+  const out = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(out.stdout.trim(), 'block-return:A block-return:B bare-finally:A bare-finally:B break-return:A break-return:B');
+});

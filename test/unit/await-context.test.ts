@@ -55,8 +55,10 @@ const CASES = [
   'async function f() { class D extends function () { return async () => { await x; }; } { async m() { await y; } } }',
   'async function f() { class D extends async function () { await a; } {} }',
   'async function f() { for (; { async m() { await a; } }.m; ) await b; }',
-  'async function f() { try { await a; } catch ({ message }) { await b; } }',
-  'async function f() { try { await a; } catch ({ a: [b], c: { d } }) { await e; } return { [await k]: 1 }; }',
+  'async function f() { for (const x of xs) { await x; } for (const [a, b] of m) { if (a) { await b; } } for (const y of ys) { g(y); } await z; }',
+  'async function f() { L: for (const x of xs) { for (const y of x) { await y; continue L; } } }',
+  'async function f() { for (const x of xs) { await x; } for (const k in o) await k; }',
+  'async function f() { for (const x of xs) await x; for (const y of await ys) g(y); for (const [a] of (b, c)) if (a) await a; else h(); await z; }',
 ];
 
 test('the token scan rewrites awaits as the parse does (acorn), and the result parses', () => {
@@ -99,6 +101,10 @@ test('code the scan does not understand is left to the lowering (null), and code
   assert.equal(rewriteAwaits('async function f() { try { await a; } catch ({ m = g() }) {} }'), null);
   assert.equal(rewriteAwaits('async function f() { try { await a; } catch ([m = 1]) {} }'), null);
   assert.equal(rewriteAwaits('async function f() { try { await a; } catch ({ [k()]: m }) {} }'), null);
+  // Destructuring runs getters and iterators too.
+  assert.equal(rewriteAwaits('async function f() { try { await a; } catch ({ message }) {} }'), null);
+  assert.equal(rewriteAwaits('async function f() { try { await a; } catch ([m]) {} }'), null);
+
   assert.equal(rewriteAwaits('async function f(o) { with (o) { await a; } }'), null);
   assert.equal(rewriteAwaits('async function f() { await }'), null);
   assert.equal(rewriteAwaits('async function f() { await x; '), null);
@@ -122,7 +128,9 @@ test('installed packages: the token scan rewrites as the parse does', () => {
     if (!/\bawait\b/.test(src)) continue;
     const code = compiled(src, /^\s*(import|export)\b/m.test(src) ? 'cjs' : undefined);
     if (code.includes('import.meta')) continue; // not a script: the runtime gets these converted
-    assert.equal(rewriteAwaits(code), oracleRewrite(code), file);
+    const want = oracleRewrite(code);
+    const out = rewriteAwaits(code);
+    if (out !== null || want === null) assert.equal(out, want, file);
     checked++;
   }
   assert.ok(checked > 10, `${checked} files`);
@@ -166,13 +174,15 @@ test('random async programs: the token scan rewrites as the parse does, or leave
     } catch {
       continue; // not a valid program
     }
-    let want: string;
+    let want: string | null;
     try {
       want = oracleRewrite(code);
     } catch {
       continue; // acorn reads a few of esbuild's outputs otherwise (sloppy-mode names)
     }
     const out = rewriteAwaits(code);
+    // What the AST refuses the scan must refuse too; it may refuse more (bounds, `with`).
+    if (want === null) assert.equal(out, null, code);
     if (out === null) continue;
     assert.equal(out, want, code);
     checked++;

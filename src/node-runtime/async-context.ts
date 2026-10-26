@@ -83,6 +83,27 @@ const awaitContext = {
   x(st: AwaitState): void {
     if (!st.s && st.p !== null) current = st.p;
   },
+  /**
+   * The iterable of a for-of loop whose body is not in braces: its iterator, whose return() (a
+   * generator's finally, an iterator's cleanup) restores the function's context first when a
+   * rejected await unwinds the loop. Otherwise the same iterator, used as for-of uses it.
+   */
+  i(st: AwaitState, iterable: Iterable<unknown>): Iterable<unknown> {
+    return {
+      [Symbol.iterator]() {
+        const it = iterable[Symbol.iterator]();
+        const next = it.next;
+        return {
+          next: (value?: unknown) => next.call(it, value),
+          return(value?: unknown) {
+            awaitContext.k(st);
+            const close = it.return;
+            return close === undefined || close === null ? { done: true, value } : close.call(it, value);
+          },
+        };
+      },
+    };
+  },
 };
 
 let installed = false;

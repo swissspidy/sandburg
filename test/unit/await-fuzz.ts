@@ -80,6 +80,7 @@ export function programs(seed: number): () => string {
           () => `if (${expr(inAsync)}) ${block(inAsync)} else ${block(inAsync)}`,
           () => `try ${block(inAsync)} catch (${pick(['e', '{ m = ' + expr(inAsync) + ' }', '{ message }', '[m]'])}) ${block(inAsync)} finally ${block(inAsync)}`,
           () => `L: for (const i of ${expr(inAsync)}) { ${stmt(inAsync)} continue L; }`,
+          () => `for (const i of ${expr(inAsync)}) ${stmt(inAsync)}`,
           () => `switch (${expr(inAsync)}) { case 1: ${stmt(inAsync)} default: { ${stmt(inAsync)} } }`,
           () => `return ${expr(inAsync)};`,
           () => `${pick(['async ', ''])}function g(${params()}) ${block(true)}`,

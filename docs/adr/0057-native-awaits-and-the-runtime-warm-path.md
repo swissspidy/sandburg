@@ -95,12 +95,20 @@ async function f(x) {                         async function f(x) {
   them against Node's output. At run time, the host checks that the rewritten code parses
   (compiled with `Function`, never called); code the scan does not understand, or whose result
   does not parse, is lowered as before.
-- **Lowered on purpose**: a catch parameter whose pattern runs code, a default or a computed key
-  (`catch ({ m = f() })`, `catch ({ [k()]: m })`: it runs before the catch block, where a rejected await's context is restored; `catch ({ message })`
-  is rewritten), code with `with`
+- **Lowered on purpose**: a catch parameter with a pattern (`catch ({ message })`, `catch ([m])`:
+  destructuring runs getters, iterators, defaults and computed keys before the catch block, where a
+  rejected await's context is restored), code with `with`
   (the names the rewrite adds would resolve through its object), and code over 4 MB or with more
   than 50,000 awaits (see Security). `s` also restores the function's context if it finds the
-  call still marked suspended. Every place that lowered does this: installed files (`install.ts`), the host's
+  call still marked suspended.
+- **for-of loops**: a rejected await in a loop's body unwinds the loop, which closes its iterator
+  (its `return()`, a generator's `finally`) before any catch of the function runs, and nothing of
+  the rewrite runs on that path. A body in braces that awaits gets `try { … } catch (__sbe) {
+  k(__sbac); throw __sbe; }` (no cost per iteration); a body not in braces, whose end the scan does
+  not look for, gets its iterable wrapped (`__sandburg_ac.i(__sbac, xs)`: the same iterator, whose
+  `return()` restores the context first). Neither lowers anything: in the nine fixtures' installs,
+  the scan leaves the same 11 files to the lowering as before (all over 4 MB); Vite's chunk alone
+  has 63 for-of bodies not in braces in async functions. Every place that lowered does this: installed files (`install.ts`), the host's
   compile of project files, Vite's SSR modules and webpack's `eval` literals (`compile.ts`), and the
   page's compiler for installs in the browser. `TRANSFORM_VERSION` and the compile cache's key change.
 
