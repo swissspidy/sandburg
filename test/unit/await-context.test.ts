@@ -56,6 +56,7 @@ const CASES = [
   'async function f() { class D extends async function () { await a; } {} }',
   'async function f() { for (; { async m() { await a; } }.m; ) await b; }',
   'async function f() { try { await a; } catch ({ message }) { await b; } }',
+  'async function f() { try { await a; } catch ({ a: [b], c: { d } }) { await e; } return { [await k]: 1 }; }',
 ];
 
 test('the token scan rewrites awaits as the parse does (acorn), and the result parses', () => {
@@ -97,6 +98,7 @@ test('code the scan does not understand is left to the lowering (null), and code
   // names the rewrite adds would resolve through its object.
   assert.equal(rewriteAwaits('async function f() { try { await a; } catch ({ m = g() }) {} }'), null);
   assert.equal(rewriteAwaits('async function f() { try { await a; } catch ([m = 1]) {} }'), null);
+  assert.equal(rewriteAwaits('async function f() { try { await a; } catch ({ [k()]: m }) {} }'), null);
   assert.equal(rewriteAwaits('async function f(o) { with (o) { await a; } }'), null);
   assert.equal(rewriteAwaits('async function f() { await }'), null);
   assert.equal(rewriteAwaits('async function f() { await x; '), null);

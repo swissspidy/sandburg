@@ -127,3 +127,19 @@ test('AsyncLocalStorage across awaits in the shapes the scan once misread', asyn
     'heritage:A:B method:B outer:A member:A:B of:A/ await y:B/ await y param:A param:B after-param-await:A after-param-await:B later:A later:B',
   );
 });
+
+// A catch parameter's computed key runs before the catch block, like a default: the function is
+// lowered. On its own in its file (a lowered function lowers the whole file).
+test('AsyncLocalStorage in a catch parameter\'s computed key', async () => {
+  const program = `
+    const { AsyncLocalStorage } = require('async_hooks');
+    const als = new AsyncLocalStorage();
+    const out = [];
+    const tick = () => new Promise((r) => setTimeout(r, 1));
+    const rej = () => new Promise((_, j) => setTimeout(() => j({}), 1));
+    async function keyed() { await tick(); try { await rej(); } catch ({ [(out.push(als.getStore()), 'x')]: k }) { } }
+    Promise.all([als.run('A', keyed), als.run('B', keyed)]).then(() => console.log(out.join(' ')));`;
+  const out = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(out.stdout.trim(), 'A B');
+});

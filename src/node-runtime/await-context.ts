@@ -84,7 +84,7 @@ interface Frame {
   awaits: number;
   /** Open `?`s of conditionals at an expression body's depth. */
   conditionals: number;
-  /** It has a catch parameter with a default in its pattern (run before the context is restored). */
+  /** It has a catch parameter whose pattern runs code (a default, a computed key) before the context is restored. */
   unsafe?: boolean;
 }
 
@@ -366,21 +366,24 @@ class Scanner {
     }
     // A default in a catch parameter's pattern (`catch ({ m = f() })`) runs before the catch block
     // restores a rejected await's context: its function is lowered instead.
-    if (value === '=') {
-      for (let i = this.groups.length - 1; i >= 0; i--) {
-        const f = this.groups[i].catchFrame;
-        if (f) {
-          f.unsafe = true;
-          break;
-        }
-      }
-    }
+    if (value === '=') this.unsafeCatch();
     if (value === '*' && this.functionDue && this.prevType === T.Word && this.prevValue === 'function') this.functionDue.generator = true;
     if (top?.member) {
       if (value === ',' || value === ';') resetMember(top.member);
       else if (value === '*' && !top.member.assigned) top.member.star = true;
       else if (value === '...') top.member.assigned = true; // a spread: an expression, not a member
       else noteMember(top.member, value);
+    }
+  }
+
+  /** Code in a catch parameter's pattern (a default, a computed key): the catch's function is lowered. */
+  private unsafeCatch(): void {
+    for (let i = this.groups.length - 1; i >= 0; i--) {
+      const f = this.groups[i].catchFrame;
+      if (f) {
+        f.unsafe = true;
+        return;
+      }
     }
   }
 
@@ -448,6 +451,8 @@ class Scanner {
       return this.push(g);
     }
     if (value === '[') {
+      // A computed key in an object pattern (`catch ({ [k()]: m })`) runs code too.
+      if (top?.brace === 'object' && this.memberName()) this.unsafeCatch();
       this.memberToken('[');
       return this.push({ kind: 91 });
     }
