@@ -10,7 +10,7 @@
  * used only for the bytes it was compiled from (the file as written, unchanged since).
  */
 import { NEEDS_LOWERING } from './loader.ts';
-import { base, compileCache, vfs } from './worker.ts';
+import type { Vfs } from './vfs.ts';
 import { traceTransfer } from '../transfer-trace.ts';
 
 const HELPER = `onmessage = async ({ data: { alive, path, bytes, shared, compiled, compile, token } }) => {
@@ -52,6 +52,10 @@ const NativeWorker = globalThis.Worker;
 const workerHref = globalThis.location?.href;
 
 let dirs: string[] = [];
+/** What the runtime gave it (worker.ts' init): its files, the host's base URL, the run's compile capability. */
+let vfs: Vfs;
+let base = '';
+let compileCache: { key: string; token?: string } | null = null;
 let helper: Worker | null | undefined;
 /**
  * Set once the helper runs. A worker this runtime starts does not start while the runtime blocks, so
@@ -63,7 +67,8 @@ const toSend = new Set<string>();
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 
 /** Compiles ahead the CommonJS files written under `under` (absolute directories). */
-export function compileAhead(under: string[]): void {
+export function compileAhead(under: string[], runtime: { vfs: Vfs; base: string; compileCache: { key: string; token?: string } | null }): void {
+  ({ vfs, base, compileCache } = runtime);
   dirs = under.map((d) => (d.endsWith('/') ? d : `${d}/`));
   // Started now, to be running by the program's first write.
   startHelper();

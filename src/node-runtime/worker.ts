@@ -286,7 +286,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     startDigester();
     vfs.watch((_event, path) => digestWhenWritten(path));
     if (msg.compileAhead?.length) {
-      compileAhead(msg.compileAhead.map((d) => `${msg.cwd}/${d}`));
+      compileAhead(msg.compileAhead.map((d) => `${msg.cwd}/${d}`), { vfs, base, compileCache });
       vfs.watch((_event, path) => compileWhenWritten(path));
     }
   }
