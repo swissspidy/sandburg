@@ -214,10 +214,11 @@ test('a sandbox cannot hold more than its file-channel bound open at once', asyn
   const other = host.register('other', adapter('other'));
   const channels: { status: number; socket: ReturnType<typeof connect> }[] = [];
   // Opens a file channel and keeps it open; resolves once the status line is in.
-  const openChannel = (o: string): Promise<{ status: number; socket: ReturnType<typeof connect> }> =>
+  // `from` is the Origin header sent; a refused one keeps its socket half-open after the host ends its side.
+  const openChannel = (o: string, from = o): Promise<{ status: number; socket: ReturnType<typeof connect> }> =>
     new Promise((resolve, reject) => {
-      const socket = connect(host.port, '127.0.0.1', () => {
-        socket.write(`GET ${FILE_CHANNEL_PATH} HTTP/1.1\r\nHost: ${new URL(o).host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: ${o}\r\n\r\n`);
+      const socket = connect({ port: host.port, host: '127.0.0.1', allowHalfOpen: from !== o }, () => {
+        socket.write(`GET ${FILE_CHANNEL_PATH} HTTP/1.1\r\nHost: ${new URL(o).host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: ${from}\r\n\r\n`);
       });
       let head = '';
       socket.on('data', (d) => {
@@ -235,6 +236,9 @@ test('a sandbox cannot hold more than its file-channel bound open at once', asyn
   const closeFrame = Buffer.from([0x88, 0x80, 0, 0, 0, 0]);
   const waitClosed = (socket: ReturnType<typeof connect>) => new Promise<void>((r) => socket.on('close', () => r()));
   try {
+    // Refused handshakes hold no slot, even while their sockets stay open.
+    assert.equal((await openChannel(origin, 'https://elsewhere.example')).status, 403);
+    assert.equal((await openChannel(origin, 'https://elsewhere.example')).status, 403);
     assert.equal((await openChannel(origin)).status, 101);
     assert.equal((await openChannel(origin)).status, 101);
     // The third is refused while two are open.
@@ -248,7 +252,8 @@ test('a sandbox cannot hold more than its file-channel bound open at once', asyn
     await new Promise((r) => setTimeout(r, 50));
     assert.equal((await openChannel(origin)).status, 101);
   } finally {
-    await Promise.all(channels.filter((c) => !c.socket.closed).map((c) => (c.socket.write(closeFrame), waitClosed(c.socket))));
+    for (const c of channels) if (c.status !== 101) c.socket.destroy();
+    await Promise.all(channels.filter((c) => c.status === 101 && !c.socket.closed).map((c) => (c.socket.write(closeFrame), waitClosed(c.socket))));
     await host.close();
   }
 });

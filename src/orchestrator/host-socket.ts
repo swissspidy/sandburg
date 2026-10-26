@@ -36,13 +36,13 @@ const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 /**
  * Accepts the upgrade if it comes from `origin` (a WebSocket is not bound by CORS: another page could
- * open one to any host) and answers requests with `serve`.
+ * open one to any host) and answers requests with `serve`. Returns whether the upgrade was accepted.
  */
-export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: string, serve: (req: HostRequest) => Promise<HostResponse | null>): void {
+export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: string, serve: (req: HostRequest) => Promise<HostResponse | null>): boolean {
   const key = req.headers['sec-websocket-key'];
   if (req.headers.origin !== origin || typeof key !== 'string' || req.headers.upgrade?.toLowerCase() !== 'websocket') {
     socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
-    return;
+    return false;
   }
   const accept = createHash('sha1').update(key + GUID).digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
@@ -71,6 +71,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
     const space = text.indexOf(' ');
     void answer(text.slice(space + 1), serve, channel).then(reply(Number(text.slice(0, space)), text.slice(space + 1)));
   });
+  return true;
 }
 
 async function answerPost(target: string, body: Buffer, serve: (req: HostRequest) => Promise<HostResponse | null>, channel: object): Promise<{ status: number; body: Buffer }> {

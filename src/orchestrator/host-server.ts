@@ -203,7 +203,8 @@ export class HostServer {
           else this.fileChannels.set(id, n);
         };
         socket.on('end', release).on('close', release);
-        acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!({ ...r, sandbox: id }));
+        // A refused handshake frees its slot now: the peer may never close its side.
+        if (!acceptFileChannel(req, socket, this.origin(id), (r) => adapter.serve!({ ...r, sandbox: id }))) release();
       } catch {
         socket.destroy();
       }
