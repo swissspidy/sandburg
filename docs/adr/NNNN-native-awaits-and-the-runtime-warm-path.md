@@ -107,11 +107,24 @@ the time the program reads a file downloaded on the side.
   | Native awaits | astro-app | 4.04 → 3.73 s (−8%) | ready 2.11 → 1.92 s |
   | | sveltekit-app | 3.27 → 3.15 s (−4%) | start 1.20 → 1.11 s |
   | | lit-vite | 1.33 → 1.29 s (−3%) | ready 0.30 → 0.26 s |
-  | | vite-react-counter | 1.45 → 1.58 s | rounds 2-5: 1.5/1.6/1.7/1.6 against 1.4/1.5/1.6/1.7 |
+  | | vite-react-counter (8 rounds) | 1.55 → 1.52 s (−2%) | ready 0.36 → 0.35 s |
 
   After the first change, 0 of 4 warm `vite-react-counter` runs made the synchronous request for
-  rolldown's binary (2 of 4 before). The whole branch against the origin/main it started from: see
-  the table below.
+  rolldown's binary (2 of 4 before).
+- **The branch against the origin/main it started from** (860c0eb), warm, medians:
+
+  | Fixture | Rounds | Total | Phase |
+  |---|---|---|---|
+  | solid-start-app | 3 | 3.53 → 3.23 s (−9%) | start 0.71 → 0.58 s, ready 1.64 → 1.54 s |
+  | react-router-app | 3 | 2.46 → 2.26 s (−8%) | ready 0.55 → 0.51 s |
+  | nuxt-app | 3 | 4.89 → 4.67 s (−5%) | ready 3.12 → 2.85 s |
+  | astro-app | 5 | 3.80 → 3.62 s (−5%) | ready 1.97 → 1.86 s |
+  | sveltekit-app | 5 | 3.12 → 3.09 s (−1%) | ready 1.07 → 1.03 s |
+  | lit-vite | 5 | 1.33 → 1.32 s (−1%) | ready 0.30 → 0.28 s |
+  | vite-react-counter | 5 | 1.45 → 1.51 s (+4%: two head rounds at 2.1 and 1.7 s; the 8-round A/B of the second change above: −2%) | |
+
+  The SSR frameworks gain most: their requests run async code (render, loaders, the module runner)
+  whose awaits were generators; a Vite SPA's server does little of it.
 - **Cold**, 3 rounds: `vite-react-counter` 5.90 → 5.77 s, `astro-app` 16.11 → 16.29 s. The host scans
   and checks what it transforms (start +8-19%; install and ready moved the other way); transforms
   are cached by content, so a warm run pays nothing.
