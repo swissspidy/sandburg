@@ -165,6 +165,7 @@ node scripts/pages/build.ts --verify   # the demo site, into dist-pages/
 node scripts/profile.ts <project>      # where a run's time goes: V8 CPU profile of every thread, by package
 node scripts/bench.ts                   # A/B benchmark of two revisions (default origin/main vs this checkout), cold and warm
 node scripts/edit-loop.ts               # edit-to-render latency of the fixtures
+node scripts/flakes.ts --cpu 4 <files>  # run test files again and again under load, and count what fails (docs/testing.md)
 ```
 
 The demo site replays the host's answers from static files, recorded when the site is built
