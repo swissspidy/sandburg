@@ -77,8 +77,11 @@ that fails without it.
 | Requests no app made | warm `next-app-router`: blocked requests | 11 | 0 |
 | Late allocators | 24 corpus apps, warm, `parallel` 4, 4.5 GB cgroup (n=3): wall | 33.45 s | 33.47 s (+0%) |
 | | the same: peak renderers | 2,405 MB | 2,367 MB |
-| Seed runs | SEED_MEASUREMENT | | |
+| Seed runs (and the whole branch) | 12 corpus apps (seed 2, 4 Next.js), cold, `parallel` 4, 4.5 GB cgroup (n=2): wall | 97.26 s | 96.19 s (−1%) |
+| | the same: peak renderers | 1,840 MB | 1,812 MB |
 
+- The cold batch's warm-up (`prewarm`) seeds the Next.js stack before the apps open, so its seed
+  runs did not overlap the batch's apps; the seed accounting binds where a stack is not warmed.
 - Without a memory limit the guard does not bind and nothing changes; in the cgroup the warm batch
   ran as fast (16/24 passing on both sides), as its apps stay within their history's peaks.
 - **Behaviour changes**: a dev script whose servers answer no HTML is taken once all its processes
