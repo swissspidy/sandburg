@@ -29,7 +29,7 @@ runs it on its own dev server. Later requests change the running app, and errors
 - **Contained.** A sandbox reaches the network only through a caching gateway and a per-sandbox
   allowlist, and tests prove it.
 
-| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md)) | Median run, cold | Median run, warm |
+| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md), 2026-09-30) | Median run, cold | Median run, warm |
 |---|---|---|
 | Vite, vanilla (33 apps) | 3.4 s | 3.2 s |
 | Vite + React (34) | 16.1 s | 5.9 s |
@@ -38,11 +38,19 @@ runs it on its own dev server. Later requests change the running app, and errors
 | Whole corpus, 3 tabs | 533 s | 289 s |
 
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
-from empty Sandburg caches. A Next.js app that has never run, with a new install, runs in
-15.7 s, down from about 45 s. Its first compile takes 2.2 s, down from 18.3 s, because it starts
-from a webpack cache that Sandburg seeds with the framework's modules
-([ADR 0014](docs/adr/0014-node-runtime-only.md)). Since study v6, a profile of the runtime made warm
-Next.js runs a third faster, 11.9 s to 8.0 s ([ADR 0017](docs/adr/0017-runtime-profile.md)).
+from empty Sandburg caches (npm's own cache warm). The study predates most of the speed work in
+ADRs 0016–0059. The fixtures on `main` today (8dda85e), measured with `node scripts/bench.ts
+--base origin/main --head . --rounds 3` on a 4-core, 15 GB Linux machine (medians of each side's three
+runs; both sides are the same revision, so the two medians show the spread):
+
+| Fixture | Cold run | Warm run |
+|---|---|---|
+| vite-react-counter (Vite 8, React 19) | 5.2–5.5 s | 1.2–1.3 s |
+| lit-vite (Vite 8, Lit) | 4.4 s | 1.0 s |
+| next-app-router (Next.js 16) | 19.1–19.3 s | 3.9 s |
+
+A warm run is a session's second run of the project. Each ADR records its own before-and-after
+measurements, and CI benchmarks every pull request that changes `src/` or `pages/` against its base.
 
 ## Quick start
 
