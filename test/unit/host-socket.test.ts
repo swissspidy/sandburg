@@ -288,3 +288,34 @@ test("a message within the bound in as many fragments as Chromium sends (~33 for
   assert.equal(raw.messages[0]?.readUInt32LE(0), 9);
   assert.deepEqual(asked, ['POST /__sandburg/esbuild-transform']);
 });
+
+/** A channel on an in-memory socket: what the host writes is kept, `push` delivers bytes as a TCP read would. */
+async function memoryChannel(serve: (req: HostRequest) => Promise<{ status: number; body: string } | null>) {
+  const { Duplex } = await import('node:stream');
+  const written: Buffer[] = [];
+  const socket = new Duplex({ read() {}, write(chunk: Buffer, _e, done) { written.push(chunk); done(); } });
+  const req = { headers: { origin: ORIGIN, 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', upgrade: 'websocket' } } as unknown as import('node:http').IncomingMessage;
+  assert.ok(acceptFileChannel(req, socket, ORIGIN, serve));
+  return { socket, written };
+}
+
+/** A masked client frame (the mask is zeros: the payload as it is). */
+function clientFrame(fin: boolean, opcode: number, payload: Uint8Array): Buffer {
+  const n = payload.length;
+  const head = n < 126 ? Buffer.from([(fin ? 0x80 : 0) | opcode, 0x80 | n]) : n < 65536 ? Buffer.from([(fin ? 0x80 : 0) | opcode, 0x80 | 126, n >> 8, n & 0xff]) : Buffer.concat([Buffer.from([(fin ? 0x80 : 0) | opcode, 0x80 | 127]), (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; })()]);
+  return Buffer.concat([head, Buffer.alloc(4), payload]);
+}
+
+test('a large frame that comes in small chunks is put together once, not copied for each chunk', { timeout: 20_000 }, async () => {
+  let served = 0;
+  const { socket } = await memoryChannel(async () => ((served++), { status: 200, body: 'ok' }));
+  const bytes = clientFrame(true, 0x2, postMessage(1, '/__sandburg/esbuild-transform', new Uint8Array(4_100_000)));
+  const t0 = performance.now();
+  // TCP's segment size: ~2,950 reads. Copying what came at each read was ~1.3 s of the host's thread.
+  for (let at = 0; at < bytes.length; at += 1460) socket.push(bytes.subarray(at, at + 1460));
+  for (let i = 0; i < 200 && !served; i++) await new Promise((r) => setTimeout(r, 5));
+  const ms = performance.now() - t0;
+  socket.destroy();
+  assert.equal(served, 1);
+  assert.ok(ms < 400, `${ms.toFixed(0)} ms`);
+});

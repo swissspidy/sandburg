@@ -110,26 +110,41 @@ async function answer(target: string, serve: (req: HostRequest) => Promise<HostR
  * the fragments.
  */
 function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer) => void): void {
-  let buf: Buffer = Buffer.alloc(0);
+  // What came and is not read yet, as it came: put together once it holds `need` bytes (the next
+  // frame's header, or the whole frame once its header is read), so a large frame that comes in many
+  // chunks is copied once, not once per chunk.
+  let chunks: Buffer[] = [];
+  let pending = 0;
+  let need = 2;
   /** The data message being received in fragments: its opcode, the fragments, their length. */
   let message: { opcode: number; parts: Buffer[]; length: number } | null = null;
   const fail = () => {
-    buf = Buffer.alloc(0);
+    chunks = [];
+    pending = 0;
     message = null;
     socket.destroy();
   };
-  socket.on('data', (chunk: Buffer) => {
-    buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+  const read = () => {
+    let buf = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, pending);
+    chunks = [];
+    pending = 0;
+    need = 2;
     for (;;) {
-      if (buf.length < 2) return;
+      if (buf.length < 2) break;
       let length = buf[1] & 0x7f;
       let at = 2;
       if (length === 126) {
-        if (buf.length < 4) return;
+        if (buf.length < 4) {
+          need = 4;
+          break;
+        }
         length = buf.readUInt16BE(2);
         at = 4;
       } else if (length === 127) {
-        if (buf.length < 10) return;
+        if (buf.length < 10) {
+          need = 10;
+          break;
+        }
         length = Number(buf.readBigUInt64BE(2));
         at = 10;
       }
@@ -145,7 +160,10 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
       if (!control && received + cost > ((continuation ? message!.opcode : opcode) === 0x2 ? MAX_POST : MAX_FRAME)) return fail();
       const masked = (buf[1] & 0x80) !== 0;
       const end = at + (masked ? 4 : 0) + length;
-      if (buf.length < end) return;
+      if (buf.length < end) {
+        need = end;
+        break;
+      }
       const payload = Buffer.from(buf.subarray(end - length, end));
       if (masked) {
         const mask = buf.subarray(at, at + 4);
@@ -166,7 +184,17 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
       } else {
         onMessage(opcode, payload);
       }
+      if (socket.destroyed) return;
     }
+    if (buf.length) {
+      chunks = [buf];
+      pending = buf.length;
+    }
+  };
+  socket.on('data', (chunk: Buffer) => {
+    chunks.push(chunk);
+    pending += chunk.length;
+    if (pending >= need) read();
   });
 }
 
