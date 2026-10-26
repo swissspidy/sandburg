@@ -1,6 +1,6 @@
 /**
  * The rewrite of awaits (node-runtime/await-context.ts: the scan and the parse check of its output)
- * for installed files, on threads of their own.
+ * for installed files, on a helper thread.
  *
  * On the host's main thread they took 0.25 s of a cold vite-react-counter start and 1.8-2.1 s of a
  * cold next-app-router one (the scan ~70%, the check the rest), while the runtime waited on the same
@@ -9,14 +9,16 @@
  * its output, or null to lower. A helper that fails is not used again: its files, and later ones,
  * are rewritten on this thread, with the same result.
  */
-import { availableParallelism } from 'node:os';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { contextAwaits } from '../../node-runtime/await-context.ts';
 
 const TAG = 'sandburg-await-threads';
 
-/** Helpers: the main thread, esbuild and the browser need the other cores. */
-const SIZE = Math.max(1, Math.min(2, availableParallelism() - 2));
+/**
+ * One helper: the main thread, esbuild and the browser's threads need the other cores (with two, a
+ * cold astro-app run on 4 cores was 11% slower than on main; with one, 4% faster).
+ */
+const SIZE = 1;
 
 /** Code smaller than this is rewritten on this thread: posting a file costs ~0.03 ms, rewriting 1 KB ~0.1 ms. */
 const INLINE_MAX = 1 << 10;
@@ -38,7 +40,6 @@ export function contextAwaitsSoon(code: string): Promise<string | null> {
   return new Promise((done) => {
     try {
       if (helpers.length < SIZE) helpers.push(startHelper());
-      // The helper with the fewest files waiting.
       const { worker, waiting } = helpers.reduce((a, b) => (b.waiting.size < a.waiting.size ? b : a));
       const id = ++ids;
       waiting.set(id, { code, done });
