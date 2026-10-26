@@ -6,7 +6,7 @@
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
-import { MAILBOX_BYTES } from '../file-channel.ts';
+import { MAILBOX_BYTES, MAX_FRAME } from '../file-channel.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
 let installedRequests = 0;
@@ -140,13 +140,24 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
 const reads = new Set<string>();
 let unreported: string[] = [];
 let reportTimer: ReturnType<typeof setTimeout> | null = null;
-/** Files per report: a report is one frame of the file channel (MAX_FRAME, 64 KB). */
+let unreportedLength = 0;
+/** Files per report. */
 const REPORT_BATCH = 100;
+/**
+ * A report's files, encoded: a report is one text frame of the file channel, which the host closes
+ * on a frame over MAX_FRAME (64 KB); the rest of the frame is the report's URL. 100 long paths were
+ * over it.
+ */
+const REPORT_MAX = MAX_FRAME - 1024;
 
 function noteRead(key: string): void {
   if (!channel || !installKey || reads.has(key)) return;
   reads.add(key);
+  const length = encodeURIComponent(key).length + 3; // and a newline, %0A
+  if (length > REPORT_MAX) return;
+  if (unreportedLength + length > REPORT_MAX) reportReads();
   unreported.push(key);
+  unreportedLength += length;
   if (unreported.length >= REPORT_BATCH) reportReads();
   else reportTimer ??= nativeSetTimeout(reportReads, 500);
 }
@@ -156,6 +167,7 @@ function reportReads(): void {
   reportTimer = null;
   const keys = unreported;
   unreported = [];
+  unreportedLength = 0;
   if (keys.length) channel?.post({ note: `${base}/nm/${installKey}/read?files=${encodeURIComponent(keys.join('\n'))}` });
 }
 
