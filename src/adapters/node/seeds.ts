@@ -43,7 +43,13 @@ function nextSeedKey(versions: Record<string, string>, router: NextRouter): stri
   return createHash('sha256').update(`next-seed\0${router === 'app' ? '' : `${router}\0`}${JSON.stringify(versions)}\0${NODE_VERSION}\0${TRANSFORM_VERSION}`).digest('hex').slice(0, 24);
 }
 
-function nextSeedProject(versions: Record<string, string>, router: NextRouter): { project: Project; checks: Record<string, (ctx: { app: { goto?: unknown }; page: { evaluate(f: () => Promise<unknown>): Promise<unknown> } }) => Promise<void>> } {
+/**
+ * The seed project: a page with a client component and a link, another page, a route handler. Its run
+ * has no checks of its own: webpack stores its cache once, 5 s after the first page's compile, and
+ * what checks compiled after it (the route handler, the other page) was never stored, while compiling
+ * it competed with the app that started the seed run, and kept the seed from being stored sooner.
+ */
+function nextSeedProject(versions: Record<string, string>, router: NextRouter): Project {
   const counter = `import { useState } from 'react';\nexport default function Counter() {\n  const [n, setN] = useState(0);\n  return <button onClick={() => setN(n + 1)}>Count {n}</button>;\n}\n`;
   const files: Record<string, string> = {
     'package.json': JSON.stringify({ name: 'sandburg-next-seed', private: true, scripts: { dev: 'next dev' }, dependencies: versions }, null, 2),
@@ -63,16 +69,7 @@ function nextSeedProject(versions: Record<string, string>, router: NextRouter): 
         }),
   };
   const name = router === 'app' ? 'next-seed' : `next-${router}-seed`;
-  const project = projectFromFiles(files, { name: `sandburg-${name}@${versions.next}`, path: `sandburg:${name}/${versions.next}` });
-  // Compile what apps compile first: a page with a client component, another route, a route handler.
-  const checks = {
-    'the page, a route and a route handler compile': async ({ app }: { app: { getByRole(r: string, o: object): { click(): Promise<void> }; evaluate(f: () => Promise<unknown>): Promise<unknown> } }) => {
-      await app.getByRole('button', { name: /Count/ }).click();
-      await app.evaluate(() => fetch('/api/ping').then((r) => r.json()));
-      await app.getByRole('link', { name: 'About' }).click();
-    },
-  };
-  return { project, checks: checks as never };
+  return projectFromFiles(files, { name: `sandburg-${name}@${versions.next}`, path: `sandburg:${name}/${versions.next}` });
 }
 
 /**
@@ -117,8 +114,7 @@ export async function nextSeedCache(resolved: Record<string, string>, router: Ne
   if (await stored()) return { key, ready: true, dirs };
   if (options?.runSeed && !seeding.has(key)) {
     log(`seeding the webpack cache for next@${versions.next} beside this app (once per set of versions and router)`);
-    const seed = nextSeedProject(versions, router);
-    seeding.set(key, options.runSeed(seed.project, seed.checks).catch((e: Error) => log(`seeding failed: ${e.message}`)));
+    seeding.set(key, options.runSeed(nextSeedProject(versions, router), {}).catch((e: Error) => log(`seeding failed: ${e.message}`)));
   }
   return { key, ready: false, dirs };
 }

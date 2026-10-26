@@ -13,7 +13,7 @@ import { RUNTIME_MODULE, runtimeBootstrap } from '../../src/node-runtime/runtime
 import { createHash } from 'node:crypto';
 import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
 import type { HostRequest } from '../../src/types.ts';
-import { compileForRuntime, projectHasTopLevelAwait, type CompileKind } from '../../src/adapters/node/compile.ts';
+import { compiled, compileForRuntime, projectHasTopLevelAwait, type CompileKind } from '../../src/adapters/node/compile.ts';
 import { nativeTransform } from '../../src/adapters/node/native-transform.ts';
 
 const PAGE = `<!doctype html><script>
@@ -215,7 +215,15 @@ export class RuntimeHarness {
         res.writeHead(out.status, out.headers);
         return res.end(out.body);
       }
+      const known = /^\/__sandburg\/compiled\/([0-9a-f]{64})$/.exec(url.pathname);
+      if (known) {
+        this.asked.push(`http ${url.pathname}`);
+        const out = compiled(known[1]);
+        res.writeHead(out === undefined ? 404 : 200, { 'content-type': 'text/javascript' });
+        return res.end(out ?? 'not found');
+      }
       if (url.pathname === '/__sandburg/compile') {
+        this.asked.push(`http POST ${url.pathname}?path=${url.searchParams.get('path')}`);
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
         try {
@@ -275,11 +283,11 @@ export class RuntimeHarness {
    * file channel. `prepare`: the page prepares the runtime that long before its init message, as a
    * host page does. `asked` records what the host was asked for.
    */
-  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; prepare?: number } = {}) {
+  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; compileAhead?: string[]; prepare?: number } = {}) {
     this.install = install;
     this.asked = [];
     const nodeModules = Object.fromEntries(Object.entries(install.files).map(([rel, text]) => [rel, Buffer.byteLength(text)]));
-    const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch, ...(options.prepare ? { prepare: options.prepare } : {}) };
+    const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch, ...(options.compileAhead ? { compileAhead: options.compileAhead } : {}), ...(options.prepare ? { prepare: options.prepare } : {}) };
     return this.page.evaluate(([f, m, e]) => (window as unknown as { runNode: Function }).runNode(f, m, [], e), [files, main, extra] as const) as Promise<{
       stdout: string;
       stderr: string;

@@ -23,6 +23,8 @@ export interface NodeProcessOptions {
   filesBundle?: string | null;
   /** What the host compiled for earlier runs of the project (see compile-cache.ts). */
   compileCache?: { key: string; bundle: string | null } | null;
+  /** Project directories whose CommonJS files the runtime has compiled as they are written (node-runtime/compile-ahead.ts). */
+  compileAhead?: string[];
   nodeModules: Record<string, number> | null;
   /** node_modules installed in the browser: one block of shared memory and its index (see npm/install.ts). */
   pack?: { sab: SharedArrayBuffer; index: Record<string, [number, number]> } | null;
@@ -197,7 +199,7 @@ export class NodeProcess {
     this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
       this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
     this.send(
-      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv, ...(tracing() ? { trace: true } : {}) },
+      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, ...(opts.compileAhead?.length ? { compileAhead: opts.compileAhead } : {}), nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv, ...(tracing() ? { trace: true } : {}) },
       opts.compilePort ? [opts.compilePort] : [],
     );
   }
