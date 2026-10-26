@@ -30,7 +30,7 @@ function connectVia(proxyPort: number, target: string): Promise<{ status: string
 
 test('the egress proxy tunnels only to allowlisted origins and records the rest', async () => {
   let connections = 0;
-  const echo = createServer((s) => (connections++, s.on('data', (d) => s.write(`echo:${d}`))));
+  const echo = createServer((s) => (connections++, s.on('error', () => {}), s.on('data', (d) => s.write(`echo:${d}`))));
   await new Promise<void>((r) => echo.listen(0, '127.0.0.1', r));
   const port = (echo.address() as { port: number }).port;
   const saved = process.env.HTTPS_PROXY;
@@ -111,7 +111,7 @@ function rawRequest(port: number, text: string): Promise<string> {
 }
 
 test('malformed CONNECT targets get a 400 and are recorded, and the proxy keeps serving', async () => {
-  const echo = createServer((s) => s.on('data', (d) => s.write(`echo:${d}`)));
+  const echo = createServer((s) => s.on('error', () => {}).on('data', (d) => s.write(`echo:${d}`)));
   await new Promise<void>((r) => echo.listen(0, '127.0.0.1', r));
   const port = (echo.address() as { port: number }).port;
   const saved = process.env.HTTPS_PROXY;

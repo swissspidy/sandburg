@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Installer } from '../../src/adapters/node/install.ts';
 import type { Project } from '../../src/types.ts';
+import { tempDir } from './temp-dir.ts';
 
 // The host installs an untrusted project's dependencies with npm, which (through pacote) prepares git
 // and directory dependencies on the host even under --ignore-scripts. install() refuses anything but a
@@ -17,7 +16,7 @@ function project(dependencies: Record<string, string>, extra: Record<string, unk
 }
 
 test('install() refuses a git, file or URL dependency as unsupported and installs nothing', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'sandburg-install-specs-'));
+  const root = tempDir('sandburg-install-specs-');
   const inst = new Installer(join(root, 'installs'));
   for (const spec of ['git+ssh://git@example.invalid/a/b.git', 'github:a/b', 'file:../x', 'https://example.invalid/x.tgz', 'link:../p']) {
     // A rejection, not a synchronous throw: install() is a promise either way.
@@ -32,7 +31,7 @@ test('install() refuses a git, file or URL dependency as unsupported and install
 });
 
 test('install() refuses a project lockfile that installs a non-registry package', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'sandburg-install-lock-'));
+  const root = tempDir('sandburg-install-lock-');
   const inst = new Installer(join(root, 'installs'));
   const lock = JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/x': { version: '1.0.0', resolved: 'git+ssh://git@example.invalid/a/b.git#abc' } } });
   await assert.rejects(

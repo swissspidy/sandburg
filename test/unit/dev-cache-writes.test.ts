@@ -3,21 +3,20 @@
  * run's own sandbox, once. A cache key is a digest of public inputs (a seed's versions), so it never
  * grants a write by itself.
  */
-import { after, before, test } from 'node:test';
+import { before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { HostRequest, HostResponse } from '../../src/types.ts';
+import { tempDir } from './temp-dir.ts';
 
 let root: string;
 let node: typeof import('../../src/adapters/node/index.ts') & typeof import('../../src/adapters/node/dev-cache.ts');
 before(async () => {
-  root = await mkdtemp(join(tmpdir(), 'sandburg-dev-cache-'));
+  root = tempDir('sandburg-dev-cache-');
   process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
   node = { ...(await import('../../src/adapters/node/index.ts')), ...(await import('../../src/adapters/node/dev-cache.ts')) };
 });
-after(() => rm(root, { recursive: true, force: true }));
 
 const DIRS = ['.next/dev/cache'];
 const cacheFile = (key: string) => join(root, 'dev-cache', `${key}.json`);

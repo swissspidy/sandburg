@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
-import { link, mkdir, mkdtemp, utimes, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { link, mkdir, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tempDir } from './temp-dir.ts';
 
 // The store reads tarballs from npm's cache: this test's own (`npm config get cache` follows it).
-const cache = await mkdtemp(join(tmpdir(), 'sandburg-npm-cache-'));
+const cache = tempDir('sandburg-npm-cache-');
 process.env.npm_config_cache = cache;
 // unpackAhead's cache index keys name the configured registry; the tests write npmjs.org's.
 process.env.npm_config_registry = 'https://registry.npmjs.org/';
@@ -42,13 +42,13 @@ async function cached(name: string, version: string, files: Record<string, strin
 }
 
 async function project(packages: Record<string, unknown>): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'sandburg-store-'));
+  const dir = tempDir('sandburg-store-');
   await writeFile(join(dir, 'package-lock.json'), JSON.stringify({ name: 'sandburg-install', lockfileVersion: 3, requires: true, packages: { '': { name: 'sandburg-install' }, ...packages } }, null, 2));
   return dir;
 }
 
 test('a lockfile installs from the store as npm installs it', async () => {
-  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const store = tempDir('sandburg-store-root-');
   const packages = {
     'node_modules/tool': await cached('tool', '1.0.0', { 'bin/tool.js': '#!/usr/bin/env node\r\nconsole.log(1);\r\n', 'lib/index.js': 'module.exports = 1;', '.gitignore': 'dist' }, { bin: { tool: './bin/tool.js' } }),
     // Both have an "x" binary: the first by path wins.
@@ -98,7 +98,7 @@ test('a lockfile installs from the store as npm installs it', async () => {
 });
 
 test('the store hands what it does not handle back to npm', async () => {
-  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const store = tempDir('sandburg-store-root-');
   const linked = await project({ 'node_modules/local': { resolved: 'packages/local', link: true }, 'packages/local': { version: '1.0.0' } });
   assert.equal(await installFromLockfile(linked, store, () => {}), false);
   const git = await project({ 'node_modules/g': { version: '1.0.0', resolved: 'git+ssh://git@example.com/g.git#abc' } });
@@ -116,7 +116,7 @@ test('the store hands what it does not handle back to npm', async () => {
 });
 
 test('a lockfile location outside the install\'s node_modules is refused: the store links nothing for it', async () => {
-  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const store = tempDir('sandburg-store-root-');
   const entry = await cached('escape', '1.0.0', { 'index.js': 'planted' });
   // Beside the project's directory (dir/node_modules/../../<escaped>).
   const escaped = `sandburg-escaped-${process.pid}-${Date.now()}`;
@@ -134,7 +134,7 @@ test('install locations are a package in node_modules, or nested in one, and not
 });
 
 test('packages are unpacked ahead from a lockfile and from pinned versions in npm\'s cache', async () => {
-  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const store = tempDir('sandburg-store-root-');
   const fromLock = await cached('locked', '1.0.0', { 'a.js': 'a' });
   const pinned = await cached('pinned', '3.1.4', { 'p.js': 'p' });
   // npm's cache index: the tarball URL's entry names its integrity.
@@ -152,7 +152,7 @@ test('packages are unpacked ahead from a lockfile and from pinned versions in np
 });
 
 test('packages npm picks are unpacked as it resolves, when their tarball is what its integrity says', async () => {
-  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const store = tempDir('sandburg-store-root-');
   const good = await cached('picked', '1.0.0', { 'a.js': 'a' });
   const tampered = await cached('tampered', '1.0.0', { 't.js': 't' });
   // The tarball in npm's cache is not the one its integrity names.
@@ -181,7 +181,7 @@ test('package binaries are normalized as npm normalizes them', () => {
 });
 
 test('the store sweep removes old packages no install links, and unfinished unpacks', async () => {
-  const store = await mkdtemp(join(tmpdir(), 'sandburg-store-root-'));
+  const store = tempDir('sandburg-store-root-');
   const day = new Date(Date.now() - 2 * 24 * 3600_000);
   const make = async (name: string) => {
     await mkdir(join(store, name), { recursive: true });
@@ -204,7 +204,7 @@ test('the store sweep removes old packages no install links, and unfinished unpa
 // copy, and every install linked to it.
 test("an install rule's shim replaces a linked file without writing the store's copy", async () => {
   const { replaceFile } = await import('../../src/adapters/node/install.ts');
-  const dir = await mkdtemp(join(tmpdir(), 'sandburg-replace-'));
+  const dir = tempDir('sandburg-replace-');
   const stored = join(dir, 'store-index.js');
   const installed = join(dir, 'installed-index.js');
   await writeFile(stored, 'module.exports = require("./binding.node");');

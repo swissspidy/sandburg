@@ -4,17 +4,16 @@
  * for one by one. A report names files of the install only, and only the sandboxes of runs the
  * install was made for shape it.
  */
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from './temp-dir.ts';
 
-const root = mkdtempSync(join(tmpdir(), 'sandburg-reads-'));
+const root = tempDir('sandburg-reads-');
 process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
 const { serve, grantReads } = await import('../../src/adapters/node/index.ts');
 const { preloadEntries } = await import('../../src/adapters/node/preload.ts');
-after(() => rmSync(root, { recursive: true, force: true }));
 
 const key = 'd'.repeat(24);
 const files = ['node_modules/p/package.json', 'node_modules/p/a.js', 'node_modules/p/b.js', 'node_modules/p/c.js', 'node_modules/p/d.js'];
@@ -59,7 +58,8 @@ test('then what they read from bundles and asked for, in the order first loaded'
   assert.deepEqual(await preloadEntries(key), ['t:node_modules/p/a.js', 't:node_modules/p/c.js']);
   // A file asked for on its own is read too.
   assert.equal((await request(`/__sandburg/nm/${key}/f/node_modules/p/b.js`))?.status, 200);
-  await new Promise((r) => setTimeout(r, 50));
+  // Recorded asynchronously.
+  for (let i = 0; i < 200 && (await preloadEntries(key)).length < 3; i++) await new Promise((r) => setTimeout(r, 25));
   assert.deepEqual(await preloadEntries(key), ['t:node_modules/p/a.js', 'f:node_modules/p/b.js', 't:node_modules/p/c.js']);
 });
 

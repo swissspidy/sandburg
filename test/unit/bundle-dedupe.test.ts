@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { dedupedPath } from '../../src/node-runtime/bundle-dedupe.ts';
+import { tempDir } from './temp-dir.ts';
 
 /** A node_modules tree: package directory (relative) → [version, files, dependencies]. */
 function tree(packages: Record<string, [string, Record<string, string>, Record<string, string>?]>): string {
-  const root = mkdtempSync(join(tmpdir(), 'sandburg-dedupe-'));
+  const root = tempDir('sandburg-dedupe-');
   for (const [dir, [version, files, dependencies]] of Object.entries(packages)) {
     const at = join(root, dir);
     mkdirSync(at, { recursive: true });

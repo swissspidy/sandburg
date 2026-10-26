@@ -2,7 +2,7 @@
  * Caches on one .sandburg/ written by more than one Session or process at once: no writer replaces
  * what another one is serving from, and no entry is put together from two writers' parts.
  */
-import { after, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -70,13 +70,24 @@ test('preload lists: a process that writes a list keeps what another process rec
   }
   const list = join(root, 'dev-cache', `preload-${key}.json`);
   const saved = () => (existsSync(list) ? (JSON.parse(readFileSync(list, 'utf8')) as string[]) : []);
-  // Lists are written 2 s after a file is first recorded: b writes its list while a has its own in
-  // memory (read before b wrote), and a writes later.
-  await b.recordLoad(key, 'f', 'node_modules/pkg/b.json');
-  await new Promise((r) => setTimeout(r, 1_000));
-  await a.recordLoad(key, 'f', 'node_modules/pkg/a.json');
-  await new Promise((r) => setTimeout(r, 1_500));
-  assert.deepEqual(saved(), ['f:node_modules/pkg/b.json']);
-  await new Promise((r) => setTimeout(r, 1_500));
-  assert.deepEqual(saved(), ['f:node_modules/pkg/a.json', 'f:node_modules/pkg/b.json']);
+  // Lists are written 2 s after a file is first recorded (on mocked timers: each write happens when
+  // the test says, however slow the machine): b writes its list while a has its own in memory (read
+  // before b wrote), and a writes later.
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const written = async (n: number) => {
+      for (const end = Date.now() + 10_000; Date.now() < end && saved().length < n; ) await new Promise((r) => setImmediate(r));
+    };
+    await b.recordLoad(key, 'f', 'node_modules/pkg/b.json');
+    mock.timers.tick(1_000);
+    await a.recordLoad(key, 'f', 'node_modules/pkg/a.json');
+    mock.timers.tick(1_000);
+    await written(1);
+    assert.deepEqual(saved(), ['f:node_modules/pkg/b.json']);
+    mock.timers.tick(1_000);
+    await written(2);
+    assert.deepEqual(saved(), ['f:node_modules/pkg/a.json', 'f:node_modules/pkg/b.json']);
+  } finally {
+    mock.timers.reset();
+  }
 });

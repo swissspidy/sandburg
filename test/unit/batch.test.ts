@@ -16,6 +16,12 @@ test('a batch starts its next app when one reaches its checks, with at most twic
   let maxStarting = 0;
   let maxOpen = 0;
   const order: string[] = [];
+  // App "slow" stays in its checks until the five others have ended (or 5 s): the order shows whether
+  // they ran meanwhile, however long their timers take on a loaded machine.
+  let othersEnded!: () => void;
+  const others = new Promise<void>((r) => (othersEnded = r));
+  const fallback = setTimeout(othersEnded, 5000);
+  void others.then(() => clearTimeout(fallback));
   const session = {
     async run(project: string, options: RunOptions) {
       starting++;
@@ -28,9 +34,10 @@ test('a batch starts its next app when one reaches its checks, with at most twic
       starting--;
       options.onPhase?.('checks');
       // App "slow" waits long in its checks (a failing assertion): the others go on meanwhile.
-      await sleep(project === 'slow' ? 200 : 20);
+      await (project === 'slow' ? others : sleep(20));
       open--;
       order.push(`end ${project}`);
+      if (order.filter((o) => o.startsWith('end ') && o !== 'end slow').length === 5) othersEnded();
       return {
         runId: `r-${project}`,
         status: 'passed',

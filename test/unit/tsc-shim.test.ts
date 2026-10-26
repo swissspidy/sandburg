@@ -6,13 +6,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TSC_SHIM, WASM_BUILDS } from '../../src/adapters/node/install-rules.ts';
+import { tempDir } from './temp-dir.ts';
 
 function project(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), 'tsc-shim-'));
+  const dir = tempDir('tsc-shim-');
   const ts = join(dir, 'node_modules', 'typescript');
   mkdirSync(join(ts, 'lib'), { recursive: true });
   writeFileSync(join(ts, 'package.json'), JSON.stringify({ name: 'typescript', version: '7.0.2', type: 'module' }));

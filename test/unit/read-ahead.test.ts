@@ -1,15 +1,15 @@
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from './temp-dir.ts';
 
 // The node adapter serves from the shared installer, rooted here (set before it is loaded).
-const root = mkdtempSync(join(tmpdir(), 'sandburg-ahead-'));
+const root = tempDir('sandburg-ahead-');
 process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
 const { serve } = await import('../../src/adapters/node/index.ts');
 const { MAX_BODY } = await import('../../src/file-channel.ts');
-after(() => rmSync(root, { recursive: true, force: true }));
+const { preloadList } = await import('../../src/adapters/node/preload.ts');
 
 const key = 'c'.repeat(24);
 const files: Record<string, string> = {
@@ -69,9 +69,9 @@ test('read-ahead: files the runtime used are recorded as loaded, and then left o
   assert.equal((await get('node_modules/icons/esm/b.js', 'used=1'))?.status, 204);
   // A path outside the install is not recorded (and not read).
   assert.equal((await get('node_modules/../../../etc/passwd', 'used=1'))?.status, 204);
-  // Recording is asynchronous.
-  await new Promise((r) => setTimeout(r, 50));
-  // b.js was used, d.js asked for (above).
+  // Recording is asynchronous: b.js was used, d.js asked for (above).
+  const loaded = await preloadList(key);
+  for (let i = 0; i < 200 && !(loaded.has('f:node_modules/icons/esm/b.js') && loaded.has('f:node_modules/icons/esm/d.js')); i++) await new Promise((r) => setTimeout(r, 25));
   const out = await get('node_modules/icons/esm/a.js', 'ahead=1');
   assert.deepEqual(bundle(out!.body).map(([rel]) => rel), ['node_modules/icons/esm/a.js', 'node_modules/icons/esm/a.js.map', 'node_modules/icons/esm/c.js']);
 });
