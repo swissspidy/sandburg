@@ -230,12 +230,16 @@ interface RunOptions {
     onAppFiles?: (files: FileTree) => void;
     onPhase?: (phase: PhaseName) => void;
     onRenderer?: (renderer: RunRenderer) => void;
+    onSeed?: () => Pick<RunOptions, 'onPhase' | 'onRenderer'> & {
+        ended(): void;
+    };
 }
 
 function runProject(project: string | Project, options?: RunOptions & SessionOptions): Promise<RunResult>;
 
 interface RunRenderer {
     used(): number | null;
+    peak?(): number | null;
     collectGarbage(): Promise<void>;
 }
 
