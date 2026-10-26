@@ -1,4 +1,4 @@
-# ADR NNNN: Chromium's OS sandbox on by default, and site isolation
+# ADR 0061: Chromium's OS sandbox on by default, and site isolation
 
 - Status: Accepted
 - Date: 2026-10-26

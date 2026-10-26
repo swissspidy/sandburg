@@ -187,7 +187,7 @@ An app runs in a tab of its own: its own browser context and origin, every reque
 egress gateway and the sandbox's egress proxy (the allowlist). Under that, Chromium runs inside its
 OS sandbox (on Linux: namespaces and a seccomp-bpf filter for each renderer), and with
 `--site-per-process` a frame of another site gets a renderer process of its own
-([ADR NNNN](docs/adr/NNNN-chromium-sandbox.md)).
+([ADR 0061](docs/adr/0061-chromium-sandbox.md)).
 
 The sandbox needs a host that allows it. On Linux it needs unprivileged user namespaces, which
 Chromium does not use as root, and which Ubuntu 23.10 and later restrict with AppArmor
