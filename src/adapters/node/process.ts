@@ -109,6 +109,18 @@ const EPHEMERAL_PATIENCE_MS = 5_000;
 const SETTLED_MS = 1000;
 
 /**
+ * What the head of an answer to pagePort's probe (GET /) tells: whether it is the page (null: no
+ * Content-Type, the body tells), and whether it said it serves something else (notPage: a status
+ * of 400 or more, or a Content-Type other than HTML or plain text, as an API's JSON).
+ */
+export function probeAnswer(status: number, contentType: string | undefined): { page: boolean | null; notPage: boolean } {
+  if (status >= 400) return { page: false, notPage: true };
+  if (contentType === undefined) return { page: null, notPage: false };
+  const html = /html/i.test(contentType);
+  return { page: html, notPage: !html && !/^\s*text\/plain/i.test(contentType) };
+}
+
+/**
  * Whether pagePort, with every port probed and none the page's, takes the first port now: after
  * `patience` ms without a new port, or SETTLED_MS after the last port or report once no process of
  * the program is still starting (process-tree.ts in the runtime), unless a port said it serves
@@ -254,9 +266,9 @@ export class NodeProcess {
         if (m.type === 'start' || m.type === 'full' || m.type === 'error') {
           const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1];
           if (m.type === 'error') return done(false);
-          if (m.status! >= 400 || (type !== undefined && !/html|^\s*text\/plain/i.test(type))) notPage = true;
-          if (m.status! >= 400) return done(false);
-          if (type !== undefined) return done(/html/.test(type));
+          const answer = probeAnswer(m.status!, type);
+          if (answer.notPage) notPage = true;
+          if (answer.page !== null) return done(answer.page);
           if (m.type === 'full') return done(!!m.body && looksLikeHtml(new Uint8Array(m.body)));
           sniffed = new Uint8Array(0);
         }

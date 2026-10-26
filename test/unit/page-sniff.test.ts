@@ -1,7 +1,7 @@
 /** pagePort's test for a page whose server sends no Content-Type (src/adapters/node/process.ts). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { looksLikeHtml, pagePortSettled, sniffHtml } from '../../src/adapters/node/process.ts';
+import { looksLikeHtml, pagePortSettled, probeAnswer, sniffHtml } from '../../src/adapters/node/process.ts';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 
@@ -32,3 +32,26 @@ test("pagePort takes a port that sent no HTML once no process is starting, unles
   assert.equal(pagePortSettled({ ...at, starting: 1, notPage: true, now: 68_001 }), true);
   assert.equal(pagePortSettled({ ...at, starting: 1, notPage: true, now: 68_000 }), false);
 });
+
+test("the head of an answer to pagePort's probe: the page, an API's, or the body tells", () => {
+  const page = { page: true, notPage: false };
+  const other = { page: false, notPage: true };
+  const text = { page: false, notPage: false };
+  const sniff = { page: null, notPage: false };
+  for (const [status, type, expected] of [
+    [200, 'text/html', page],
+    [200, 'text/html; charset=utf-8', page],
+    [200, 'TEXT/HTML', page],
+    [200, 'application/xhtml+xml', page],
+    [200, 'application/json', other],
+    [200, 'Application/JSON; charset=utf-8', other],
+    [200, 'image/svg+xml', other],
+    [200, 'text/plain', text],
+    [200, 'Text/Plain; charset=utf-8', text],
+    [200, undefined, sniff],
+    [404, undefined, other],
+    [500, 'text/html', other],
+    [302, undefined, sniff],
+  ] as const) assert.deepEqual(probeAnswer(status, type), expected, `${status} ${type}`);
+});
+

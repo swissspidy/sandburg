@@ -123,5 +123,11 @@ that forks an API, or serves one itself, before its page).
 
 ## Not done
 
+- **Known limits of the page port's 1 s path.** One process whose API answers `/` with `text/plain`
+  and whose page's server starts more than 1 s later still gets the API's port: plain text counts as
+  a page that may be the app's, the cost of the case this fixes. And two setups do not gain from it
+  and wait 60 s as on origin/main: an API that sends JSON beside a page that sends no Content-Type,
+  and dev scripts run under a parent that never serves a port itself (concurrently, nodemon, tsx
+  watch).
 - The memory guard's margins (`OUTGROWN_MARGIN` 1.5, a seed's 1 GiB) come from the renderers
   measured in ADR 0046, not from a batch that exceeds them.
