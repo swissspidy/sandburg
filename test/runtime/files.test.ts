@@ -92,9 +92,11 @@ test('installed files: raw files read one after another come with the files afte
         console.log(['c.js', 'a.js', 'd.js', 'b.js', 'a.js.map'].map(read).join(' '));
       });`,
   };
-  const out = await h.runInstalled(main, icons, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length >= 3 });
+  // The uses are told as the files are read, before the program prints them: the run ends on both.
+  const printed = 'C A D B A-map\n';
+  const out = await h.runInstalled(main, icons, '/app/main.js', { holdChannel: true, until: ({ asked, stdout }) => asked.filter((a) => a.includes('used=1')).length >= 3 && stdout === printed });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'C A D B A-map\n');
+  assert.equal(out.stdout, printed);
   const nm = `/__sandburg/nm/${INSTALL_KEY}/f/node_modules/icons/esm`;
   assert.deepEqual(h.asked.filter((a) => a.includes('/icons/esm/')).sort(), [
     `ws ${nm}/a.js.map?used=1`,
@@ -117,9 +119,10 @@ test('installed files: modules pushed with a transformed file are loaded without
     pushes: { 'node_modules/tool/index.js': ['node_modules/tool/a.js', 'node_modules/tool/b.js'] },
   };
   const main = { 'main.js': `${CHANNEL_OPEN}\nsetInterval(() => {}, 1000);\nchannelOpen().then(() => console.log(require('tool')));` };
-  const out = await h.runInstalled(main, tool, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length >= 2 });
+  const printed = 'tool a b\n';
+  const out = await h.runInstalled(main, tool, '/app/main.js', { holdChannel: true, until: ({ asked, stdout }) => asked.filter((a) => a.includes('used=1')).length >= 2 && stdout === printed });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'tool a b\n');
+  assert.equal(out.stdout, printed);
   const nm = `/__sandburg/nm/${INSTALL_KEY}/t/node_modules/tool`;
   assert.deepEqual(h.asked.filter((a) => a.includes('/t/')).sort(), [`ws ${nm}/a.js?used=1`, `ws ${nm}/b.js?used=1`, `ws ${nm}/index.js?ahead=1`]);
 });
