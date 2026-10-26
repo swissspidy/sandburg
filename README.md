@@ -29,7 +29,7 @@ runs it on its own dev server. Later requests change the running app, and errors
 - **Contained.** A sandbox reaches the network only through a caching gateway and a per-sandbox
   allowlist, and tests prove it.
 
-| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md), 2026-09-30) | Median run, cold | Median run, warm |
+| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md), 2026-09-30, 4 vCPU, 3 tabs at a time) | Median run, cold | Median run, warm |
 |---|---|---|
 | Vite, vanilla (33 apps) | 3.4 s | 3.2 s |
 | Vite + React (34) | 16.1 s | 5.9 s |
@@ -38,10 +38,9 @@ runs it on its own dev server. Later requests change the running app, and errors
 | Whole corpus, 3 tabs | 533 s | 289 s |
 
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
-from empty Sandburg caches (npm's own cache warm). The study predates most of the speed work in
-ADRs 0016–0059. The fixtures on `main` today (8dda85e), measured with `node scripts/bench.ts
---base origin/main --head . --rounds 3` on a 4-core, 15 GB Linux machine (medians of each side's three
-runs; both sides are the same revision, so the two medians show the spread):
+from empty Sandburg caches (npm's own cache warm). The study predates the speed work in ADRs
+0017–0059. The fixtures on 2026-10-26, at 8dda85e: a one-off run of `node scripts/bench.ts` on a
+4-core, 15 GB Linux machine, 3 rounds ([command, setup and every run](docs/bench/2026-10-26.md)):
 
 | Fixture | Cold run | Warm run |
 |---|---|---|
@@ -49,8 +48,9 @@ runs; both sides are the same revision, so the two medians show the spread):
 | lit-vite (Vite 8, Lit) | 4.4 s | 1.0 s |
 | next-app-router (Next.js 16) | 19.1–19.3 s | 3.9 s |
 
-A warm run is a session's second run of the project. Each ADR records its own before-and-after
-measurements, and CI benchmarks every pull request that changes `src/` or `pages/` against its base.
+Each cell is a median of three runs. The script measures two sides, here both 8dda85e, so a range
+gives the two sides' medians: the spread between runs of the same code. A warm run is a session's
+second run of the project. Each ADR records its own before-and-after measurements.
 
 ## Quick start
 
@@ -91,15 +91,18 @@ sandburg open <project>                                 # load it in a visible t
 - `--install-in browser` (opt-in) has the page install the packages from the npm registry and
   compile modules itself: the host only serves static files ([ADR 0018](docs/adr/0018-browser-install.md),
   [ADR 0020](docs/adr/0020-compile-in-the-page.md)).
-- `batch` and `compare` run one tab per core, up to 8, by default. A project's own `checks.spec.ts`
-  (or `<name>.checks.spec.ts` next to an archive) takes precedence over `--checks`.
+- `batch` and `compare` run one tab per core, up to 8, by default. In `batch` and `compare`, a
+  project's own `checks.spec.ts` (or `app.checks.spec.ts` next to `app.zip`) takes precedence over
+  `--checks`. Directories whose name starts with `.`, and archives or JSON files whose name starts
+  with `.` or `_`, are skipped.
 - Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a
   usage error.
 - `sandburg --help` lists the other options (`--ready`, `--save-files`, `--headed`, `--json`, `--out`, …).
 
-Every run also checks, without a checks file, that the page is not a server error, that the app throws
-no uncaught errors and that no request failed or was blocked, and records a screenshot, an
-accessibility tree and an axe-core scan.
+Every run also has built-in checks, without a checks file ([`src/orchestrator/checks.ts`](src/orchestrator/checks.ts)).
+A page that is a server error, or an uncaught error in the app, fails the run. Failed or blocked
+requests are reported without failing it. A screenshot, the accessibility tree and an axe-core scan
+are recorded, not enforced.
 
 A checks file default-exports named checks. Each gets the app's frame, Playwright's `expect`, and
 `appUrl(path)`:
@@ -151,7 +154,7 @@ point at the file and line where the dev server reported them.
 | Back ends | Express and other Node servers next to the front end, reached through Vite's proxy, from the page (`http://localhost:<port>`) or over WebSockets; SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) |
 | Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn scripts, package binaries, `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly |
 | Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, `AsyncLocalStorage` across native `await`s ([ADR 0057](docs/adr/0057-native-awaits-and-the-runtime-warm-path.md)), top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide; TypeScript 7's `tsc` runs tsrs ([ADR 0024](docs/adr/0024-typescript-7.md)) |
-| Not supported | Native addons without a WebAssembly build, synchronous child processes, programs other than Node (`git`, `python` exit with 127), dependencies that are not npm registry versions (git, URL, `file:`, `link:`: the install fails) |
+| Not supported | Native addons without a WebAssembly build, synchronous child processes, programs other than Node (`git`, `python` exit with 127), dependencies that are not npm registry versions (git, URL, `file:`, `link:`, `workspace:`, `user/repo` shorthands: the install fails) |
 
 ## How it works
 
@@ -170,9 +173,11 @@ The map of the code (where each module runs, what may import what, the contracts
 where to add a framework) is [`docs/architecture.md`](docs/architecture.md), kept true by
 `test/unit/architecture.test.ts`. The design decisions are recorded in [`docs/adr`](docs/adr). [ADR 0006](docs/adr/0006-node-runtime.md)
 covers the runtime, and [ADR 0014](docs/adr/0014-node-runtime-only.md) covers the single runtime and the
-cold-start work. Isolation (an origin per sandbox) is [ADR 0001](docs/adr/0001-runtime-adapters-serving-results.md), the
-egress gateway [ADR 0005](docs/adr/0005-wordpress-playground.md), and [ADR 0054](docs/adr/0054-security-review-round-4.md)
-maps every boundary an app can reach and how the host holds it.
+cold-start work. [ADR 0001](docs/adr/0001-runtime-adapters-serving-results.md) gives each sandbox its own origin and
+routes every request through the egress gateway (allowlist, cache);
+[ADR 0005](docs/adr/0005-wordpress-playground.md) (named for an adapter since removed) adds a per-sandbox egress proxy
+for what the gateway cannot intercept; [ADR 0054](docs/adr/0054-security-review-round-4.md) maps every boundary an app
+can reach and how the host holds it.
 The study method and every report are in [`docs/fidelity`](docs/fidelity/README.md).
 
 ## Development
@@ -204,10 +209,11 @@ only needs the runtime's own files ([ADR 0021](docs/adr/0021-generate-in-the-bro
 workflow builds and deploys the site on every push to `main`.
 
 CI runs on every pull request and push to `main`. It runs typecheck, lint and unit tests on Node 24 (LTS),
-the runtime tests in Chromium, the packed package, and each e2e file as its own job, with each suite's
-times against its budget (`test/budgets.json`); the Docker reference tests run there too. A pull request
-that changes `src/` or `pages/` is also benchmarked against its base branch (`scripts/bench.ts`), and
-fails only when a fixture is more than 30% slower. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
+the runtime tests in Chromium, the packed package, and each e2e file as its own job; the Docker reference tests run there too. Each
+job reports its tests' times, with a warning annotation for a file over its budget in `test/budgets.json`.
+A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, `package-lock.json` or the perf workflow
+is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
+That job fails only when a median is more than 30% slower, or when a side has no result. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
 after a week's cooldown. Every action is pinned to a commit.
 
 A pull request that changes what the package does adds a changeset (`npx changeset`): the bump and a line
