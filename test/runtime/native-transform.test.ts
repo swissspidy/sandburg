@@ -5,7 +5,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RuntimeHarness } from './harness.ts';
+import { CHANNEL_OPEN, RuntimeHarness } from './harness.ts';
 
 const h = new RuntimeHarness();
 before(() => h.open());
@@ -17,25 +17,28 @@ test("a program's transforms go to the host: over HTTP at first, then over the f
   const out = await h.runInstalled(
     {
       'main.js': `
+        ${CHANNEL_OPEN}
         const { Worker } = require('worker_threads');
         const hook = globalThis[Symbol.for('sandburg.esbuildTransform')];
         // Not sent: an option the host does not take, and an esbuild older than it answers for.
         console.log('ineligible:', hook('0.25.12', 'x', { mangleProps: /_/ }), hook('0.24.2', 'x', {}));
         ${ask('let early: number = 1')}.then((r) => console.log('early:', r.code.trim()));
-        setTimeout(async () => {
+        // The harness holds the channel until the program asks for it.
+        channelOpen().then(async () => {
           console.log('later:', (await ${ask('let later: number = 2')}).code.trim());
           // Code with errors: no answer, for the app's own esbuild to report.
           console.log('errors:', await ${ask('let = ;')});
           const w = new Worker('/app/thread.js');
           w.on('message', (m) => console.log('thread:', m));
-          w.on('exit', () => process.exit(0));
-        }, 300);`,
+        });`,
       'thread.js': `
         const { parentPort } = require('worker_threads');
         ${ask('let inThread: number = 3')}.then((r) => parentPort.postMessage(r.code.trim()));`,
     },
     { files: {}, bundled: [] },
     '/app/main.js',
+    // The thread does not exit (see worker_threads in threads.ts): the run ends with its answer.
+    { holdChannel: true, until: ({ stdout }) => stdout.includes('thread:') },
   );
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'ineligible: null null\nearly: let early = 1;\nlater: let later = 2;\nerrors: null\nthread: let inThread = 3;\n');

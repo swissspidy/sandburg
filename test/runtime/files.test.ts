@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INSTALL_KEY, RuntimeHarness } from './harness.ts';
+import { CHANNEL_OPEN, INSTALL_KEY, RuntimeHarness } from './harness.ts';
 
 const h = new RuntimeHarness();
 before(() => h.open());
@@ -17,24 +17,27 @@ const install = {
 };
 
 // A program and its thread each load a package the preload bundle has and one it lacks; the
-// second is required once the file channel has had time to open.
+// second is required once the file channel is open (the harness holds it until the program asks).
 const program = {
   'main.js': `
+    ${CHANNEL_OPEN}
     const { Worker } = require('worker_threads');
     console.log('main:', require('bundled'));
-    setTimeout(() => {
+    channelOpen().then(() => {
       console.log('main:', require('single'));
       const w = new Worker('/app/thread.js');
       w.on('message', (m) => console.log('thread:', m));
-      w.on('exit', () => process.exit(0));
-    }, 300);`,
+    });`,
   'thread.js': `
     const { parentPort } = require('worker_threads');
     parentPort.postMessage(require('bundled') + ', ' + require('single'));`,
 };
 
+/** Both runtimes have told the host what they read of the bundle (the thread does not exit: see threads.ts). */
+const bothReported = ({ asked }: { asked: string[] }) => asked.filter((a) => a.includes('/read?')).length === 2;
+
 test('installed files: the preload bundle, shared with threads, and single files over the file channel', async () => {
-  const out = await h.runInstalled(program, install, '/app/main.js');
+  const out = await h.runInstalled(program, install, '/app/main.js', { holdChannel: true, until: bothReported });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n');
   const nm = `/__sandburg/nm/${INSTALL_KEY}`;
@@ -67,15 +70,18 @@ test('installed files: raw files read one after another come with the files afte
   };
   // Read out of order once the channel is open, as a bundler does: c.js comes with d.js; a.js with
   // a.js.map and b.js, up to c.js (the runtime has it); each file is read once, and its use told.
+  // The program stays (an interval) until the host has heard of the three files' use.
   const main = {
     'main.js': `
+      ${CHANNEL_OPEN}
       const fs = require('fs');
-      setTimeout(() => {
+      setInterval(() => {}, 1000);
+      channelOpen().then(() => {
         const read = (f) => fs.readFileSync('/app/node_modules/icons/esm/' + f, 'utf8');
         console.log(['c.js', 'a.js', 'd.js', 'b.js', 'a.js.map'].map(read).join(' '));
-      }, 300);`,
+      });`,
   };
-  const out = await h.runInstalled(main, icons, '/app/main.js');
+  const out = await h.runInstalled(main, icons, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length === 3 });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'C A D B A-map\n');
   const nm = `/__sandburg/nm/${INSTALL_KEY}/f/node_modules/icons/esm`;
@@ -99,8 +105,8 @@ test('installed files: modules pushed with a transformed file are loaded without
     bundled: [],
     pushes: { 'node_modules/tool/index.js': ['node_modules/tool/a.js', 'node_modules/tool/b.js'] },
   };
-  const main = { 'main.js': `setTimeout(() => console.log(require('tool')), 300);` };
-  const out = await h.runInstalled(main, tool, '/app/main.js');
+  const main = { 'main.js': `${CHANNEL_OPEN}\nsetInterval(() => {}, 1000);\nchannelOpen().then(() => console.log(require('tool')));` };
+  const out = await h.runInstalled(main, tool, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.filter((a) => a.includes('used=1')).length === 2 });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'tool a b\n');
   const nm = `/__sandburg/nm/${INSTALL_KEY}/t/node_modules/tool`;
@@ -108,7 +114,7 @@ test('installed files: modules pushed with a transformed file are loaded without
 });
 
 test('installed files: a preload bundle the page downloaded is not requested again', async () => {
-  const out = await h.runInstalled(program, install, '/app/main.js', { prefetch: true });
+  const out = await h.runInstalled(program, install, '/app/main.js', { prefetch: true, holdChannel: true, until: bothReported });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n');
   // One request for the bundle: the page's.

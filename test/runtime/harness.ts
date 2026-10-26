@@ -36,6 +36,8 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
   const bodies = new Map();
   let pending = requests.length;
   const finish = () => { w.terminate(); resolve(out); };
+  // The run the harness is waiting on (see RuntimeHarness.until): its output so far, and its end.
+  window.current = { out, finish };
   w.onmessage = (e) => {
     const m = e.data;
     if (m.type === 'ready') w.postMessage({ type: 'run', main });
@@ -62,9 +64,11 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
   const init = { type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg', ...extra };
   if (extra.prefetch) init.prefetched = { [extra.preload]: window.prefetch(extra.preload) };
   // As the page does at a run's mount (adapters/node/browser.ts): the runtime starts its spares, then waits for init.
+  // A program ends when it exits (or, with requests, once each has its response), or when the harness
+  // ends it (until); the backstop only ends one that hangs.
   const start = () => {
     w.postMessage(init);
-    if (!requests.length) setTimeout(finish, 3000);
+    if (!requests.length) setTimeout(finish, 30_000);
   };
   if (extra.spares) {
     w.postMessage({ type: 'spares' });
@@ -102,6 +106,25 @@ interface Install {
 }
 export const INSTALL_KEY = 'a'.repeat(24);
 
+/** A transform the harness answers with how it was asked ("ws" over the file channel, else "http"), not recorded in `asked`. */
+const PROBE = '/* sandburg harness: which way? */';
+
+/**
+ * For a program: `channelOpen()` resolves once the runtime asks the host over its file channel (each
+ * request after it does too), as a probe of the runtime's esbuild hook finds out. With `holdChannel`,
+ * the harness opens the channel only once a program asked this.
+ */
+export const CHANNEL_OPEN = `const channelOpen = async () => {
+  for (;;) {
+    const r = await globalThis[Symbol.for('sandburg.esbuildTransform')]('0.25.12', ${JSON.stringify(PROBE)}, {});
+    if (r && r.code.includes('"ws"')) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};`;
+
+/** What a running program has printed and what the host was asked for, for RuntimeHarness.until. */
+type RunState = { stdout: string; asked: string[] };
+
 export class RuntimeHarness {
   private server!: Server;
   private browser!: Browser;
@@ -113,6 +136,26 @@ export class RuntimeHarness {
   noSpareScript = false;
   /** Answer /__sandburg/node-worker.js with the runtime's script itself, as a static deployment does (scripts/pages/build.ts). */
   classicRuntime = false;
+  /** File channels waiting to be accepted, while the harness holds them (runInstalled's holdChannel); null when it does not. */
+  private held: (() => void)[] | null = null;
+
+  private release(): void {
+    const held = this.held ?? [];
+    this.held = null;
+    for (const accept of held) accept();
+  }
+
+  /** An esbuild transform's answer; a probe (CHANNEL_OPEN) is answered with the way it came, and opens a held channel. */
+  private async transform(r: Omit<HostRequest, 'sandbox'>, via: 'ws' | 'http') {
+    const body = await r.body();
+    const [options, input] = JSON.parse(body.toString()) as [unknown, unknown];
+    if (input !== PROBE) {
+      this.asked.push(`${via} ${r.path}?${r.query.toString()}`);
+      return nativeTransform({ ...r, sandbox: 'harness', body: async () => body });
+    }
+    if (via === 'http') this.release();
+    return nativeTransform({ ...r, sandbox: 'harness', body: async () => Buffer.from(JSON.stringify([options, `export default ${JSON.stringify(via)};`])) });
+  }
 
   /** The host's answer for an install's file or its preload bundle, as the node adapter serves them. */
   private installed(path: string): Buffer | null {
@@ -202,10 +245,9 @@ export class RuntimeHarness {
         return res.end(JSON.stringify({ topLevelAwait: projectHasTopLevelAwait(JSON.parse(Buffer.concat(chunks).toString())) }));
       }
       if (url.pathname === '/__sandburg/esbuild-transform') {
-        this.asked.push(`http ${url.pathname}${url.search}`);
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
-        const out = await nativeTransform({ method: req.method ?? 'GET', path: url.pathname, query: url.searchParams, sandbox: 'harness', body: async () => Buffer.concat(chunks) });
+        const out = await this.transform({ method: req.method ?? 'GET', path: url.pathname, query: url.searchParams, body: async () => Buffer.concat(chunks) }, 'http');
         res.writeHead(out.status, out.headers);
         return res.end(out.body);
       }
@@ -226,15 +268,17 @@ export class RuntimeHarness {
     });
     this.server.on('upgrade', (req, socket) => {
       const origin = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
-      acceptFileChannel(req, socket, origin, async (r: HostRequest) => {
+      const accept = () => acceptFileChannel(req, socket, origin, async (r: HostRequest) => {
+        if (r.path === '/__sandburg/esbuild-transform') return this.transform(r, 'ws');
         const query = r.query.toString();
         this.asked.push(`ws ${r.path}${query ? `?${query}` : ''}`);
         if (r.query.get('used') === '1') return { status: 204, body: '' };
-        if (r.path === '/__sandburg/esbuild-transform') return nativeTransform({ ...r, sandbox: 'harness' });
         const body = this.installed(r.path);
         const ahead = body && r.query.get('ahead') === '1' ? (r.path.includes('/t/') ? this.pushed(r.path) : this.ahead(r.path, r.query.get('until'))) : null;
         return ahead ? { status: 207, body: ahead } : body ? { status: 200, body } : null;
       });
+      if (this.held) this.held.push(accept);
+      else accept();
     });
     await new Promise<void>((r) => this.server.listen(0, '127.0.0.1', r));
     this.browser = await chromium.launch({ executablePath: process.env.SANDBURG_CHROMIUM });
@@ -251,8 +295,28 @@ export class RuntimeHarness {
     }>;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number } = {}) {
-    return this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, { ...(execArgv ? { execArgv } : {}), ...options }] as const) as Promise<{
+  /**
+   * Ends the run in progress once `done` holds for what it printed and asked for (looked at every
+   * 25 ms): for a program that does not exit (a server, a thread that stays). The run's result.
+   */
+  private async until<T>(run: Promise<T>, done?: (state: RunState) => boolean): Promise<T> {
+    if (!done) return run;
+    let over = false;
+    void run.finally(() => (over = true));
+    while (!over) {
+      const stdout = await this.page.evaluate(() => (window as unknown as { current?: { out: { stdout: string } } }).current?.out.stdout ?? '');
+      if (done({ stdout, asked: this.asked })) {
+        await this.page.evaluate(() => (window as unknown as { current?: { finish(): void } }).current?.finish());
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return run;
+  }
+
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean } = {}) {
+    const { until, ...rest } = options;
+    return this.until(this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, { ...(execArgv ? { execArgv } : {}), ...rest }] as const) as Promise<{
       stdout: string;
       stderr: string;
       fatal: string | null;
@@ -260,25 +324,28 @@ export class RuntimeHarness {
       responses: { status: number; body: string; chunks: number }[];
       /** The ids of the requests whose response came in one message (response-full). */
       whole: number[];
-    }>;
+    }>, until);
   }
 
   /**
    * Runs a program with an install: node_modules files the runtime reads from the host, a preload
    * bundle of `bundled` (downloaded by the page as it starts the runtime if `prefetch`), and the
-   * file channel. `asked` records what the host was asked for.
+   * file channel (with `holdChannel`, opened only once the program asks for it: see CHANNEL_OPEN).
+   * `asked` records what the host was asked for.
    */
-  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean } = {}) {
+  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; holdChannel?: boolean; until?: (state: RunState) => boolean } = {}) {
     this.install = install;
     this.asked = [];
+    this.release();
+    if (options.holdChannel) this.held = [];
     const nodeModules = Object.fromEntries(Object.entries(install.files).map(([rel, text]) => [rel, Buffer.byteLength(text)]));
     const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch };
-    return this.page.evaluate(([f, m, e]) => (window as unknown as { runNode: Function }).runNode(f, m, [], e), [files, main, extra] as const) as Promise<{
+    return this.until(this.page.evaluate(([f, m, e]) => (window as unknown as { runNode: Function }).runNode(f, m, [], e), [files, main, extra] as const) as Promise<{
       stdout: string;
       stderr: string;
       fatal: string | null;
       exit: number | null;
-    }>;
+    }>, options.until);
   }
 
   async close(): Promise<void> {

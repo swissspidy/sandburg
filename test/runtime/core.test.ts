@@ -607,9 +607,22 @@ test('child_process: a program reaches a server another child process runs (a de
             res.on('end', () => resolve(body));
           }).on('error', (e) => resolve(e.code));
         });
-        setTimeout(async () => console.log(await ask(4200), await ask(4299)), 300);`,
+        // The shell starts both at once: the API may not listen yet (as a dev proxy, ask again).
+        const api = async () => {
+          for (let i = 0; i < 200; i++) {
+            const answer = await ask(4200);
+            if (answer !== 'ECONNREFUSED') return answer;
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          return 'ECONNREFUSED';
+        };
+        (async () => console.log(await api(), await ask(4299)))();`,
     },
     '/app/main.js',
+    // The API's server stays up: the run ends with the answers.
+    [],
+    undefined,
+    { until: ({ stdout }) => / ECONNREFUSED|api GET \/items \S+/.test(stdout) },
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.match(out.stdout, /api GET \/items ECONNREFUSED/, out.stdout + out.stderr);
@@ -655,8 +668,9 @@ test('child_process: a shell script ends with its foreground command, not with a
       'main.js': `
         const c = require('child_process').spawn('node seed.js & node server.js', { shell: true, stdio: 'inherit' });
         c.on('exit', (code) => console.log('script exited', code));`,
-      'seed.js': `console.log('seeded');`,
-      'server.js': `setTimeout(() => { console.log('server done'); process.exit(3); }, 300);`,
+      'seed.js': `console.log('seeded');\nrequire('fs').writeFileSync('/app/seeded', '');`,
+      // Ends after the background command (however long that takes to start), with a code of its own.
+      'server.js': `const end = setInterval(() => require('fs').existsSync('/app/seeded') && (clearInterval(end), console.log('server done'), process.exit(3)), 20);`,
     },
     '/app/main.js',
   );
