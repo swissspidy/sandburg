@@ -40,6 +40,7 @@ import { expect } from '@playwright/test';
 import type { HostInstall } from '../../src/adapters/node/browser.ts';
 import type { Project } from '../../src/types.ts';
 import { launchOptions } from '../../src/orchestrator/launch.ts';
+import { recordingServe } from './record.ts';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -73,27 +74,11 @@ async function build(): Promise<void> {
 
   // Record what the host serves (the same answers for every run of the same content).
   let used = new Set<string>();
-  const serve = node.serve!.bind(node);
-  node.serve = async (req) => {
-    let body: Buffer | undefined;
-    const request = { ...req, body: async (max?: number) => (body ??= await req.body(max)) };
-    const res = await serve(request);
-    if (!res || (req.method === 'POST' && req.path.startsWith('/__sandburg/dev-cache/'))) return res;
-    const key = req.method === 'POST' ? `POST ${req.path}?${req.query} ${createHash('sha256').update(await request.body()).digest('hex')}` : req.path;
+  node.serve = recordingServe(node.serve!.bind(node), async (key, res) => {
     const blob = await writeBlob(res.body);
-    const entry: Manifest[string] = [blob.id, res.headers?.['content-type'] ?? 'application/octet-stream', res.status];
-    manifest[key] = entry;
+    manifest[key] = [blob.id, res.headers?.['content-type'] ?? 'application/octet-stream', res.status];
     used.add(key);
-    // Compiles again under a key without the path (Vite's config file has a timestamp in its
-    // name): the output depends on the path only through the loader (.tsx) and .mjs/.mts.
-    if (req.path === '/__sandburg/compile') {
-      const path = req.query.get('path') ?? '';
-      const loose = `POST /__sandburg/compile#${req.query.get('kind')}|${req.query.get('async') ?? ''}|${path.endsWith('x') ? 'x' : ''}|${/\.m[jt]s$/.test(path) ? 'm' : ''} ${key.slice(key.lastIndexOf(' ') + 1)}`;
-      manifest[loose] = entry;
-      used.add(loose);
-    }
-    return res;
-  };
+  });
   let captured: { project: Project; host: HostInstall } | null = null;
   const hostInstall = node.hostInstall!.bind(node);
   node.hostInstall = async (project, log, options) => {

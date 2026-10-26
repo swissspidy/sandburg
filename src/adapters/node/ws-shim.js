@@ -33,6 +33,18 @@ globalThis.__async ??= (__this, __arguments, generator) =>
     void step((generator = generator.apply(__this, __arguments)).next());
   });
 
+/*
+ * And the runtime's await-context helper (AWAIT_CONTEXT_GLOBAL in node-runtime/names.ts), which the
+ * awaits of compiled async functions call (node-runtime/await-context.ts): the loading screen's
+ * client sends them too. A page has no AsyncLocalStorage context to carry, so each call passes its
+ * value through.
+ */
+if (!('__sandburg_ac' in globalThis)) {
+  const pass = (_state, value) => value;
+  const none = () => {};
+  Object.defineProperty(globalThis, '__sandburg_ac', { value: Object.freeze({ e: () => null, s: pass, r: pass, k: none, x: none, i: pass }) });
+}
+
 (() => {
   const Native = window.WebSocket;
   let connect;
