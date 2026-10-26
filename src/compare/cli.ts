@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { Session, type RunOptions, type SessionOptions } from '../orchestrator/session.ts';
 import { discoverProjects } from '../orchestrator/batch.ts';
+import { NO_SANDBOX } from '../orchestrator/launch.ts';
 import { dockerReference } from '../reference/docker.ts';
 import { compare } from './compare.ts';
 import { renderReport } from './report.ts';
@@ -23,6 +24,7 @@ export async function compareCommand(
   }
   const session = new Session(sessionOptions);
   await session.open();
+  if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
   try {
     const report = await compare(session, items, {
       ...runOptions,

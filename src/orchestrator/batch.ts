@@ -46,6 +46,8 @@ export interface BatchSummary {
   startedAt: string;
   finishedAt: string;
   wallMs: number;
+  /** The session's browser ran inside Chromium's OS sandbox (each run's environment.browserSandbox). */
+  browserSandbox: boolean;
   totals: {
     runs: number;
     passed: number;
@@ -292,6 +294,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
     startedAt: startedAt.toISOString(),
     finishedAt: new Date().toISOString(),
     wallMs,
+    browserSandbox: session.browserSandbox,
     totals: {
       runs: results.length,
       passed: results.filter((r) => r.status === 'passed').length,

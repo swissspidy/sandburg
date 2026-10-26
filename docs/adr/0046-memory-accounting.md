@@ -42,7 +42,8 @@ when apps allocate, and what a renderer holds, on a 4-core machine with 15 GB.
 
 ## Decision
 
-- **Each run finds its renderer** (`orchestrator/renderer-memory.ts`). Chromium's DevTools Protocol
+- **Each run finds its renderer** (`orchestrator/renderer-memory.ts`; inside Chromium's OS sandbox,
+  by other means: ADR 0061). Chromium's DevTools Protocol
   does not name a page's process, but gives the CPU time of both: the page's (`Performance.getMetrics`,
   ProcessTime, measured in the renderer) and each renderer's by pid (`SystemInfo.getProcessInfo`,
   from the browser process). The renderers' times are read just before and just after the page's:

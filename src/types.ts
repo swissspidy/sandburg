@@ -230,6 +230,12 @@ export interface RunResult {
   environment: {
     sandburgVersion: string;
     browser: string;
+    /**
+     * The browser ran inside Chromium's OS sandbox (false: turned off with SessionOptions.browserSandbox
+     * or its CLI flag or env var). Optional in result-schema.json: results from before ADR 0061 do not
+     * have it, and ran without the sandbox.
+     */
+    browserSandbox: boolean;
     platform: string;
     offline: boolean;
   };
