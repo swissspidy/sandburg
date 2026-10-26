@@ -1,4 +1,4 @@
-# ADR NNNN: The await rewrite of installed files on helper threads
+# ADR 0062: The await rewrite of installed files on a helper thread
 
 - Status: Accepted
 - Date: 2026-10-26
