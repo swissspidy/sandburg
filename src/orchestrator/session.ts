@@ -130,7 +130,7 @@ export interface RunOptions {
   seed?: boolean;
   /**
    * Where dependencies are installed: 'host' (npm on the host, the default) or 'browser' (opt-in:
-   * the page resolves and fetches packages from the npm registry itself; see node-runtime/npm).
+   * the page resolves and fetches packages from the npm registry itself; see adapters/node/browser-npm).
    */
   installIn?: 'host' | 'browser';
   /**

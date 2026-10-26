@@ -6,6 +6,7 @@ import type { FileIndex } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
 import { installer } from './installs.ts';
 import { preloadList, BUNDLES_KEPT } from './preload.ts';
+import { bundleHead } from '../../bundle-format.ts';
 
 /**
  * Read-ahead of raw installed files: a runtime that reads a raw file missing from its preload bundle
@@ -13,8 +14,8 @@ import { preloadList, BUNDLES_KEPT } from './preload.ts';
  * files after it in its directory, by name: a dev server's first pre-bundle reads a package's files in
  * turn (Vite's esbuild read lucide-react's icons and their source maps, 3,100 requests). Files this
  * install's runs loaded before are left out (they are in its preload bundle), as are large ones;
- * the answer stays under the file channel's MAX_BODY. The runtime tells which ones it read
- * (`?used=1`), and only those are recorded as loaded.
+ * the answer stays under the file channel's MAX_BODY (src/file-channel.ts). The runtime tells
+ * which ones it read (`?used=1`), and only those are recorded as loaded.
  */
 const AHEAD_BUDGET = 512 << 10;
 
@@ -71,10 +72,7 @@ export async function readAhead(key: string, rel: string, first: Buffer, until: 
     bytes += body.length;
   }
   if (header.length === 1) return null;
-  const json = Buffer.from(JSON.stringify(header));
-  const length = Buffer.alloc(4);
-  length.writeUInt32LE(json.length);
-  return Buffer.concat([length, json, ...bodies]);
+  return Buffer.concat([bundleHead(header), ...bodies]);
 }
 
 /**
@@ -116,10 +114,7 @@ export function pushAhead(key: string, rel: string, first: Buffer, prefetcher: P
     queue.push(...(prefetcher.requires.get(dep) ?? []));
   }
   if (header.length === 1) return null;
-  const json = Buffer.from(JSON.stringify(header));
-  const length = Buffer.alloc(4);
-  length.writeUInt32LE(json.length);
-  return Buffer.concat([length, json, ...bodies]);
+  return Buffer.concat([bundleHead(header), ...bodies]);
 }
 
 /** The package.json Node reads for a module's "type": the nearest one up its directories. */

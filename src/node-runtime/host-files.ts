@@ -6,6 +6,8 @@
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
+import { ANSWER_HEADER, FILE_CHANNEL_NAME, MAILBOX_BYTES, MAILBOX_HEADER as CHANNEL_MAILBOX_HEADER, MAX_FRAME, POST_HEADER } from '../file-channel.ts';
+import { bundleHeader } from '../bundle-format.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
 let installedRequests = 0;
@@ -54,11 +56,9 @@ export function prefetchedBody(url: string): Uint8Array | null {
 }
 
 export function bundleFiles(bytes: Uint8Array): [string, Uint8Array, string][] {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const length = view.getUint32(0, true);
-  const header = JSON.parse(new TextDecoder().decode(bytes.slice(4, 4 + length))) as [string, string, number][];
+  const { header, body } = bundleHeader<[string, string, number]>(bytes);
   const files: [string, Uint8Array, string][] = [];
-  let at = 4 + length;
+  let at = body;
   for (const [mode, rel, size] of header) {
     // A negative size names a file that is not in the bundle (see downloadOnSide).
     if (size < 0) {
@@ -139,13 +139,24 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
 const reads = new Set<string>();
 let unreported: string[] = [];
 let reportTimer: ReturnType<typeof setTimeout> | null = null;
-/** Files per report: a report is one frame of the file channel (MAX_FRAME, 64 KB). */
+let unreportedLength = 0;
+/** Files per report. */
 const REPORT_BATCH = 100;
+/**
+ * A report's files, encoded: a report is one text frame of the file channel, which the host closes
+ * on a frame over MAX_FRAME (64 KB); the rest of the frame is the report's URL. 100 long paths were
+ * over it.
+ */
+const REPORT_MAX = MAX_FRAME - 1024;
 
 function noteRead(key: string): void {
   if (!channel || !installKey || reads.has(key)) return;
   reads.add(key);
+  const length = encodeURIComponent(key).length + 3; // and a newline, %0A
+  if (length > REPORT_MAX) return;
+  if (unreportedLength + length > REPORT_MAX) reportReads();
   unreported.push(key);
+  unreportedLength += length;
   if (unreported.length >= REPORT_BATCH) reportReads();
   else reportTimer ??= nativeSetTimeout(reportReads, 500);
 }
@@ -155,6 +166,7 @@ function reportReads(): void {
   reportTimer = null;
   const keys = unreported;
   unreported = [];
+  unreportedLength = 0;
   if (keys.length) channel?.post({ note: `${base}/nm/${installKey}/read?files=${encodeURIComponent(keys.join('\n'))}` });
 }
 
@@ -236,10 +248,9 @@ export function loadCompiles(into: Map<string, string>, asyncModules: boolean): 
     const res = requestSync(compileCache.bundle, true);
     if (res.status !== 200) return;
     const bytes = res.body as Uint8Array;
-    const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
     const decoder = new TextDecoder();
-    const header = JSON.parse(decoder.decode(bytes.subarray(4, 4 + length))) as [string, number, string, number, number][];
-    let at = 4 + length;
+    const { header, body } = bundleHeader<[string, number, string, number, number]>(bytes);
+    let at = body;
     for (const [kind, async, path, codeLength, outLength] of header) {
       // The same key as hostCompile's; compiled as an async module or not, as this runtime would ask.
       if (!!async === (asyncModules && kind !== 'cjs')) into.set(`${kind}:${path}\0${decoder.decode(bytes.subarray(at, at + codeLength))}`, decoder.decode(bytes.subarray(at + codeLength, at + codeLength + outLength)));
@@ -278,7 +289,7 @@ const DIGEST_HELPER = `let socket = null, ids = 0;
 const asked = new Map();
 const settle = (shared, status, body) => {
   const state = new Int32Array(shared, 0, 3);
-  if (body) new Uint8Array(shared, 12).set(body);
+  if (body) new Uint8Array(shared, ${CHANNEL_MAILBOX_HEADER}).set(body);
   Atomics.store(state, 1, body ? body.length : 0);
   Atomics.store(state, 2, status);
   Atomics.store(state, 0, 1);
@@ -289,12 +300,12 @@ function open(url, ready) {
   socket.binaryType = 'arraybuffer';
   socket.onopen = () => (Atomics.store(ready, 0, 1), Atomics.notify(ready, 0));
   socket.onmessage = ({ data }) => {
-    const head = new DataView(data, 0, 8);
+    const head = new DataView(data, 0, ${ANSWER_HEADER});
     const shared = asked.get(head.getUint32(0, true));
     if (!shared) return;
     asked.delete(head.getUint32(0, true));
-    if (shared instanceof MessagePort) return shared.postMessage({ status: head.getUint32(4, true), body: new Uint8Array(data, 8) });
-    settle(shared, head.getUint32(4, true), new Uint8Array(data, 8));
+    if (shared instanceof MessagePort) return shared.postMessage({ status: head.getUint32(4, true), body: new Uint8Array(data, ${ANSWER_HEADER}) });
+    settle(shared, head.getUint32(4, true), new Uint8Array(data, ${ANSWER_HEADER}));
   };
   socket.onclose = () => {
     Atomics.store(ready, 0, 2);
@@ -319,11 +330,11 @@ const handle = async ({ data }) => {
     const id = ++ids;
     asked.set(id, data.reply);
     const path = new TextEncoder().encode(data.post);
-    const frame = new Uint8Array(8 + path.length + data.body.length);
+    const frame = new Uint8Array(${POST_HEADER} + path.length + data.body.length);
     new DataView(frame.buffer).setUint32(0, id, true);
     new DataView(frame.buffer).setUint32(4, path.length, true);
-    frame.set(path, 8);
-    frame.set(data.body, 8 + path.length);
+    frame.set(path, ${POST_HEADER});
+    frame.set(data.body, ${POST_HEADER} + path.length);
     return socket.send(frame);
   }
   const state = new Int32Array(data.shared, 0, 2);
@@ -407,13 +418,11 @@ export function startDigester(): void {
  */
 let channel: { post(message: unknown, transfer?: Transferable[]): void; ready: SharedArrayBuffer; mailbox: SharedArrayBuffer | null } | null = null;
 
-const CHANNEL_MAILBOX = 12 + (1 << 20);
-
 function openChannel(worker: Worker): void {
   if (channel || !globalThis.location || typeof WebSocket === 'undefined') return;
   const ready = new SharedArrayBuffer(4);
   channel = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), ready, mailbox: null };
-  const url = new URL(`${base}/files`, workerHref);
+  const url = new URL(`${base}/${FILE_CHANNEL_NAME}`, workerHref);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   nativeWorkerPost.call(worker, { channel: url.href, ready });
 }
@@ -453,7 +462,7 @@ export function postViaChannel(url: string, body: Uint8Array): Promise<{ status:
 function viaChannel(url: string): { status: number; body: Uint8Array } | null {
   const c = channel;
   if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
-  c.mailbox ??= new SharedArrayBuffer(CHANNEL_MAILBOX);
+  c.mailbox ??= new SharedArrayBuffer(MAILBOX_BYTES);
   const state = new Int32Array(c.mailbox, 0, 3);
   Atomics.store(state, 0, 0);
   c.post({ get: url, shared: c.mailbox });
@@ -463,7 +472,7 @@ function viaChannel(url: string): { status: number; body: Uint8Array } | null {
     return null;
   }
   const status = Atomics.load(state, 2);
-  return status ? { status, body: new Uint8Array(c.mailbox, 12, Atomics.load(state, 1)).slice() } : null;
+  return status ? { status, body: new Uint8Array(c.mailbox, CHANNEL_MAILBOX_HEADER, Atomics.load(state, 1)).slice() } : null;
 }
 
 /** The hex SHA-256 of text's UTF-8, or null when the helper is not there to compute it. */

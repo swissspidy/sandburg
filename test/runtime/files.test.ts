@@ -158,3 +158,27 @@ test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare run
   const warm = await h.page.evaluate(() => Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4)));
   assert.equal(other - wasi, warm, `spares started: ${other} with another thread, ${wasi} with a WebAssembly thread`);
 });
+
+test('installed files: the bundle files a runtime read are told in reports that fit a frame of the file channel', async () => {
+  // 100 files with long paths (~800 characters each): reports of 100 files were one 80 KB frame,
+  // over the channel's MAX_FRAME, and the host closed the channel (later files came over HTTP).
+  const dir = `node_modules/long/${Array.from({ length: 4 }, (_, i) => String(i).repeat(200)).join('/')}`;
+  const names = Array.from({ length: 100 }, (_, i) => `${dir}/f${i}.js`);
+  const files: Record<string, string> = { 'node_modules/single/package.json': install.files['node_modules/single/package.json'], 'node_modules/single/index.js': install.files['node_modules/single/index.js'] };
+  for (const [i, name] of names.entries()) files[name] = `module.exports = ${i};`;
+  const main = {
+    'main.js': `
+      setTimeout(() => {
+        let sum = 0;
+        for (let i = 0; i < 100; i++) sum += require('/app/${dir}/f' + i + '.js');
+        console.log(sum);
+        setTimeout(() => { console.log(require('single')); setTimeout(() => process.exit(0), 700); }, 100);
+      }, 300);`,
+  };
+  const out = await h.runInstalled(main, { files, bundled: names }, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, '4950\nasked for on its own\n');
+  const reported = h.asked.filter((a) => a.startsWith(`ws /__sandburg/nm/${INSTALL_KEY}/read?files=`)).flatMap((a) => decodeURIComponent(a.slice(a.indexOf('=') + 1)).split('\n'));
+  assert.deepEqual(reported.sort(), names.map((n) => `t/${n}`).sort());
+  assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/nm/')), []);
+});

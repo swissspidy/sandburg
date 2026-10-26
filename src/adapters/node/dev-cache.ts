@@ -9,9 +9,11 @@ import type { Project } from '../../types.ts';
 import { CompileCache } from './compile-cache.ts';
 import { tmpSuffix } from './install.ts';
 import { devCacheRoot } from './installs.ts';
+import { allOf } from '../../framework.ts';
+import { bundleHead, bundleHeader } from '../../bundle-format.ts';
 
 /**
- * Dev servers' dependency caches, kept between runs: Vite's cache directory, with each environment's
+ * Dev servers' dependency caches (FRAMEWORKS' devCaches), kept between runs: Vite's cache directory, with each environment's
  * pre-bundled dependencies (deps, deps_ssr) and what plugins keep beside them (without
  * vite-plugin-svelte's _svelte_metadata.json, SvelteKit re-optimized on every start), where Vite
  * (node_modules/.vite), Nuxt (node_modules/.cache/vite) and the Angular CLI (.angular/cache) put it.
@@ -22,7 +24,7 @@ import { devCacheRoot } from './installs.ts';
  * project's code, so a cache is only ever used by runs of the same project (its installed packages
  * and every file): one project cannot plant pre-bundled code in another's run.
  */
-export const DEV_CACHE_DIRS = ['node_modules/.vite', 'node_modules/.cache/vite', 'node_modules/.cache/jiti', '.angular/cache'];
+export const DEV_CACHE_DIRS = [...allOf('devCaches'), 'node_modules/.cache/jiti'];
 
 export function devCacheKey(project: Project, installKey: string): string {
   const h = createHash('sha256').update(installKey);
@@ -144,10 +146,7 @@ export async function cacheBundle(key: string): Promise<Buffer | null> {
     header.push(['f', path, body.length]);
     bodies.push(body);
   }
-  const head = Buffer.from(JSON.stringify(header));
-  const length = Buffer.alloc(4);
-  length.writeUInt32LE(head.length);
-  const bundle = Buffer.concat([length, head, ...bodies]);
+  const bundle = Buffer.concat([bundleHead(header), ...bodies]);
   const tmp = `${bin}.${tmpSuffix()}.tmp`;
   await writeFile(tmp, bundle);
   await rename(tmp, bin);
@@ -173,20 +172,16 @@ export function takeCacheWrite(key: string, token: string | null | undefined, sa
  * of files, or whose lengths do not add up to the body's.
  */
 export function bundledEntries(body: Buffer): Record<string, string | { base64: string }> | null {
-  if (body.length < 4) return null;
-  const length = body.readUInt32LE(0);
-  if (4 + length > body.length) return null;
-  let header: unknown;
+  let header: unknown[];
+  let at: number;
   try {
-    header = JSON.parse(body.subarray(4, 4 + length).toString('utf8'));
+    ({ header, body: at } = bundleHeader<unknown>(body));
   } catch {
     return null;
   }
-  if (!Array.isArray(header)) return null;
   const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   const out: Record<string, string | { base64: string }> = {};
-  let at = 4 + length;
-  for (const entry of header as unknown[]) {
+  for (const entry of header) {
     if (!Array.isArray(entry) || entry.length !== 3 || typeof entry[1] !== 'string' || !Number.isSafeInteger(entry[2]) || entry[2] < 0 || at + entry[2] > body.length) return null;
     const bytes = body.subarray(at, at + entry[2]);
     at += entry[2];

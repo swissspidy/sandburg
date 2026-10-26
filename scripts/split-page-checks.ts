@@ -23,3 +23,14 @@ splitModule(
   ['Outcome', 'Matcher', 'show', 'failure', 'deepEqual', 'textMatches', 'locatorMatchers', 'appMatchers', 'ValueMatcher', 'valueMatchers', 'bind', 'makeExpect'],
   "The page checks' expect: Playwright's web-first assertions on locators and the page, which retry\nuntil they pass or time out, and its value assertions.",
 );
+
+// What locator.ts, expect.ts and the runtime share, and the `app`, so that none of them imports
+// runtime.ts (an import cycle: scripts/architecture.ts).
+splitModule(
+  RUNTIME,
+  'src/page-checks/frame.ts',
+  ['ivya', 'settings', 'appIframe', 'appWindow', 'appDocument', 'sleep', 'POLL_MS', 'poll', 'message', 'named', 'isFailure', 'matchesUrl', 'guarded'],
+  "What the page checks' modules share: the app's frame, the run's settings, polling and the errors\nthey throw, named as Playwright names them.",
+);
+
+splitModule(RUNTIME, 'src/page-checks/app.ts', ['navigate', 'App'], "The page checks' `app`: the app's frame as a Playwright Frame (navigation, waits, evaluate, and\nthe shortcuts that take a selector).");
