@@ -285,10 +285,10 @@ export class HostServer {
       res.end('requests from another site are refused');
       return;
     }
-    // Only a browser's requests are served: Chromium sends Sec-Fetch-Site with every request to a
-    // sandbox (a *.localhost origin is potentially trustworthy), so a request without it, or with a
-    // value no browser sends, comes from some other client. (The file channel's upgrade carries none;
-    // it checks Origin instead, see the upgrade handler.)
+    // Requests not shaped as a browser's are refused too: Chromium sends Sec-Fetch-Site with every
+    // request to a sandbox (a *.localhost origin is potentially trustworthy), and a page's script
+    // cannot set it. This authenticates nothing: a raw HTTP client can send any value. (The file
+    // channel's upgrade carries none; it checks Origin instead, see the upgrade handler.)
     if (site !== 'same-origin' && site !== 'none') {
       res.writeHead(403, { 'content-type': 'text/plain' });
       res.end('requests without a browser fetch site are refused');
