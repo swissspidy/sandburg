@@ -59,7 +59,8 @@ test('then what they read from bundles and asked for, in the order first loaded'
   assert.deepEqual(await preloadEntries(key), ['t:node_modules/p/a.js', 't:node_modules/p/c.js']);
   // A file asked for on its own is read too.
   assert.equal((await request(`/__sandburg/nm/${key}/f/node_modules/p/b.js`))?.status, 200);
-  await new Promise((r) => setTimeout(r, 50));
+  // Recorded asynchronously.
+  for (let i = 0; i < 200 && (await preloadEntries(key)).length < 3; i++) await new Promise((r) => setTimeout(r, 25));
   assert.deepEqual(await preloadEntries(key), ['t:node_modules/p/a.js', 'f:node_modules/p/b.js', 't:node_modules/p/c.js']);
 });
 
