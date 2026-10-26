@@ -385,12 +385,43 @@ onmessage = handle;`;
 /** The helper and its shared memory: the answer's state (0 waiting, 1 written, 2 failed), 1 once it runs, the digest. */
 let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } | null = null;
 
+/**
+ * The helper started before the init message, while the runtime waits idle for it (the page's
+ * 'prepare' message): a new worker gets its parent's messages only once the parent has run a task
+ * after the worker's script ran, and from its init the runtime runs its program in one long task.
+ * Started at init, the helper was often not running when the program first read a file downloaded
+ * on the side: the read made a synchronous request of its own (rolldown's 11 MB WebAssembly, 70-120
+ * ms) while the helper downloaded the same file again.
+ */
+let preparedHelper: { worker: Worker; shared: SharedArrayBuffer } | null = null;
+
+function newHelper(): { worker: Worker; shared: SharedArrayBuffer } {
+  const worker = new NativeWorker(URL.createObjectURL(new Blob([DIGEST_HELPER], { type: 'text/javascript' })));
+  const shared = new SharedArrayBuffer(40);
+  nativeWorkerPost.call(worker, { hello: true, shared });
+  return { worker, shared };
+}
+
+export function prepareDigester(): void {
+  if (preparedHelper || digester) return;
+  try {
+    preparedHelper = newHelper();
+  } catch {
+    preparedHelper = null;
+  }
+}
+
+/** A helper prepared for a runtime that turned out not to need one (a thread, an install in the browser). */
+export function dropPreparedDigester(): void {
+  preparedHelper?.worker.terminate();
+  preparedHelper = null;
+}
+
 export function startDigester(): void {
   try {
-    const worker = new NativeWorker(URL.createObjectURL(new Blob([DIGEST_HELPER], { type: 'text/javascript' })));
-    const shared = new SharedArrayBuffer(40);
+    const { worker, shared } = preparedHelper ?? newHelper();
+    preparedHelper = null;
     digester = { worker, shared, state: new Int32Array(shared, 0, 2) };
-    nativeWorkerPost.call(worker, { hello: true, shared });
     openChannel(worker);
   } catch {
     digester = null;

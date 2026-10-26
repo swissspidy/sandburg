@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { compileForRuntime, compileForRuntimeAsync, projectHasTopLevelAwait, projectHasTopLevelAwaitAsync, StringLru } from '../../src/adapters/node/compile.ts';
 import { transformForRuntime } from '../../src/adapters/node/install.ts';
 import { ESM_WRAPPER_PARAMS } from '../../src/adapters/node/esm-names.ts';
+import './await-context-stub.ts'; // compiled code runs here
 
 // A webpack dev chunk: modules as eval("<source>") literals, and code of its own around them.
 const chunk = (body: string) => `"use strict";
@@ -13,14 +14,15 @@ exports.modules = {
 exports.run = async () => (await Promise.resolve(1));
 `;
 
-test('a webpack dev chunk: async code lowered inside its eval literals and around them', async () => {
+test('a webpack dev chunk: awaits rewritten to restore the async context inside its eval literals and around them', async () => {
   const out = compileForRuntime(chunk('1'), '/app/.next/server/chunk.js', 'cjs');
   const evals = [...out.matchAll(/\beval\(("(?:[^"\\\n]|\\.)*")\)/g)].map((m) => JSON.parse(m[1]) as string);
   assert.equal(evals.length, 2);
-  assert.doesNotMatch(evals[0], /\basync function\b|\bawait\b/); // lowered
+  const rewritten = /__sandburg_ac\.r\(__sbac, await __sandburg_ac\.s\(__sbac, /;
+  assert.match(evals[0], rewritten);
   assert.match(evals[0], /\/\/# sourceURL=webpack-internal:\/\/\/\.\/a\.js$/); // kept last
-  assert.equal(evals[1], 'module.exports = 2;'); // nothing to lower: as it was
-  assert.doesNotMatch(out.replace(/\beval\(("(?:[^"\\\n]|\\.)*")\)/g, ''), /\basync\b|\bawait\b/); // the code around them too
+  assert.equal(evals[1], 'module.exports = 2;'); // nothing to rewrite: as it was
+  assert.match(out.replace(/\beval\(("(?:[^"\\\n]|\\.)*")\)/g, ''), rewritten); // the code around them too
   assert.doesNotMatch(out, /__sandburg_eval_/);
   const exports: Record<string, unknown> = {};
   new Function('exports', 'module', out)(exports, { exports });

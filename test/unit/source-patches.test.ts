@@ -4,6 +4,7 @@ import { transformForRuntime } from '../../src/adapters/node/install.ts';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import './await-context-stub.ts'; // compiled code runs here
 
 // nitropack 2.13's dev server, as published.
 const NITRO_GET_WORKER = `class DevServer {
