@@ -4,6 +4,7 @@
  * workers, storage and cookies never mix between parallel tabs (ADR 0001).
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
@@ -14,6 +15,7 @@ import { source } from '../sources.ts';
 import { PAGE_CHECKS_PATH, runtimeBundle } from '../page-checks/index.ts';
 import { CLASSIC_CHARSET, classicBody, type HostScript } from './code-cache.ts';
 import { acceptFileChannel, FILE_CHANNEL_PATH } from './host-socket.ts';
+import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 
 const HOST_ENTRY = source('host/host.ts');
 export const SANDBOX_DOMAIN = 'sandburg.localhost';
@@ -26,7 +28,7 @@ const HOST_HTML = `<!doctype html>
 <style>html,body{margin:0;height:100%}#app{border:0;width:100%;height:100%;display:block}</style>
 </head>
 <body>
-<iframe id="app" title="app"></iframe>
+<iframe id="app" title="app"></iframe>${tracingTransfers ? '<script>window.__sandburgTraceTransfers = true</script>' : ''}
 <script type="module" src="/__sandburg/host.js"></script>
 </body>
 </html>
@@ -98,6 +100,9 @@ class BodyTooLargeError extends Error {
  * What comes after a refusal is dropped as it arrives (the stream is not destroyed: that would close
  * the connection before the 413 is sent).
  */
+/** The bytes of each request's body that readBody received, for tracing (traceResponse). */
+const bodyBytes = new WeakMap<IncomingMessage, number>();
+
 function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
   const declared = req.headers['content-length'];
   if (declared !== undefined && !(Number(declared) <= max)) return Promise.reject(new BodyTooLargeError(max));
@@ -105,6 +110,7 @@ function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
     const chunks: Buffer[] = [];
     let length = 0;
     const done = () => {
+      bodyBytes.set(req, length);
       req.off('data', onData).off('end', onEnd).off('error', onError);
       req.on('data', () => {}).on('error', () => {});
     };
@@ -129,9 +135,16 @@ function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
   });
 }
 
+/** The path of arguments stashed for a sandbox's host page (see HostServer.stash). */
+const ARGS_PATH = '/__sandburg/args/';
+/** How long stashed arguments wait for their page. */
+const STASH_TTL_MS = 120_000;
+
 export class HostServer {
   private server: Server;
   private sandboxes = new Map<string, AdapterDescriptor>();
+  /** Arguments of calls into host pages, by id: for one sandbox, served once (see stash). */
+  private stashed = new Map<string, { sandbox: string; body: string }>();
   port = 0;
 
   /**
@@ -140,6 +153,7 @@ export class HostServer {
    */
   constructor({ onError = (err: unknown, path: string) => console.error(`sandburg: the host server failed to answer ${path}:`, err) } = {}) {
     this.server = createServer((req, res) => {
+      if (tracingTransfers) traceResponse(req, res);
       this.handle(req, res).catch((err) => {
         try {
           onError(err, (req.url ?? '').split('?')[0].slice(0, 300));
@@ -194,6 +208,21 @@ export class HostServer {
 
   unregister(id: string): void {
     this.sandboxes.delete(id);
+    for (const [key, stash] of this.stashed) if (stash.sandbox === id) this.stashed.delete(key);
+  }
+
+  /**
+   * Keeps a call's arguments (JSON) for sandbox `id`'s host page, which fetches them from the path
+   * returned, once, instead of receiving them through page.evaluate: Playwright validates and
+   * serializes an argument value by value on the host's thread (a run's install data, with the
+   * installed files' index of 10-12k entries, was ~1.8 s of it in a 24-app batch). The path's id
+   * is random, and only that sandbox's origin is served it.
+   */
+  stash(id: string, body: string): string {
+    const key = randomBytes(18).toString('base64url');
+    this.stashed.set(key, { sandbox: id, body });
+    setTimeout(() => this.stashed.delete(key), STASH_TTL_MS).unref();
+    return ARGS_PATH + key;
   }
 
   origin(id: string): string {
@@ -228,7 +257,19 @@ export class HostServer {
       return;
     }
     const path = url.pathname;
-    if (path === '/' || path === '/index.html' || path === '/__sandburg/') {
+    if (path.startsWith(ARGS_PATH)) {
+      // Another sandbox's arguments are not found here, nor are ones already taken.
+      const key = path.slice(ARGS_PATH.length);
+      const stash = this.stashed.get(key);
+      if (!stash || stash.sandbox !== id || req.method !== 'GET') {
+        res.writeHead(404, { ...headers, 'content-type': 'text/plain' });
+        res.end('not found');
+        return;
+      }
+      this.stashed.delete(key);
+      res.writeHead(200, { ...headers, 'content-type': 'application/json' });
+      res.end(stash.body);
+    } else if (path === '/' || path === '/index.html' || path === '/__sandburg/') {
       res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8' });
       res.end(HOST_HTML);
     } else if (path === '/__sandburg/host.js') {
@@ -284,6 +325,27 @@ export class HostServer {
       res.end('not found');
     }
   }
+}
+
+/** Traces a response's body and a request's (SANDBURG_TRACE_TRANSFERS). */
+function traceResponse(req: IncomingMessage, res: ServerResponse): void {
+  const t0 = performance.now();
+  let sent = 0;
+  const end = res.end.bind(res) as (body?: unknown) => ServerResponse;
+  (res as { end: (body?: unknown) => ServerResponse }).end = (body?: unknown) => {
+    if (typeof body === 'string') sent = Buffer.byteLength(body);
+    else if (body instanceof Uint8Array) sent = body.length;
+    return end(body);
+  };
+  res.once('finish', () => {
+    const path = (req.url ?? '').split('?')[0];
+    const ms = performance.now() - t0;
+    // Counted as readBody read it: a listener of its own here would start the body flowing before the adapter reads it.
+    const received = bodyBytes.get(req) ?? 0;
+    const binary = /octet-stream|wasm/.test(String(res.getHeader('content-type') ?? ''));
+    traceTransfer({ hop: 'host→page http', what: `${req.method} ${path}`, bytes: sent, encoding: binary ? 'binary' : 'text', ms });
+    traceTransfer({ hop: 'page→host http', what: `${req.method} ${path}`, bytes: received, encoding: String(req.headers['content-type'] ?? '').includes('json') ? 'json' : 'binary', ms });
+  });
 }
 
 function contentType(path: string): string {

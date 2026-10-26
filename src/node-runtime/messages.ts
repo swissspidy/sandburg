@@ -1,4 +1,5 @@
 import type { Mailbox } from './message-ports.ts';
+import type { CacheEntry } from './cache-tree.ts';
 import type { VStat } from './vfs.ts';
 import type { FileTree } from '../types.ts';
 
@@ -27,8 +28,9 @@ export type FromWorker =
   | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
   /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
   | { type: 'process-exit'; command: string; code: number; stderr: string }
-  /** `unchanged`: read-tree's ifChanged, and nothing under the tracked directories changed (files is empty). */
-  | { type: 'tree'; id: number; files: Record<string, string | { base64: string }>; unchanged?: boolean };
+  | { type: 'tree'; id: number; files: Record<string, { base64: string }> }
+  /** read-cache's answer: the files, and their bytes as a bundle when asked (cache-tree.ts); `unchanged` as tree's. */
+  | { type: 'cache'; id: number; files: CacheEntry[]; bundle: ArrayBuffer | null; unchanged?: boolean };
 
 /**
  * net connections between runtimes (see net.ts): a socket here, its peer in the parent or a nested
@@ -131,10 +133,12 @@ export type ToWorker =
       inherit?: { asyncModules: boolean; usesSqlite: boolean };
       /** Raised once anything but the install wrote in node_modules (see trackNodeModulesWrites); the main runtime's, for threads. */
       nodeModulesWrites?: Int32Array;
+      /** Report large transfers to the host (src/transfer-trace.ts; dev only). */
+      trace?: boolean;
     }
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }
-  /** `track`: project directories whose files the runtime notes changes to from now on (see read-tree's ifChanged). */
+  /** `track`: project directories whose files the runtime notes changes to from now on (see read-cache's ifChanged). */
   | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
   /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
   | { type: 'spares' }
@@ -148,11 +152,10 @@ export type ToWorker =
   /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
   /** Writes a project file, as an editor would (file watchers see the change). */
   | { type: 'write-file'; path: string; content: string }
-  /**
-   * The files under some directories (dev servers' caches, kept for the next run); with match, also
-   * the project's files whose path matches it, outside node_modules and dot directories (an app's databases).
-   */
-  | { type: 'read-tree'; id: number; dirs: string[]; match?: string; ifChanged?: boolean }
+  /** The project's files whose path matches `match`, outside node_modules and dot directories (an app's databases). */
+  | { type: 'read-tree'; id: number; match: string }
+  /** A dev server's cache under `dirs`, to keep for the next run: its files, and with `bytes` their bytes (see cache-tree.ts). */
+  | { type: 'read-cache'; id: number; dirs: string[]; bytes: boolean; ifChanged?: boolean }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }
   | { type: 'ws-send'; id: number; data: string | ArrayBuffer }
   | { type: 'ws-close'; id: number; code?: number; reason?: string }
