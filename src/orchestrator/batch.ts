@@ -244,6 +244,27 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
           options.onRenderer?.(renderer);
           app.renderer = renderer;
         },
+        // A seed run beside the app (its own renderer) is another open app until it ends.
+        onSeed: () => {
+          const outer = options.onSeed?.();
+          const seed: OpenApp = { expected: null, used: () => seed.renderer?.used() ?? null, peak: () => seed.renderer?.peak?.() ?? null, inChecks: false, renderer: null, collectedAt: -Infinity };
+          apps.add(seed);
+          return {
+            onPhase: (phase) => {
+              outer?.onPhase?.(phase);
+              if (phase === 'checks') seed.inChecks = true;
+            },
+            onRenderer: (renderer) => {
+              outer?.onRenderer?.(renderer);
+              seed.renderer = renderer;
+            },
+            ended: () => {
+              outer?.ended();
+              apps.delete(seed);
+              free();
+            },
+          };
+        },
       })
       .then((result) => {
         results[index] = result;

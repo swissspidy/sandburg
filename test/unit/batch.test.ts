@@ -356,6 +356,37 @@ test('an app that allocates in its checks holds what its earlier run reached bey
   }
 });
 
+test("a seed run an app starts (its own renderer) counts against the memory reserve until it ends", async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
+  try {
+    const GiB = 2 ** 30;
+    const log: string[] = [];
+    const session = {
+      async run(project: string, options: RunOptions) {
+        log.push(`start ${project}`);
+        if (project === 'a') {
+          // A cold Next.js install seeds beside the app: the seed's renderer has not allocated yet.
+          const seed = options.onSeed!();
+          seed.onRenderer?.({ used: () => 0, peak: () => 0, collectGarbage: async () => {} });
+          void sleep(100).then(() => {
+            log.push('seed ended');
+            seed.ended();
+          });
+        }
+        options.onPhase?.('checks');
+        log.push(`checks ${project}`);
+        await sleep(project === 'a' ? 200 : 10);
+        return { runId: `r-${project}`, status: 'passed', failure: null, project: { name: project, path: resolve(project), snapshotId: project }, runtime: { name: 'node' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 10, checksMs: 10 } } as unknown as RunResult;
+      },
+    } as unknown as Session;
+    // 2.4 GiB: "a" in its checks leaves all of it, but its seed is expected to reach 1 GiB: "b" waits for it.
+    await runBatch(session, ['a', 'b'].map((p) => ({ project: p })), { parallel: 4, prewarm: false, batchDir: dir, longestFirst: false, availableMemory: () => 2.4 * GiB });
+    assert.deepEqual(log.slice(0, 4), ['start a', 'checks a', 'seed ended', 'start b']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('a batch short of memory has its apps in their checks collect garbage before it waits, at most every 10 s', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-batch-'));
   try {
