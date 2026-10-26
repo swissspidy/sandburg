@@ -257,3 +257,39 @@ test('a sandbox cannot hold more than its file-channel bound open at once', asyn
     await host.close();
   }
 });
+
+test("a file channel's client that ends its side ends the channel: no socket outlives its slot", async () => {
+  const host = new HostServer({ maxFileChannels: 1 });
+  await host.listen();
+  const origin = host.register('half', adapter('half'));
+  const open = (): Promise<{ status: number; socket: ReturnType<typeof connect> }> =>
+    new Promise((resolve, reject) => {
+      // allowHalfOpen: the client's end of the socket stays readable after it ends its side.
+      const socket = connect({ port: host.port, host: '127.0.0.1', allowHalfOpen: true }, () => {
+        socket.write(`GET ${FILE_CHANNEL_PATH} HTTP/1.1\r\nHost: ${new URL(origin).host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: ${origin}\r\n\r\n`);
+      });
+      let head = '';
+      socket.on('data', (d) => {
+        head += d.toString('latin1');
+        const line = /^HTTP\/1\.1 (\d+)/.exec(head);
+        if (line) resolve({ status: Number(line[1]), socket });
+      });
+      socket.on('error', reject);
+    });
+  try {
+    const first = await open();
+    assert.equal(first.status, 101);
+    const closed = new Promise<boolean>((r) => {
+      first.socket.on('close', () => r(true));
+      setTimeout(() => r(false), 2000);
+    });
+    first.socket.end();
+    // The host closes its side too (before, it kept the socket while its slot was freed).
+    assert.equal(await closed, true);
+    const second = await open();
+    assert.equal(second.status, 101);
+    second.socket.destroy();
+  } finally {
+    await host.close();
+  }
+});
