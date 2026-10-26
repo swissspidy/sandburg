@@ -1,9 +1,23 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeSoon } from '../../src/adapters/node/file-writes.ts';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+
+// The synchronous fs calls a write makes (writeNow), counted on this (the main) thread: they are the
+// writer thread's to make. Set before file-writes.ts is loaded, its named imports bound to the spies.
+const SYNC_CALLS = ['writeFileSync', 'renameSync', 'mkdirSync', 'rmSync'] as const;
+const originals = Object.fromEntries(SYNC_CALLS.map((name) => [name, fs[name]])) as Record<(typeof SYNC_CALLS)[number], (...a: unknown[]) => unknown>;
+let mainThreadCalls = 0;
+for (const name of SYNC_CALLS) (fs as unknown as Record<string, unknown>)[name] = (...a: unknown[]) => ((mainThreadCalls++), originals[name](...a));
+syncBuiltinESMExports();
+const { writeSoon } = await import('../../src/adapters/node/file-writes.ts');
+after(() => {
+  for (const name of SYNC_CALLS) (fs as unknown as Record<string, unknown>)[name] = originals[name];
+  syncBuiltinESMExports();
+});
 
 test('writeSoon writes each file whole, in directories it makes, and does not wait for the write', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sandburg-writes-'));
@@ -13,6 +27,8 @@ test('writeSoon writes each file whole, in directories it makes, and does not wa
   const PENDING = Symbol('pending');
   assert.equal(await Promise.race([writes[0], Promise.resolve(PENDING)]), PENDING);
   assert.deepEqual(await Promise.all(writes), files.map(() => true));
+  // None of it on this thread (a write made here, even one that settles its promise later, counts).
+  assert.equal(mainThreadCalls, 0);
   for (const [i, f] of files.entries()) assert.equal(await readFile(f, 'utf8'), i % 2 ? `text ${i}` : `bytes ${i}`);
   // No temporary file is left.
   for (const dir of await readdir(root)) assert.ok((await readdir(join(root, dir))).every((n) => !n.endsWith('.tmp')));
