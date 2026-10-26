@@ -1,16 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from './temp-dir.ts';
 import type { HostResponse } from '../../src/types.ts';
 
 // The node adapter serves from the shared installer, rooted here (set before it is loaded).
-const root = mkdtempSync(join(tmpdir(), 'sandburg-pages-record-'));
+const root = tempDir('sandburg-pages-record-');
 process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
 const { serve } = await import('../../src/adapters/node/index.ts');
 const { recordingServe } = await import('../../scripts/pages/record.ts');
-after(() => rmSync(root, { recursive: true, force: true }));
 
 const key = 'd'.repeat(24);
 const files: Record<string, string> = {
