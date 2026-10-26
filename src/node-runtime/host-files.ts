@@ -109,6 +109,8 @@ function downloadedOnSide(key: string): Uint8Array | null {
     if (state !== 0 && state !== 4) break;
     Atomics.wait(side.state, 0, state, deadline - now);
   }
+  // Still not started when the wait ran out: taken, so a helper that starts later does not download it too.
+  Atomics.compareExchange(side.state, 0, 0, 3);
   if (Atomics.load(side.state, 0) !== 1) return null;
   return new Uint8Array(side.shared, 8, Atomics.load(side.state, 1)).slice();
 }
