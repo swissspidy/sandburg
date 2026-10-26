@@ -89,12 +89,15 @@ async function f(x) {                         async function f(x) {
   alone, or using an outer function's state), members named `class` or `function` (`static
   function = 'f';`), `of`, `yield`, `let` and `await` used as names (a `/` after them divides; one
   case rewrote text inside a string), `async` as a name in an await's operand, a number followed
-  by a member (`.5.of`). All are fixed and are shapes in the tests now, and a runtime test runs
+  by a member (`.5.of`); a re-review, a function expression in an `extends` clause
+  (`class D extends function () {…} {`, whose body was taken for the class's) and a `{` after a
+  for head's `;` (taken for a block). All are fixed and are shapes in the tests now, and a runtime test runs
   them against Node's output. At run time, the host checks that the rewritten code parses
   (compiled with `Function`, never called); code the scan does not understand, or whose result
   does not parse, is lowered as before.
-- **Lowered on purpose**: a catch parameter with a pattern (`catch ({ m = f() })`: its defaults
-  run before the catch block, where a rejected await's context is restored), code with `with`
+- **Lowered on purpose**: a catch parameter whose pattern has a default (`catch ({ m = f() })`: it
+  runs before the catch block, where a rejected await's context is restored; `catch ({ message })`
+  is rewritten), code with `with`
   (the names the rewrite adds would resolve through its object), and code over 4 MB or with more
   than 50,000 awaits (see Security). `s` also restores the function's context if it finds the
   call still marked suspended. Every place that lowered does this: installed files (`install.ts`), the host's

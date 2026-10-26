@@ -84,7 +84,7 @@ interface Frame {
   awaits: number;
   /** Open `?`s of conditionals at an expression body's depth. */
   conditionals: number;
-  /** It has a catch parameter with a pattern (its defaults would run before the context is restored). */
+  /** It has a catch parameter with a default in its pattern (run before the context is restored). */
   unsafe?: boolean;
 }
 
@@ -108,6 +108,8 @@ interface Group {
   async?: boolean;
   generator?: boolean;
   expression?: boolean;
+  /** `(` of a catch parameter with a pattern: the frame of the catch (a default in it makes the frame unsafe). */
+  catchFrame?: Frame;
   /** `(` of a for head: its `of` or `in` was read. */
   iterates?: boolean;
   /** `{` of a function body: its frame. */
@@ -290,7 +292,8 @@ class Scanner {
       case T.Eof:
         return true;
       case T.Punct:
-        return this.prevValue === ';' || this.prevCaseColon;
+        // A `;` in a for head separates its parts, not statements.
+        return (this.prevValue === ';' && !(this.top?.kind === 40 && this.top.before === 'for')) || this.prevCaseColon;
       case T.Open:
         return this.prevValue === '{' && this.top?.brace !== 'object' && this.top?.brace !== 'class';
       case T.Close:
@@ -361,6 +364,17 @@ class Scanner {
       // A label: a statement follows.
       this.caseColon = true;
     }
+    // A default in a catch parameter's pattern (`catch ({ m = f() })`) runs before the catch block
+    // restores a rejected await's context: its function is lowered instead.
+    if (value === '=') {
+      for (let i = this.groups.length - 1; i >= 0; i--) {
+        const f = this.groups[i].catchFrame;
+        if (f) {
+          f.unsafe = true;
+          break;
+        }
+      }
+    }
     if (value === '*' && this.functionDue && this.prevType === T.Word && this.prevValue === 'function') this.functionDue.generator = true;
     if (top?.member) {
       if (value === ',' || value === ';') resetMember(top.member);
@@ -429,7 +443,7 @@ class Scanner {
       }
       // A catch parameter with a pattern (`catch ({ m = f() })`) runs code before its block, where
       // the context is restored: the function is lowered instead.
-      if (g.before === 'catch' && /^\s*[[{]/.test(this.code.slice(this.end, this.end + 64))) this.frame.unsafe = true;
+      if (g.before === 'catch' && /^\s*[[{]/.test(this.code.slice(this.end, this.end + 64))) g.catchFrame = this.frame;
       this.memberToken('(');
       return this.push(g);
     }
@@ -438,17 +452,19 @@ class Scanner {
       return this.push({ kind: 91 });
     }
     // `{`
-    const classDue = this.classDue.at(-1);
-    if (classDue && classDue.depth === this.groups.length) {
-      this.classDue.pop();
-      return this.push({ kind: 123, brace: 'class', member: newMember(), exprAfter: classDue.expression });
-    }
     if (this.prevType === T.Close && this.prevValue === ')' && this.lastParen?.params) {
       // A function's or method's body.
       const frame = this.newFrame(!!this.lastParen.async, !!this.lastParen.generator, false, this.afterDirectives(this.end));
       frame.depth++;
       this.memberToken('{');
       return this.push({ kind: 123, brace: 'fn', frame, exprAfter: !!this.lastParen.expression });
+    }
+    // After a function's parameters, the body (above); a class's body otherwise (`class A extends
+    // function () {} {`: the function's body comes first).
+    const classDue = this.classDue.at(-1);
+    if (classDue && classDue.depth === this.groups.length) {
+      this.classDue.pop();
+      return this.push({ kind: 123, brace: 'class', member: newMember(), exprAfter: classDue.expression });
     }
     if (this.atStatement() || (this.prevType === T.Close && this.prevValue === ')') || (this.prevType === T.Word && !this.prevProperty && (this.prevValue === 'try' || this.prevValue === 'finally' || this.prevValue === 'catch' || this.prevValue === 'static'))) {
       // A block: a catch or finally block is where a rejected await resumes.

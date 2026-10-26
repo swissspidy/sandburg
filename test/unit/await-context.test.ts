@@ -51,6 +51,11 @@ const CASES = [
   'async function f() { return await async + await static?.p; }',
   'async function f() { try { await a; } catch(e){await b} }',
   'async function f() { return { ...async (x) => { await x; } }; }',
+  // A re-review's: a function expression in an extends clause; a `{` after a for head's `;`.
+  'async function f() { class D extends function () { return async () => { await x; }; } { async m() { await y; } } }',
+  'async function f() { class D extends async function () { await a; } {} }',
+  'async function f() { for (; { async m() { await a; } }.m; ) await b; }',
+  'async function f() { try { await a; } catch ({ message }) { await b; } }',
 ];
 
 test('the token scan rewrites awaits as the parse does (acorn), and the result parses', () => {
@@ -91,6 +96,7 @@ test('code the scan does not understand is left to the lowering (null), and code
   // A catch parameter's defaults run before the catch block restores the context; in `with`, the
   // names the rewrite adds would resolve through its object.
   assert.equal(rewriteAwaits('async function f() { try { await a; } catch ({ m = g() }) {} }'), null);
+  assert.equal(rewriteAwaits('async function f() { try { await a; } catch ([m = 1]) {} }'), null);
   assert.equal(rewriteAwaits('async function f(o) { with (o) { await a; } }'), null);
   assert.equal(rewriteAwaits('async function f() { await }'), null);
   assert.equal(rewriteAwaits('async function f() { await x; '), null);
