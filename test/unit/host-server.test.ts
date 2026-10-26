@@ -1,6 +1,7 @@
 /**
  * The host server's boundaries (ADR 0001, ADR 0030), tried from outside: a request names its
- * sandbox by its Host, requests from another site are refused, and the file channel's upgrade is
+ * sandbox by its Host, requests from another site or from a client that is not a browser (no
+ * Sec-Fetch-Site) are refused, and the file channel's upgrade is
  * routed to the sandbox it names and accepted only from that sandbox's own pages.
  */
 import { after, before, test } from 'node:test';
@@ -41,10 +42,14 @@ before(async () => {
 });
 after(() => host.close());
 
-/** A request to the host server as a browser would send it, with the headers given. */
-function get(path: string, headers: Record<string, string>, method = 'GET'): Promise<{ status: number; body: string }> {
+/**
+ * A request to the host server as a browser would send it, with the headers given: a same-origin
+ * request unless they say otherwise (a header given as null is not sent).
+ */
+function get(path: string, headers: Record<string, string | null>, method = 'GET'): Promise<{ status: number; body: string }> {
+  const sent = Object.fromEntries(Object.entries({ 'sec-fetch-site': 'same-origin', ...headers }).filter((h): h is [string, string] => h[1] !== null));
   return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port: host.port, path, method, headers }, (res) => {
+    const req = request({ host: '127.0.0.1', port: host.port, path, method, headers: sent }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (c) => (body += c));
@@ -89,6 +94,28 @@ test('requests from another site are refused before the adapter sees them', asyn
   // The sandbox's own requests, and navigations the user starts (none), are served.
   assert.equal((await get('/', { host: hostOf(one), 'sec-fetch-site': 'same-origin' })).status, 200);
   assert.equal((await get('/', { host: hostOf(one), 'sec-fetch-site': 'none' })).status, 200);
+});
+
+test('a request without a browser fetch site (a client that is not a browser) is refused before the adapter sees it', async () => {
+  served.length = 0;
+  const path = host.stash('one', '[1]');
+  // No Sec-Fetch-Site, an empty one, and values no browser sends.
+  for (const site of [null, '', 'same-origin, cross-site', 'Same-Origin', 'nonsense']) {
+    for (const target of ['/', '/__sandburg/host.js', '/__sandburg/x', '/__sandburg/compile', '/__sw__.js', path]) {
+      for (const method of ['GET', 'POST']) {
+        const res = await get(target, { host: hostOf(one), 'sec-fetch-site': site, origin: one }, method);
+        assert.deepEqual(res, { status: 403, body: 'requests without a browser fetch site are refused' }, `${method} ${target} (${site})`);
+      }
+    }
+  }
+  assert.deepEqual(served, []);
+  // The stashed arguments were not taken by the refused requests; the page's own request gets them.
+  assert.equal((await get(path, { host: hostOf(one), 'sec-fetch-site': 'same-origin' })).body, '[1]');
+  // A browser's own requests: same-origin, and navigations the user starts (none).
+  for (const site of ['same-origin', 'none']) {
+    assert.equal((await get('/', { host: hostOf(one), 'sec-fetch-site': site })).status, 200, site);
+    assert.equal((await get('/__sandburg/x', { host: hostOf(one), 'sec-fetch-site': site }, 'POST')).body, 'one answers', site);
+  }
 });
 
 test('sandbox ids are DNS labels: no dots, so a Host cannot name one sandbox inside another', () => {
@@ -154,9 +181,9 @@ test('a request target that is not a URL path fails that connection only: the ho
     // A WebSocket upgrade to `//[` (`new URL` throws for it): the upgrade handler threw, and the process exited.
     const upgrade = await raw(host.port, `GET //[ HTTP/1.1\r\nHost: ${hostHeader}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     assert.match(upgrade, /^HTTP\/1\.1 404 /);
-    const plain = await raw(host.port, `GET //[ HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n\r\n`);
+    const plain = await raw(host.port, `GET //[ HTTP/1.1\r\nHost: ${hostHeader}\r\nSec-Fetch-Site: same-origin\r\nConnection: close\r\n\r\n`);
     assert.match(plain, /^HTTP\/1\.1 400 /);
-    const ok = await raw(host.port, `GET /__sandburg/anything HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n\r\n`);
+    const ok = await raw(host.port, `GET /__sandburg/anything HTTP/1.1\r\nHost: ${hostHeader}\r\nSec-Fetch-Site: same-origin\r\nConnection: close\r\n\r\n`);
     assert.match(ok, /^HTTP\/1\.1 200 /);
   } finally {
     await host.close();
@@ -172,7 +199,7 @@ test('a request the host fails to answer gets a 500 without the error: its detai
     throw secret;
   }));
   try {
-    const answer = await raw(host.port, `GET /__sandburg/nm/x?token=1 HTTP/1.1\r\nHost: s-test.sandburg.localhost:${host.port}\r\nConnection: close\r\n\r\n`);
+    const answer = await raw(host.port, `GET /__sandburg/nm/x?token=1 HTTP/1.1\r\nHost: s-test.sandburg.localhost:${host.port}\r\nSec-Fetch-Site: same-origin\r\nConnection: close\r\n\r\n`);
     assert.match(answer, /^HTTP\/1\.1 500 /);
     assert.ok(answer.includes('internal error (logged by the host)'), answer);
     for (const leak of [process.cwd(), 'ENOENT', 'at ', '.sandburg']) assert.ok(!answer.includes(leak), leak);

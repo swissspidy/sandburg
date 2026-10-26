@@ -258,6 +258,7 @@ export class Session {
   private async openTab(adapter: AdapterDescriptor, loadTimeoutMs: number): Promise<Tab> {
     const browser = this.browser;
     if (!browser) throw new Error('session is not open');
+    // Unique, not secret: see HostServer.register.
     const id = `s-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
     const network = newEgressStats();
     // Requests the gateway does not see go to the context's own egress proxy, which polices them

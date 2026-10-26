@@ -177,6 +177,10 @@ export class HostServer {
     });
     // The runtime's file requests over a WebSocket (host-socket.ts).
     // One connection's handling never takes the process down: a fault closes that connection only.
+    // The upgrade is accepted from the sandbox's own origin (Chromium sends no Sec-Fetch-Site with a
+    // WebSocket's handshake, so Origin is its check). It asks no token: the channel answers what the
+    // HTTP routes answer the sandbox's pages without one (installed files, compiles, transforms), and
+    // a compile that may write the compile cache carries that write's own token, as over HTTP.
     this.server.on('upgrade', (req: IncomingMessage, socket: Duplex) => {
       try {
         const id = this.sandboxOf(req);
@@ -230,7 +234,12 @@ export class HostServer {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
-  /** Registers a sandbox and returns its origin. `id` must be a DNS label. */
+  /**
+   * Registers a sandbox and returns its origin. `id` must be a DNS label. An id is not a secret
+   * (Session's has 24 random bits beside the time): any client can name any sandbox in its Host.
+   * Nothing is granted for knowing one; what grants something is a random value of its own (a
+   * stash's key, 144 bits; a cache write's token, 256 bits).
+   */
   register(id: string, adapter: AdapterDescriptor): string {
     if (!/^[a-z0-9-]{1,63}$/.test(id)) throw new Error(`invalid sandbox id: ${id}`);
     this.sandboxes.set(id, adapter);
@@ -274,6 +283,15 @@ export class HostServer {
     if (site === 'same-site' || site === 'cross-site') {
       res.writeHead(403, { 'content-type': 'text/plain' });
       res.end('requests from another site are refused');
+      return;
+    }
+    // Only a browser's requests are served: Chromium sends Sec-Fetch-Site with every request to a
+    // sandbox (a *.localhost origin is potentially trustworthy), so a request without it, or with a
+    // value no browser sends, comes from some other client. (The file channel's upgrade carries none;
+    // it checks Origin instead, see the upgrade handler.)
+    if (site !== 'same-origin' && site !== 'none') {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('requests without a browser fetch site are refused');
       return;
     }
     const headers: Record<string, string> = { 'cache-control': 'no-store' };
