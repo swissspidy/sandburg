@@ -25,13 +25,15 @@ import { VITE_SEED_DIRS, VITE_SEED_WAIT } from './vite-seed.ts';
 import { warmups } from './warmup.ts';
 import { extraDependencies } from './install-rules.ts';
 import { installer, devCacheRoot } from './installs.ts';
+import { COMPILER } from './compile-cache.ts';
 import { DEV_CACHE_DIRS, devCacheKey, compileWrites, TOKEN_TTL_MS, SOURCE_BODY_MAX, issueCacheWrite, issueCompileWrite, granted, readDevCache, cacheDigests, compileCache, compileKeys, readableCaches, cacheBundle, takeCacheWrite, writeDevCache } from './dev-cache.ts';
 import { markDirty, recordLoad, readList, prefetchers, preloadUrl, preloadBundle } from './preload.ts';
 import { readAhead, pushAhead } from './read-ahead.ts';
 import { nextRouter, viteSeedCache, nextSeedCache } from './seeds.ts';
 
-// Compiles of code the runtime sends, kept on disk as transforms are (compile-store.ts).
-const compiledDir = join(installer.root, '..', 'compiled', `v${TRANSFORM_VERSION}`);
+// Compiles of code the runtime sends, kept on disk as transforms are (compile-store.ts), by the
+// compiler's own sources too (a change to compile.ts is another directory, as for the per-project cache).
+const compiledDir = join(installer.root, '..', 'compiled', `v${TRANSFORM_VERSION}-${COMPILER}`);
 storeCompiles(diskCompileStore(compiledDir));
 void sweepCompiles(compiledDir);
 const WS_SHIM = source('adapters/node/ws-shim.js');

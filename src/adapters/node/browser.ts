@@ -304,6 +304,7 @@ export function createAdapter(): RuntimeAdapter {
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
         compileCache: host.compileCache ?? null,
+        compileAhead: frameworkInfo(ctx.framework)?.node?.compileAhead,
         nodeModules,
         pack,
         compilePort: compiler ? connectCompiler(compiler) : null,

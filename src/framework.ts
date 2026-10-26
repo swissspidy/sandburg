@@ -33,6 +33,8 @@ export interface FrameworkInfo {
     sparesAtMount?: boolean;
     /** Its dev server's environment. */
     env?: Record<string, string>;
+    /** Directories its dev server writes CommonJS into and requires from soon after, compiled as written (node-runtime/compile-ahead.ts). */
+    compileAhead?: string[];
     /** Options for its dev command, when it would start more Node processes than the server needs (each is a runtime here). */
     devCommand?(command: string, argv: string[]): { execArgv: string[]; argv: string[] } | null;
   };
@@ -57,6 +59,8 @@ export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = 
        * Next.js 16 (it leaves the module ESM).
        */
       env: { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 'true' },
+      /** next dev's server chunks (.next/server before Next.js 16). */
+      compileAhead: ['.next/dev/server', '.next/server'],
     },
     reference: { script: () => 'dev', listen: (host, port) => ['-H', host, '-p', String(port)] },
   },
