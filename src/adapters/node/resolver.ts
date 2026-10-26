@@ -15,7 +15,7 @@
  */
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { execFileSync } from 'node:child_process';
-import { realpathSync, existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { realpathSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, writeFileSync } from 'node:fs';
 import { setPriority } from 'node:os';
 import { createRequire, enableCompileCache } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -682,7 +682,7 @@ export class Resolver {
     const dir = join(this.dir, '.npm-resolver-warm');
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'package.json'), '{"name":"sandburg-warm","private":true}\n');
+      writeOnce(join(dir, 'package.json'), '{"name":"sandburg-warm","private":true}\n');
     } catch {
       return;
     }
@@ -694,7 +694,7 @@ export class Resolver {
     if (this.worker) return this.worker;
     const configDir = join(this.dir, '.npm-resolver');
     mkdirSync(configDir, { recursive: true });
-    writeFileSync(join(configDir, 'package.json'), '{}\n');
+    writeOnce(join(configDir, 'package.json'), '{}\n');
     const worker = new Worker(new URL(import.meta.url), {
       workerData: { tag: WORKER_TAG, npmRoot: this.root!, configDir, flags: this.flags } satisfies Init,
     });
@@ -726,6 +726,17 @@ export class Resolver {
     void this.worker?.terminate();
     this.worker = null;
   }
+}
+
+/**
+ * Writes a file that never changes once written, unless it is there: other processes on the same
+ * .sandburg/ may be reading it (a rewrite truncates it first), and two may write it at once.
+ */
+function writeOnce(path: string, content: string): void {
+  if (existsSync(path)) return;
+  const tmp = `${path}.${process.pid}-${Math.random().toString(36).slice(2)}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
 }
 
 // Last: the worker needs the classes above.
