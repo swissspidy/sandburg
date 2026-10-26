@@ -6,6 +6,7 @@
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
+import { MAILBOX_BYTES } from '../file-channel.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
 let installedRequests = 0;
@@ -376,8 +377,6 @@ export function startDigester(): void {
  */
 let channel: { post(message: unknown, transfer?: Transferable[]): void; ready: SharedArrayBuffer; mailbox: SharedArrayBuffer | null } | null = null;
 
-const CHANNEL_MAILBOX = 12 + (1 << 20);
-
 function openChannel(worker: Worker): void {
   if (channel || !globalThis.location || typeof WebSocket === 'undefined') return;
   const ready = new SharedArrayBuffer(4);
@@ -422,7 +421,7 @@ export function postViaChannel(url: string, body: Uint8Array): Promise<{ status:
 function viaChannel(url: string): { status: number; body: Uint8Array } | null {
   const c = channel;
   if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
-  c.mailbox ??= new SharedArrayBuffer(CHANNEL_MAILBOX);
+  c.mailbox ??= new SharedArrayBuffer(MAILBOX_BYTES);
   const state = new Int32Array(c.mailbox, 0, 3);
   Atomics.store(state, 0, 0);
   c.post({ get: url, shared: c.mailbox });

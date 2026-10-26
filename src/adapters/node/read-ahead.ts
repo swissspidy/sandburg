@@ -13,8 +13,8 @@ import { preloadList, BUNDLES_KEPT } from './preload.ts';
  * files after it in its directory, by name: a dev server's first pre-bundle reads a package's files in
  * turn (Vite's esbuild read lucide-react's icons and their source maps, 3,100 requests). Files this
  * install's runs loaded before are left out (they are in its preload bundle), as are large ones;
- * the answer stays under the file channel's MAX_BODY. The runtime tells which ones it read
- * (`?used=1`), and only those are recorded as loaded.
+ * the answer stays under the file channel's MAX_BODY (src/file-channel.ts). The runtime tells
+ * which ones it read (`?used=1`), and only those are recorded as loaded.
  */
 const AHEAD_BUDGET = 512 << 10;
 
