@@ -172,7 +172,8 @@
         "src/adapters/node/tla.ts",
         "src/adapters/node/ws-shim.js",
         "src/transfer-trace.ts",
-        "src/file-channel.ts"
+        "src/file-channel.ts",
+        "src/framework.ts"
       ],
       "rules": {
         "eslint/no-restricted-imports": [

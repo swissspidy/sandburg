@@ -76,12 +76,18 @@ where it is read.
 
 ## Where to add things
 
-- **A framework**: detection in framework.ts (before `vite`, which many frameworks are built on),
-  the `Framework` union in types.ts and result-schema.json; how its dev server starts in the page
-  (adapters/node/browser.ts: spares at mount, dev command options, environment). What it needs of
-  its packages goes by package, not by framework: source patches and WebAssembly builds in
-  adapters/node/install-rules.ts, deferred imports in deferred-imports.ts, its cache directories in
-  dev-cache.ts and node-runtime/threads.ts, a hydration marker in host/settle.ts.
+- **A framework**: an entry in `FRAMEWORKS` (src/framework.ts): how to detect it (the table's
+  order is detection's: frameworks built on Vite before `vite`), its build and cache directories,
+  its dev caches kept between runs, its telemetry switches, how the node runtime starts its dev
+  server (spares at mount, environment, dev command options) and how the Docker reference does.
+  Its name goes in the `Framework` union (types.ts: the table is a Record over it, so one without
+  the other does not compile) and in result-schema.json (test/unit/frameworks.test.ts). What it
+  needs of its packages goes by package, since frameworks share them: source patches and
+  WebAssembly builds in adapters/node/install-rules.ts, deferred imports in deferred-imports.ts.
+  Signals in the page that are not keyed by framework stay where they are read: hydration markers
+  (host/settle.ts), loading pages (orchestrator/app-ready.ts), error formats (classify.ts). Next.js
+  and static sites have flows of their own in the node adapter (an entry script instead of the dev
+  script, seeds): adapters/node/index.ts, plan.ts, seeds.ts and browser.ts.
 - **A route on the host**: in the adapter's `serve()`, behind the host server's checks (the
   `sandburg/one-host-server` lint rule refuses a server of its own). A route a runtime reaches
   over the file channel is also in host-socket.ts's SERVED or POSTED.

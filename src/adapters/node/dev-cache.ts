@@ -9,9 +9,10 @@ import type { Project } from '../../types.ts';
 import { CompileCache } from './compile-cache.ts';
 import { tmpSuffix } from './install.ts';
 import { devCacheRoot } from './installs.ts';
+import { allOf } from '../../framework.ts';
 
 /**
- * Dev servers' dependency caches, kept between runs: Vite's cache directory, with each environment's
+ * Dev servers' dependency caches (FRAMEWORKS' devCaches), kept between runs: Vite's cache directory, with each environment's
  * pre-bundled dependencies (deps, deps_ssr) and what plugins keep beside them (without
  * vite-plugin-svelte's _svelte_metadata.json, SvelteKit re-optimized on every start), where Vite
  * (node_modules/.vite), Nuxt (node_modules/.cache/vite) and the Angular CLI (.angular/cache) put it.
@@ -22,7 +23,7 @@ import { devCacheRoot } from './installs.ts';
  * project's code, so a cache is only ever used by runs of the same project (its installed packages
  * and every file): one project cannot plant pre-bundled code in another's run.
  */
-export const DEV_CACHE_DIRS = ['node_modules/.vite', 'node_modules/.cache/vite', 'node_modules/.cache/jiti', '.angular/cache'];
+export const DEV_CACHE_DIRS = [...allOf('devCaches'), 'node_modules/.cache/jiti'];
 
 export function devCacheKey(project: Project, installKey: string): string {
   const h = createHash('sha256').update(installKey);

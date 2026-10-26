@@ -13,6 +13,7 @@ import { FsError, Vfs, norm, parent, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
 import type { ToParent, VfsCall, ThreadInit, VfsOp, ProjectSnapshot, ToWorker } from './messages.ts';
+import { allOf } from '../framework.ts';
 
 /**
  * Where a thread of the app's own process reports a WebAssembly trap to the page directly: its
@@ -296,8 +297,10 @@ export class ThreadVfs extends RemoteVfs {
 
 /** A path in or of a node_modules directory. */
 const IN_NODE_MODULES = /\/node_modules(?:\/|$)/;
-/** Caches dev servers keep in node_modules: threads always ask their parent about them. */
-const CACHE_IN_NODE_MODULES = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)/;
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Caches dev servers keep in node_modules (FRAMEWORKS' nodeModulesCaches): threads always ask their parent about them. */
+const NODE_MODULES_CACHES = [...allOf('nodeModulesCaches'), '.cache', '.tmp'].map(escapeRegExp).join('|');
+const CACHE_IN_NODE_MODULES = new RegExp(`/node_modules/(?:${NODE_MODULES_CACHES})`);
 
 /**
  * A flag in shared memory that the main runtime raises once anything is written, made, renamed or
@@ -332,10 +335,11 @@ export function trackNodeModulesWrites(vfs: Vfs, root: string, nodeModules: Reco
   return flag;
 }
 
-/** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output, big files. */
-const SNAPSHOT_SKIP = /\/(?:node_modules|\.git|\.angular|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
+/** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output (FRAMEWORKS' buildDirs), big files. */
+const BUILD_DIRS = [...allOf('buildDirs'), '.turbo', '.cache'].map(escapeRegExp).join('|');
+const SNAPSHOT_SKIP = new RegExp(`/(?:node_modules|\\.git|${BUILD_DIRS})(?:/|$)`);
 /** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
-const WRITTEN_DIRS = /\/node_modules\/\.(?:vite|cache|tmp|astro|svelte-kit)(?:\/|$)|\/(?:\.angular|\.next|\.nuxt|\.output|\.svelte-kit|\.astro|\.vinxi|\.turbo|\.cache)(?:\/|$)/;
+const WRITTEN_DIRS = new RegExp(`/node_modules/(?:${NODE_MODULES_CACHES})(?:/|$)|/(?:${BUILD_DIRS})(?:/|$)`);
 const SNAPSHOT_MAX_FILE = 4 << 20;
 
 function isProjectSnapshot(s: unknown): s is ProjectSnapshot {
