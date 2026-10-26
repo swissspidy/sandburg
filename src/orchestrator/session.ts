@@ -18,7 +18,7 @@ import { EgressProxy } from './egress-proxy.ts';
 import { AXE_CLASSIC_PATH, AXE_SCRIPT, HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { CodeCache, type PageCode } from './code-cache.ts';
 import { SnapshotStore } from '../store.ts';
-import { mainThreadCpu, RendererMemory, type RendererMemorySource } from './renderer-memory.ts';
+import { pageRendererMemory, type RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
@@ -313,46 +313,10 @@ export class Session {
    */
   private rendererMemory(tab: Tab): RendererMemory | null {
     const browser = this.browser;
-    if (process.platform !== 'linux' || !browser) return null;
-    const renderers = async () => {
-      this.browserCdp ??= browser.newBrowserCDPSession();
-      const { processInfo } = await (await this.browserCdp).send('SystemInfo.getProcessInfo');
-      return processInfo.filter((p) => p.type === 'renderer');
-    };
-    let page: Promise<CDPSession> | null = null;
-    const source: RendererMemorySource = {
-      pageCpu: async () => {
-        page ??= tab.context.newCDPSession(tab.page).then(async (s) => (await s.send('Performance.enable'), s));
-        const { metrics } = await (await page).send('Performance.getMetrics');
-        const cpu = metrics.find((m) => m.name === 'ProcessTime')?.value;
-        if (cpu === undefined) throw new Error('no ProcessTime');
-        return cpu;
-      },
-      renderers: async () => (await renderers()).map((p) => ({ pid: p.id, cpuSeconds: p.cpuTime })),
-      release: () => {
-        void page?.then((s) => s.detach()).catch(() => {});
-        page = null;
-      },
-    };
-    if (!this.browserSandbox) return new RendererMemory(source);
-    // In the OS sandbox the page reads no CPU time of its process (ProcessTime is 0): it works on its
-    // main thread instead, and the host reads the renderers' main threads (see RendererMemory).
-    return new RendererMemory({
-      ...source,
-      mark: async () => {
-        await tab.page.evaluate((ms) => {
-          const until = performance.now() + ms;
-          while (performance.now() < until);
-        }, RENDERER_MARK_MS);
-        // /proc counts in clock ticks (10 ms): half the work, to be sure of it.
-        return RENDERER_MARK_MS / 2 / 1000;
-      },
-      renderers: async () => (await renderers()).flatMap((p) => {
-        const cpuSeconds = mainThreadCpu(p.id);
-        return cpuSeconds === null ? [] : [{ pid: p.id, cpuSeconds }];
-      }),
-    });
+    if (!browser) return null;
+    return pageRendererMemory(tab.page, () => (this.browserCdp ??= browser.newBrowserCDPSession()), this.browserSandbox);
   }
+
 
   private async closeTab(tab: Tab): Promise<void> {
     await tab.context.close().catch(() => {});
@@ -733,8 +697,6 @@ const GC_TIMEOUT_MS = 2_000;
 /** How often a run reads its renderer's memory once found (for the peak), and looks for it until then. */
 const RENDERER_SAMPLE_MS = 1_000;
 const RENDERER_LOCATE_MS = 250;
-/** How long the page works on its main thread for each look, inside the OS sandbox (RendererMemorySource.mark). */
-const RENDERER_MARK_MS = 40;
 
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;

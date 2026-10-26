@@ -16,18 +16,24 @@ test("one --disable-features switch: Playwright's features and Sandburg's, in pl
   assert.deepEqual(options.ignoreDefaultArgs, ['--enable-unsafe-swiftshader', `--disable-features=${features.join(',')}`]);
 });
 
-test("Chromium runs inside its OS sandbox unless turned off, by the option or SANDBURG_NO_BROWSER_SANDBOX=1", (t) => {
+test("Chromium runs inside its OS sandbox unless turned off, by the option or SANDBURG_NO_BROWSER_SANDBOX=1", async (t) => {
   const saved = process.env.SANDBURG_NO_BROWSER_SANDBOX;
   t.after(() => (saved === undefined ? delete process.env.SANDBURG_NO_BROWSER_SANDBOX : (process.env.SANDBURG_NO_BROWSER_SANDBOX = saved)));
   delete process.env.SANDBURG_NO_BROWSER_SANDBOX;
   assert.equal(browserSandbox({}), true);
   assert.equal(launchOptions({}).chromiumSandbox, true);
   assert.equal(launchOptions({ browserSandbox: false }).chromiumSandbox, false);
-  // Only 1 turns it off: anything else (a typo, "true") leaves it on.
+  // Only 1 turns it off: anything else (a typo, "true") leaves it on, and says so once (not for 0).
+  const warnings: string[] = [];
+  const onWarning = (w: Error) => warnings.push(w.message);
+  process.on('warning', onWarning);
+  t.after(() => process.off('warning', onWarning));
   for (const value of ['0', '', 'true', 'yes']) {
     process.env.SANDBURG_NO_BROWSER_SANDBOX = value;
     assert.equal(launchOptions({}).chromiumSandbox, true, value);
   }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(warnings, ["SANDBURG_NO_BROWSER_SANDBOX=true leaves Chromium's OS sandbox on: only 1 turns it off"]);
   process.env.SANDBURG_NO_BROWSER_SANDBOX = '1';
   assert.equal(launchOptions({}).chromiumSandbox, false);
   // The option wins over the environment, either way.

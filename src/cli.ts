@@ -41,6 +41,7 @@ Options:
   --no-browser-sandbox Run Chromium without its OS sandbox (default: sandboxed; also
                        SANDBURG_NO_BROWSER_SANDBOX=1). Only for hosts where the sandbox cannot
                        start (as root, or user namespaces restricted); results record it
+  --browser-sandbox    Run it sandboxed even where SANDBURG_NO_BROWSER_SANDBOX=1 is set
   --json               Print full JSON instead of a summary
   -h, --help           Show this help
 

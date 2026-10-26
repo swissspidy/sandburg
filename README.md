@@ -194,7 +194,8 @@ Chromium does not use as root, and which Ubuntu 23.10 and later restrict with Ap
 (`sysctl kernel.apparmor_restrict_unprivileged_userns=0` lifts that, as does an AppArmor profile for
 the Chromium binary). Where the sandbox cannot start, `sandburg` stops before the first run and says
 what to change. It does not fall back on its own. To run without the sandbox, say so:
-`--no-browser-sandbox`, `SANDBURG_NO_BROWSER_SANDBOX=1`, or `new Session({ browserSandbox: false })`.
+`--no-browser-sandbox`, `SANDBURG_NO_BROWSER_SANDBOX=1`, or `new Session({ browserSandbox: false })`
+(`--browser-sandbox` asks for the sandbox where the environment variable turns it off).
 The CLI warns, and each `result.json` (`environment.browserSandbox`) and batch `summary.json`
 (`browserSandbox`) records it.
 

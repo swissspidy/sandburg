@@ -34,8 +34,8 @@ Three other launch switches came under review:
 - **The sandbox is on by default.** `launchOptions()` passes `chromiumSandbox: true`.
   `SessionOptions.browserSandbox: false`, the CLI's `--no-browser-sandbox`, or
   `SANDBURG_NO_BROWSER_SANDBOX=1` turns it off. The option wins over the environment, and only the
-  value `1` turns it off (a typo leaves it on). `--browser-sandbox` asks for it even where the
-  environment turns it off.
+  value `1` turns it off (a typo leaves it on, with a warning; `0` without one). `--browser-sandbox`
+  asks for it even where the environment turns it off.
 - **No automatic fallback.** Where the sandbox cannot start, `Session.open()` fails with a
   `BrowserSetupError` that says why and what to change: as root, Chromium refuses it; where
   unprivileged user namespaces are restricted (AppArmor on Ubuntu 23.10 and later), a sysctl or an
@@ -64,18 +64,43 @@ ADR 0046 finds a run's renderer by CPU time: the page reports its process's (`Pe
 ProcessTime), the browser reports each renderer's by pid, and the renderer whose time brackets the
 page's is the one. Inside the sandbox a renderer cannot read its own process's statistics:
 ProcessTime is 0 (measured, 156), so the match picked an idle renderer (13 MB, against several
-hundred for an app), and the e2e `run` and `batch` suites failed on `rendererPeakBytes`. ThreadTime
-is counted only from `Performance.enable`, and the main threads of identical host pages differ too
-little to tell them apart.
+hundred for an app), and the e2e `run` and `batch` suites failed on `rendererPeakBytes`.
 
-Inside the sandbox, the page works instead (`RendererMemorySource.mark`): each look, the host page
-runs a 40 ms busy loop on its main thread. The host reads every renderer's main-thread CPU time from
-`/proc/<pid>/task/<pid>/stat` (clock ticks of 10 ms) just before and just after. A renderer that used
-at least 20 ms meanwhile fits. The looks narrow the renderers down as before, and stop once one is
-left. Unsandboxed sessions keep the ProcessTime match. The cost is 40 ms of the host page's main
-thread for each look until the renderer is found (looks are 250 ms apart from the start phase,
-usually one or two). The batch suite's check that each of 10 runs, 8 at a time, found its own
-renderer passed 3 runs out of 3 sandboxed.
+Inside the sandbox the page's renderer can read its main thread's CPU time (ThreadTime, counted
+from `Performance.enable`), and the host can read every renderer's main thread from
+`/proc/<pid>/task/<pid>/stat` (clock ticks of 10 ms). For the page's renderer the two differ by a
+constant: what its main thread used before the count started. Each time the host reads the
+renderers, the page reads its ThreadTime just before and just after, which bounds each renderer's
+offset to within that span and 15 ms either way (a tick, and one charged late). Over the run the
+page's renderer's bounds overlap at every reading. Another renderer's part as soon as its main
+thread's use differs from the page's by more than about 30 ms. Between two readings of a look, the
+page works on its main thread in an isolated world (`Page.createIsolatedWorld`, so the app cannot
+change the clock the loop reads) until its ThreadTime has grown by an amount drawn between 30 and
+90 ms, so that renderers part soon even beside pages doing the same. The work is bound by CPU time,
+not wall time.
+
+A renderer is taken once it alone fitted two looks. When none fits every reading, none is guessed:
+the bounds start again from the next reading. After 8 looks without a renderer, the run reports no
+renderer memory. Unsandboxed sessions keep the ProcessTime match.
+
+A first version spun for 40 ms of wall time and took any renderer whose main thread used 20 ms in
+that time. Under load (8 sandboxed pages on 4 busy cores), a page's renderer could get less CPU than
+that and drop out, and another page's renderer was taken in its place: 1 to 2 of 8 pages were wrong
+in each round of an independent review. A second version, bound by CPU time but comparing each
+look's growth on its own, took no wrong renderer. But in the batch e2e suite, which starts 8 tabs
+together, several renderers grew alike in every look (other apps' main threads working as much in
+the same span), and a run often ended before two looks agreed (one run in 10 without its renderer
+memory, in each of 3 runs of the suite).
+
+`test/runtime/renderer-memory.test.ts` holds 8 pages, each with 48 MB more memory than the one
+before, while every core is busy. It checks that a page's renderer, when one is taken, holds that
+page's memory. The first version failed it in 1 of 3 runs. This one found all 8 renderers in 9 of 9
+runs, and none wrong. The batch e2e suite (10 runs, 8 at a time, each run's renderer found) passed 3
+of 3 runs sandboxed.
+
+The cost inside the sandbox is the work. The app's frame is same-origin with the host page and
+shares its main thread, so each look blocks the app for 30 to 90 ms of CPU. Looks are 250 ms apart
+from the start phase until the renderer is found: usually two, 8 at most (720 ms of CPU at most).
 
 ### CI
 

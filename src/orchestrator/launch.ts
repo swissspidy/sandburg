@@ -35,8 +35,15 @@ export function missingBrowser(err: unknown): BrowserSetupError | null {
  * sandboxUnavailable): a run without the sandbox is one someone chose, and its result says so.
  */
 export function browserSandbox(options: SessionOptions): boolean {
-  return options.browserSandbox ?? process.env.SANDBURG_NO_BROWSER_SANDBOX !== '1';
+  const value = process.env.SANDBURG_NO_BROWSER_SANDBOX;
+  if (options.browserSandbox === undefined && value && value !== '1' && value !== '0' && !warnedValue) {
+    warnedValue = true;
+    process.emitWarning(`SANDBURG_NO_BROWSER_SANDBOX=${value} leaves Chromium's OS sandbox on: only 1 turns it off`);
+  }
+  return options.browserSandbox ?? value !== '1';
 }
+
+let warnedValue = false;
 
 /** What the CLI says of a session (and a run's summary) without the sandbox. */
 export const NO_SANDBOX = "Chromium's OS sandbox is off (--no-browser-sandbox or SANDBURG_NO_BROWSER_SANDBOX=1)";

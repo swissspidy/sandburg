@@ -105,26 +105,67 @@ test("a process's memory is its resident anonymous and shared memory, null for n
   assert.equal(processMemory(2 ** 30), null);
 });
 
-test("where the page cannot read its CPU time (the OS sandbox), its renderer is the one busy while it works, over every look", async () => {
-  // Main-thread CPU seconds of three renderers: 11 is the page's; 12 is busy now and then, 13 is idle.
+/**
+ * A source inside the OS sandbox: each look reads the renderers' main threads, the renderers in a
+ * look's entry use that much CPU, and reads them again; the page counts (ThreadTime) what renderer
+ * 11, its own, used, or what key 0 says.
+ */
+function marking(looks: Record<number, number>[]) {
   const cpu: Record<number, number> = { 11: 1, 12: 1, 13: 1 };
-  const busy = [[11, 12], [11]];
+  let page = 0;
   let look = 0;
-  const memory = new RendererMemory({
+  return new RendererMemory({
     pageCpu: () => Promise.reject(new Error('not read where the page works instead')),
-    mark: async () => {
-      for (const pid of busy[look]) cpu[pid] += 0.04;
-      look++;
-      return 0.02;
+    mark: async (read) => {
+      const used = look < looks.length ? looks[look++] : { 11: 0.04 };
+      const first = { from: page, renderers: await read(), to: page };
+      for (const [pid, s] of Object.entries(used)) if (pid !== '0') cpu[Number(pid)] += s;
+      page += used[0] ?? used[11] ?? 0;
+      return [first, { from: page, renderers: await read(), to: page }];
     },
     renderers: async () => Object.entries(cpu).map(([pid, cpuSeconds]) => ({ pid: Number(pid), cpuSeconds })),
     memory: (pid) => pid * 1000,
   });
-  // The first look: 11 and 12 were both busy meanwhile. The second: only 11, which fitted both.
+}
+
+test("inside the OS sandbox, the page's renderer is the one whose main thread kept pace with the page's count, over two looks", async () => {
+  // Look 1: 11 (the page's) used 40 ms, 12 about as much, 13 nothing (13 parts at once). Look 2: 11
+  // alone works; 12 has used 50 ms less than the page counted, and parts too.
+  const memory = marking([{ 11: 0.04, 12: 0.05 }, { 11: 0.04 }]);
   assert.equal(await memory.locate(), false);
   assert.equal(memory.used(), null);
   assert.equal(await memory.locate(), true);
   assert.equal(memory.used(), 11_000);
+});
+
+test('inside the OS sandbox, one look that fits one renderer alone is not enough', async () => {
+  const memory = marking([{ 11: 0.04 }, { 11: 0.04 }]);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+});
+
+test("inside the OS sandbox, a renderer that worked more than the page counted is not the page's", async () => {
+  const memory = marking([{ 11: 0.04, 12: 0.09 }, { 11: 0.04, 12: 0.09 }]);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+});
+
+test('inside the OS sandbox, when no renderer fits the looks start again rather than guess, and after 8 looks none is taken', async () => {
+  // Look 1: the page counted 40 ms its renderer's reading did not show, and 12 used 40 ms: 12 alone
+  // fits. Look 2: 11 works and 12 not: none fitted both, and none is taken (not 11, the last seen);
+  // the looks start again, and 11 is taken once it alone fitted two more.
+  const memory = marking([{ 0: 0.04, 12: 0.04 }, { 11: 0.04 }, { 11: 0.04 }, { 11: 0.04 }]);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+  // Two renderers that always work alike: never one alone. After 8 looks it stops, and reads nothing.
+  const never = marking(Array.from({ length: 20 }, () => ({ 11: 0.04, 12: 0.04 })));
+  for (let i = 0; i < 9; i++) assert.equal(await never.locate(), false);
+  assert.equal(never.used(), null);
 });
 
 test("a process's main thread's CPU time is read from /proc, null for none", { skip: process.platform !== 'linux' }, () => {
