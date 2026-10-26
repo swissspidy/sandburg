@@ -409,17 +409,19 @@ let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } |
  */
 let preparedHelper: { worker: Worker; shared: SharedArrayBuffer } | null = null;
 
-function newHelper(): { worker: Worker; shared: SharedArrayBuffer } {
-  const worker = new NativeWorker(URL.createObjectURL(new Blob([DIGEST_HELPER], { type: 'text/javascript' })));
+function newHelper(delay = 0): { worker: Worker; shared: SharedArrayBuffer } {
+  const spin = delay > 0 ? `for (const until = performance.now() + ${Number(delay)}; performance.now() < until; );\n` : '';
+  const worker = new NativeWorker(URL.createObjectURL(new Blob([spin + DIGEST_HELPER], { type: 'text/javascript' })));
   const shared = new SharedArrayBuffer(40);
   nativeWorkerPost.call(worker, { hello: true, shared });
   return { worker, shared };
 }
 
-export function prepareDigester(): void {
+/** `delay`, for tests: ms the helper spins before it handles a message (see the 'prepare' message). */
+export function prepareDigester(delay?: number): void {
   if (preparedHelper || digester) return;
   try {
-    preparedHelper = newHelper();
+    preparedHelper = newHelper(delay);
   } catch {
     preparedHelper = null;
   }

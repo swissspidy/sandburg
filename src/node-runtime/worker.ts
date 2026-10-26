@@ -743,7 +743,7 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'run') run(msg);
   else if (msg.type === 'prepare') {
-    if (!proc) prepareDigester();
+    if (!proc) prepareDigester(msg.helperDelay);
   }
   else if (msg.type === 'spares') {
     if (!proc) warmRuntimes(location.pathname.replace(/\/node-worker\.js$/, ''), WARM_RUNTIMES);

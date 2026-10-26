@@ -214,20 +214,23 @@ test('installed files: a file downloaded on the side is downloaded once when the
   assert.deepEqual(h.asked.filter((a) => a.includes('big.wasm')), [`http /__sandburg/nm/${INSTALL_KEY}/f/node_modules/big/big.wasm`]);
 });
 
-test('installed files: a file downloaded on the side is downloaded once when the file helper has not started by the program\'s first read', async () => {
-  // As on a loaded machine: the helper, started with init here (no prepare), does not run until the
-  // program yields, so the runtime takes the file itself and the helper does not download it again.
-  const big = {
-    files: { ...install.files, 'node_modules/big/big.wasm': 'w'.repeat(200_000) },
-    bundled: install.bundled,
-    side: ['node_modules/big/big.wasm'],
-  };
-  const main = { 'main.js': `console.log(require('fs').readFileSync('/app/node_modules/big/big.wasm', 'utf8').length + ' ' + require('bundled')); setTimeout(() => process.exit(0), 500);` };
-  const out = await h.runInstalled(main, big, '/app/main.js', { prefetch: true });
-  assert.equal(out.fatal, null);
-  assert.equal(out.stdout, '200000 from the bundle\n');
-  assert.deepEqual(h.asked.filter((a) => a.includes('big.wasm')), [`http /__sandburg/nm/${INSTALL_KEY}/f/node_modules/big/big.wasm`]);
-});
+for (const delay of [300, 1000]) {
+  test(`installed files: a file downloaded on the side is downloaded once when the file helper starts ${delay} ms late`, async () => {
+    // As on a loaded machine: the helper, prepared before init, spins before it handles a message, so
+    // it has not started by the program's first read; the runtime takes the file itself, and the
+    // helper, once it starts, does not download it again. The program runs on past the helper's start.
+    const big = {
+      files: { ...install.files, 'node_modules/big/big.wasm': 'w'.repeat(200_000) },
+      bundled: install.bundled,
+      side: ['node_modules/big/big.wasm'],
+    };
+    const main = { 'main.js': `console.log(require('fs').readFileSync('/app/node_modules/big/big.wasm', 'utf8').length + ' ' + require('bundled')); setTimeout(() => process.exit(0), ${delay + 1000});` };
+    const out = await h.runInstalled(main, big, '/app/main.js', { prefetch: true, prepare: 300, helperDelay: delay });
+    assert.equal(out.fatal, null);
+    assert.equal(out.stdout, '200000 from the bundle\n');
+    assert.deepEqual(h.asked.filter((a) => a.includes('big.wasm')), [`http /__sandburg/nm/${INSTALL_KEY}/f/node_modules/big/big.wasm`]);
+  });
+}
 
 test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare runtimes; another thread does', async () => {
   // Each thread loads worker_threads, as napi-rs' wasi-worker.mjs does; the program waits for the
