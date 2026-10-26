@@ -105,6 +105,9 @@ function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | nul
 /** How long a server on a port the system picked waits before it may be taken for the app (see 'listening'). */
 const EPHEMERAL_PATIENCE_MS = 5_000;
 
+/** How long every process of the program serves a port, with no new port, before pagePort takes a port that sent no HTML. */
+const SETTLED_MS = 1000;
+
 /** How much of a body without a Content-Type is read to tell whether it is HTML. */
 const SNIFF_BYTES = 512;
 const DOCUMENT_STARTS = ['<!doctype html', '<html', '<head', '<body', '<!--'];
@@ -129,6 +132,9 @@ export function looksLikeHtml(bytes: Uint8Array): boolean {
 export class NodeProcess {
   /** Ports the program's HTTP servers listen on, in the order they started. */
   readonly ports: number[] = [];
+  /** How many of the program's processes are still starting (process-tree.ts in the runtime); null until it reports. */
+  private starting: number | null = null;
+  private startingSince = 0;
   /** Commands of the dev script that exited with an error (a backend that crashed, say). */
   readonly failedCommands: { command: string; code: number; stderr: string }[] = [];
   failure: Error | null = null;
@@ -195,9 +201,11 @@ export class NodeProcess {
   /**
    * The port whose server serves the app's page: of the ports the program listens on, the first to
    * answer GET / with HTML (a dev script may start an API server before or beside the page's). If
-   * none has after `patience` ms without a new port, the first port. The wait is long because some
-   * dev servers listen only once they have compiled the app (ng serve, 20-40 s here), and an API
-   * server that started first must not be taken for the app.
+   * none has, the first port: once every process the program still runs serves a port (none is
+   * still starting, see process-tree.ts) for SETTLED_MS, as no other server is coming; else after
+   * `patience` ms without a new port. The wait is long because some dev servers listen only once
+   * they have compiled the app (ng serve, 20-40 s here), and an API server that started first must
+   * not be taken for the app.
    */
   async pagePort(patience = 60_000): Promise<number> {
     await this.listening();
@@ -241,11 +249,12 @@ export class NodeProcess {
     };
     const tick = setInterval(() => {
       for (const w of this.waiters) w();
-    }, 1000);
+    }, 250);
     try {
       await this.until(() => {
         for (const port of this.ports) if (!probed.has(port)) probe(port);
-        return found !== null || (settled === probed.size && Date.now() - lastPort > patience);
+        if (found !== null || settled !== probed.size) return found !== null;
+        return Date.now() - lastPort > patience || (this.starting === 0 && Date.now() - Math.max(lastPort, this.startingSince) > SETTLED_MS);
       });
     } finally {
       clearInterval(tick);
@@ -413,6 +422,11 @@ export class NodeProcess {
         break;
       case 'process-exit':
         this.failedCommands.push({ command: m.command, code: m.code, stderr: m.stderr });
+        break;
+      case 'starting':
+        this.starting = m.count;
+        this.startingSince = Date.now();
+        for (const w of this.waiters) w();
         break;
       case 'fatal':
         // The runtime could not load one of its own parts, or a WebAssembly thread crashed:

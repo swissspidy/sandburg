@@ -13,6 +13,7 @@ import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
 import { timers } from './builtins/process.ts';
 import { runScript } from './shell.ts';
+import { shellStepsAhead } from './process-tree.ts';
 import type { ThreadInit, ToWorker } from './messages.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
@@ -255,6 +256,7 @@ export function createChildProcess(host: ChildProcessHost) {
         exists: (path) => vfs.exists(path),
         write,
         onExit: (code) => this.finish(code, null),
+        stepsAhead: shellStepsAhead,
       });
       timers.setTimeout(() => this.emit('spawn'), 0);
     }
