@@ -70,11 +70,13 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
     };
     const { install, doInstall } = installer;
     const started: string[] = [];
-    // When the batch's install was done, and when each run asked for its install.
+    // When the batch's install was done, and when each of the batch's runs asked for its install (on a
+    // cold .sandburg/, the session's Vite seed run asks for the same install too: not one of the batch).
     let installed = Infinity;
     const asked: number[] = [];
+    const ofBatch = (project: Project) => project.path.startsWith(`${fixtureDir}#app-`);
     installer.doInstall = (key, ...rest) => (started.push(key), doInstall.call(installer, key, ...rest).then((r) => ((installed = Math.min(installed, performance.now())), r)));
-    installer.install = (project, ...rest) => (asked.push(performance.now()), install.call(installer, project, ...rest));
+    installer.install = (project, ...rest) => (ofBatch(project) && asked.push(performance.now()), install.call(installer, project, ...rest));
     const { summary, results } = await runBatch(session, items, { parallel: 8, outDir, batchDir, prewarm: false });
     assert.equal(summary.totals.passed, 10, JSON.stringify(results.filter((r) => r.status !== 'passed').map((r) => [r.failure, r.checks.filter((c) => c.status !== 'passed')]), null, 2));
     assert.equal(summary.runs.length, 10);
