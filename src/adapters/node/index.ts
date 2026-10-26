@@ -18,6 +18,7 @@ import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, tmpSuffix } from './install.ts';
+import { warmAwaitThreads } from './await-threads.ts';
 import { NATIVE_TRANSFORM_PATH, nativeTransform } from './native-transform.ts';
 import { diskCompileStore, sweepCompiles } from './compile-store.ts';
 import type { HostInstall } from './browser.ts';
@@ -368,5 +369,6 @@ export const node: AdapterDescriptor = {
   prepare: () => {
     installer.prepare();
     warmCompiler();
+    warmAwaitThreads();
   },
 };

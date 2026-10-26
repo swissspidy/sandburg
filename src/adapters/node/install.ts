@@ -18,7 +18,8 @@ import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
-import { contextAwaits, mayRewrite } from '../../node-runtime/await-context.ts';
+import { mayRewrite } from '../../node-runtime/await-context.ts';
+import { contextAwaitsSoon } from './await-threads.ts';
 import type { Project } from '../../types.ts';
 import { deferImports } from './deferred-imports.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
@@ -438,7 +439,8 @@ export async function transformForRuntime(source: string, path: string, esm: boo
     const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm, lowerAsync))).code;
     const cjs = esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm, lowerAsync))).code : out;
     const done = esm ? deferImports(cjs, path) : cjs;
-    return lowerAsync ? done : (contextAwaits(done) ?? convert(code, true));
+    // The awaits are rewritten on a helper thread (await-threads.ts).
+    return lowerAsync ? done : ((await contextAwaitsSoon(done)) ?? convert(code, true));
   };
   try {
     return mark(await convert(source, !mayRewrite(source)));
