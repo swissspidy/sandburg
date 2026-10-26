@@ -35,7 +35,7 @@ let registered: Promise<ServiceWorkerRegistration> | null = null;
 export function registerServiceWorker(): Promise<ServiceWorkerRegistration> {
   registered ??= (async () => {
     // A page may name its own service worker (the static demos register theirs under their path).
-    const sw = (globalThis as { __sandburgServiceWorker?: { url: string; scope: string } }).__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
+    const sw = globalThis.__sandburgServiceWorker ?? { url: '/__sw__.js', scope: '/' };
     await navigator.serviceWorker.register(sw.url, { scope: sw.scope });
     return navigator.serviceWorker.ready;
   })();

@@ -53,14 +53,11 @@ export interface CacheSnapshot {
  * sandbox origin; a page may set another (the static demos serve it under their own path).
  */
 export function hostBase(): string {
-  return (globalThis as { __sandburgBase?: string }).__sandburgBase ?? '/__sandburg';
+  return globalThis.__sandburgBase ?? '/__sandburg';
 }
 
 /** The largest bundle downloaded ahead (prefetchBundle); a larger one fails there and the runtime asks for it. */
 const PREFETCH_MAX = 1 << 30;
-/** A growable SharedArrayBuffer (ES2024; this project's lib is older). */
-type Growable = SharedArrayBuffer & { grow(length: number): void };
-const GrowableSharedArrayBuffer = SharedArrayBuffer as unknown as new (length: number, options: { maxByteLength: number }) => Growable;
 
 /**
  * Starts downloading a bundle the runtime reads as it starts (the install's preload bundle, a dev
@@ -71,9 +68,9 @@ const GrowableSharedArrayBuffer = SharedArrayBuffer as unknown as new (length: n
  */
 function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | null {
   if (!url || !globalThis.crossOriginIsolated) return null;
-  let sab: Growable;
+  let sab: SharedArrayBuffer;
   try {
-    sab = new GrowableSharedArrayBuffer(8, { maxByteLength: 8 + PREFETCH_MAX });
+    sab = new SharedArrayBuffer(8, { maxByteLength: 8 + PREFETCH_MAX });
   } catch {
     return null;
   }
@@ -522,7 +519,7 @@ export function webSocketPort(url: string, ports: number[], samePort: (path: str
 
 /** Lets app pages open WebSockets through the host page (ws-shim.js calls window.top.__sandburgWs). */
 export function exposeWebSockets(route: (url: string) => { proc: NodeProcess; port: number } | null): void {
-  (window as unknown as Record<string, unknown>).__sandburgWs = (url: string, protocols: string[], channel: MessagePort) => {
+  window.__sandburgWs = (url: string, protocols: string[], channel: MessagePort) => {
     const target = route(url);
     if (!target) return false;
     target.proc.connectWebSocket(target.port, url, protocols, channel);

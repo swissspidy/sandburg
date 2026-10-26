@@ -24,6 +24,7 @@ export const isPageChecks = (checks: unknown): checks is PageChecks =>
 
 const LOADERS: Record<string, esbuild.Loader> = { '.ts': 'ts', '.mts': 'ts', '.cts': 'ts', '.tsx': 'tsx', '.js': 'js', '.mjs': 'js', '.jsx': 'jsx' };
 
+/** Reads a checks file to run in the page (RunOptions.checksIn 'page'): its TypeScript stripped, nothing of it run here. */
 export async function loadPageChecks(file: string): Promise<PageChecks> {
   const text = await readFile(file, 'utf8');
   const { code } = await esbuild.transform(text, {

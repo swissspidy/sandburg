@@ -10,6 +10,7 @@ import type { FailureClass, Project, RunResult } from '../types.ts';
 import type { RunOptions, RunRenderer, Session } from './session.ts';
 import { availableMemory } from './memory.ts';
 
+/** A project of a batch, with its own checks or runtime if it has any. */
 export interface BatchItem {
   /** Directory, JSON file tree, "snapshot:<id>", or an in-memory project. */
   project: string | Project;
@@ -20,6 +21,7 @@ export interface BatchItem {
   label?: string;
 }
 
+/** One run of a batch, in its summary. */
 export interface BatchRunSummary {
   label?: string;
   project: string;
@@ -36,6 +38,7 @@ export interface BatchRunSummary {
   rendererPeakBytes?: number | null;
 }
 
+/** A batch's summary (written as <batchDir>/<batchId>/summary.json). */
 export interface BatchSummary {
   schemaVersion: 1;
   batchId: string;
@@ -58,6 +61,7 @@ export interface BatchSummary {
   runs: BatchRunSummary[];
 }
 
+/** Options of runBatch(): a run's options, applied to each project, and the batch's own. */
 export interface BatchOptions extends RunOptions {
   /** Apps that start and run at a time (default: defaultParallel()). */
   parallel?: number;
@@ -143,6 +147,7 @@ export async function discoverProjects(dir: string): Promise<BatchItem[]> {
   return items;
 }
 
+/** Runs projects side by side in one session and returns each run's result and the batch's summary. */
 export async function runBatch(session: Session, items: BatchItem[], options: BatchOptions = {}): Promise<{ summary: BatchSummary; results: RunResult[] }> {
   const parallel = Math.max(1, options.parallel ?? defaultParallel());
   const batchId = `b-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;

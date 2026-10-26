@@ -12,12 +12,12 @@ import { BODY_MAX, HostServer } from '../../src/orchestrator/host-server.ts';
 import type { AdapterDescriptor } from '../../src/types.ts';
 
 let root: string;
-let node: typeof import('../../src/adapters/node/index.ts');
+let node: typeof import('../../src/adapters/node/index.ts') & typeof import('../../src/adapters/node/dev-cache.ts');
 let host: HostServer;
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'sandburg-bodies-'));
   process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
-  node = await import('../../src/adapters/node/index.ts');
+  node = { ...(await import('../../src/adapters/node/index.ts')), ...(await import('../../src/adapters/node/dev-cache.ts')) };
   host = new HostServer();
   await host.listen();
   host.register('s-a', node.node);

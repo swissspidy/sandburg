@@ -46,6 +46,7 @@ const RUNTIME_BOOT_FETCH = /Failed to fetch dynamically imported module|WebWorke
 /** Compile errors reported by dev servers and esbuild for the project's sources. */
 const COMPILE_ERROR = /Module build failed|Failed to compile|Transform failed with \d+ error|\[plugin:vite:[a-z-]+\]|Expected [^\n]{1,40} but found|Unexpected token|Unterminated (string|template)/i;
 
+/** What a run recorded, for classify(). */
 export interface ClassifyInput {
   probe: ProbeVerdict | null;
   phases: PhaseRecord[];
@@ -61,6 +62,7 @@ export interface ClassifyInput {
   infraError: { phase: PhaseName; message: string } | null;
 }
 
+/** Why a run failed (the first rule that fires, with its evidence), or null when it did not fail. */
 export function classify(input: ClassifyInput): Failure | null {
   // dispose is cleanup: a failure there is recorded but never decides the run's class.
   const failedPhase = input.phases.find((p) => p.name !== 'dispose' && (p.status === 'failed' || p.status === 'timeout'));

@@ -5,10 +5,13 @@
 
 /** File path (POSIX, relative to project root, no leading slash) → contents. */
 export type FileTree = Record<string, FileContent>;
+/** A file's text, or its bytes in base64 when it is not UTF-8 text. */
 export type FileContent = string | { base64: string };
 
+/** The framework a project was detected as (src/framework.ts). */
 export type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'solid-start' | 'react-router' | 'static' | 'unknown';
 
+/** A project to run: its files and what was detected from them. */
 export interface Project {
   name: string;
   /** Where the project came from (directory, zip or JSON path). */
@@ -20,6 +23,7 @@ export interface Project {
   snapshotId: string;
 }
 
+/** The fields of a project's package.json that Sandburg reads; the rest as they are. */
 export interface PackageJson {
   name?: string;
   dependencies?: Record<string, string>;
@@ -28,6 +32,7 @@ export interface PackageJson {
   [key: string]: unknown;
 }
 
+/** Whether a runtime can run a project (the probe phase). */
 export type ProbeVerdict =
   | { verdict: 'supported' }
   | { verdict: 'unknown'; reason: string }
@@ -72,6 +77,7 @@ export interface AdapterDescriptor {
   prepare?(): void;
 }
 
+/** What the session tells an adapter's host-side install. */
 export interface HostInstallOptions {
   /**
    * This run is a seed, started by the session to fill caches that other projects' runs share
@@ -89,6 +95,7 @@ export interface HostInstallOptions {
   sandbox?: Promise<string>;
 }
 
+/** A request to an adapter's routes under /__sandburg/ on a sandbox's origin (AdapterDescriptor.serve). */
 export interface HostRequest {
   method: string;
   path: string;
@@ -106,14 +113,17 @@ export interface HostRequest {
   channel?: object;
 }
 
+/** An adapter route's answer. */
 export interface HostResponse {
   status: number;
   headers?: Record<string, string>;
   body: string | Uint8Array;
 }
 
+/** Why an adapter failed: the project is not supported, the app failed, or the adapter itself did. */
 export type AdapterErrorCode = 'UNSUPPORTED' | 'APP' | 'INTERNAL';
 
+/** How the install phase resolved the project's dependencies. */
 export interface InstallReport {
   resolution: 'lockfile' | 'range' | 'none';
   lockfileHonored: boolean;
@@ -128,9 +138,12 @@ export interface InstallReport {
 // Result schema v1
 // ---------------------------------------------------------------------------
 
+/** A run's phases, in order. */
 export type PhaseName = 'probe' | 'load' | 'mount' | 'install' | 'start' | 'ready' | 'checks' | 'dispose';
+/** How a phase ended; skipped when an earlier one failed. */
 export type PhaseStatus = 'ok' | 'failed' | 'timeout' | 'skipped';
 
+/** One phase of a run: how it ended, how long it took, and its error if it failed or timed out. */
 export interface PhaseRecord {
   name: PhaseName;
   status: PhaseStatus;
@@ -138,6 +151,7 @@ export interface PhaseRecord {
   error?: SerializedError;
 }
 
+/** An error as a run records it: a phase's (PhaseRecord.error) or one a runtime reported. */
 export interface SerializedError {
   name: string;
   message: string;
@@ -145,9 +159,12 @@ export interface SerializedError {
   stack?: string;
 }
 
+/** What a check looks at: the app's behaviour (functional, the checks file's), or what the run collected. */
 export type CheckKind = 'functional' | 'document' | 'console' | 'network' | 'axe' | 'a11y-snapshot' | 'screenshot';
+/** How a check ended: error when the check itself broke, skipped when it did not run. */
 export type CheckStatus = 'passed' | 'failed' | 'error' | 'skipped';
 
+/** One check of a run. */
 export interface CheckResult {
   id: string;
   kind: CheckKind;
@@ -160,8 +177,10 @@ export interface CheckResult {
   details?: unknown;
 }
 
+/** Whose fault a failed run is: the runtime's, the app's, a deadline's, the infrastructure's, or not known. */
 export type FailureClass = 'runtime-unsupported' | 'app-bug' | 'timeout' | 'infra' | 'unknown';
 
+/** Why a run failed (RunResult.failure), as classify() decided. */
 export interface Failure {
   class: FailureClass;
   phase: PhaseName;
@@ -171,6 +190,7 @@ export interface Failure {
   evidence: string[];
 }
 
+/** A console message from the app's page or Sandburg's host page. */
 export interface ConsoleEntry {
   source: 'app' | 'host';
   type: string;
@@ -178,18 +198,21 @@ export interface ConsoleEntry {
   url?: string;
 }
 
+/** An uncaught exception in the app's page or the host page. */
 export interface PageError {
   source: 'app' | 'host';
   message: string;
   stack?: string;
 }
 
+/** A request that failed or that the egress gateway blocked, and why. */
 export interface NetworkEntry {
   url: string;
   method: string;
   reason: string;
 }
 
+/** A run's result (result.json, schema version 1). */
 export interface RunResult {
   schemaVersion: 1;
   runId: string;

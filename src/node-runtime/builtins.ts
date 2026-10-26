@@ -110,7 +110,7 @@ export function buildBuiltins() {
         return false;
       }
     },
-    toUSVString: (s: string) => (s as unknown as { toWellFormed?(): string }).toWellFormed?.() ?? s,
+    toUSVString: (s: string) => s.toWellFormed?.() ?? s,
     getSystemErrorName: (n: number) => `E${-n}`,
     getSystemErrorMap: () => new Map(),
     aborted: (signal: AbortSignal) => new Promise((r) => signal.addEventListener('abort', r, { once: true })),
