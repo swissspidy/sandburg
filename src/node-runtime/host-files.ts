@@ -293,7 +293,7 @@ const workerHref = globalThis.location?.href;
 
 const nativeWorkerPost = NativeWorker?.prototype.postMessage;
 
-const DIGEST_HELPER = `let socket = null, ids = 0;
+const DIGEST_HELPER = `let socket = null, ids = 0, notes = [];
 const asked = new Map();
 const settle = (shared, status, body) => {
   const state = new Int32Array(shared, 0, 3);
@@ -303,10 +303,16 @@ const settle = (shared, status, body) => {
   Atomics.store(state, 0, 1);
   Atomics.notify(state, 0);
 };
+// Called once per helper (a second socket's old onclose would clear the new one's notes).
 function open(url, ready) {
   socket = new WebSocket(url);
   socket.binaryType = 'arraybuffer';
-  socket.onopen = () => (Atomics.store(ready, 0, 1), Atomics.notify(ready, 0));
+  socket.onopen = () => {
+    Atomics.store(ready, 0, 1);
+    Atomics.notify(ready, 0);
+    for (const note of notes) socket.send('0 ' + note);
+    notes = [];
+  };
   socket.onmessage = ({ data }) => {
     const head = new DataView(data, 0, ${ANSWER_HEADER});
     const shared = asked.get(head.getUint32(0, true));
@@ -316,6 +322,7 @@ function open(url, ready) {
     settle(shared, head.getUint32(4, true), new Uint8Array(data, ${ANSWER_HEADER}));
   };
   socket.onclose = () => {
+    notes = [];
     Atomics.store(ready, 0, 2);
     Atomics.notify(ready, 0);
     for (const shared of asked.values()) shared instanceof MessagePort ? shared.postMessage({ status: 0 }) : settle(shared, 0, null);
@@ -325,7 +332,11 @@ function open(url, ready) {
 const handle = async ({ data }) => {
   if (data.channel) return open(data.channel, new Int32Array(data.ready));
   if (data.port) return void (data.port.onmessage = handle);
-  if (data.note) return void (socket && socket.readyState === 1 && socket.send('0 ' + data.note));
+  // A note sent before the socket opens waits for it (what a run read first is what its next run needs most).
+  if (data.note) {
+    if (socket && socket.readyState === 0 && notes.length < 256) notes.push(data.note);
+    return void (socket && socket.readyState === 1 && socket.send('0 ' + data.note));
+  }
   if (data.get) {
     if (!socket || socket.readyState !== 1) return settle(data.shared, 0, null);
     const id = ++ids;

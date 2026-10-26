@@ -64,12 +64,20 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
     // The installs the host starts (each runs npm unless the install is on disk already). Without the
     // warm-up (which may install the same dependencies), the batch's ten requests must share one.
     const installer = sharedInstaller() as unknown as {
+      install: (project: Project, ...rest: unknown[]) => Promise<unknown>;
       doInstall: (key: string, ...rest: unknown[]) => Promise<unknown>;
       plan: (project: Project, extra: Record<string, string>) => { key: string };
     };
-    const doInstall = installer.doInstall;
+    const { install, doInstall } = installer;
     const started: string[] = [];
-    installer.doInstall = (key, ...rest) => (started.push(key), doInstall.call(installer, key, ...rest));
+    // When the batch's install was done, and when each of the batch's runs asked for its install (on a
+    // cold .sandburg/, the session's Vite seed run asks for the same install too: not one of the batch).
+    let installed = Infinity;
+    const asked: { at: number; path: string }[] = [];
+    const ofBatch = (project: Project) => project.path.startsWith(`${fixtureDir}#app-`);
+    const batchKey = installer.plan(items[0].project as Project, extraDependencies(items[0].project as Project)).key;
+    installer.doInstall = (key, ...rest) => (started.push(key), doInstall.call(installer, key, ...rest).then((r) => (key === batchKey && (installed = performance.now()), r)));
+    installer.install = (project, ...rest) => (ofBatch(project) && asked.push({ at: performance.now(), path: project.path }), install.call(installer, project, ...rest));
     const { summary, results } = await runBatch(session, items, { parallel: 8, outDir, batchDir, prewarm: false });
     assert.equal(summary.totals.passed, 10, JSON.stringify(results.filter((r) => r.status !== 'passed').map((r) => [r.failure, r.checks.filter((c) => c.status !== 'passed')]), null, 2));
     assert.equal(summary.runs.length, 10);
@@ -82,14 +90,20 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
     }
     // One install on the host serves all ten (they share their dependencies): the runs that start
     // after it finished take it from the cache. How long the install itself takes depends on npm's
-    // cache, so its time is not checked.
-    const batchKey = installer.plan(items[0].project as Project, extraDependencies(items[0].project as Project)).key;
+    // cache, so its time is not checked. The later runs asked once it was done, and their install
+    // phase (the host's answer and the page mounting it) stayed short: 0.3-1.7 s here, 5.1 s at most
+    // with two batches at once and two CPU spinners on 4 cores; a cache hit that waited on a lock or
+    // linked node_modules again would take longer than 10 s.
     assert.equal(started.filter((k) => k === batchKey).length, 1, 'installs of the batch started on the host');
-    const later = results.slice(8).map((r) => r.timings.installMs ?? Infinity);
-    assert.ok(later.every((ms) => ms < 5000), `the two runs after the first eight installed in ${later.join(', ')} ms`);
+    assert.equal(asked.length, 10);
+    const later = asked.slice(8);
+    assert.ok(later.every(({ at }) => at > installed), `the two runs after the first eight asked for their install ${later.map(({ at }) => (at - installed).toFixed(0)).join(', ')} ms after it was done`);
+    const laterMs = later.map(({ path }) => results.find((r) => r.project.path === path)?.timings.installMs ?? Infinity);
+    assert.ok(laterMs.every((ms) => ms < 10_000), `the two runs after the first eight installed in ${laterMs.join(', ')} ms`);
     assert.ok(summary.speedup > 1.5, `speed-up ${summary.speedup}`);
   } finally {
     delete (sharedInstaller() as unknown as { doInstall?: unknown }).doInstall;
+    delete (sharedInstaller() as unknown as { install?: unknown }).install;
     await session.close();
   }
 });

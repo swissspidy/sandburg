@@ -19,7 +19,7 @@
     "src"
   ],
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=24"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",

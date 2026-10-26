@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INSTALL_KEY, RuntimeHarness } from './harness.ts';
+import { CHANNEL_OPEN, INSTALL_KEY, RuntimeHarness } from './harness.ts';
 
 const h = new RuntimeHarness();
 before(() => h.open());
@@ -17,26 +17,32 @@ const install = {
 };
 
 // A program and its thread each load a package the preload bundle has and one it lacks; the
-// second is required once the file channel has had time to open.
+// second is required once the file channel is open (the harness holds it until the program asks).
 const program = {
   'main.js': `
+    ${CHANNEL_OPEN}
     const { Worker } = require('worker_threads');
     console.log('main:', require('bundled'));
-    setTimeout(() => {
+    channelOpen().then(() => {
       console.log('main:', require('single'));
       const w = new Worker('/app/thread.js');
       w.on('message', (m) => console.log('thread:', m));
-      w.on('exit', () => process.exit(0));
-    }, 300);`,
+    });`,
   'thread.js': `
     const { parentPort } = require('worker_threads');
     parentPort.postMessage(require('bundled') + ', ' + require('single'));`,
 };
 
+/** What the program prints. */
+const programPrints = 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n';
+
+/** Both runtimes have told the host what they read of the bundle, and the program has printed it all (the thread does not exit: see threads.ts). */
+const bothReported = ({ asked, stdout }: { asked: string[]; stdout: string }) => asked.filter((a) => a.includes('/read?')).length >= 2 && stdout === programPrints;
+
 test('installed files: the preload bundle, shared with threads, and single files over the file channel', async () => {
-  const out = await h.runInstalled(program, install, '/app/main.js');
+  const out = await h.runInstalled(program, install, '/app/main.js', { holdChannel: true, until: bothReported });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n');
+  assert.equal(out.stdout, programPrints);
   const nm = `/__sandburg/nm/${INSTALL_KEY}`;
   // The thread reads the bundled package in its parent's shared memory, and asks for the rest
   // through its parent's channel; nothing installed is asked for over HTTP but the bundle. Each
@@ -53,6 +59,17 @@ test('installed files: the preload bundle, shared with threads, and single files
   assert.equal(h.asked.filter((a) => a.startsWith('http /__sandburg/preload/')).length, 1);
 });
 
+test('installed files: what a runtime read before its file channel opened is told to the host once it is open', async () => {
+  // The read is reported 500 ms after it (noteRead); the channel opens only after that, when the
+  // program asks for it. Before, such a report was dropped: a run whose channel opened late (a
+  // loaded machine) left out of its install's next bundle the files it read first.
+  const main = { 'main.js': `${CHANNEL_OPEN}\nconsole.log(require('bundled'));\nsetInterval(() => {}, 1000);\nsetTimeout(channelOpen, 700);` };
+  const out = await h.runInstalled(main, install, '/app/main.js', { holdChannel: true, until: ({ asked, stdout }) => asked.some((a) => a.includes('/read?')) && stdout === 'from the bundle\n' });
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'from the bundle\n');
+  assert.deepEqual(h.asked.filter((a) => a.startsWith('ws ')), [`ws /__sandburg/nm/${INSTALL_KEY}/read?files=${encodeURIComponent('f/node_modules/bundled/package.json\nt/node_modules/bundled/index.js')}`]);
+});
+
 test('installed files: raw files read one after another come with the files after them in their directory', async () => {
   const icons = {
     files: {
@@ -67,17 +84,22 @@ test('installed files: raw files read one after another come with the files afte
   };
   // Read out of order once the channel is open, as a bundler does: c.js comes with d.js; a.js with
   // a.js.map and b.js, up to c.js (the runtime has it); each file is read once, and its use told.
+  // The program stays (an interval) until the host has heard of the three files' use.
   const main = {
     'main.js': `
+      ${CHANNEL_OPEN}
       const fs = require('fs');
-      setTimeout(() => {
+      setInterval(() => {}, 1000);
+      channelOpen().then(() => {
         const read = (f) => fs.readFileSync('/app/node_modules/icons/esm/' + f, 'utf8');
         console.log(['c.js', 'a.js', 'd.js', 'b.js', 'a.js.map'].map(read).join(' '));
-      }, 300);`,
+      });`,
   };
-  const out = await h.runInstalled(main, icons, '/app/main.js');
+  // The uses are told as the files are read, before the program prints them: the run ends on both.
+  const printed = 'C A D B A-map\n';
+  const out = await h.runInstalled(main, icons, '/app/main.js', { holdChannel: true, until: ({ asked, stdout }) => asked.filter((a) => a.includes('used=1')).length >= 3 && stdout === printed });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'C A D B A-map\n');
+  assert.equal(out.stdout, printed);
   const nm = `/__sandburg/nm/${INSTALL_KEY}/f/node_modules/icons/esm`;
   assert.deepEqual(h.asked.filter((a) => a.includes('/icons/esm/')).sort(), [
     `ws ${nm}/a.js.map?used=1`,
@@ -99,10 +121,11 @@ test('installed files: modules pushed with a transformed file are loaded without
     bundled: [],
     pushes: { 'node_modules/tool/index.js': ['node_modules/tool/a.js', 'node_modules/tool/b.js'] },
   };
-  const main = { 'main.js': `setTimeout(() => console.log(require('tool')), 300);` };
-  const out = await h.runInstalled(main, tool, '/app/main.js');
+  const main = { 'main.js': `${CHANNEL_OPEN}\nsetInterval(() => {}, 1000);\nchannelOpen().then(() => console.log(require('tool')));` };
+  const printed = 'tool a b\n';
+  const out = await h.runInstalled(main, tool, '/app/main.js', { holdChannel: true, until: ({ asked, stdout }) => asked.filter((a) => a.includes('used=1')).length >= 2 && stdout === printed });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'tool a b\n');
+  assert.equal(out.stdout, printed);
   const nm = `/__sandburg/nm/${INSTALL_KEY}/t/node_modules/tool`;
   assert.deepEqual(h.asked.filter((a) => a.includes('/t/')).sort(), [`ws ${nm}/a.js?used=1`, `ws ${nm}/b.js?used=1`, `ws ${nm}/index.js?ahead=1`]);
 });
@@ -167,9 +190,9 @@ test('installed files: a CommonJS file required as soon as written does not wait
 });
 
 test('installed files: a preload bundle the page downloaded is not requested again', async () => {
-  const out = await h.runInstalled(program, install, '/app/main.js', { prefetch: true });
+  const out = await h.runInstalled(program, install, '/app/main.js', { prefetch: true, holdChannel: true, until: bothReported });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n');
+  assert.equal(out.stdout, programPrints);
   // One request for the bundle: the page's.
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/preload/')).map((a) => a.endsWith('?by=page')), [true]);
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/nm/')), []);

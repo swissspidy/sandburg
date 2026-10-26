@@ -35,7 +35,10 @@ async function nextSeeds(): Promise<Map<string, string[]>> {
   const seeds = new Map<string, string[]>();
   for (const name of await readdir(dir).catch(() => [] as string[])) {
     if (!/^[0-9a-f]{24}\.json$/.test(name)) continue;
-    const paths = Object.keys(JSON.parse(await readFile(join(dir, name), 'utf8')) as object);
+    // Another run on this .sandburg/ (a second copy of this suite) may remove or replace it meanwhile.
+    const text = await readFile(join(dir, name), 'utf8').catch(() => null);
+    if (text === null) continue;
+    const paths = Object.keys(JSON.parse(text) as object);
     if (paths.some((p) => p.startsWith('.next/'))) seeds.set(join(dir, name), paths);
   }
   return seeds;
@@ -49,7 +52,7 @@ function seedKey(resolved: Record<string, string>, router: 'app' | 'pages'): str
 
 // First: later tests start from the seed it stores.
 test('the first Next.js app of each router starts a seed run beside it, which stores all of webpack\'s cache, and the app cannot write it first', async () => {
-  for (const file of (await nextSeeds()).keys()) await Promise.all([rm(file), rm(`${file}.bin`, { force: true })]);
+  for (const file of (await nextSeeds()).keys()) await Promise.all([rm(file, { force: true }), rm(`${file}.bin`, { force: true })]);
   // The versions each app's install resolved, from which its page could compute its seed's key.
   const resolved = new Map<string, Record<string, string>>();
   const hostInstall = node.hostInstall!;
