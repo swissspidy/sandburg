@@ -44,7 +44,6 @@ export function writeSoon(file: string, body: string | Uint8Array): Promise<bool
 function startWriter(): { worker: Worker; waiting: Map<number, (ok: boolean) => void> } {
   const worker = new Worker(new URL(import.meta.url), { workerData: { tag: TAG } });
   const waiting = new Map<number, (ok: boolean) => void>();
-  worker.unref();
   worker.on('message', ({ id, ok }: { id: number; ok: boolean }) => {
     waiting.get(id)?.(ok);
     waiting.delete(id);
@@ -60,6 +59,8 @@ function startWriter(): { worker: Worker; waiting: Map<number, (ok: boolean) => 
   };
   worker.on('error', lost);
   worker.on('exit', lost);
+  // After the listeners: adding a 'message' listener holds the process open again.
+  worker.unref();
   return { worker, waiting };
 }
 
