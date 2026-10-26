@@ -33,13 +33,49 @@ export function missingBrowser(err: unknown): Error | null {
  */
 const WASM_TIERING_BUDGET = 1_300_000_000;
 
+/**
+ * Chromium features that reach the network from a sandbox's browser context on their own, through
+ * its egress proxy, which refuses them, so that the network check counted them against the app:
+ * PreconnectToSearch opens connections to the default search engine as a context starts (`CONNECT
+ * www.google.com:443`, 4 per context), AutofillServerCommunication asks content-autofill.googleapis.com
+ * about forms. Playwright turns off others of the kind (AimEnabled, OptimizationHints).
+ */
+const DISABLED_FEATURES = ['PreconnectToSearch', 'AutofillServerCommunication'];
+
+let playwrightFeatures: string[] | null | undefined;
+
+/**
+ * The features Playwright's own `--disable-features` switch turns off (chromiumSwitches in
+ * playwright-core, which does not export them), or null if they cannot be read. Chromium takes only
+ * the last `--disable-features`: one of ours alone would turn Playwright's back on.
+ */
+export function playwrightDisabledFeatures(): string[] | null {
+  if (playwrightFeatures !== undefined) return playwrightFeatures;
+  try {
+    const bundle = readFileSync(createRequire(import.meta.url).resolve('playwright-core/lib/coreBundle'), 'utf8');
+    const list = /\bdisabledFeatures = \[([^\]]*)\]/.exec(bundle)?.[1] ?? '';
+    const names = [...list.replace(/\/\/.*$/gm, '').matchAll(/"([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
+    playwrightFeatures = names.length && bundle.includes(`"--disable-features=" + disabledFeatures.join(",")`) ? names : null;
+  } catch {
+    playwrightFeatures = null;
+  }
+  return playwrightFeatures;
+}
+
 /** Chromium launch options. Exported so tests can check the network backstop without the gateway. */
 export function launchOptions(options: SessionOptions): LaunchOptions {
   const ca = options.extraCaCerts === undefined ? (process.env.SANDBURG_EXTRA_CA_CERTS ?? process.env.NODE_EXTRA_CA_CERTS) : options.extraCaCerts;
   const spki = ca ? spkiHashes(ca) : [];
+  // Playwright's switch is replaced by one with its features and ours (unread: left as it is).
+  const features = playwrightDisabledFeatures();
   return {
     headless: options.headless ?? true,
-    args: [`--js-flags=--wasm-tiering-budget=${WASM_TIERING_BUDGET}`, ...(spki.length ? [`--ignore-certificate-errors-spki-list=${spki.join(',')}`] : [])],
+    args: [
+      `--js-flags=--wasm-tiering-budget=${WASM_TIERING_BUDGET}`,
+      ...(spki.length ? [`--ignore-certificate-errors-spki-list=${spki.join(',')}`] : []),
+      ...(features ? [`--disable-features=${[...features, ...DISABLED_FEATURES].join(',')}`] : []),
+    ],
+    ...(features ? { ignoreDefaultArgs: [`--disable-features=${features.join(',')}`] } : {}),
     executablePath: options.executablePath ?? process.env.SANDBURG_CHROMIUM,
     // Default for contexts without their own egress-proxy credentials: only sandbox origins
     // bypass the dead proxy. Leading "<-loopback>" is required for

@@ -1,6 +1,6 @@
 /**
  * What an install changes in the packages it installs, for the browser runtime: shared by the host's
- * installer (install.ts, npm) and the browser's (node-runtime/npm/install.ts). Browser-safe: data
+ * installer (install.ts, npm) and the browser's (browser-npm/install.ts). Browser-safe: data
  * and strings only.
  */
 import type { Project } from '../../types.ts';
@@ -365,6 +365,15 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     file: /(^|\/)node_modules\/next\/dist\/build\/webpack-config\.js$/,
     from: /compression: dev \? 'gzip' : false\n/,
     to: "compression: dev ? 'gzip' : false,\n        readonly: process.env.SANDBURG_WEBPACK_CACHE_READONLY === '1' // sandburg: see SOURCE_PATCHES\n",
+  },
+  {
+    // Next.js 16.4's dev server asks npm's security advisories about its own version as it starts
+    // (experimental.agentUpgrade, 'security' by default): a POST to the registry, which the egress
+    // gateway refuses and the network check counted against the app. Off by default here, as with
+    // `experimental: { agentUpgrade: false }` in next.config; an app that sets it still gets it.
+    file: /(^|\/)node_modules\/next\/dist\/(esm\/)?server\/config-shared\.js$/,
+    from: /(\n\s*)agentUpgrade: 'security',/,
+    to: '$1agentUpgrade: false, // sandburg: see SOURCE_PATCHES',
   },
   {
     // Next.js 16 runs Turbopack unless told otherwise, and Turbopack has no WebAssembly build: with
