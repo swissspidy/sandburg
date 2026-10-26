@@ -25,11 +25,20 @@ function mulberry(seed: number): () => number {
 /** A minimal Duplex the frame reader can attach to: records writes, swallows them. */
 class MockSocket extends EventEmitter {
   destroyed = false;
+  writableEnded = false;
+  writableLength = 0;
+  pause(): this {
+    return this;
+  }
+  resume(): this {
+    return this;
+  }
   write(): boolean {
     return true;
   }
   end(): this {
     this.destroyed = true;
+    this.writableEnded = true;
     return this;
   }
   destroy(): void {

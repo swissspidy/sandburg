@@ -24,6 +24,10 @@ const SERVED = /^\/__sandburg\/nm\//;
 /** The paths it posts to: esbuild's transforms, and the runtime's compiles. */
 const POSTED = /^\/__sandburg\/(?:esbuild-transform|compile)$/;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+/** Requests one channel may have in progress; past it, the host reads no more until one is answered. */
+export const MAX_IN_FLIGHT = 32;
+/** Bytes of answers waiting to be sent on one channel past which the host reads no more until they drain. */
+export const MAX_UNSENT = 4 << 20;
 
 /**
  * Accepts the upgrade if it comes from `origin` (a WebSocket is not bound by CORS: another page could
@@ -40,16 +44,23 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   (socket as Duplex & { setNoDelay?: (on: boolean) => void }).setNoDelay?.(true);
   socket.on('error', () => socket.destroy());
   const channel = {};
-  readFrames(socket, (opcode, payload) => {
+  // A client that sends requests and does not read the answers is not answered without bound: past
+  // MAX_IN_FLIGHT requests in progress, or MAX_UNSENT bytes not sent yet, nothing more is read (the
+  // socket is paused, and TCP holds the client back) until answers go out.
+  let inFlight = 0;
+  const reader = readFrames(socket, () => inFlight < MAX_IN_FLIGHT && socket.writableLength <= MAX_UNSENT, (opcode, payload) => {
     if (opcode === 0x8) return void socket.end(frame(0x8, Buffer.alloc(0)));
     if (opcode === 0x9) return void socket.write(frame(0xa, payload));
     if (opcode !== 0x1 && opcode !== 0x2) return;
     const t0 = performance.now();
+    inFlight++;
     const reply = (id: number, what: string) => (res: { status: number; body: Buffer }) => {
+      inFlight--;
       const head = Buffer.alloc(ANSWER_HEADER);
       head.writeUInt32LE(id >>> 0, 0);
       head.writeUInt32LE(res.status, 4);
       if (!socket.destroyed && !socket.writableEnded) socket.write(frame(0x2, Buffer.concat([head, res.body])));
+      reader.resume();
       traceTransfer({ hop: 'host→runtime ws', what, bytes: res.body.length, encoding: 'binary', ms: performance.now() - t0 });
     };
     if (opcode === 0x2) {
@@ -62,6 +73,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
     const space = text.indexOf(' ');
     void answer(text.slice(space + 1), serve, channel).then(reply(Number(text.slice(0, space)), text.slice(space + 1)));
   });
+  socket.on('drain', reader.resume);
   return true;
 }
 
@@ -109,7 +121,7 @@ async function answer(target: string, serve: (req: HostRequest) => Promise<HostR
  * for a message is bounded in fragments as in bytes. Control frames (close, ping) may come between
  * the fragments.
  */
-function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer) => void): void {
+function readFrames(socket: Duplex, ready: () => boolean, onMessage: (opcode: number, payload: Buffer) => void): { resume(): void } {
   // What came and is not read yet, as it came: put together once it holds `need` bytes (the next
   // frame's header, or the whole frame once its header is read), so a large frame that comes in many
   // chunks is copied once, not once per chunk.
@@ -120,6 +132,8 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
   let message: { opcode: number; parts: Buffer[]; length: number } | null = null;
   /** A close frame came: nothing after it is read. */
   let closed = false;
+  /** Frames are waiting until `ready` (the socket is paused meanwhile). */
+  let held = false;
   const fail = () => {
     chunks = [];
     pending = 0;
@@ -133,6 +147,11 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
     need = 2;
     for (;;) {
       if (buf.length < 2) break;
+      if (!ready()) {
+        held = true;
+        socket.pause();
+        break;
+      }
       let length = buf[1] & 0x7f;
       let at = 2;
       if (length === 126) {
@@ -206,8 +225,16 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
     if (closed) return;
     chunks.push(chunk);
     pending += chunk.length;
-    if (pending >= need) read();
+    if (!held && pending >= need) read();
   });
+  return {
+    resume() {
+      if (!held || closed || socket.destroyed || !ready()) return;
+      held = false;
+      socket.resume();
+      if (pending >= need) read();
+    },
+  };
 }
 
 function frame(opcode: number, payload: Buffer): Buffer {

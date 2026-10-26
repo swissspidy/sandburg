@@ -333,3 +333,32 @@ test('nothing after a close frame is served: not a message it left unfinished, n
   assert.ok(socket.writableEnded);
   socket.destroy();
 });
+
+test('a client that does not read its answers is not answered without bound: the host stops reading until they drain', { timeout: 20_000 }, async () => {
+  const { Duplex } = await import('node:stream');
+  const { MAX_IN_FLIGHT, MAX_UNSENT } = await import('../../src/orchestrator/host-socket.ts');
+  // A socket whose writes are not taken until `drain()`: a client that does not read.
+  const held: (() => void)[] = [];
+  let reading = false;
+  const socket = new Duplex({ read() {}, write(_c, _e, done) { if (reading) done(); else held.push(done); } });
+  const req = { headers: { origin: ORIGIN, 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', upgrade: 'websocket' } } as unknown as import('node:http').IncomingMessage;
+  let served = 0;
+  acceptFileChannel(req, socket, ORIGIN, async () => ((served++), { status: 200, body: 'x'.repeat(512 << 10) }));
+  const gets = Buffer.concat(Array.from({ length: 1500 }, (_, i) => clientFrame(true, 0x1, new TextEncoder().encode(`${i + 1} /__sandburg/nm/k/t/node_modules/a/f${i}.js`))));
+  socket.push(gets);
+  await new Promise((r) => setTimeout(r, 200));
+  // Requests are taken while fewer than MAX_IN_FLIGHT are in progress and at most MAX_UNSENT bytes
+  // wait to be sent: what waits is bounded by those, and nothing more is read.
+  const answer = 512 << 10;
+  assert.ok(served > 0 && served <= MAX_IN_FLIGHT + MAX_UNSENT / answer + 1, `served ${served}`);
+  const unsent = socket.writableLength;
+  assert.ok(unsent <= MAX_UNSENT + (MAX_IN_FLIGHT + 1) * (answer + 16), `${unsent} bytes unsent`);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(socket.writableLength, unsent);
+  // Once the client reads, the host reads on.
+  reading = true;
+  for (const done of held.splice(0)) done();
+  for (let i = 0; i < 400 && served < 1500; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(served, 1500);
+  socket.destroy();
+});
