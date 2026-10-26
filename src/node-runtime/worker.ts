@@ -29,6 +29,7 @@ import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './tr
 import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
+import { COMPILE_POST_MAX } from '../file-channel.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested } from './peers.ts';
@@ -362,7 +363,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
         // Over the file channel (~2 ms a compile in a cold Astro run) when it takes the code and the
         // answer; else a synchronous XMLHttpRequest (~7-10 ms: Playwright intercepts every request).
         // The channel has no headers: the run's capability to record compiles goes in its query.
-        const fast = code.length < ASK_FIRST ? postSync(`${base}/compile?${query}${compileCache?.token ? `&token=${compileCache.token}` : ''}`, new TextEncoder().encode(code)) : null;
+        const fast = code.length < COMPILE_POST_MAX ? postSync(`${base}/compile?${query}${compileCache?.token ? `&token=${compileCache.token}` : ''}`, new TextEncoder().encode(code)) : null;
         let answer: { status: number; text: string };
         if (fast) {
           answer = { status: fast.status, text: new TextDecoder().decode(fast.body) };

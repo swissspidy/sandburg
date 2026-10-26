@@ -25,6 +25,11 @@ export const MAX_BODY = 1 << 20;
 export const MAX_FRAME = 1 << 16;
 /** Larger POST frames close the channel (a transform's code and options; the route's own bound is 4 MB). */
 export const MAX_POST = (4 << 20) + MAX_FRAME;
+/**
+ * A runtime's compile is posted over the channel when its code is shorter (larger code, next dev's
+ * chunks, is asked for by digest first and posted over HTTP); its answer still has to fit MAX_BODY.
+ */
+export const COMPILE_POST_MAX = 1 << 18;
 /** An answer's header: the id and the status. */
 export const ANSWER_HEADER = 8;
 /** A POST's header: the id and the path's length. */

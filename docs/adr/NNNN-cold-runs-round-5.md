@@ -44,8 +44,8 @@ answered (over HTTP and over the file channel, with its latency) showed:
 ## Decision
 
 - **The runtime's compiles over the file channel** (`postSync` in `src/node-runtime/host-files.ts`,
-  `hostCompile` in `worker.ts`). Code under 256 KB (`ASK_FIRST`) is posted over the channel and the
-  runtime waits on its mailbox, as for a GET; larger code, an answer over 1 MB, or no channel yet goes
+  `hostCompile` in `worker.ts`). Code under 256 KB is posted over the channel and the
+  runtime waits on its mailbox, as for a GET; larger code (`COMPILE_POST_MAX`, with the channel's other bounds in `src/file-channel.ts`), an answer over 1 MB, or no channel yet goes
   over HTTP as before. The compile cache's write token, a header over HTTP, travels in the query and
   the channel (`host-socket.ts`) puts it back as that header, so the route checks it unchanged.
 - **Whole WebSocket messages** (`readFrames` in `host-socket.ts`): fragments are put together before
@@ -153,8 +153,12 @@ Measured with interleaved runs (`scripts/bench.ts`, both sides as refs) unless s
 - **Next.js' seed beside the app** costs the app ~3.5-4 s of a cold run on 4 cores (above); starting it
   after the app's checks would make `Session.close` the whole seed run (~8 s or more). Which one a
   user feels depends on whether the session runs more apps; not changed.
-- **Large compiles** (code over 256 KB: next dev's chunks) still go over HTTP: their answers are
-  mostly over the channel's 1 MB bound.
+- **Large compiles** (code over 256 KB, `COMPILE_POST_MAX`: next dev's chunks) still go over HTTP:
+  their answers are mostly over the channel's 1 MB bound. perf-nextjs-ready's compile-ahead
+  (`node-runtime/compile-ahead.ts`) posts written Next.js server chunks to `/compile` and asks for
+  `/compiled/<digest>` over HTTP; those under the bounds could use the channel (`postSync`, or
+  `postViaChannel` for an asynchronous request), and a GET of `/compiled/<digest>` could be served
+  over it as installed files are, when its answer fits.
 - **Starting the program before the install is done**: in a cold astro-app run the install's last
   steps after npm's resolution (unpacking the rest, WebAssembly builds, the index) take ~0.9 s, and
   the program's first requests need packages that are unpacked last; the index the host's checks rely
