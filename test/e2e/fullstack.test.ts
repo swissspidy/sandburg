@@ -140,3 +140,20 @@ test('a dev script whose API answers first, with its page server still to start 
   });
   assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
 });
+
+test('a dev script program that forks an API and then starts its own page server gets the page', async () => {
+  // dev.js has a child that listens at once (the API); its own server, the page's, comes 3 s later.
+  const files = {
+    'package.json': JSON.stringify({ name: 'fork-then-page', private: true, scripts: { dev: 'node prep.js && node dev.js' } }),
+    'prep.js': "console.log('prepared');",
+    'api.js': "require('http').createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{\"ok\":true}'); }).listen(3001);",
+    'dev.js':
+      "require('child_process').fork('api.js');\n" +
+      "setTimeout(() => require('http').createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><h1>The page</h1>'); }).listen(3000), 3000);",
+  };
+  const result = await session.run(projectFromFiles(files, { name: 'fork-then-page', path: fixture('node-express') }), {
+    outDir,
+    checks: { 'the page renders': async ({ app, expect }) => void (await expect(app.getByRole('heading', { name: 'The page' })).toBeVisible()) },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+});

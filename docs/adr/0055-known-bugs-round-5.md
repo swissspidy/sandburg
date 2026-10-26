@@ -39,9 +39,11 @@ that fails without it.
 ## Decision
 
 - **The runtime reports how many of the program's processes are still starting**
-  (`node-runtime/process-tree.ts`). A process is starting while it runs, serves no HTTP port of its
-  own and waits on no child process; a shell script with commands still to start (`node api.js &
-  sleep 3 && node page.js` while it sleeps) counts too. Each runtime reports its count to its parent
+  (`node-runtime/process-tree.ts`). A process is starting while it runs and serves no HTTP port of its
+  own, whether or not it has children (concurrently, next dev's parent, a `dev.js` that forks an API
+  and then starts its page's server), except Sandburg's own program for the dev script, which only
+  waits on the script's commands; a shell script with commands still to start (`node api.js & sleep
+  3 && node page.js` while it sleeps) counts too. Each runtime reports its count to its parent
   (`starting` messages): its own (a worker thread is no process and counts 0) plus what each nested
   runtime reported last; a child process counts as starting until it reports, and one that ended no
   more. The program's runtime reports the whole tree's count to the page. Once it has been 0 for 1 s

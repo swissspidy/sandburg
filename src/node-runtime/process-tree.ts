@@ -1,10 +1,12 @@
 /**
  * How many of the program's processes are still starting, for the page's search for the app's port
- * (NodeProcess.pagePort). A process is starting while it runs, serves no HTTP port of its own and
- * waits on no child process: a build step (`tsc && node server.js`), or a dev server that listens
- * only once it has compiled (ng serve). A process with children (the dev script's shell,
- * concurrently, next dev's parent) only waits on them; a server that listens is up. A runtime whose
- * shell script has commands still to start (`node api.js & sleep 2 && vite`) is starting too.
+ * (NodeProcess.pagePort). A process is starting while it runs and serves no HTTP port of its own:
+ * a build step (`tsc && node server.js`), or a dev server that listens
+ * only once it has compiled (ng serve). The program Sandburg starts to run the dev script does
+ * nothing but wait on the script's commands, so it does not count while they run; any other
+ * program does until it serves a port, children or not (concurrently, next dev's parent, a dev.js
+ * that forks an API and then starts its page's server). A runtime whose shell script has commands
+ * still to start (`node api.js & sleep 2 && vite`) is starting too.
  *
  * Each runtime reports its count to its parent ('starting' messages): its own (1 or 0; a worker
  * thread is no process and counts 0) plus what each nested runtime it started reported last. A child
@@ -49,6 +51,15 @@ export function nestedEnded(runtime: object): void {
   if (nested.delete(runtime)) update();
 }
 
+/** Dev scripts this runtime's program (Sandburg's, which does nothing else) runs now (devScriptRunning). */
+let devScripts = 0;
+
+/** The dev script Sandburg's program runs started (+1) or ended (-1): while it runs, the program only waits on the script's commands. */
+export function devScriptRunning(delta: 1 | -1): void {
+  devScripts = Math.max(0, devScripts + delta);
+  update();
+}
+
 /** A shell script's step with more steps after it started (+1) or ended (-1): the script has commands still to start. */
 export function shellStepsAhead(delta: 1 | -1): void {
   stepsAhead = Math.max(0, stepsAhead + delta);
@@ -70,8 +81,10 @@ function starting(): number {
     if (entry.process || entry.count > 0) children = true;
   }
   // This runtime counts once: while a script it runs has commands still to start, or while it is a
-  // process with neither a child to wait on nor a port.
-  return count + (stepsAhead > 0 || (isProcess && !children && !serving()) ? 1 : 0);
+  // process that serves no port, unless it is Sandburg's program for the dev script with the
+  // script's commands running. Any other program with children (concurrently, a dev.js that forks
+  // an API and then starts its page's server) may still start a server of its own.
+  return count + (stepsAhead > 0 || (isProcess && !(children && devScripts > 0) && !serving()) ? 1 : 0);
 }
 
 function update(): void {

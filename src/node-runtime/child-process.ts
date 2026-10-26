@@ -13,7 +13,7 @@ import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
 import { timers } from './builtins/process.ts';
 import { runScript } from './shell.ts';
-import { shellStepsAhead } from './process-tree.ts';
+import { devScriptRunning, shellStepsAhead } from './process-tree.ts';
 import type { ThreadInit, ToWorker } from './messages.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
@@ -31,6 +31,8 @@ interface SpawnOptions {
   encoding?: string;
   /** A command of a shell script: report it when it fails (see ChildProcessHost.reportExit). */
   sandburgCommand?: boolean;
+  /** The dev script, run by the program Sandburg starts for it, which only waits on it (see process-tree.ts). */
+  sandburgDevScript?: boolean;
 }
 
 /** A command line split into words (quotes and backslash escapes, as a POSIX shell would). */
@@ -230,6 +232,10 @@ export function createChildProcess(host: ChildProcessHost) {
       };
       const vfs = host.vfs();
       options.signal?.addEventListener('abort', () => this.kill('SIGTERM'), { once: true });
+      if (options.sandburgDevScript) {
+        devScriptRunning(1);
+        this.once('exit', () => devScriptRunning(-1));
+      }
       this.shell = runScript(script, cwd, env, {
         node: (argv, o) => {
           const child = new ChildProcess();
