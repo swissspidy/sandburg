@@ -290,8 +290,12 @@ export class Installer {
     }
     let idx = this.indexes.get(key);
     if (!idx) {
-      idx = loadIndex(join(this.root, key));
-      this.indexes.set(key, idx);
+      const loading = loadIndex(join(this.root, key));
+      // A key with no install (any 24 hex digits can be asked for) is not remembered.
+      loading.catch(() => {
+        if (this.indexes.get(key) === loading) this.indexes.delete(key);
+      });
+      this.indexes.set(key, (idx = loading));
     }
     return idx;
   }

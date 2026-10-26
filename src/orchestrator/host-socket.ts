@@ -66,7 +66,9 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   /** Bytes that left the socket's buffer (net.Socket's bytesWritten counts what is still buffered too). */
   const sent = () => ((socket as Duplex & { bytesWritten?: number }).bytesWritten ?? 0) - socket.writableLength;
   // On expiry: still not drained, and nothing sent since the timer was armed: closed. A client that
-  // reads, more slowly than the host writes, is given another period.
+  // reads, more slowly than the host writes, is given another period. (Progress is counted per write
+  // the socket completes, and one write may hold the whole backlog: in effect a client must read at
+  // least ~MAX_UNSENT per DRAIN_TIMEOUT_MS, ~280 KB/s.)
   const arm = (from: number) => {
     stalled = setTimeout(() => {
       stalled = null;
@@ -116,11 +118,19 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   return true;
 }
 
-/** The runtime's notes: `0 <base>/nm/<install>/read?files=…` and `0 <base>/nm/<install>/<f|t>/<path>?used=1`. */
-const NOTE = /^0 \S*?\/__sandburg\/nm\/[0-9a-f]{24}\/(?:read\?files=[^&?#\s]*|[ft]\/[^?#\s]+\?used=1)$/;
-
+/** The runtime's notes: `0 <base>/nm/<install>/read?files=…` and `0 <base>/nm/<install>/<f|t>/<path>?used=1`, nothing else. */
 function isNote(payload: Buffer): boolean {
-  return payload[0] === 0x30 && payload[1] === 0x20 && NOTE.test(payload.toString('utf8'));
+  if (payload[0] !== 0x30 || payload[1] !== 0x20) return false;
+  // Decided on the URL as it is served (its path and query), not on the request's text.
+  let url: URL;
+  try {
+    url = new URL(payload.subarray(2).toString('utf8'), 'http://x');
+  } catch {
+    return false;
+  }
+  if (url.hash) return false;
+  if (/^\/__sandburg\/nm\/[0-9a-f]{24}\/read$/.test(url.pathname)) return [...url.searchParams.keys()].join() === 'files';
+  return /^\/__sandburg\/nm\/[0-9a-f]{24}\/[ft]\/.+$/.test(url.pathname) && url.search === '?used=1';
 }
 
 /** A POST's target as traces show it: the compile cache's write token (a capability) left out. */

@@ -260,3 +260,17 @@ test('bundledEntries reads what bundleCache writes', async () => {
   vfs.write('/app/.next/dev/cache/webpack/x.json', new TextEncoder().encode('{"a":2}'));
   assert.notEqual(listCache(vfs, '/app', ['.next/dev/cache'])[1][2], before);
 });
+
+test('an install key with no install is not remembered, by an index asked for or a note of a file used', async () => {
+  const { sharedInstaller } = await import('../../src/adapters/node/install.ts');
+  const installer = sharedInstaller() as unknown as { index(key: string): Promise<unknown>; indexes: Map<string, unknown> };
+  const unknown = '9'.repeat(24);
+  await assert.rejects(installer.index(unknown));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(installer.indexes.has(unknown), false);
+  // A note of a file used of a key with no install: answered, and the key not remembered.
+  const other = '8'.repeat(24);
+  const res = await node.serve({ method: 'GET', path: `/__sandburg/nm/${other}/t/node_modules/a/index.js`, query: new URLSearchParams({ used: '1' }), sandbox: 's-none', body: async () => Buffer.alloc(0) });
+  assert.equal(res?.status, 204);
+  assert.equal(installer.indexes.has(other), false);
+});

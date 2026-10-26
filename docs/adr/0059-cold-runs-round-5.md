@@ -130,11 +130,14 @@ answered (over HTTP and over the file channel, with its latency) showed:
   in `MAX_UNSENT` (8 MB), so at most 8 requests are in progress and at most 8 MB of answers (plus
   frame headers) wait per channel; with the per-sandbox bound on channels (256, ADR 0054), at most
   ~2 GB per sandbox while every one of them is stalled. The runtime's notes (what it read, a file
-  sent ahead that it used: two fixed forms, answered 204 by the host) are served without an answer;
+  sent ahead that it used: two fixed forms, told apart by the URL as served, its path and query, and
+  answered 204 by the host) are served without an answer;
   any other request is answered and reserved for. A channel whose answers have sent nothing for
-  `DRAIN_TIMEOUT_MS` (30 s) while not drained is closed (one that reads, slowly, is not), which frees its slot (a client that ends its side while
+  `DRAIN_TIMEOUT_MS` (30 s) while not drained is closed (one that reads, slowly, is not: in effect a
+  client must read at least ~`MAX_UNSENT` per period, ~280 KB/s), which frees its slot (a client that ends its side while
   its socket is paused is not read until then). A client that ends its side of the socket ends the
-  channel, so a socket never outlives its slot. Each has a test in
+  channel, so a socket never outlives its slot. An install key with no install is not remembered by
+  the host (any 24 hex digits can be asked for), whether a file of it or a note of a file used asked. Each has a test in
   `test/unit/host-socket.test.ts` or `test/unit/host-server.test.ts` that fails without it.
 - **The writer thread** writes the files the host wrote before, under the host's own digests; it is
   the host's code on a thread of the host process, and nothing reaches it from a run but bytes the

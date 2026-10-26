@@ -440,11 +440,20 @@ test('a request with id 0 that is not one of the runtime\'s notes is answered (a
   const { socket, written } = await memoryChannel(async () => ({ status: 200, body: 'transformed' }));
   const handshake = written.length;
   const key = 'a'.repeat(24);
-  for (const path of [`/__sandburg/nm/${key}/t/node_modules/a/index.js`, `/__sandburg/nm/${key}/f/node_modules/a/index.js?ahead=1`, `/__sandburg/nm/${key}/read?files=x&used=1&ahead=1`, `/__sandburg/nm/${key}/t/a.js?used=1&ahead=1`]) {
-    socket.push(clientFrame(true, 0x1, new TextEncoder().encode(`0 ${path}`)));
-  }
-  for (let i = 0; i < 100 && written.length < handshake + 4; i++) await new Promise((r) => setTimeout(r, 5));
-  assert.equal(written.length, handshake + 4);
+  const nm = `/__sandburg/nm/${key}`;
+  const paths = [
+    `${nm}/t/node_modules/a/index.js`,
+    `${nm}/f/node_modules/a/index.js?ahead=1`,
+    `${nm}/read?files=x&used=1&ahead=1`,
+    `${nm}/t/a.js?used=1&ahead=1`,
+    // A note's form after the path that is served: in its fragment, or in its query.
+    `${nm}/t/node_modules/a/index.js#${nm}/read?files=x`,
+    `${nm}/t/node_modules/a/index.js?ahead=1&x=${nm}/read?files=x`,
+    `${nm}/f/node_modules/a/a.wasm?x=${nm}/f/a?used=1`,
+  ];
+  for (const path of paths) socket.push(clientFrame(true, 0x1, new TextEncoder().encode(`0 ${path}`)));
+  for (let i = 0; i < 100 && written.length < handshake + paths.length; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(written.length, handshake + paths.length);
   socket.destroy();
 });
 
