@@ -313,11 +313,12 @@ const handle = async ({ data }) => {
     asked.set(id, data.shared);
     return socket.send(id + ' ' + data.get);
   }
-  // A POST (a binary frame: id, the path's length, the path, the body), answered on the port given.
+  // A POST (a binary frame: id, the path's length, the path, the body), answered on the port given,
+  // or in the mailbox given (a synchronous one, postSync).
   if (data.post) {
-    if (!socket || socket.readyState !== 1) return data.reply.postMessage({ status: 0 });
+    if (!socket || socket.readyState !== 1) return data.reply ? data.reply.postMessage({ status: 0 }) : settle(data.shared, 0, null);
     const id = ++ids;
-    asked.set(id, data.reply);
+    asked.set(id, data.reply ?? data.shared);
     const path = new TextEncoder().encode(data.post);
     const frame = new Uint8Array(8 + path.length + data.body.length);
     new DataView(frame.buffer).setUint32(0, id, true);
@@ -427,6 +428,26 @@ function viaChannel(url: string): { status: number; body: Uint8Array } | null {
   Atomics.store(state, 0, 0);
   c.post({ get: url, shared: c.mailbox });
   // A helper that does not answer is not asked again (its late answer would land in the mailbox).
+  if (Atomics.wait(state, 0, 0, 120_000) === 'timed-out') {
+    channel = null;
+    return null;
+  }
+  const status = Atomics.load(state, 2);
+  return status ? { status, body: new Uint8Array(c.mailbox, 12, Atomics.load(state, 1)).slice() } : null;
+}
+
+/**
+ * A POST over the channel that this thread waits for, as viaChannel's GETs: the status and a copy of
+ * the body, or null (no channel, or status 0: a path, body or answer the channel does not take) to
+ * use HTTP. The runtime's compiles: a synchronous XMLHttpRequest each was ~7-10 ms in a cold run.
+ */
+export function postSync(url: string, body: Uint8Array): { status: number; body: Uint8Array } | null {
+  const c = channel;
+  if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
+  c.mailbox ??= new SharedArrayBuffer(CHANNEL_MAILBOX);
+  const state = new Int32Array(c.mailbox, 0, 3);
+  Atomics.store(state, 0, 0);
+  c.post({ post: url, body, shared: c.mailbox }, [body.buffer]);
   if (Atomics.wait(state, 0, 0, 120_000) === 'timed-out') {
     channel = null;
     return null;

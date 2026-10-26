@@ -142,3 +142,26 @@ test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare run
   const warm = await h.page.evaluate(() => Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4)));
   assert.equal(other - wasi, warm, `spares started: ${other} with another thread, ${wasi} with a WebAssembly thread`);
 });
+
+test("the runtime's compiles go over the file channel once it is open, with their errors", async () => {
+  // An ES module over 32 KB (the browser sends it in fragments) and a TypeScript file that does not parse.
+  const main = {
+    'main.js': `
+      setTimeout(() => {
+        console.log(require('./big.mjs').size);
+        try {
+          require('./bad.ts');
+        } catch (e) {
+          console.log(e.code, /Expected/.test(e.message));
+        }
+        process.exit(0);
+      }, 300);`,
+    'big.mjs': `export const size = ${JSON.stringify('x'.repeat(100_000))}.length;\n`,
+    'bad.ts': 'const = 1;\n',
+  };
+  const out = await h.runInstalled(main, { files: {}, bundled: [] }, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, '100000\nERR_COMPILE true\n');
+  const compiles = h.asked.filter((a) => a.includes('/__sandburg/compile'));
+  assert.deepEqual(compiles.map((a) => a.split('?')[0]), ['ws /__sandburg/compile', 'ws /__sandburg/compile']);
+});

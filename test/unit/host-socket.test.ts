@@ -105,19 +105,41 @@ function post(ws: WebSocket, id: number, path: string, body: Uint8Array | string
   });
 }
 
-test("the file channel takes POSTs of esbuild's transforms only, as the route's own bound says", async () => {
+test("the file channel takes POSTs of esbuild's transforms and the runtime's compiles only, as the route's own bound says", async () => {
   const { server, asked, url } = await channelServer();
   const ws = await open(url, ORIGIN);
   assert.deepEqual(await post(ws, 1, '/__sandburg/esbuild-transform?v=0.25.0', '[{},"x"]'), { id: 1, status: 200, body: 'posted 0.25.0 [{},"x"]' });
+  assert.deepEqual(await post(ws, 4, '/__sandburg/compile?v=cjs', 'x'), { id: 4, status: 200, body: 'posted cjs x' });
   // Any other path, a GET path among them, goes to HTTP; nothing is served.
-  for (const path of ['/__sandburg/compile?kind=cjs', '/__sandburg/dev-cache/0123456789abcdef01234567', '/__sandburg/nm/k/t/node_modules/a/index.js', '/__sandburg/esbuild-transform/../compile']) {
+  for (const path of ['/__sandburg/compile/x', '/__sandburg/dev-cache/0123456789abcdef01234567', '/__sandburg/nm/k/t/node_modules/a/index.js', '/__sandburg/esbuild-transform/../dev-cache']) {
     assert.equal((await post(ws, 2, path, 'x')).status, 0, path);
   }
   // A body over what the route reads (the route's bound, here 1 MB): refused before it is served.
   assert.equal((await post(ws, 3, '/__sandburg/esbuild-transform', new Uint8Array((1 << 20) + 1))).status, 0);
   ws.close();
   server.close();
-  assert.deepEqual(asked, ['POST /__sandburg/esbuild-transform', 'POST /__sandburg/esbuild-transform']);
+  assert.deepEqual(asked, ['POST /__sandburg/esbuild-transform', 'POST /__sandburg/compile', 'POST /__sandburg/esbuild-transform']);
+});
+
+test("a POST's capability token comes in its query over the channel, and reaches the route as the header it is over HTTP", async () => {
+  const seen: { token?: string; query: string }[] = [];
+  const server = createServer((_req, res) => res.end());
+  server.on('upgrade', (req, socket) =>
+    acceptFileChannel(req, socket, ORIGIN, async (r) => {
+      seen.push({ token: r.headers?.['x-sandburg-token'], query: r.query.toString() });
+      return { status: 200, body: 'ok' };
+    }),
+  );
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const ws = await open(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/__sandburg/files`, ORIGIN);
+  await post(ws, 1, '/__sandburg/compile?kind=cjs&cache=abc&token=secret', 'x');
+  await post(ws, 2, '/__sandburg/compile?kind=cjs', 'x');
+  ws.close();
+  server.close();
+  assert.deepEqual(seen, [
+    { token: 'secret', query: 'kind=cjs&cache=abc' },
+    { token: undefined, query: 'kind=cjs' },
+  ]);
 });
 
 test('the file channel closes on a POST larger than a transform can be, or a malformed one', async () => {

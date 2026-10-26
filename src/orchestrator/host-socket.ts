@@ -30,8 +30,8 @@ export const MAX_FRAME = 1 << 16;
 export const MAX_POST = (4 << 20) + MAX_FRAME;
 /** The paths a runtime asks for over the channel: installed files. */
 const SERVED = /^\/__sandburg\/nm\//;
-/** The paths it posts to: esbuild's transforms. */
-const POSTED = /^\/__sandburg\/esbuild-transform$/;
+/** The paths it posts to: esbuild's transforms, and the runtime's compiles. */
+const POSTED = /^\/__sandburg\/(?:esbuild-transform|compile)$/;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 /**
@@ -65,7 +65,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
       if (payload.length < 8 || 8 + payload.readUInt32LE(4) > payload.length) return void socket.destroy();
       const length = payload.readUInt32LE(4);
       const target = payload.subarray(8, 8 + length).toString('utf8');
-      return void answerPost(target, payload.subarray(8 + length), serve, channel).then(reply(payload.readUInt32LE(0), target));
+      return void answerPost(target, payload.subarray(8 + length), serve, channel).then(reply(payload.readUInt32LE(0), target.replace(/([?&]token=)[^&]*/, '$1…')));
     }
     const text = payload.toString('utf8');
     const space = text.indexOf(' ');
@@ -83,7 +83,10 @@ async function answerPost(target: string, body: Buffer, serve: (req: HostRequest
       if (max !== undefined && body.length > max) throw Object.assign(new Error('body too large'), { status: 413 });
       return body;
     };
-    const out = await serve({ method: 'POST', path: url.pathname, query: url.searchParams, body: read, channel });
+    // The compile route's write capability, a header over HTTP, is in the query here (no headers).
+    const token = url.searchParams.get('token') ?? undefined;
+    url.searchParams.delete('token');
+    const out = await serve({ method: 'POST', path: url.pathname, query: url.searchParams, headers: { 'x-sandburg-token': token }, body: read, channel });
     if (!out) return { status: 404, body: empty };
     const answer = typeof out.body === 'string' ? Buffer.from(out.body) : Buffer.from(out.body.buffer, out.body.byteOffset, out.body.byteLength);
     return answer.length > MAX_BODY ? { status: 0, body: empty } : { status: out.status, body: answer };
