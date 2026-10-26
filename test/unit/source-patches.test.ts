@@ -306,3 +306,107 @@ test("Nitro's dev build starts from the project's rollup cache and keeps it when
     delete (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.transformCache')];
   }
 });
+
+// next 16.4's fork of webpack's EvalSourceMapDevToolPlugin (dist/build/webpack/plugins/
+// eval-source-map-dev-tool-plugin.js), as published, without the source map's rewriting.
+const NEXT_EVAL_SOURCE_MAP_PLUGIN = `"use strict";
+const _webpack = require("next/dist/compiled/webpack/webpack");
+const cache = new WeakMap();
+class EvalSourceMapDevToolPlugin {
+    constructor(options){
+        this.sourceMapComment = '//# sourceURL=[module]\\n//# sourceMappingURL=[url]';
+        this.options = options;
+    }
+    apply(compiler) {
+        const options = this.options;
+        compiler.hooks.compilation.tap('NextJSEvalSourceMapDevToolPlugin', (compilation)=>{
+            const { JavascriptModulesPlugin } = compiler.webpack.javascript;
+            const { RawSource } = compiler.webpack.sources;
+            const hooks = JavascriptModulesPlugin.getCompilationHooks(compilation);
+            new _webpack.SourceMapDevToolModuleOptionsPlugin(options).apply(compilation);
+            hooks.renderModuleContent.tap('NextJSEvalSourceMapDevToolPlugin', (source, m, { chunk, runtimeTemplate, chunkGraph })=>{
+                const cachedSource = cache.get(source);
+                if (cachedSource !== undefined) {
+                    return cachedSource;
+                }
+                const result = (r)=>{
+                    cache.set(source, r);
+                    return r;
+                };
+                let sourceMap;
+                let content;
+                if (source.sourceAndMap) {
+                    const sourceAndMap = source.sourceAndMap(options);
+                    sourceMap = sourceAndMap.map;
+                    content = sourceAndMap.source;
+                } else {
+                    sourceMap = source.map(options);
+                    content = source.source();
+                }
+                if (!sourceMap) {
+                    return result(source);
+                }
+                const moduleId = chunkGraph.getModuleId(m);
+                const footer = \`\${this.sourceMapComment.replace(/\\[url\\]/g, \`data:application/json;charset=utf-8;base64,\${Buffer.from(JSON.stringify(sourceMap), 'utf8').toString('base64')}\`)}\\n//# sourceURL=webpack-internal:///\${moduleId}\\n\`;
+                return result(new RawSource(\`eval(\${compilation.outputOptions.trustedTypes ? \`\${_webpack.RuntimeGlobals.createScript}(\${JSON.stringify(content + footer)})\` : JSON.stringify(content + footer)});\`));
+            });
+        });
+    }
+}
+module.exports = EvalSourceMapDevToolPlugin;
+`;
+
+test("next dev's source maps cover the project's own modules, and installed modules keep their webpack-internal URLs", async () => {
+  const out = await transformForRuntime(NEXT_EVAL_SOURCE_MAP_PLUGIN, 'node_modules/next/dist/build/webpack/plugins/eval-source-map-dev-tool-plugin.js', false);
+  type Tap = (...a: unknown[]) => unknown;
+  const taps: Record<string, Tap[]> = { buildModule: [], renderModuleContent: [] };
+  const hook = (name: string) => ({ tap: (_: string, f: Tap) => taps[name].push(f) });
+  class RawSource {
+    code: string;
+    constructor(code: string) {
+      this.code = code;
+    }
+    source() {
+      return this.code;
+    }
+    map(): object | null {
+      return null;
+    }
+  }
+  class MappedSource extends RawSource {
+    map() {
+      return { version: 3, sources: ['webpack://app/page.tsx'], mappings: 'AAAA' };
+    }
+  }
+  // SourceMapDevToolModuleOptionsPlugin, as webpack has it: every module is built with a source map.
+  const webpack = { SourceMapDevToolModuleOptionsPlugin: class { apply = () => hook('buildModule').tap('', (m) => ((m as { useSourceMap: boolean }).useSourceMap = true)) }, RuntimeGlobals: { createScript: '__webpack_require__.ts' } };
+  const compilation = { hooks: { buildModule: hook('buildModule') }, outputOptions: {} };
+  const compiler = {
+    hooks: { compilation: { tap: (_: string, f: Tap) => f(compilation) } },
+    webpack: { ...webpack, javascript: { JavascriptModulesPlugin: { getCompilationHooks: () => ({ renderModuleContent: hook('renderModuleContent') }) } }, sources: { RawSource } },
+  };
+  const module = { exports: {} as new (o: object) => { apply(c: unknown): void } };
+  new Function('module', 'exports', 'require', out)(module, module.exports, () => webpack);
+  new module.exports({}).apply(compiler);
+
+  const built = (resource: string) => {
+    const m = { resource, useSourceMap: false };
+    for (const f of taps.buildModule) f(m);
+    return m.useSourceMap;
+  };
+  assert.equal(built('/app/app/page.tsx'), true);
+  assert.equal(built('/app/node_modules/next/dist/client/app-index.js'), false);
+  assert.equal(built('/app/node_modules/react-dom/cjs/react-dom-client.development.js'), false);
+
+  const render = (source: RawSource, resource: string, id: string) => taps.renderModuleContent[0](source, { resource }, { chunkGraph: { getModuleId: () => id } }) as RawSource;
+  // An installed module (built without a map): eval'd under its webpack-internal URL, no source map.
+  const installed = render(new RawSource('exports.a = 1;'), '/app/node_modules/next/dist/client/a.js', '(app-pages-browser)/./node_modules/next/dist/client/a.js');
+  assert.equal(installed.source(), 'eval("exports.a = 1;\\n//# sourceURL=webpack-internal:///(app-pages-browser)/./node_modules/next/dist/client/a.js\\n");');
+  assert.equal(new Function('exports', `${installed.source()}; return exports;`)({}).a, 1);
+  // The project's module keeps its inline source map.
+  const own = render(new MappedSource('exports.b = 2;'), '/app/app/page.tsx', '(app-pages-browser)/./app/page.tsx');
+  assert.match(own.source(), /^eval\("exports\.b = 2;\/\/# sourceURL=\[module\]\\n\/\/# sourceMappingURL=data:application\/json;charset=utf-8;base64,[A-Za-z0-9+/=]+\\n\/\/# sourceURL=webpack-internal:\/\/\/\(app-pages-browser\)\/\.\/app\/page\.tsx\\n"\);$/);
+  // A module of the project without a map (none was made for it) is left as it was.
+  const plain = new RawSource('exports.c = 3;');
+  assert.equal(render(plain, '/app/app/data.json', 'x'), plain);
+});
