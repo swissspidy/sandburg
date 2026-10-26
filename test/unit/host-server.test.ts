@@ -111,7 +111,7 @@ test('a request without a browser fetch site (a client that is not a browser) is
   assert.deepEqual(served, []);
   // The stashed arguments were not taken by the refused requests; the page's own request gets them.
   assert.equal((await get(path, { host: hostOf(one), 'sec-fetch-site': 'same-origin' })).body, '[1]');
-  // A browser's own requests: same-origin, and navigations the user starts (none).
+  // A browser's own requests: same-origin, and none, which only the browser itself sends (user-initiated navigations).
   for (const site of ['same-origin', 'none']) {
     assert.equal((await get('/', { host: hostOf(one), 'sec-fetch-site': site })).status, 200, site);
     assert.equal((await get('/__sandburg/x', { host: hostOf(one), 'sec-fetch-site': site }, 'POST')).body, 'one answers', site);
