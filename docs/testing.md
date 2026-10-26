@@ -22,7 +22,7 @@ two sessions or two suites on one machine do). It prints each run's failures, th
 with how often it failed, and keeps every run's output. Chromium on fewer cores is another kind of
 load: prefix the command with `taskset -c 0,1`.
 
-What was found this way, and the patterns that fix it (ADR NNNN):
+What was found this way, and the patterns that fix it (ADR 0060):
 
 - **A fixed wait for something asynchronous** (`setTimeout(…, 300)` "for the channel to open", 50 ms
   "for the record to land"): wait for the thing itself. Poll for the state with a deadline, or have
