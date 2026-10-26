@@ -80,6 +80,37 @@ test("bundles that are not only code and files are not kept: findings to warn ab
   }
 });
 
+test('a bundle is not kept when a file it was made from is written while it is made', async () => {
+  const vfs = project();
+  let made = 0;
+  const bundles = () => createConfigBundles(vfs, createTransformCache(vfs, () => '/app'), () => '/app');
+  const bundle = async () => {
+    made++;
+    // The app writes the file between the bundler's read and the end of the bundle.
+    await new Promise((r) => setTimeout(r, 2));
+    vfs.write('/app/config/shared.ts', enc(`export default { base: "/${made}/" };`));
+    return { code: 'export default { base: "/" };', dependencies: ['config/shared.ts', 'vite.config.ts'] };
+  };
+  await bundles()('/app/vite.config.ts', true, bundle);
+  await bundles()('/app/vite.config.ts', true, bundle);
+  assert.equal(made, 2);
+});
+
+test('a file outside the project counts the settings above it, up to the root', async () => {
+  const vfs = project();
+  vfs.mkdir('/shared/lib', true);
+  vfs.write('/shared/lib/base.ts', enc('export default {};'));
+  const made = { count: 0 };
+  const outside = () => (made.count++, Promise.resolve({ code: 'x', dependencies: ['/shared/lib/base.ts', 'vite.config.ts'] }));
+  const bundles = () => createConfigBundles(vfs, createTransformCache(vfs, () => '/app'), () => '/app');
+  await bundles()('/app/vite.config.ts', true, outside);
+  await bundles()('/app/vite.config.ts', true, outside);
+  assert.equal(made.count, 1);
+  vfs.write('/shared/tsconfig.json', enc('{"compilerOptions":{"jsx":"preserve"}}'));
+  await bundles()('/app/vite.config.ts', true, outside);
+  assert.equal(made.count, 2);
+});
+
 test('a tampered or foreign entry is not used', async () => {
   const vfs = project();
   const { made, bundle } = bundler();

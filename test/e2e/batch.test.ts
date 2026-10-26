@@ -96,8 +96,10 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
 
 test('two sessions in one process run apps side by side on one .sandburg/, each in its own browser', async () => {
   const sessions = [new Session(), new Session()];
-  await Promise.all(sessions.map((s) => s.open()));
+  // Both opens settle first: one that opened is closed even when the other failed to.
+  const opened = await Promise.allSettled(sessions.map((s) => s.open()));
   try {
+    for (const o of opened) if (o.status === 'rejected') throw o.reason;
     // The same install, the same dev-cache key's neighbours, the same host modules: only the heading differs.
     const results = await Promise.all(
       sessions.map((session, i) =>
@@ -114,7 +116,7 @@ test('two sessions in one process run apps side by side on one .sandburg/, each 
     for (const r of results) assert.equal(r.status, 'passed', JSON.stringify([r.failure, r.checks.filter((c) => c.status !== 'passed')]));
     assert.notEqual(results[0].runId, results[1].runId);
   } finally {
-    await Promise.all(sessions.map((s) => s.close()));
+    await Promise.all(sessions.filter((_, i) => opened[i].status === 'fulfilled').map((s) => s.close()));
   }
 });
 

@@ -100,6 +100,9 @@ class BodyTooLargeError extends Error {
  * What comes after a refusal is dropped as it arrives (the stream is not destroyed: that would close
  * the connection before the 413 is sent).
  */
+/** The bytes of each request's body that readBody received, for tracing (traceResponse). */
+const bodyBytes = new WeakMap<IncomingMessage, number>();
+
 function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
   const declared = req.headers['content-length'];
   if (declared !== undefined && !(Number(declared) <= max)) return Promise.reject(new BodyTooLargeError(max));
@@ -107,6 +110,7 @@ function readBody(req: IncomingMessage, max = BODY_MAX): Promise<Buffer> {
     const chunks: Buffer[] = [];
     let length = 0;
     const done = () => {
+      bodyBytes.set(req, length);
       req.off('data', onData).off('end', onEnd).off('error', onError);
       req.on('data', () => {}).on('error', () => {});
     };
@@ -326,9 +330,7 @@ export class HostServer {
 /** Traces a response's body and a request's (SANDBURG_TRACE_TRANSFERS). */
 function traceResponse(req: IncomingMessage, res: ServerResponse): void {
   const t0 = performance.now();
-  let received = 0;
   let sent = 0;
-  req.on('data', (c: Buffer) => (received += c.length));
   const end = res.end.bind(res) as (body?: unknown) => ServerResponse;
   (res as { end: (body?: unknown) => ServerResponse }).end = (body?: unknown) => {
     if (typeof body === 'string') sent = Buffer.byteLength(body);
@@ -338,6 +340,8 @@ function traceResponse(req: IncomingMessage, res: ServerResponse): void {
   res.once('finish', () => {
     const path = (req.url ?? '').split('?')[0];
     const ms = performance.now() - t0;
+    // Counted as readBody read it: a listener of its own here would start the body flowing before the adapter reads it.
+    const received = bodyBytes.get(req) ?? 0;
     const binary = /octet-stream|wasm/.test(String(res.getHeader('content-type') ?? ''));
     traceTransfer({ hop: 'host→page http', what: `${req.method} ${path}`, bytes: sent, encoding: binary ? 'binary' : 'text', ms });
     traceTransfer({ hop: 'page→host http', what: `${req.method} ${path}`, bytes: received, encoding: String(req.headers['content-type'] ?? '').includes('json') ? 'json' : 'binary', ms });
