@@ -54,7 +54,7 @@ second run of the project. Each ADR records its own before-and-after measurement
 
 ## Quick start
 
-Requires Node.js 22.18 or later.
+Requires Node.js 24 (LTS) or later.
 
 ```sh
 npm install --save-dev sandburg
