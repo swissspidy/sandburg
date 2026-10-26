@@ -67,7 +67,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
       if (payload.length < POST_HEADER || POST_HEADER + payload.readUInt32LE(4) > payload.length) return void socket.destroy();
       const length = payload.readUInt32LE(4);
       const target = payload.subarray(POST_HEADER, POST_HEADER + length).toString('utf8');
-      return void answerPost(target, payload.subarray(POST_HEADER + length), serve, channel).then(reply(payload.readUInt32LE(0), target.replace(/([?&]token=)[^&]*/, '$1…')));
+      return void answerPost(target, payload.subarray(POST_HEADER + length), serve, channel).then(reply(payload.readUInt32LE(0), traced(target)));
     }
     const text = payload.toString('utf8');
     const space = text.indexOf(' ');
@@ -75,6 +75,11 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   });
   socket.on('drain', reader.resume);
   return true;
+}
+
+/** A POST's target as traces show it: the compile cache's write token (a capability) left out. */
+export function traced(target: string): string {
+  return target.replace(/([?&]token=)[^&]*/, '$1…');
 }
 
 async function answerPost(target: string, body: Buffer, serve: (req: HostRequest) => Promise<HostResponse | null>, channel: object): Promise<{ status: number; body: Buffer }> {

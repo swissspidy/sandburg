@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
+import { acceptFileChannel, traced } from '../../src/orchestrator/host-socket.ts';
 import { FRAGMENT_COST, MAX_BODY, MAX_FRAME, MAX_POST } from '../../src/file-channel.ts';
 import type { HostRequest } from '../../src/types.ts';
 
@@ -361,4 +361,10 @@ test('a client that does not read its answers is not answered without bound: the
   for (let i = 0; i < 400 && served < 1500; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(served, 1500);
   socket.destroy();
+});
+
+test("a POST's capability token is left out of what traces show", () => {
+  assert.equal(traced('/__sandburg/compile?kind=cjs&token=secret&cache=abc'), '/__sandburg/compile?kind=cjs&token=…&cache=abc');
+  assert.equal(traced('/__sandburg/compile?token=secret'), '/__sandburg/compile?token=…');
+  assert.equal(traced('/__sandburg/esbuild-transform?v=1'), '/__sandburg/esbuild-transform?v=1');
 });
