@@ -157,3 +157,20 @@ test('a dev script program that forks an API and then starts its own page server
   });
   assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
 });
+
+test('a dev script program that serves its API and then, seconds later, its page gets the page', async () => {
+  // One process: the API (JSON) at once, the page's server 3 s later (as Vite's createServer takes).
+  const files = {
+    'package.json': JSON.stringify({ name: 'api-then-page-one-process', private: true, scripts: { dev: 'node prep.js && node server.js' } }),
+    'prep.js': "console.log('prepared');",
+    'server.js':
+      "const http = require('http');\n" +
+      "http.createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{\"ok\":true}'); }).listen(3001);\n" +
+      "setTimeout(() => http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><h1>The page</h1>'); }).listen(3000), 3000);",
+  };
+  const result = await session.run(projectFromFiles(files, { name: 'api-then-page-one-process', path: fixture('node-express') }), {
+    outDir,
+    checks: { 'the page renders': async ({ app, expect }) => void (await expect(app.getByRole('heading', { name: 'The page' })).toBeVisible()) },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+});

@@ -108,6 +108,19 @@ const EPHEMERAL_PATIENCE_MS = 5_000;
 /** How long every process of the program serves a port, with no new port, before pagePort takes a port that sent no HTML. */
 const SETTLED_MS = 1000;
 
+/**
+ * Whether pagePort, with every port probed and none the page's, takes the first port now: after
+ * `patience` ms without a new port, or SETTLED_MS after the last port or report once no process of
+ * the program is still starting (process-tree.ts in the runtime), unless a port said it serves
+ * something else (a Content-Type other than HTML or plain text, or a status of 400 or more: an
+ * API). A process may serve an API first and its page's dev server seconds later (Vite's
+ * createServer); then only a new port, or the patience, ends the wait.
+ */
+export function pagePortSettled(s: { now: number; lastPort: number; patience: number; starting: number | null; startingSince: number; notPage: boolean }): boolean {
+  if (s.now - s.lastPort > s.patience) return true;
+  return s.starting === 0 && !s.notPage && s.now - Math.max(s.lastPort, s.startingSince) > SETTLED_MS;
+}
+
 /** How much of a body without a Content-Type is read to tell whether it is HTML. */
 const SNIFF_BYTES = 512;
 const DOCUMENT_STARTS = ['<!doctype html', '<html', '<head', '<body', '<!--'];
@@ -201,8 +214,7 @@ export class NodeProcess {
   /**
    * The port whose server serves the app's page: of the ports the program listens on, the first to
    * answer GET / with HTML (a dev script may start an API server before or beside the page's). If
-   * none has, the first port: once every process the program still runs serves a port (none is
-   * still starting, see process-tree.ts) for SETTLED_MS, as no other server is coming; else after
+   * none has, the first port: once no other server is coming (see pagePortSettled); else after
    * `patience` ms without a new port. The wait is long because some dev servers listen only once
    * they have compiled the app (ng serve, 20-40 s here), and an API server that started first must
    * not be taken for the app.
@@ -213,6 +225,8 @@ export class NodeProcess {
     let found: number | null = null;
     let settled = 0;
     let lastPort = Date.now();
+    /** Whether a port said it serves something else (see pagePortSettled). */
+    let notPage = false;
     const probe = (port: number) => {
       probed.add(port);
       lastPort = Date.now();
@@ -239,7 +253,9 @@ export class NodeProcess {
         }
         if (m.type === 'start' || m.type === 'full' || m.type === 'error') {
           const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1];
-          if (m.type === 'error' || m.status! >= 400) return done(false);
+          if (m.type === 'error') return done(false);
+          if (m.status! >= 400 || (type !== undefined && !/html|^\s*text\/plain/i.test(type))) notPage = true;
+          if (m.status! >= 400) return done(false);
           if (type !== undefined) return done(/html/.test(type));
           if (m.type === 'full') return done(!!m.body && looksLikeHtml(new Uint8Array(m.body)));
           sniffed = new Uint8Array(0);
@@ -254,7 +270,7 @@ export class NodeProcess {
       await this.until(() => {
         for (const port of this.ports) if (!probed.has(port)) probe(port);
         if (found !== null || settled !== probed.size) return found !== null;
-        return Date.now() - lastPort > patience || (this.starting === 0 && Date.now() - Math.max(lastPort, this.startingSince) > SETTLED_MS);
+        return pagePortSettled({ now: Date.now(), lastPort, patience, starting: this.starting, startingSince: this.startingSince, notPage });
       });
     } finally {
       clearInterval(tick);

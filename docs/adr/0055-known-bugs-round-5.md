@@ -5,8 +5,10 @@
 
 ## Context
 
-Earlier rounds noticed four bugs and left them open. Each was reproduced first; each fix has a test
-that fails without it.
+Earlier rounds noticed four bugs and left them open. Each was reproduced first, and each fix has a
+test that fails without it. Some of the tests added beside them guard against regressions instead
+and pass on origin/main too (an API that answers first and the page's server 3 s later; a program
+that forks an API, or serves one itself, before its page).
 
 1. **A page without a `Content-Type` under a compound dev script waited 60 s** (ADR 0043's "Not
    done"; ADR 0044 fixed the case of a whole HTML document only). For a dev script the runtime's
@@ -47,9 +49,11 @@ that fails without it.
   (`starting` messages): its own (a worker thread is no process and counts 0) plus what each nested
   runtime reported last; a child process counts as starting until it reports, and one that ended no
   more. The program's runtime reports the whole tree's count to the page. Once it has been 0 for 1 s
-  with no new port, `pagePort` takes the first port (still preferring the one that answers HTML). The
-  60 s rule holds where a process is left starting (`concurrently "node api.js" "ng serve"` while ng
-  compiles). A server on a port the system picked (a tool's probe) does not count as up.
+  with no new port, `pagePort` takes the first port (still preferring the one that answers HTML),
+  unless a port said it serves something else: a `Content-Type` other than HTML or plain text, or a
+  status of 400 or more (an API; its process may start the page's dev server seconds later, as
+  Vite's `createServer` takes). Then, as where a process is left starting (`concurrently "node
+  api.js" "ng serve"` while ng compiles), the 60 s rule holds (`pagePortSettled`). A server on a port the system picked (a tool's probe) does not count as up.
 - **Chromium's own network features are turned off**: `PreconnectToSearch` and
   `AutofillServerCommunication`. Chromium takes only the last `--disable-features` switch, so a
   second one would have replaced Playwright's (turning `AimEnabled` back on, whose `/async/folae`

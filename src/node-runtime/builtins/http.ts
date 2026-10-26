@@ -269,7 +269,6 @@ export class Server extends EventEmitter {
   listening = false;
   private port: number | string = 0;
   /** Listening on a port the system picked (port 0): a tool's probe or internal server, not the app's. */
-  /** On a port the system picked (listen(0)). */
   ephemeral = false;
   timeout = 0;
   keepAliveTimeout = 5000;
