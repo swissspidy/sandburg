@@ -300,7 +300,7 @@ const IN_NODE_MODULES = /\/node_modules(?:\/|$)/;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Caches dev servers keep in node_modules (FRAMEWORKS' nodeModulesCaches): threads always ask their parent about them. */
 const NODE_MODULES_CACHES = [...allOf('nodeModulesCaches'), '.cache', '.tmp'].map(escapeRegExp).join('|');
-const CACHE_IN_NODE_MODULES = new RegExp(`/node_modules/(?:${NODE_MODULES_CACHES})`);
+export const CACHE_IN_NODE_MODULES = new RegExp(`/node_modules/(?:${NODE_MODULES_CACHES})`);
 
 /**
  * A flag in shared memory that the main runtime raises once anything is written, made, renamed or
@@ -337,9 +337,9 @@ export function trackNodeModulesWrites(vfs: Vfs, root: string, nodeModules: Reco
 
 /** Files a thread's snapshot leaves out: installed packages (threads read them from the host), build output (FRAMEWORKS' buildDirs), big files. */
 const BUILD_DIRS = [...allOf('buildDirs'), '.turbo', '.cache'].map(escapeRegExp).join('|');
-const SNAPSHOT_SKIP = new RegExp(`/(?:node_modules|\\.git|${BUILD_DIRS})(?:/|$)`);
+export const SNAPSHOT_SKIP = new RegExp(`/(?:node_modules|\\.git|${BUILD_DIRS})(?:/|$)`);
 /** Caches and build output: the snapshot leaves them out, and they change while the app runs. */
-const WRITTEN_DIRS = new RegExp(`/node_modules/(?:${NODE_MODULES_CACHES})(?:/|$)|/(?:${BUILD_DIRS})(?:/|$)`);
+export const WRITTEN_DIRS = new RegExp(`/node_modules/(?:${NODE_MODULES_CACHES})(?:/|$)|/(?:${BUILD_DIRS})(?:/|$)`);
 const SNAPSHOT_MAX_FILE = 4 << 20;
 
 function isProjectSnapshot(s: unknown): s is ProjectSnapshot {

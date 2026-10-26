@@ -12,6 +12,8 @@
 import type { FileTree, Framework, PackageJson } from './types.ts';
 
 export interface FrameworkInfo {
+  /** Its name, as people write it. */
+  title: string;
   /** Whether a project uses it, from its dependencies and file paths. Tried in the table's order: the first match wins. */
   detect(deps: Record<string, string>, paths: string[], files: FileTree, pkg: PackageJson | null): boolean;
   /**
@@ -43,6 +45,7 @@ const configFile = (name: string) => (paths: string[]) => paths.some((p) => new 
 /** The frameworks, in the order detection tries them: the ones built on Vite before Vite. */
 export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = {
   next: {
+    title: 'Next.js',
     detect: (deps, paths) => 'next' in deps || configFile('next')(paths),
     buildDirs: ['.next'],
     quietEnv: { NEXT_TELEMETRY_DISABLED: '1' },
@@ -58,6 +61,7 @@ export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = 
     reference: { script: () => 'dev', listen: (host, port) => ['-H', host, '-p', String(port)] },
   },
   angular: {
+    title: 'Angular',
     detect: (deps, _paths, files) => '@angular/core' in deps || 'angular.json' in files,
     buildDirs: ['.angular'],
     devCaches: ['.angular/cache'],
@@ -76,12 +80,14 @@ export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = 
     reference: { script: (pkg) => (pkg?.scripts?.dev ? 'dev' : 'start'), listen: (host, port) => ['--host', host, '--port', String(port)] },
   },
   sveltekit: {
+    title: 'SvelteKit',
     detect: (deps) => '@sveltejs/kit' in deps,
     buildDirs: ['.svelte-kit'],
     nodeModulesCaches: ['.svelte-kit'],
     node: { sparesAtMount: true },
   },
   astro: {
+    title: 'Astro',
     detect: (deps, paths) => 'astro' in deps || configFile('astro')(paths),
     buildDirs: ['.astro'],
     nodeModulesCaches: ['.astro'],
@@ -89,6 +95,7 @@ export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = 
     node: { sparesAtMount: true },
   },
   nuxt: {
+    title: 'Nuxt',
     detect: (deps, paths) => 'nuxt' in deps || configFile('nuxt')(paths),
     buildDirs: ['.nuxt', '.output'],
     devCaches: ['node_modules/.cache/vite'],
@@ -104,11 +111,13 @@ export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = 
     },
   },
   'solid-start': {
+    title: 'SolidStart',
     detect: (deps) => '@solidjs/start' in deps,
     buildDirs: ['.vinxi'],
     node: { sparesAtMount: true },
   },
   'react-router': {
+    title: 'React Router',
     detect: (deps) => '@react-router/dev' in deps,
     node: {
       sparesAtMount: true,
@@ -121,6 +130,7 @@ export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = 
     },
   },
   vite: {
+    title: 'Vite',
     detect: (deps, paths) => 'vite' in deps || configFile('vite')(paths),
     nodeModulesCaches: ['.vite'],
     devCaches: ['node_modules/.vite'],
@@ -128,6 +138,7 @@ export const FRAMEWORKS: Record<Exclude<Framework, 'unknown'>, FrameworkInfo> = 
     reference: { script: () => 'dev', listen: (host, port) => ['--host', host, '--port', String(port), '--strictPort'] },
   },
   static: {
+    title: 'a static site',
     detect: (_deps, _paths, files, pkg) => !pkg && 'index.html' in files,
   },
 };

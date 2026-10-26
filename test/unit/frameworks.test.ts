@@ -45,3 +45,36 @@ test('every framework the Docker reference starts has a dev server command line'
     assert.match(info.reference.script({ scripts: { dev: 'x' } }), /^(dev|start)$/, name);
   }
 });
+
+// What the table derives, pinned: an edit of the table that changes which paths a thread's snapshot
+// leaves out, which writes count as the install changing, or what a run's caches and environment
+// are, fails here first.
+test("the paths and values derived from the table: threads' patterns, dev caches, DEV_ENV", async () => {
+  const { CACHE_IN_NODE_MODULES, SNAPSHOT_SKIP, WRITTEN_DIRS } = await import('../../src/node-runtime/threads.ts');
+  const { DEV_CACHE_DIRS } = await import('../../src/adapters/node/dev-cache.ts');
+  const { DEV_ENV } = await import('../../src/adapters/node/scripts.ts');
+  const inNodeModulesCache = ['/app/node_modules/.vite/deps/a.js', '/app/node_modules/.cache/x', '/app/node_modules/.tmp/y', '/app/node_modules/.astro/z', '/app/node_modules/.svelte-kit/w', '/app/node_modules/.vite-temp/v'];
+  const notInNodeModulesCache = ['/app/node_modules/react/index.js', '/app/node_modules/.bin/vite', '/app/node_modules/.next/x', '/app/.vite/x'];
+  for (const p of inNodeModulesCache) assert.ok(CACHE_IN_NODE_MODULES.test(p), p);
+  for (const p of notInNodeModulesCache) assert.ok(!CACHE_IN_NODE_MODULES.test(p), p);
+  const skipped = ['/app/node_modules', '/app/node_modules/x/y.js', '/app/.git/HEAD', '/app/.next/server/a.js', '/app/.angular/cache/x', '/app/.nuxt/x', '/app/.output/x', '/app/.svelte-kit/x', '/app/.astro/x', '/app/.vinxi/x', '/app/.turbo/x', '/app/.cache/x', '/app/client/.next'];
+  const kept = ['/app/src/next.js', '/app/.nextx/a', '/app/.vite/x', '/app/node_modulesx/a', '/app/.github/workflows/ci.yml', '/app/package.json'];
+  for (const p of skipped) assert.ok(SNAPSHOT_SKIP.test(p), p);
+  for (const p of kept) assert.ok(!SNAPSHOT_SKIP.test(p), p);
+  const written = ['/app/node_modules/.vite/deps/a.js', '/app/node_modules/.cache', '/app/node_modules/.tmp/a', '/app/.next/cache/x', '/app/.angular/cache', '/app/.nuxt/a', '/app/.output/a', '/app/.svelte-kit/a', '/app/.astro/a', '/app/.vinxi/a', '/app/.turbo/a', '/app/.cache/a'];
+  const notWritten = ['/app/node_modules/react/index.js', '/app/node_modules/.vite-temp/a', '/app/node_modules', '/app/.git/HEAD', '/app/src/a.ts'];
+  for (const p of written) assert.ok(WRITTEN_DIRS.test(p), p);
+  for (const p of notWritten) assert.ok(!WRITTEN_DIRS.test(p), p);
+  assert.deepEqual([...DEV_CACHE_DIRS].sort(), ['.angular/cache', 'node_modules/.cache/jiti', 'node_modules/.cache/vite', 'node_modules/.vite']);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(DEV_ENV).sort(([a], [b]) => a.localeCompare(b))),
+    { ASTRO_TELEMETRY_DISABLED: '1', DO_NOT_TRACK: '1', NEXT_TELEMETRY_DISABLED: '1', NG_CLI_ANALYTICS: 'false', NO_UPDATE_NOTIFIER: '1', NUXT_TELEMETRY_DISABLED: '1' },
+  );
+});
+
+test("the Docker reference's probe names the frameworks it starts, from the table", async () => {
+  const { dockerReference } = await import('../../src/reference/docker.ts');
+  const run = dockerReference()();
+  const verdict = run.probe({ name: 'x', path: '/x', files: {}, packageJson: { scripts: { dev: 'astro dev' } }, framework: 'astro' } as unknown as Parameters<typeof run.probe>[0]);
+  assert.deepEqual(verdict, { verdict: 'unsupported', reason: 'the Docker reference runs Next.js, Angular and Vite dev servers, not "astro"' });
+});

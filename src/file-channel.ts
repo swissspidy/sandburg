@@ -15,8 +15,10 @@
  *   body's length, the status), then the body, which MAX_BODY bounds (MAILBOX_BYTES).
  */
 
-/** Where a sandbox's runtime opens the channel (its host page's base, then /files). */
-export const FILE_CHANNEL_PATH = '/__sandburg/files';
+/** The channel's name under its host page's base (a runtime opens `<base>/files`). */
+export const FILE_CHANNEL_NAME = 'files';
+/** Where the host accepts the channel: under the host page's base on a sandbox origin. */
+export const FILE_CHANNEL_PATH = `/__sandburg/${FILE_CHANNEL_NAME}`;
 /** Larger bodies are answered with status 0 (over a WebSocket, 40 MB took 4x as long as over HTTP). */
 export const MAX_BODY = 1 << 20;
 /** Larger text frames from a runtime close the channel: a request is `<id> <path>`, and nothing is buffered beyond this. */
@@ -25,5 +27,8 @@ export const MAX_FRAME = 1 << 16;
 export const MAX_POST = (4 << 20) + MAX_FRAME;
 /** An answer's header: the id and the status. */
 export const ANSWER_HEADER = 8;
-/** A runtime's mailbox for one answer: the state, the body's length and the status, then the body. */
-export const MAILBOX_BYTES = 12 + MAX_BODY;
+/** A POST's header: the id and the path's length. */
+export const POST_HEADER = 8;
+/** A runtime's mailbox for one answer: the state, the body's length and the status (i32 each), then the body. */
+export const MAILBOX_HEADER = 12;
+export const MAILBOX_BYTES = MAILBOX_HEADER + MAX_BODY;

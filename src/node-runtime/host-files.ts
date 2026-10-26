@@ -6,7 +6,7 @@
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
-import { MAILBOX_BYTES, MAX_FRAME } from '../file-channel.ts';
+import { ANSWER_HEADER, FILE_CHANNEL_NAME, MAILBOX_BYTES, MAILBOX_HEADER as CHANNEL_MAILBOX_HEADER, MAX_FRAME, POST_HEADER } from '../file-channel.ts';
 import { bundleHeader } from '../bundle-format.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
 
@@ -289,7 +289,7 @@ const DIGEST_HELPER = `let socket = null, ids = 0;
 const asked = new Map();
 const settle = (shared, status, body) => {
   const state = new Int32Array(shared, 0, 3);
-  if (body) new Uint8Array(shared, 12).set(body);
+  if (body) new Uint8Array(shared, ${CHANNEL_MAILBOX_HEADER}).set(body);
   Atomics.store(state, 1, body ? body.length : 0);
   Atomics.store(state, 2, status);
   Atomics.store(state, 0, 1);
@@ -300,12 +300,12 @@ function open(url, ready) {
   socket.binaryType = 'arraybuffer';
   socket.onopen = () => (Atomics.store(ready, 0, 1), Atomics.notify(ready, 0));
   socket.onmessage = ({ data }) => {
-    const head = new DataView(data, 0, 8);
+    const head = new DataView(data, 0, ${ANSWER_HEADER});
     const shared = asked.get(head.getUint32(0, true));
     if (!shared) return;
     asked.delete(head.getUint32(0, true));
-    if (shared instanceof MessagePort) return shared.postMessage({ status: head.getUint32(4, true), body: new Uint8Array(data, 8) });
-    settle(shared, head.getUint32(4, true), new Uint8Array(data, 8));
+    if (shared instanceof MessagePort) return shared.postMessage({ status: head.getUint32(4, true), body: new Uint8Array(data, ${ANSWER_HEADER}) });
+    settle(shared, head.getUint32(4, true), new Uint8Array(data, ${ANSWER_HEADER}));
   };
   socket.onclose = () => {
     Atomics.store(ready, 0, 2);
@@ -330,11 +330,11 @@ const handle = async ({ data }) => {
     const id = ++ids;
     asked.set(id, data.reply);
     const path = new TextEncoder().encode(data.post);
-    const frame = new Uint8Array(8 + path.length + data.body.length);
+    const frame = new Uint8Array(${POST_HEADER} + path.length + data.body.length);
     new DataView(frame.buffer).setUint32(0, id, true);
     new DataView(frame.buffer).setUint32(4, path.length, true);
-    frame.set(path, 8);
-    frame.set(data.body, 8 + path.length);
+    frame.set(path, ${POST_HEADER});
+    frame.set(data.body, ${POST_HEADER} + path.length);
     return socket.send(frame);
   }
   const state = new Int32Array(data.shared, 0, 2);
@@ -391,7 +391,7 @@ function openChannel(worker: Worker): void {
   if (channel || !globalThis.location || typeof WebSocket === 'undefined') return;
   const ready = new SharedArrayBuffer(4);
   channel = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), ready, mailbox: null };
-  const url = new URL(`${base}/files`, workerHref);
+  const url = new URL(`${base}/${FILE_CHANNEL_NAME}`, workerHref);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   nativeWorkerPost.call(worker, { channel: url.href, ready });
 }
@@ -441,7 +441,7 @@ function viaChannel(url: string): { status: number; body: Uint8Array } | null {
     return null;
   }
   const status = Atomics.load(state, 2);
-  return status ? { status, body: new Uint8Array(c.mailbox, 12, Atomics.load(state, 1)).slice() } : null;
+  return status ? { status, body: new Uint8Array(c.mailbox, CHANNEL_MAILBOX_HEADER, Atomics.load(state, 1)).slice() } : null;
 }
 
 /** The hex SHA-256 of text's UTF-8, or null when the helper is not there to compute it. */

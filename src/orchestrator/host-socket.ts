@@ -15,7 +15,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { HostRequest, HostResponse } from '../types.ts';
 import { traceTransfer } from '../transfer-trace.ts';
-import { ANSWER_HEADER, MAX_BODY, MAX_FRAME, MAX_POST } from '../file-channel.ts';
+import { ANSWER_HEADER, MAX_BODY, MAX_FRAME, MAX_POST, POST_HEADER } from '../file-channel.ts';
 
 /** The paths a runtime asks for over the channel: installed files. */
 const SERVED = /^\/__sandburg\/nm\//;
@@ -51,10 +51,10 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
       traceTransfer({ hop: 'host→runtime ws', what, bytes: res.body.length, encoding: 'binary', ms: performance.now() - t0 });
     };
     if (opcode === 0x2) {
-      if (payload.length < 8 || 8 + payload.readUInt32LE(4) > payload.length) return void socket.destroy();
+      if (payload.length < POST_HEADER || POST_HEADER + payload.readUInt32LE(4) > payload.length) return void socket.destroy();
       const length = payload.readUInt32LE(4);
-      const target = payload.subarray(8, 8 + length).toString('utf8');
-      return void answerPost(target, payload.subarray(8 + length), serve, channel).then(reply(payload.readUInt32LE(0), target));
+      const target = payload.subarray(POST_HEADER, POST_HEADER + length).toString('utf8');
+      return void answerPost(target, payload.subarray(POST_HEADER + length), serve, channel).then(reply(payload.readUInt32LE(0), target));
     }
     const text = payload.toString('utf8');
     const space = text.indexOf(' ');

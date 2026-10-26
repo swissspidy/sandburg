@@ -84,7 +84,8 @@ frameworks built on Vite before `vite`), `buildDirs`, `nodeModulesCaches`, `devC
 listen arguments). It is core (no imports): the host, the page, the runtime and the demo site's
 generator import it. It is a `Record` over the `Framework` union, so a name in one and not the other
 does not compile; test/unit/frameworks.test.ts checks result-schema.json's enum against it and pins
-detection (16 cases). threads.ts derives its three patterns from it, dev-cache.ts its directories,
+detection (16 cases), and pins what the table derives (threads.ts' three patterns on 46 sample
+paths, the dev caches, DEV_ENV), so an edit of the table that changes them fails there first. threads.ts derives its three patterns from it, dev-cache.ts its directories,
 scripts.ts its DEV_ENV, browser.ts the env, spares and dev command options, docker.ts what it
 supports and how it starts it.
 
@@ -108,7 +109,18 @@ where they are read; docs/architecture.md says where each goes.
   (which each reader already treated as a bad bundle), and copies the header out of shared memory,
   which Chromium's TextDecoder does not read (a first version did not: the runtime's prefetched-bundle
   test failed, Node's TextDecoder reads it and the unit test did not tell). The same bytes are written.
-- **Dependency specs**: the browser installer's parseSpec asks spec-guard.ts' `isRegistrySpec`.
+- **Dependency specs**: spec-guard.ts' `parseRegistrySpec` is the one parse of a spec (the package
+  and range, or null); the host's `isRegistrySpec` and the browser installer's parseSpec both use it,
+  so a spec the guard passes is resolved as the guard read it (`" npm:foo@^1"` is foo, not a range of
+  the alias's text).
+- **The file channel's offsets**: the runtime's helper (a script built as a string) interpolates the
+  answer's header (ANSWER_HEADER), a POST's (POST_HEADER) and the mailbox's (MAILBOX_HEADER) instead
+  of writing 8 and 12; the runtime opens `<base>/${FILE_CHANNEL_NAME}` (base-relative: the demo
+  site's host page has another base).
+- **Entries checked against the code**: the test compares the page's entries with each adapter's
+  `browserEntry`, the service worker's with its `assets`, the compile worker's with COMPILE_WORKER,
+  and checks that page-checks/index.ts and bundle.ts still bundle the declared entries. npm's packages
+  (pacote, @npmcli/arborist, cacache, npm-registry-fetch, npm-package-arg) are host-only.
 
 ### Fixes the contracts turned up
 
@@ -121,7 +133,12 @@ where they are read; docs/architecture.md says where each goes.
   runtime test fails without it.
 - **The browser installer's spec check** let through a directory (`.`, `..`), a local tarball
   (`x.tgz`), a protocol it did not list (`ssh://host/x`) and an alias to a file (`npm:x@file:../y`),
-  which failed later with a less clear error; it now refuses what the host refuses.
+  which failed later with a less clear error; it now refuses what the host refuses. An override's
+  `$name` (npm's reference to the project's own spec of a package, which the host allows) is resolved
+  to that spec; one that names no dependency of the project fails as npm fails (`Unable to resolve
+  reference $name`). A `$` anywhere else (`npm:x@$y`) is refused, as the host refuses it, with a
+  message saying so. Before this branch, the browser installer took `$react` as a range and failed
+  to find a version.
 
 ### Numbers
 
@@ -133,7 +150,7 @@ where they are read; docs/architecture.md says where each goes.
 | modules with framework-keyed knowledge | 7 | 1 table, read by 6 |
 | sites framing bundles by hand | 11 | 0 (one module) |
 | definitions of the file channel's bounds | 2 (host, and a copy in the runtime) | 1 |
-| unit tests | 304 | 316 |
+| unit tests | 304 | 320 |
 | runtime tests | 78 | 79 |
 
 On this branch (9ba31fa): typecheck, lint, `npm test` (316), `npm run test:runtime` (79) and the
@@ -185,8 +202,10 @@ the same; the read-report fix matters only for paths long enough to overflow a f
   cache, a browser module.
 - Behaviour changes: a runtime whose read report would exceed a frame keeps its file channel (before:
   the channel closed and later files came over HTTP); `--install-in browser` refuses `.`, `..`,
-  tarball paths, unlisted protocols and aliases to files up front. Nothing else an app or a user
-  could notice.
+  tarball paths, unlisted protocols, aliases to files and `$` references other than an override's
+  whole value up front, and resolves an override's `$name` to the project's spec; the Docker
+  reference's "unsupported framework" message lists the frameworks from the table (Next.js, Angular
+  and Vite, in its order). Nothing else an app or a user could notice.
 
 ## What did not help, or was left
 

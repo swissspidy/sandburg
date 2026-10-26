@@ -13,7 +13,7 @@ import { contentBytes } from '../store.ts';
 import { DEV_ENV } from '../adapters/node/scripts.ts';
 import { AdapterError } from '../host/types.ts';
 import type { InstallReport, ProbeVerdict, Project } from '../types.ts';
-import { frameworkInfo } from '../framework.ts';
+import { FRAMEWORKS, frameworkInfo } from '../framework.ts';
 import type { NodeRuntime } from '../orchestrator/session.ts';
 
 /** Options of dockerReference(): the image and where the container's files and npm cache live. */
@@ -56,7 +56,8 @@ class DockerRun implements NodeRuntime {
 
   probe(project: Project): ProbeVerdict {
     if (!frameworkInfo(project.framework)?.reference) {
-      return { verdict: 'unsupported', reason: `the Docker reference runs Vite, Next.js and Angular dev servers, not "${project.framework}"` };
+      const titles = Object.values(FRAMEWORKS).flatMap((f) => (f.reference ? [f.title] : []));
+      return { verdict: 'unsupported', reason: `the Docker reference runs ${titles.slice(0, -1).join(', ')} and ${titles.at(-1)} dev servers, not "${project.framework}"` };
     }
     if (!project.packageJson?.scripts?.dev) return { verdict: 'unsupported', reason: 'package.json has no "dev" script' };
     return { verdict: 'supported' };

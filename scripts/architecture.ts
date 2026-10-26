@@ -117,8 +117,8 @@ export const ENVIRONMENTS: Record<Environment, { what: string; entries: string[]
   'app-frame': { what: "the app's frame: the page checks' runtime and the WebSocket shim", entries: ['src/page-checks/runtime.ts', 'src/page-checks/dom-shim.ts', 'src/adapters/node/ws-shim.js'] },
 };
 
-/** Packages that only run on the host: a browser bundle that imports one fails to build or to run. */
-const HOST_ONLY_PACKAGES = /^(esbuild|playwright-core|@playwright\/test|oxc-parser)(\/|$)/;
+/** Packages that only run on the host (Node's APIs, npm's internals): a browser bundle that imports one fails to build or to run. */
+const HOST_ONLY_PACKAGES = /^(esbuild|playwright-core|@playwright\/test|oxc-parser|pacote|@npmcli\/arborist|cacache|npm-registry-fetch|npm-package-arg)(\/|$)/;
 
 /**
  * The layers, by path (the first that matches), and the layers each may import. A layer may import

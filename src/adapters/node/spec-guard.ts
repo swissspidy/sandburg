@@ -32,17 +32,27 @@ function isRegistryRange(range: string): boolean {
   return RANGE.test(range);
 }
 
-/** Whether `spec` (a dependency value) resolves to a registry package, and nothing a fetcher would prepare. */
-export function isRegistrySpec(spec: string): boolean {
+/**
+ * The package and range a registry spec names (`name` is the dependency's own, unless an `npm:`
+ * alias names another; an empty range is `latest`), or null for anything else: the one parse of a
+ * spec, for the host's check and the browser installer's resolution alike.
+ */
+export function parseRegistrySpec(name: string, spec: string): { name: string; range: string } | null {
   const s = spec.trim();
   const alias = ALIAS.exec(s);
   if (alias) {
-    const [, name, range] = alias;
+    const [, aliased, range] = alias;
     // The aliased package must be a name, not a path or a local tarball (npm reparses it: `npm:.tgz` is a file).
-    if (!NAME.test(name) || TARBALL.test(name)) return false;
-    return range === undefined ? true : isRegistryRange(range);
+    if (!NAME.test(aliased) || TARBALL.test(aliased)) return null;
+    if (range !== undefined && !isRegistryRange(range)) return null;
+    return { name: aliased, range: range?.trim() || 'latest' };
   }
-  return isRegistryRange(s);
+  return isRegistryRange(s) ? { name, range: s || 'latest' } : null;
+}
+
+/** Whether `spec` (a dependency value) resolves to a registry package, and nothing a fetcher would prepare. */
+export function isRegistrySpec(spec: string): boolean {
+  return parseRegistrySpec('', spec) !== null;
 }
 
 /** Thrown when a project asks for a dependency the host does not install (not a registry version). */

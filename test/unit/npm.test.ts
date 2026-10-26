@@ -124,6 +124,19 @@ test('resolve: peers installed, optional dependencies left out, unsupported spec
   await assert.rejects(resolveTree({ dependencies: { host: '^9' } }, registry), /No matching version found for host@\^9/);
 });
 
+test("resolve: specs parsed as the host parses them; an override's $ reference is the project's own spec", async () => {
+  const registry = fakeRegistry({ host: { '3.0.0': {}, '3.2.0': {} }, react: { '18.3.1': {}, '19.1.0': {} }, dom: { '1.0.0': { deps: { react: '^19' } } } });
+  // An alias with spaces around it is the aliased package (before: the alias's text as a range of "x").
+  assert.equal((await resolveTree({ dependencies: { x: ' npm:host@^3 ' } }, registry)).get('node_modules/x')?.version, '3.2.0');
+  // "$react": the project's own spec of react, wherever the override applies.
+  const pinned = await resolveTree({ dependencies: { react: '18.3.1', dom: '1.0.0' }, overrides: { react: '$react' } }, registry);
+  assert.equal(pinned.get('node_modules/react')?.version, '18.3.1');
+  assert.equal(pinned.has('node_modules/dom/node_modules/react'), false);
+  await assert.rejects(resolveTree({ dependencies: { dom: '1.0.0' }, overrides: { react: '$react' } }, registry), /Unable to resolve reference \$react/);
+  // A $ reference anywhere but an override's whole value is refused, as the host refuses it, and said so.
+  await assert.rejects(resolveTree({ dependencies: { x: 'npm:host@$react' } }, registry), (e: Error) => e instanceof UnsupportedSpecError && /a \$ reference/.test(e.message));
+});
+
 test('resolve: a v3 lockfile is installed as it is, and says so', async () => {
   const registry = fakeRegistry({ c: { '1.0.0': {}, '1.5.0': {} } });
   const lock = JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/c': { version: '1.0.0', optionalDependencies: { 'c-wasm32-wasi': '1.0.0' } }, 'node_modules/opt': { version: '1.0.0', optional: true } } });

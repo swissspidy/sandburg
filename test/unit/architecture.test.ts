@@ -25,6 +25,22 @@ test('every module runs in an environment, or is imported only for its types', (
   assert.deepEqual(unplaced, [], 'imported by value, but reached from no entry: add its bundle\'s entry to ENVIRONMENTS');
 });
 
+test("the entries are the bundles' own: the host page and each adapter's browser half, its assets, the compile worker, the page checks", async () => {
+  const { relative } = await import('node:path');
+  const { adapterNames, getAdapter } = await import('../../src/adapters.ts');
+  const { COMPILE_WORKER } = await import('../../src/adapters/node/compile-wasm-bundle.ts');
+  const rel = (p: string) => relative(process.cwd(), p);
+  const adapters = adapterNames.map(getAdapter);
+  assert.deepEqual(ENVIRONMENTS.page.entries, ['src/host/host.ts', ...adapters.map((a) => rel(a.browserEntry))]);
+  assert.deepEqual(ENVIRONMENTS['service-worker'].entries, adapters.flatMap((a) => Object.values(a.assets).map(rel)));
+  assert.deepEqual(ENVIRONMENTS['compile-worker'].entries, [rel(COMPILE_WORKER)]);
+  // The page checks' runtime (page-checks/index.ts bundles it) and the runtime's script (bundle.ts).
+  for (const [env, file, entry] of [['app-frame', 'src/page-checks/index.ts', 'page-checks/runtime.ts'], ['runtime', 'src/node-runtime/bundle.ts', "here('worker.ts')"]] as const) {
+    assert.ok(readFileSync(file, 'utf8').includes(entry), `${file} no longer bundles ${entry}`);
+    assert.ok(ENVIRONMENTS[env].entries.some((e) => e.endsWith(entry.replace(/^here\('(.*)'\)$/, '$1'))), env);
+  }
+});
+
 test("the lint config's browser-only rule covers every module that runs in a browser", () => {
   // .oxlintrc.json refuses node:* imports in browser code, for the editor and `npm run lint`; its
   // file list is kept true here.
