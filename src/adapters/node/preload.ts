@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { TRANSFORM_VERSION, tmpSuffix } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
 import { installer, devCacheRoot } from './installs.ts';
+import { bundleHead } from '../../bundle-format.ts';
 
 /**
  * Preloading: the installed files that runs load (node_modules/…, compiled or raw), recorded as the
@@ -282,10 +283,7 @@ async function buildBundle(key: string, entries: string[]): Promise<{ body: Buff
     header.push([mode, rel, got.body.length]);
     bodies.push(got.body);
   }
-  const json = Buffer.from(JSON.stringify(header));
-  const length = Buffer.alloc(4);
-  length.writeUInt32LE(json.length);
-  return { body: Buffer.concat([length, json, ...bodies]), files: header.map(([mode, rel]) => [mode, rel]) };
+  return { body: Buffer.concat([bundleHead(header), ...bodies]), files: header.map(([mode, rel]) => [mode, rel]) };
 }
 
 /**

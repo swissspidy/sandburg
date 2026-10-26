@@ -8,7 +8,7 @@ import { tempDir } from './temp-dir.ts';
 const root = tempDir('sandburg-ahead-');
 process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
 const { serve } = await import('../../src/adapters/node/index.ts');
-const { MAX_BODY } = await import('../../src/orchestrator/host-socket.ts');
+const { MAX_BODY } = await import('../../src/file-channel.ts');
 const { preloadList } = await import('../../src/adapters/node/preload.ts');
 
 const key = 'c'.repeat(24);

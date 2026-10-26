@@ -28,6 +28,8 @@ export type FromWorker =
   | { type: 'ws-closed'; id: number; code: number; reason: string; wasClean: boolean }
   /** A command of a shell script failed, here or in a nested runtime (passed up to the host). */
   | { type: 'process-exit'; command: string; code: number; stderr: string }
+  /** How many of this runtime's processes (it and its child processes, at any depth) are still starting: see process-tree.ts. */
+  | { type: 'starting'; count: number }
   | { type: 'tree'; id: number; files: Record<string, { base64: string }> }
   /** read-cache's answer: the files, and their bytes as a bundle when asked (cache-tree.ts); `unchanged` as tree's. */
   | { type: 'cache'; id: number; files: CacheEntry[]; bundle: ArrayBuffer | null; unchanged?: boolean };
@@ -111,6 +113,8 @@ export type ToWorker =
       filesBundle?: string | null;
       /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
       compileCache?: { key: string; bundle: string | null; token?: string } | null;
+      /** Project directories whose CommonJS files are compiled as they are written (compile-ahead.ts): next dev's server output. */
+      compileAhead?: string[];
       /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
       prefetched?: Record<string, SharedArrayBuffer>;
       nodeModules: Record<string, number> | null;

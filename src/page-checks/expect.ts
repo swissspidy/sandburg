@@ -4,7 +4,8 @@
  */
 import { getAriaChecked, getAriaDisabled, getAriaRole, getElementAccessibleName, isElementVisible } from 'ivya/utils';
 import { type Text, editable, normalize, Locator, safeElements } from './locator.ts';
-import { named, App, matchesUrl, appDocument, poll, guarded } from './runtime.ts';
+import { named, matchesUrl, appDocument, poll, guarded } from './frame.ts';
+import { App } from './app.ts';
 
 interface Outcome {
   pass: boolean;

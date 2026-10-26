@@ -1,6 +1,6 @@
 /**
  * What an install changes in the packages it installs, for the browser runtime: shared by the host's
- * installer (install.ts, npm) and the browser's (node-runtime/npm/install.ts). Browser-safe: data
+ * installer (install.ts, npm) and the browser's (browser-npm/install.ts). Browser-safe: data
  * and strings only.
  */
 import type { Project } from '../../types.ts';
@@ -365,6 +365,35 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
     file: /(^|\/)node_modules\/next\/dist\/build\/webpack-config\.js$/,
     from: /compression: dev \? 'gzip' : false\n/,
     to: "compression: dev ? 'gzip' : false,\n        readonly: process.env.SANDBURG_WEBPACK_CACHE_READONLY === '1' // sandburg: see SOURCE_PATCHES\n",
+  },
+  {
+    // next dev's source maps (`eval-source-map`) for the project's own modules only. Its maps of
+    // installed modules (Next.js' and React's, whose stack frames it ignore-lists) were 3/4 of what
+    // each run handles: 2/3 of the webpack cache's packs (inflated and restored in every run), 7.4 of
+    // the 12 MB of the client's main chunk that the page parses, and the server's chunks. Those modules
+    // are built without one (SWC is not asked for it) and emitted as webpack's `eval` devtool emits
+    // them, under the same webpack-internal:/// URL: their frames read and are ignore-listed as before
+    // (by path), at the module's own lines. The project's modules keep theirs.
+    // One replacement over both places, so that a version where either has changed gets neither: maps
+    // dropped without the eval wrapper would leave those modules' frames as unmapped lines of the chunk.
+    file: /(^|\/)node_modules\/next\/dist\/(esm\/)?build\/webpack\/plugins\/eval-source-map-dev-tool-plugin\.js$/,
+    from: /\n(\s*)new (_webpack\.|)SourceMapDevToolModuleOptionsPlugin\(options\)\.apply\(compilation\);\n([^]*?)\n(\s*)if \(!sourceMap\) \{\n\s*return result\(source\);\n/,
+    to:
+      "\n$1new $2SourceMapDevToolModuleOptionsPlugin(options).apply(compilation);\n$1compilation.hooks.buildModule.tap('SandburgSourceMaps', (m) => { if (/[\\\\/]node_modules[\\\\/]/.test(m.resource ?? '')) m.useSourceMap = false; }); // sandburg: see SOURCE_PATCHES\n$3\n" +
+      "$4if (!sourceMap && /[\\\\/]node_modules[\\\\/]/.test(m.resource ?? '')) { // sandburg: see SOURCE_PATCHES\n" +
+      '$4  const code = JSON.stringify(`${content}\\n//# sourceURL=webpack-internal:///${chunkGraph.getModuleId(m)}\\n`);\n' +
+      '$4  return result(new RawSource(`eval(${compilation.outputOptions.trustedTypes ? `${compiler.webpack.RuntimeGlobals.createScript}(${code})` : code});`));\n' +
+      '$4}\n' +
+      '$4if (!sourceMap) {\n$4    return result(source);\n',
+  },
+  {
+    // Next.js 16.4's dev server asks npm's security advisories about its own version as it starts
+    // (experimental.agentUpgrade, 'security' by default): a POST to the registry, which the egress
+    // gateway refuses and the network check counted against the app. Off by default here, as with
+    // `experimental: { agentUpgrade: false }` in next.config; an app that sets it still gets it.
+    file: /(^|\/)node_modules\/next\/dist\/(esm\/)?server\/config-shared\.js$/,
+    from: /(\n\s*)agentUpgrade: 'security',/,
+    to: '$1agentUpgrade: false, // sandburg: see SOURCE_PATCHES',
   },
   {
     // Next.js 16 runs Turbopack unless told otherwise, and Turbopack has no WebAssembly build: with

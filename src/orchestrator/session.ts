@@ -130,7 +130,7 @@ export interface RunOptions {
   seed?: boolean;
   /**
    * Where dependencies are installed: 'host' (npm on the host, the default) or 'browser' (opt-in:
-   * the page resolves and fetches packages from the npm registry itself; see node-runtime/npm).
+   * the page resolves and fetches packages from the npm registry itself; see adapters/node/browser-npm).
    */
   installIn?: 'host' | 'browser';
   /**
@@ -147,12 +147,21 @@ export interface RunOptions {
    * guard reads of each open app, and asks of those in their checks when memory is short.
    */
   onRenderer?: (renderer: RunRenderer) => void;
+  /**
+   * Called when the run starts a seed run beside it (a cold Next.js install's, ADR 0037), whose tab
+   * has a renderer of its own (up to 1.4 GB): the seed run's phases and renderer go to the
+   * callbacks it returns, and `ended` once it is over. A batch's memory guard counts it as another
+   * open app.
+   */
+  onSeed?: () => Pick<RunOptions, 'onPhase' | 'onRenderer'> & { ended(): void };
 }
 
 /** A run's renderer, for a batch (RunOptions.onRenderer). */
 export interface RunRenderer {
   /** Bytes it uses now; null until it is found, and where its memory cannot be read (not Linux). */
   used(): number | null;
+  /** The most it was seen to use so far (bytes); null until it is found, and where its memory cannot be read. */
+  peak?(): number | null;
   /**
    * A full garbage collection in each of the run's isolates (collectGarbage), each given
    * GC_TIMEOUT_MS; resolves when done (never rejects; a no-op once the run is over).
@@ -389,10 +398,11 @@ export class Session {
 
   /** Runs a seed project (see HostInstallOptions.runSeed); its result goes to .sandburg/seeds. */
   private runSeed(project: Project, checks: Checks, parent: RunOptions): Promise<void> {
+    const watch = parent.onSeed?.();
     const seed = (async () => {
-      const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds') });
+      const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds'), onPhase: watch?.onPhase, onRenderer: watch?.onRenderer });
       if (result.status !== 'passed') throw new Error(`seed ${project.name} did not pass: ${result.failure?.message ?? result.status}`);
-    })();
+    })().finally(() => watch?.ended());
     this.seeds.add(seed);
     void seed.catch(() => {}).finally(() => this.seeds.delete(seed));
     return seed;
@@ -493,6 +503,7 @@ export class Session {
       const t = tab;
       options.onRenderer?.({
         used: () => memory?.used() ?? null,
+        peak: () => memory?.peak || null,
         collectGarbage: async () => {
           if (t.page.isClosed()) return;
           const cdp = await t.context.newCDPSession(t.page).catch(() => null);

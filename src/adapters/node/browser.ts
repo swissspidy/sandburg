@@ -5,13 +5,15 @@
  */
 import { AdapterError, type AdapterContext, type RuntimeAdapter } from '../../host/types.ts';
 import type { FileTree, Framework, InstallReport } from '../../types.ts';
+import { frameworkInfo } from '../../framework.ts';
 import { connectServiceWorker, registerServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort, type CacheSnapshot } from './process.ts';
 import type { CacheEntry } from '../../node-runtime/cache-tree.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
-import { installInBrowser, packFiles, type BrowserInstallPart } from '../../node-runtime/npm/install.ts';
-import { Registry } from '../../node-runtime/npm/registry.ts';
-import { UnsupportedSpecError } from '../../node-runtime/npm/resolve.ts';
+import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-npm/install.ts';
+import { Registry } from './browser-npm/registry.ts';
+import { UnsupportedSpecError } from './browser-npm/resolve.ts';
+import { bundleHeader } from '../../bundle-format.ts';
 
 export interface HostInstall {
   key: string;
@@ -52,41 +54,15 @@ const START = '.sandburg/start.js';
 const BACKEND_PREFIX = /^\/__sandburg_backend\/(\d+)(\/[^?]*)?(\?.*)?$/;
 
 /**
- * Next.js in the runtime: SWC's WebAssembly build (there is no native SWC in the browser), and
- * next.config.ts loaded with Node's own type stripping, as `--experimental-next-config-strip-types`
- * does. The default path transpiles it with SWC to CommonJS, which SWC's WebAssembly build stopped
- * doing in Next.js 16 (it leaves the module ESM).
- */
-const NEXT_ENV = { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 'true' };
-
-/**
  * napi-rs WebAssembly packages (rolldown, oxc, Astro's compiler, satteri) start a pool of 4 async
  * workers (emnapi's asyncWorkPoolSize) on their first async call, each a runtime here that boots and
  * instantiates the package's WebAssembly while the program waits: one each.
  */
 const RUNTIME_ENV = { NAPI_RS_ASYNC_WORK_POOL_SIZE: '1' };
 
-/**
- * The Angular CLI compiles TypeScript on its own thread, not in a worker thread (NG_BUILD_PARALLEL_TS=0;
- * the same compilation and diagnostics). A worker thread here is another runtime that loads
- * TypeScript and the Angular compiler again (~1 s of a warm ng serve), for little parallelism.
- */
-const ANGULAR_ENV = { NG_BUILD_PARALLEL_TS: '0' };
-
-/**
- * Options for dev commands that start more Node processes than the server needs: here each is
- * another runtime, which loads the CLI again and competes with the app for the cores.
- * - `react-router dev` relaunches itself as a child process with --conditions=development unless it
- *   has them (~2 s). It starts with them instead, as the child it would relaunch (without that
- *   child's REACT_ROUTER_DEV_RESTARTED).
- * - `nuxt dev` serves from its own process, and once it is ready starts two more (its fork pool) to
- *   restart in after a change to nuxt.config, while the app's page loads. With --no-fork it
- *   restarts in its own process.
- */
-function devCommandOptions(framework: string | undefined, command: string, argv: string[]): { execArgv: string[]; argv: string[] } {
-  if (framework === 'react-router' && /^react-router\s+dev(\s|$)/.test(command)) return { execArgv: ['--conditions=development'], argv };
-  if (framework === 'nuxt' && /^(nuxt|nuxi)\s+dev(\s|$)/.test(command) && !argv.some((a) => /^--(no-)?fork(=|$)/.test(a))) return { execArgv: [], argv: [...argv, '--no-fork'] };
-  return { execArgv: [], argv };
+/** Its dev command's options from the framework's entry (FRAMEWORKS' node.devCommand), or none. */
+function devCommandOptions(framework: Framework, command: string, argv: string[]): { execArgv: string[]; argv: string[] } {
+  return frameworkInfo(framework)?.node?.devCommand?.(command, argv) ?? { execArgv: [], argv };
 }
 
 /** Entry scripts per framework: the programmatic equivalents of the dev commands. */
@@ -134,7 +110,7 @@ http
 /** A dev script with several commands (or other packages' scripts), run by the runtime's shell as npm runs it. */
 const shellStart = (script: string) => `// Sandburg: the dev script, run as npm runs it.
 const { spawn } = require('node:child_process');
-const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit' });
+const child = spawn(${JSON.stringify(script)}, { shell: true, stdio: 'inherit', sandburgDevScript: true });
 child.on('exit', (code) => process.exit(code ?? 1));
 `;
 
@@ -145,9 +121,8 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 /** The files of a cache's bundle (readCache), as [path, bytes] (views of the bundle). */
 function bundleFiles(bundle: ArrayBuffer): [string, Uint8Array][] {
-  const length = new DataView(bundle).getUint32(0, true);
-  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(bundle, 4, length))) as [string, string, number][];
-  let at = 4 + length;
+  const { header, body } = bundleHeader<[string, string, number]>(new Uint8Array(bundle));
+  let at = body;
   return header.map(([, path, size]) => [path, new Uint8Array(bundle, (at += size) - size, size)]);
 }
 
@@ -172,12 +147,13 @@ function sameBytes(file: string | { base64: string } | undefined, bytes: Uint8Ar
  * at a time: spares it started then took their wake-up, and their first thread's init, 200-500 ms
  * after they were sent. Started at the mount, they are ready when the program starts its threads.
  * Not for other apps: four spares, however idle, made a warm node-express run 4% slower (n=8).
+ *
+ * Whether the app's runtime starts its spares at the mount: those dev servers (FRAMEWORKS'
+ * node.sparesAtMount), and projects of several packages (a client and a server), which run them as
+ * child processes.
  */
-const SPARES_AT_MOUNT = new Set<Framework>(['vite', 'astro', 'sveltekit', 'nuxt', 'solid-start', 'react-router', 'angular']);
-
-/** Whether the app's runtime starts its spares at the mount: those dev servers, and projects of several packages (a client and a server), which run them as child processes. */
 function startsThreads(tree: FileTree, framework: Framework): boolean {
-  return SPARES_AT_MOUNT.has(framework) || Object.keys(tree).some((path) => path !== 'package.json' && path.endsWith('/package.json') && !path.includes('node_modules/'));
+  return !!frameworkInfo(framework)?.node?.sparesAtMount || Object.keys(tree).some((path) => path !== 'package.json' && path.endsWith('/package.json') && !path.includes('node_modules/'));
 }
 
 /**
@@ -323,11 +299,12 @@ export function createAdapter(): RuntimeAdapter {
         // PORT only for a single server: the servers of a dev script listen where it says.
         // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
         // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
-        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...(ctx.framework === 'next' ? NEXT_ENV : {}), ...(ctx.framework === 'angular' ? ANGULAR_ENV : {}), ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
+        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...frameworkInfo(ctx.framework)?.node?.env, ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
         compileCache: host.compileCache ?? null,
+        compileAhead: frameworkInfo(ctx.framework)?.node?.compileAhead,
         nodeModules,
         pack,
         compilePort: compiler ? connectCompiler(compiler) : null,

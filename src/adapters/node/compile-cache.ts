@@ -18,9 +18,10 @@ import { join } from 'node:path';
 import { source } from '../../sources.ts';
 import { tmpSuffix } from './install.ts';
 import type { CompileKind } from './compile.ts';
+import { bundleHead, bundleHeader } from '../../bundle-format.ts';
 
 /** What the stored outputs depend on besides the code: the compiler's own sources. */
-const COMPILER = createHash('sha256')
+export const COMPILER = createHash('sha256')
   .update(['compile.ts', 'interop.ts', 'tla.ts', 'esm-names.ts'].map((f) => readFileSync(source(`adapters/node/${f}`), 'utf8')).join('\0'))
   .digest('hex')
   .slice(0, 12);
@@ -105,10 +106,7 @@ export class CompileCache {
     if (cached) return cached;
     const entries = [...(await this.load(key)).values()];
     if (!entries.length) return null;
-    const header = Buffer.from(JSON.stringify(entries.map((e) => [e.kind, e.async ? 1 : 0, e.path, e.code.length, e.out.length])));
-    const length = Buffer.alloc(4);
-    length.writeUInt32LE(header.length);
-    const bundle = Buffer.concat([length, header, ...entries.flatMap((e) => [e.code, e.out])]);
+    const bundle = Buffer.concat([bundleHead(entries.map((e) => [e.kind, e.async ? 1 : 0, e.path, e.code.length, e.out.length])), ...entries.flatMap((e) => [e.code, e.out])]);
     this.bundles.set(key, bundle);
     return bundle;
   }
@@ -161,11 +159,10 @@ function id(kind: string, async: boolean, path: string, code: Buffer): string {
 
 /** A stored bundle's entries; throws for one that is cut off or is not a bundle. */
 function parse(bundle: Buffer): Entry[] {
-  const length = bundle.readUInt32LE(0);
-  const header = JSON.parse(bundle.subarray(4, 4 + length).toString('utf8')) as [CompileKind, number, string, number, number][];
-  if (!Array.isArray(header) || 4 + length + header.reduce((n, e) => n + e[3] + e[4], 0) !== bundle.length) throw new Error('not a compile bundle');
+  const { header, body } = bundleHeader<[CompileKind, number, string, number, number]>(bundle);
+  if (body + header.reduce((n, e) => n + e[3] + e[4], 0) !== bundle.length) throw new Error('not a compile bundle');
   const out: Entry[] = [];
-  let at = 4 + length;
+  let at = body;
   for (const [kind, async, path, codeLength, outLength] of header) {
     const code = bundle.subarray(at, at + codeLength);
     at += codeLength;

@@ -148,7 +148,9 @@ point at the file and line where the dev server reported them.
 4. **Playwright** runs the checks in the app's frame, and collects screenshots, accessibility trees,
    console errors and network failures.
 
-The design decisions are recorded in [`docs/adr`](docs/adr). [ADR 0006](docs/adr/0006-node-runtime.md)
+The map of the code (where each module runs, what may import what, the contracts between the parts,
+where to add a framework) is [`docs/architecture.md`](docs/architecture.md), kept true by
+`test/unit/architecture.test.ts`. The design decisions are recorded in [`docs/adr`](docs/adr). [ADR 0006](docs/adr/0006-node-runtime.md)
 covers the runtime, and [ADR 0014](docs/adr/0014-node-runtime-only.md) covers the single runtime and the
 cold-start work. The study method and every report are in [`docs/fidelity`](docs/fidelity/README.md).
 
