@@ -19,11 +19,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 
 type Node = { type: string; start: number; end: number; [k: string]: unknown };
 
-const ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const REPORT = join(ROOT, 'api/sandburg.api.md');
 
 interface Module {
@@ -229,7 +230,7 @@ export function currentApiReport(): string {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const report = currentApiReport();
   if (process.argv.includes('--update')) writeFileSync(REPORT, report);
   else process.stdout.write(report);
