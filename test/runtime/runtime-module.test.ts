@@ -38,6 +38,8 @@ before(async () => {
     const js = { 'content-type': 'text/javascript' };
     if (path === '/__sw__.js') return res.writeHead(200, js).end(sw);
     if (path === '/__sandburg/node-worker.js') return res.writeHead(200, js).end(runtimeBootstrap(DIGEST));
+    // A worker (a client of the service worker) that asks for the module with HEAD first.
+    if (path === '/__sandburg/head.js') return res.writeHead(200, js).end(`fetch('/__sandburg/runtime/${DIGEST}.mjs', { method: 'HEAD' }).then(async (r) => postMessage([r.status, (await r.text()).length]))`);
     if (RUNTIME_MODULE.exec(path)?.[1] === DIGEST && !missing) return res.writeHead(200, js).end(MODULE);
     if (path === '/__sandburg/') return res.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><title>host</title>');
     res.writeHead(404).end();
@@ -157,6 +159,25 @@ test('code is not used for other text under the URL: a replaced entry is compile
   const after = await traced(page);
   assert.equal(after.consumed, false);
   assert.equal(after.started.replies[0].text, 'replaced');
+  await context.close();
+});
+
+test('a HEAD for the module, first, does not cache it without its text', async () => {
+  const { context, page } = await hostPage();
+  const head = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        // Held until it answers (an unreferenced worker may be collected first).
+        const w = ((globalThis as { headWorker?: Worker }).headWorker = new Worker('/__sandburg/head.js'));
+        w.onmessage = (e) => resolve(e.data);
+        w.onerror = (e) => resolve(String(e.message));
+      }),
+  );
+  assert.deepEqual(head, [200, 0]);
+  // An empty module would never answer: give up after 10 s.
+  const out = await Promise.race([start(page), new Promise<Started>((r) => setTimeout(() => r({ replies: [], error: 'no answer' }), 10_000))]);
+  assert.equal(out.error, null);
+  assert.deepEqual(out.replies.map((r) => r.text), ['original', 'original', 'original']);
   await context.close();
 });
 
