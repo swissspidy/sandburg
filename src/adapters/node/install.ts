@@ -25,6 +25,7 @@ import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUI
 import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 import { assertRegistryLockfile, assertRegistryManifest } from './spec-guard.ts';
+import { writeSoon } from './file-writes.ts';
 
 /**
  * A git binary that does not exist, so that npm cannot clone (and prepare, see spec-guard.ts) a git
@@ -290,8 +291,12 @@ export class Installer {
     }
     let idx = this.indexes.get(key);
     if (!idx) {
-      idx = loadIndex(join(this.root, key));
-      this.indexes.set(key, idx);
+      const loading = loadIndex(join(this.root, key));
+      // A key with no install (any 24 hex digits can be asked for) is not remembered.
+      loading.catch(() => {
+        if (this.indexes.get(key) === loading) this.indexes.delete(key);
+      });
+      this.indexes.set(key, (idx = loading));
     }
     return idx;
   }
@@ -374,18 +379,9 @@ export class Installer {
     return this.combined.has(key) ? undefined : this.memory.get(`${key}\0${rel}`);
   }
 
-  /** Transform cache directories made by this process. */
-  private made = new Set<string>();
-
+  /** Kept on disk; a transform that could not be written is done again by a later process. */
   private async persist(file: string, body: Buffer): Promise<void> {
-    const dir = join(file, '..');
-    if (!this.made.has(dir)) {
-      await mkdir(dir, { recursive: true });
-      this.made.add(dir);
-    }
-    const tmp = `${file}.${tmpSuffix()}.tmp`;
-    await writeFile(tmp, body);
-    await rename(tmp, file);
+    await writeSoon(file, body);
   }
 
   /**

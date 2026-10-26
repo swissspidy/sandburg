@@ -6,9 +6,9 @@
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
-import { ANSWER_HEADER, FILE_CHANNEL_NAME, MAILBOX_BYTES, MAILBOX_HEADER as CHANNEL_MAILBOX_HEADER, MAX_FRAME, POST_HEADER } from '../file-channel.ts';
+import { ANSWER_HEADER, FILE_CHANNEL_NAME, MAILBOX_BYTES, MAILBOX_HEADER as CHANNEL_MAILBOX_HEADER, MAX_BODY, MAX_FRAME, POST_HEADER } from '../file-channel.ts';
 import { bundleHeader } from '../bundle-format.ts';
-import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
+import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack, nodeModulesIndex } from './worker.ts';
 
 let installedRequests = 0;
 
@@ -124,6 +124,10 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
     const early = sentAhead(key, url);
     if (early) return { status: 200, body: binary ? early : new TextDecoder().decode(early) };
+    // A file over the channel's bound (a WebAssembly binary, Vite's largest chunk) over HTTP at once:
+    // the host would read or transform it for the channel, answer that it is too large (status 0),
+    // and read it again for HTTP (rolldown's 11 MB binary: ~100 ms of the host's thread, twice a run).
+    if ((nodeModulesIndex?.[key.slice(2)] ?? 0) >= MAX_BODY) return httpSync(url, binary);
     const res = key.startsWith('f/') ? readAhead(url, key.slice(2)) : key.startsWith('t/') ? withPushed(url) : null;
     if (res) return { status: res.status, body: binary ? res.body : new TextDecoder().decode(res.body) };
   }
@@ -264,6 +268,10 @@ export function loadCompiles(into: Map<string, string>, asyncModules: boolean): 
 export function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   const fast = url.startsWith(`${base}/nm/`) ? viaChannel(url) : null;
   if (fast) return { status: fast.status, body: binary ? fast.body : new TextDecoder().decode(fast.body) };
+  return httpSync(url, binary);
+}
+
+function httpSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
@@ -324,11 +332,12 @@ const handle = async ({ data }) => {
     asked.set(id, data.shared);
     return socket.send(id + ' ' + data.get);
   }
-  // A POST (a binary frame: id, the path's length, the path, the body), answered on the port given.
+  // A POST (a binary frame: id, the path's length, the path, the body), answered on the port given,
+  // or in the mailbox given (a synchronous one, postSync).
   if (data.post) {
-    if (!socket || socket.readyState !== 1) return data.reply.postMessage({ status: 0 });
+    if (!socket || socket.readyState !== 1) return data.reply ? data.reply.postMessage({ status: 0 }) : settle(data.shared, 0, null);
     const id = ++ids;
-    asked.set(id, data.reply);
+    asked.set(id, data.reply ?? data.shared);
     const path = new TextEncoder().encode(data.post);
     const frame = new Uint8Array(${POST_HEADER} + path.length + data.body.length);
     new DataView(frame.buffer).setUint32(0, id, true);
@@ -467,6 +476,26 @@ function viaChannel(url: string): { status: number; body: Uint8Array } | null {
   Atomics.store(state, 0, 0);
   c.post({ get: url, shared: c.mailbox });
   // A helper that does not answer is not asked again (its late answer would land in the mailbox).
+  if (Atomics.wait(state, 0, 0, 120_000) === 'timed-out') {
+    channel = null;
+    return null;
+  }
+  const status = Atomics.load(state, 2);
+  return status ? { status, body: new Uint8Array(c.mailbox, CHANNEL_MAILBOX_HEADER, Atomics.load(state, 1)).slice() } : null;
+}
+
+/**
+ * A POST over the channel that this thread waits for, as viaChannel's GETs: the status and a copy of
+ * the body, or null (no channel, or status 0: a path, body or answer the channel does not take) to
+ * use HTTP. The runtime's compiles: a synchronous XMLHttpRequest each was ~7-10 ms in a cold run.
+ */
+export function postSync(url: string, body: Uint8Array): { status: number; body: Uint8Array } | null {
+  const c = channel;
+  if (!c || Atomics.load(new Int32Array(c.ready), 0) !== 1) return null;
+  c.mailbox ??= new SharedArrayBuffer(MAILBOX_BYTES);
+  const state = new Int32Array(c.mailbox, 0, 3);
+  Atomics.store(state, 0, 0);
+  c.post({ post: url, body, shared: c.mailbox }, [body.buffer]);
   if (Atomics.wait(state, 0, 0, 120_000) === 'timed-out') {
     channel = null;
     return null;

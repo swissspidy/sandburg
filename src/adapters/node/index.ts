@@ -234,7 +234,8 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
     const [, key, mode, rel] = m;
     // A file the runtime read from a read-ahead answer: recorded as loaded, as if it had been asked for.
     if (req.query.get('used') === '1') {
-      if (decodeURIComponent(rel) in (await installer.index(key))) void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
+      // A key with no install: nothing to record (and nothing remembered of it, see Installer.index).
+      if (decodeURIComponent(rel) in (await installer.index(key).catch(() => ({})))) void recordRead(key, mode, decodeURIComponent(rel), req.sandbox);
       return { status: 204, headers: {}, body: '' };
     }
     const file = mode === 't' ? await installer.file(key, decodeURIComponent(rel)) : await installer.raw(key, decodeURIComponent(rel));

@@ -29,7 +29,8 @@ import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './tr
 import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
-import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel } from './host-files.ts';
+import { COMPILE_POST_MAX } from '../file-channel.ts';
+import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
 import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested } from './peers.ts';
@@ -184,7 +185,7 @@ export let thread: ThreadInit | null = null;
 let tsRunner = false;
 export let threads: ReturnType<typeof createWorkerThreads>;
 export let childProcess: ReturnType<typeof createChildProcess>;
-let nodeModulesIndex: Record<string, number> | null = null;
+export let nodeModulesIndex: Record<string, number> | null = null;
 let nodeModulesWrites: Int32Array | undefined;
 let transformCache: TransformCache | null = null;
 
@@ -366,14 +367,25 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       } else if (known?.status === 200) {
         out = known.body as string;
       } else {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${base}/compile?kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}${compileCache ? `&cache=${compileCache.key}` : ''}`, false);
-        // The run's capability to record compiles under its key (a header: recorded demos key requests by their URL).
-        if (compileCache?.token) xhr.setRequestHeader('x-sandburg-token', compileCache.token);
-        // As a Blob: a string body was slower to reach the host (the 8 MB chunk: ~0.85 s -> ~0.5 s).
-        xhr.send(new Blob([code]));
-        if (xhr.status !== 200) throw Object.assign(new SyntaxError(xhr.responseText), { code: 'ERR_COMPILE' });
-        out = xhr.responseText;
+        const query = `kind=${kind}&path=${encodeURIComponent(path)}${async ? '&async=1' : ''}${compileCache ? `&cache=${compileCache.key}` : ''}`;
+        // Over the file channel (~2 ms a compile in a cold Astro run) when it takes the code and the
+        // answer; else a synchronous XMLHttpRequest (~7-10 ms: Playwright intercepts every request).
+        // The channel has no headers: the run's capability to record compiles goes in its query.
+        const fast = code.length < COMPILE_POST_MAX ? postSync(`${base}/compile?${query}${compileCache?.token ? `&token=${compileCache.token}` : ''}`, new TextEncoder().encode(code)) : null;
+        let answer: { status: number; text: string };
+        if (fast) {
+          answer = { status: fast.status, text: new TextDecoder().decode(fast.body) };
+        } else {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `${base}/compile?${query}`, false);
+          // The run's capability to record compiles under its key (a header: recorded demos key requests by their URL).
+          if (compileCache?.token) xhr.setRequestHeader('x-sandburg-token', compileCache.token);
+          // As a Blob: a string body was slower to reach the host (the 8 MB chunk: ~0.85 s -> ~0.5 s).
+          xhr.send(new Blob([code]));
+          answer = { status: xhr.status, text: xhr.responseText };
+        }
+        if (answer.status !== 200) throw Object.assign(new SyntaxError(answer.text), { code: 'ERR_COMPILE' });
+        out = answer.text;
       }
     }
     compiledCache.set(key, out);
