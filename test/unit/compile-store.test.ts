@@ -52,14 +52,18 @@ test('the sweep removes old versions and the oldest compiles beyond the limit', 
     await mkdir(join(root, 'v1', 'aa'), { recursive: true });
     await mkdir(join(root, 'v2', 'bb'), { recursive: true });
     await mkdir(join(root, 'v3', 'cc'), { recursive: true });
+    // Named with the compiler's digest too (adapters/node/index.ts), old and recent.
+    await mkdir(join(root, 'v3-0a1b2c3d4e5f', 'dd'), { recursive: true });
+    await mkdir(join(root, 'v3-abcdef012345', 'ee'), { recursive: true });
     await utimes(join(root, 'v1'), (now - 2 * day) / 1000, (now - 2 * day) / 1000);
+    await utimes(join(root, 'v3-0a1b2c3d4e5f'), (now - 2 * day) / 1000, (now - 2 * day) / 1000);
     for (let i = 0; i < 4; i++) {
       const file = join(root, 'v3', 'cc', `${i}.js`);
       await writeFile(file, 'x'.repeat(100));
       await utimes(file, (now - (10 - i) * 1000) / 1000, (now - (10 - i) * 1000) / 1000);
     }
     await sweepCompiles(join(root, 'v3'), 300, now);
-    assert.deepEqual((await readdir(root)).sort(), ['v2', 'v3'], 'an old version unchanged for a day goes; a recent one stays');
+    assert.deepEqual((await readdir(root)).sort(), ['v2', 'v3', 'v3-abcdef012345'], 'an old version unchanged for a day goes; a recent one stays');
     assert.deepEqual((await readdir(join(root, 'v3', 'cc'))).sort(), ['2.js', '3.js'], 'the oldest go, down to 3/4 of the limit');
   } finally {
     await rm(root, { recursive: true, force: true });

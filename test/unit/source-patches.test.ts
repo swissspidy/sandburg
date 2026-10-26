@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { transformForRuntime } from '../../src/adapters/node/install.ts';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // nitropack 2.13's dev server, as published.
 const NITRO_GET_WORKER = `class DevServer {
@@ -429,4 +432,23 @@ test("Next.js' dev server does not ask npm's security advisories by default (a P
   }
   const other = await transformForRuntime(NEXT_DEFAULTS, 'node_modules/other/dist/server/config-shared.js', false);
   assert.match(other, /agentUpgrade: "security"|agentUpgrade: 'security'/);
+});
+
+test("the source-map patch applies to Next.js' plugin as published (15.5, 16.4; CommonJS and ESM), at both places or at neither", async () => {
+  const dir = fileURLToPath(new URL('./fixtures/next-eval-source-map/', import.meta.url));
+  const files = readdirSync(dir).filter((f) => f.endsWith('.js.txt'));
+  assert.equal(files.length, 4);
+  for (const file of files) {
+    const source = readFileSync(join(dir, file), 'utf8');
+    const esm = file.endsWith('-esm.js.txt');
+    const path = `node_modules/next/dist/${esm ? 'esm/' : ''}build/webpack/plugins/eval-source-map-dev-tool-plugin.js`;
+    const out = await transformForRuntime(source, path, esm);
+    assert.match(out, /tap\("SandburgSourceMaps"|tap\('SandburgSourceMaps'/, file);
+    assert.match(out, /sourceURL=webpack-internal:\/\/\/\$\{chunkGraph\.getModuleId\(m\)\}/, file);
+    // A version whose second place differs gets neither change.
+    const drifted = source.replace(/if \(!sourceMap\) \{\n(\s*)return result\(source\);/, 'if (sourceMap == null) {\n$1return result(source);');
+    assert.notEqual(drifted, source, file);
+    const untouched = await transformForRuntime(drifted, path, esm);
+    assert.doesNotMatch(untouched, /SandburgSourceMaps|sandburg: see SOURCE_PATCHES/, file);
+  }
 });

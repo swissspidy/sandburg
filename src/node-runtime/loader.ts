@@ -42,10 +42,10 @@ let REQUIRE_CONDITIONS = [...BASE_REQUIRE_CONDITIONS];
 let IMPORT_CONDITIONS = [...BASE_IMPORT_CONDITIONS];
 /** The conditions of the resolution in progress (resolution is synchronous). */
 let conditions = REQUIRE_CONDITIONS;
-/** Exports objects of converted ES modules (see src/adapters/node/interop.ts). */
 /** Code the loader has the host compile (lowered, see adapters/node/compile.ts); other CommonJS runs as it is. */
 export const NEEDS_LOWERING = /\basync\b|\bawait\b|\beval\("|\bimport\s*\(/;
 
+/** Exports objects of converted ES modules (see src/adapters/node/interop.ts). */
 const esmExports: WeakSet<object> = ((globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.esm')] ??= new WeakSet()) as WeakSet<object>;
 
 interface PackageJson {

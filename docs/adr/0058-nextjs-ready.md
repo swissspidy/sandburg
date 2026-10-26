@@ -45,8 +45,9 @@ the seed was 27 MB of gzip (78 MB inflated for the client), inflated and restore
   writes there (one the loader would have the host lower) to the host as written: by digest first
   (`/compiled/<digest>`), else `POST /compile` with the run's compile capability, the requests the
   runtime made when it required the file. The output waits in shared memory; `hostCompile` uses it
-  only for the file as it was written and unchanged since, and waits for one still compiling, but
-  never for a helper that has not started (a worker the runtime starts does not start while the
+  only for the file as it was written and unchanged since, and waits up to 5 s for one still
+  compiling (a helper that lets a wait pass, or fails, is not waited for again), but never for a
+  helper that has not started (a worker the runtime starts does not start while the
   runtime blocks: a Pages Router app writes its chunks and requires them in one go).
 - **Next.js seed runs have no checks of their own**: webpack stores its cache once, 5 s after the
   first page's compile; what the seed's checks compiled after it (its route handler, its second page)
