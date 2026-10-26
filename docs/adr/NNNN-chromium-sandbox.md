@@ -78,9 +78,10 @@ renderer passed 3 runs out of 3 sandboxed.
 
 ### CI
 
-GitHub's ubuntu runners can run the sandbox. Each workflow job that starts Chromium first prints
-`kernel.apparmor_restrict_unprivileged_userns`. If it is 1, the job sets it to 0, which keeps the
-sandbox on rather than opting out. No workflow uses `--no-browser-sandbox`.
+GitHub's ubuntu runners can run the sandbox, but their image (ubuntu-24.04, 20261012.334) restricts
+unprivileged user namespaces: `kernel.apparmor_restrict_unprivileged_userns` is 1, and Chrome for
+Testing has no AppArmor profile that allows them. Each workflow job that starts Chromium first prints
+the setting. If it is 1, the job sets it to 0, which keeps the sandbox on rather than opting out. No workflow uses `--no-browser-sandbox`.
 `test/runtime/browser-sandbox.test.ts` launches Chromium with Sandburg's options and reads each
 renderer's `Seccomp:` line in `/proc/<pid>/status` (2: a seccomp-bpf filter; 0 without the sandbox).
 It also checks that a cross-site frame is a target of its own, and under `CI` it fails if the
@@ -91,7 +92,16 @@ sandbox was turned off.
 `node scripts/bench.ts --base origin/main --head . --fixtures vite-react-counter --modes warm,cold
 --rounds 5`, on a 4-core, 15 GB container:
 
-BENCH_RESULTS
+| Head runs | Mode | main (no sandbox) | This change | Change |
+|---|---|---|---|---|
+| Sandboxed (as a non-root user) | warm | 1.24 s | 1.30 s | +5% |
+| Sandboxed (as a non-root user) | cold | 5.08 s | 5.03 s | -1% |
+| `SANDBURG_NO_BROWSER_SANDBOX=1` (site isolation only) | warm | 1.26 s | 1.24 s | -2% |
+| `SANDBURG_NO_BROWSER_SANDBOX=1` (site isolation only) | cold | 4.95 s | 4.99 s | +1% |
+
+`--site-per-process` costs nothing measurable for an app without cross-site frames. The sandbox
+costs about 60 ms on a warm run (start +0.03 s, checks +0.02 s; the renderer's seccomp filter on
+each system call, and the busy loops of the renderer match), within the noise of a cold run.
 
 ## Consequences
 
