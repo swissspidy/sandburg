@@ -111,6 +111,8 @@ export type ToWorker =
       filesBundle?: string | null;
       /** Where the host records what it compiles for this run, and a bundle of what it compiled for earlier runs of the project (adapters/node/compile-cache.ts). */
       compileCache?: { key: string; bundle: string | null; token?: string } | null;
+      /** Project directories whose CommonJS files are compiled as they are written (compile-ahead.ts): next dev's server output. */
+      compileAhead?: string[];
       /** Bundles the page started downloading as it started this runtime, by URL (adapters/node/process.ts, prefetchBundle). */
       prefetched?: Record<string, SharedArrayBuffer>;
       nodeModules: Record<string, number> | null;

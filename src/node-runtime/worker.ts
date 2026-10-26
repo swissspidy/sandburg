@@ -30,6 +30,7 @@ import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
+import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
 import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested } from './peers.ts';
 
 patchBase64Url();
@@ -283,6 +284,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   if (installKey && !pageCompiler && (!thread || thread.process)) {
     startDigester();
     vfs.watch((_event, path) => digestWhenWritten(path));
+    if (msg.compileAhead?.length) {
+      compileAhead(msg.compileAhead.map((d) => `${msg.cwd}/${d}`));
+      vfs.watch((_event, path) => compileWhenWritten(path));
+    }
   }
   if (Object.keys(sources).length && pageCompiler) {
     asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
@@ -353,8 +358,11 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       // what the host compiled before, next dev's chunks in every later run of an app, comes back
       // without being sent. Sending 8 MB costs ~0.35 s before the host sees the request; asking, ~10 ms.
       const digest = code.length < ASK_FIRST ? null : ((kind === 'cjs' && writtenDigest(path)) || digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`));
-      const known = digest ? requestSync(`${base}/compiled/${digest}`, false) : null;
-      if (known?.status === 200) {
+      const ahead = kind === 'cjs' ? compiledAhead(path) : null;
+      const known = ahead === null && digest ? requestSync(`${base}/compiled/${digest}`, false) : null;
+      if (ahead !== null) {
+        out = ahead;
+      } else if (known?.status === 200) {
         out = known.body as string;
       } else {
         const xhr = new XMLHttpRequest();

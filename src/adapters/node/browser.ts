@@ -57,6 +57,9 @@ const BACKEND_PREFIX = /^\/__sandburg_backend\/(\d+)(\/[^?]*)?(\?.*)?$/;
  * does. The default path transpiles it with SWC to CommonJS, which SWC's WebAssembly build stopped
  * doing in Next.js 16 (it leaves the module ESM).
  */
+/** Where next dev writes the server's chunks, which it requires once written (.next/server before Next.js 16). */
+const NEXT_SERVER_DIRS = ['.next/dev/server', '.next/server'];
+
 const NEXT_ENV = { NEXT_TEST_WASM: '1', __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: 'true' };
 
 /**
@@ -328,6 +331,7 @@ export function createAdapter(): RuntimeAdapter {
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
         compileCache: host.compileCache ?? null,
+        ...(ctx.framework === 'next' ? { compileAhead: NEXT_SERVER_DIRS } : {}),
         nodeModules,
         pack,
         compilePort: compiler ? connectCompiler(compiler) : null,

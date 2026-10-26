@@ -107,6 +107,44 @@ test('installed files: modules pushed with a transformed file are loaded without
   assert.deepEqual(h.asked.filter((a) => a.includes('/t/')).sort(), [`ws ${nm}/a.js?used=1`, `ws ${nm}/b.js?used=1`, `ws ${nm}/index.js?ahead=1`]);
 });
 
+// next dev writes its server's chunks, then requires them once it has compiled the client: the
+// runtime has them compiled as they are written (compile-ahead.ts), and uses that compile only for
+// the file as it was written.
+const writesChunks = {
+  'main.js': `
+    const fs = require('fs');
+    const dir = '/app/.next/dev/server';
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(dir + '/chunk.js', 'module.exports = async () => "written";');
+    fs.writeFileSync(dir + '/other.js', 'module.exports = async () => "first";');
+    setTimeout(() => {
+      // The host is asked for this file now: what it was asked before came first.
+      require('single');
+      fs.writeFileSync(dir + '/other.js', 'module.exports = async () => "changed";');
+      Promise.all([require(dir + '/chunk.js')(), require(dir + '/other.js')()]).then((r) => {
+        console.log(r.join(' '));
+        process.exit(0);
+      });
+    }, 500);`,
+};
+
+test('installed files: CommonJS files written under the directories named are compiled as they are written, and only used as written', async () => {
+  const compiles = (file: string) => h.asked.flatMap((a, i) => (a === `http POST /__sandburg/compile?path=/app/.next/dev/server/${file}` ? [i] : []));
+  const marker = () => h.asked.findIndex((a) => a.includes('node_modules/single/'));
+  let out = await h.runInstalled(writesChunks, install, '/app/main.js', { compileAhead: ['.next/dev/server'] });
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'written changed\n');
+  assert.equal(compiles('chunk.js').length, 1);
+  assert.ok(compiles('chunk.js')[0] < marker(), h.asked.join('\n'));
+  // other.js as first written, then again once it changed (the first compile is not used).
+  assert.equal(compiles('other.js').length, 2);
+  assert.ok(compiles('other.js')[0] < marker() && compiles('other.js')[1] > marker(), h.asked.join('\n'));
+  // Without: compiled when required.
+  out = await h.runInstalled(writesChunks, install, '/app/main.js');
+  assert.equal(out.stdout, 'written changed\n');
+  assert.ok(compiles('chunk.js')[0] > marker(), h.asked.join('\n'));
+});
+
 test('installed files: a preload bundle the page downloaded is not requested again', async () => {
   const out = await h.runInstalled(program, install, '/app/main.js', { prefetch: true });
   assert.equal(out.fatal, null);
