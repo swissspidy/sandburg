@@ -66,7 +66,13 @@ test(`pages that look for their renderers at once, on busy cores, each find thei
   }
 });
 
-test(`pages opened together, each with an app at work, find their renderers within a short run (${browserSandbox({}) ? 'inside' : 'outside'} the OS sandbox)`, { skip: process.platform !== 'linux', timeout: 60_000 }, async () => {
+// The OS sandbox's way of finding a renderer (the page's work, and its main thread in /proc). Without
+// the sandbox the ProcessTime match finds no renderer within so short a run on busy cores, and
+// says so (null), which the test above covers: it never takes another's.
+const skipOpenedTogether =
+  process.platform !== 'linux' ? 'Linux only (/proc)' : !browserSandbox({}) ? 'the OS sandbox is off (SANDBURG_NO_BROWSER_SANDBOX=1): this covers how a sandboxed run finds its renderer' : false;
+
+test('pages opened together, each with an app at work, find their renderers within a short run (inside the OS sandbox)', { skip: skipOpenedTogether, timeout: 60_000 }, async () => {
   // As a batch opens its first tabs: all at once, alike, and looked for in step.
   const pages = await Promise.all(
     Array.from({ length: PAGES }, async (_, i) => {

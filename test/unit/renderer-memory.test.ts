@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RendererMemory, mainThreadCpu, matchRenderer, processMemory } from '../../src/orchestrator/renderer-memory.ts';
+import { RendererMemory, mainThreadCpu, matchRenderer, processMemory, schedstatSeconds } from '../../src/orchestrator/renderer-memory.ts';
 
 test("a page's renderer is the one renderer whose CPU time, read before and after the page's, brackets it", () => {
   const before = [
@@ -178,4 +178,13 @@ test("a process's main thread's CPU time is read from /proc, null for none", { s
   // In nanoseconds (schedstat, a few ms either way), or in clock ticks of 10 ms (stat, 15 ms).
   assert.ok([0.003, 0.015].includes(mainThreadCpu(process.pid)!.toleranceSeconds));
   assert.equal(mainThreadCpu(2 ** 22 + 1), null);
+});
+
+test('a schedstat line gives the run time in seconds, and none where the kernel keeps no scheduler statistics', () => {
+  assert.equal(schedstatSeconds('115234567 2034567 42\n'), 0.115234567);
+  // Without scheduler statistics the kernel prints zeros, or nothing: the clock ticks (stat) count instead.
+  assert.equal(schedstatSeconds('0 0 0\n'), null);
+  assert.equal(schedstatSeconds(''), null);
+  assert.equal(schedstatSeconds('\n'), null);
+  assert.equal(schedstatSeconds('garbage'), null);
 });

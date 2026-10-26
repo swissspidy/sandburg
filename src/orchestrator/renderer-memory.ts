@@ -103,12 +103,13 @@ export function processMemory(pid: number): number | null {
  * Null where /proc cannot say (not Linux, or the process has ended).
  */
 export function mainThreadCpu(pid: number): { seconds: number; toleranceSeconds: number } | null {
+  let seconds: number | null = null;
   try {
-    const ns = Number(readFileSync(`/proc/${pid}/task/${pid}/schedstat`, 'utf8').split(' ')[0]);
-    if (Number.isFinite(ns)) return { seconds: ns / 1e9, toleranceSeconds: SCHEDSTAT_TOLERANCE_S };
+    seconds = schedstatSeconds(readFileSync(`/proc/${pid}/task/${pid}/schedstat`, 'utf8'));
   } catch {
-    // No scheduler statistics in this kernel: the clock ticks.
+    // No such file: the clock ticks.
   }
+  if (seconds !== null) return { seconds, toleranceSeconds: SCHEDSTAT_TOLERANCE_S };
   try {
     const stat = readFileSync(`/proc/${pid}/task/${pid}/stat`, 'utf8');
     // The fields after the command (which may hold spaces and parentheses): state is the first, utime the 12th.
@@ -118,6 +119,16 @@ export function mainThreadCpu(pid: number): { seconds: number; toleranceSeconds:
   } catch {
     return null;
   }
+}
+
+/**
+ * A thread's run time in seconds from its schedstat line (`<run ns> <wait ns> <slices>`), or null
+ * where the kernel keeps no scheduler statistics: it prints `0 0 0` then, or nothing. A thread that
+ * has run has used more than 0 ns.
+ */
+export function schedstatSeconds(line: string): number | null {
+  const ns = Number(line.trim().split(/\s+/)[0]);
+  return Number.isFinite(ns) && ns > 0 ? ns / 1e9 : null;
 }
 
 export interface RendererMemorySource {
