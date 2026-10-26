@@ -66,10 +66,13 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
     w.postMessage(init);
     if (!requests.length) setTimeout(finish, 3000);
   };
+  // As the page does when it prepares a runtime as it loads (adapters/node/browser.ts): the runtime starts its file helper.
+  if (extra.prepare) w.postMessage({ type: 'prepare' });
   if (extra.spares) {
     w.postMessage({ type: 'spares' });
     setTimeout(start, extra.spares);
-  } else start();
+  } else if (extra.prepare) setTimeout(start, extra.prepare);
+  else start();
 });
 window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
@@ -99,6 +102,8 @@ interface Install {
   bundled: string[];
   /** Transformed files the host pushes with a transformed file asked for with ?ahead=1 (see pushAhead). */
   pushes?: Record<string, string[]>;
+  /** Files the preload bundle only names (a negative size): the runtime downloads them on the side (downloadOnSide). */
+  side?: string[];
 }
 export const INSTALL_KEY = 'a'.repeat(24);
 
@@ -132,7 +137,8 @@ export class RuntimeHarness {
     }
     if (!path.startsWith('/__sandburg/preload/')) return null;
     const files = this.install.bundled.flatMap((rel) => ['f', 't'].map((mode) => [mode, rel, Buffer.from(this.install.files[rel])] as const));
-    const header = Buffer.from(JSON.stringify(files.map(([mode, rel, bytes]) => [mode, rel, bytes.length])));
+    const side = (this.install.side ?? []).map((rel) => ['f', rel, -Buffer.byteLength(this.install.files[rel])]);
+    const header = Buffer.from(JSON.stringify([...files.map(([mode, rel, bytes]) => [mode, rel, bytes.length]), ...side]));
     const length = Buffer.alloc(4);
     length.writeUInt32LE(header.length);
     return Buffer.concat([length, header, ...files.map((f) => f[2])]);
@@ -279,13 +285,14 @@ export class RuntimeHarness {
   /**
    * Runs a program with an install: node_modules files the runtime reads from the host, a preload
    * bundle of `bundled` (downloaded by the page as it starts the runtime if `prefetch`), and the
-   * file channel. `asked` records what the host was asked for.
+   * file channel. `prepare`: the page prepares the runtime that long before its init message, as a
+   * host page does. `asked` records what the host was asked for.
    */
-  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; compileAhead?: string[] } = {}) {
+  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; compileAhead?: string[]; prepare?: number } = {}) {
     this.install = install;
     this.asked = [];
     const nodeModules = Object.fromEntries(Object.entries(install.files).map(([rel, text]) => [rel, Buffer.byteLength(text)]));
-    const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch, ...(options.compileAhead ? { compileAhead: options.compileAhead } : {}) };
+    const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch, ...(options.compileAhead ? { compileAhead: options.compileAhead } : {}), ...(options.prepare ? { prepare: options.prepare } : {}) };
     return this.page.evaluate(([f, m, e]) => (window as unknown as { runNode: Function }).runNode(f, m, [], e), [files, main, extra] as const) as Promise<{
       stdout: string;
       stderr: string;

@@ -146,6 +146,8 @@ export type ToWorker =
   | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
   /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
   | { type: 'spares' }
+  /** Before init: the page prepared this runtime for its next program; it starts its file helper now (prepareDigester in host-files.ts). */
+  | { type: 'prepare' }
   /** The parent closed this child process's IPC channel. */
   | { type: 'disconnect' }
   /** A net connection between runtimes (see netMessage). */

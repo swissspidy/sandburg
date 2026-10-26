@@ -13,3 +13,6 @@ export const SPARE_WAKE = 'sandburg-spare-wake';
 /** Node's conditions for `require`, and for `import` (ES modules are converted to CommonJS, but resolve as imports): the runtime's loader, and the host's prefetcher. */
 export const REQUIRE_CONDITIONS: readonly string[] = ['require', 'node', 'module-sync', 'node-addons', 'default'];
 export const IMPORT_CONDITIONS: readonly string[] = ['import', 'node', 'module-sync', 'node-addons', 'default'];
+
+/** The global that awaits rewritten to carry async context call (await-context.ts writes the calls; async-context.ts installs it). */
+export const AWAIT_CONTEXT_GLOBAL = '__sandburg_ac';

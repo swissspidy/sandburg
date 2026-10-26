@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { hasTopLevelAwait, toAsyncModule } from '../../src/adapters/node/tla.ts';
 import { compileForRuntime } from '../../src/adapters/node/compile.ts';
+import './await-context-stub.ts'; // compiled code runs here
 
 test('hasTopLevelAwait ignores await inside functions', () => {
   assert.equal(hasTopLevelAwait('const x = await f();'), true);

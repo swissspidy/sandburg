@@ -4,8 +4,8 @@
  *
  * - ESM → CommonJS (the runtime's loader is CommonJS, like require()).
  * - TypeScript → JavaScript (Node 24 strips types natively).
- * - async functions/generators are lowered, so AsyncLocalStorage context
- *   survives `await` (see src/node-runtime/async-context.ts).
+ * - async generators and for await are lowered, and each native await restores
+ *   AsyncLocalStorage's context (see src/node-runtime/await-context.ts).
  * - Code inside webpack's `eval("...")` modules (Next.js dev bundles use the
  *   eval-source-map devtool) is lowered too, in place, keeping direct-eval scope.
  * - Top-level await: such modules become async modules (see tla.ts). With
@@ -17,6 +17,7 @@ import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
+import { contextAwaits, mayRewrite } from '../../node-runtime/await-context.ts';
 
 export type CompileKind = 'esm' | 'cjs' | 'ts';
 
@@ -72,7 +73,14 @@ export class StringLru<V extends string | null> {
 /** Lowered eval literals: the replacement literal, or null when it stays as it is (keys are whole modules, with their source maps). */
 const loweredEvals = new StringLru<string | null>(64 << 20);
 
-const LOWER = { 'async-await': false, 'async-generator': false, 'for-await': false, 'dynamic-import': false } as const;
+/**
+ * What esbuild lowers: async generators and for await (to generators and native awaits), and
+ * import() (to require, through the runtime's loader). Async functions stay native, their awaits
+ * rewritten to restore AsyncLocalStorage's context (contextAwaits); code whose awaits cannot be
+ * rewritten has its async functions lowered too (LOWER_ASYNC), as all code was before.
+ */
+const LOWER = { 'async-generator': false, 'for-await': false, 'dynamic-import': false } as const;
+const LOWER_ASYNC = { ...LOWER, 'async-await': false } as const;
 /** Compiles by key (compileForRuntime); those that go out are still on disk (CompileStore). */
 const cache = new StringLru<string>(128 << 20);
 
@@ -245,28 +253,28 @@ function* compileOnce(code: string, path: string, kind: CompileKind, opts: { asy
   // placeholder, and the literals go back after (a 6 MB vendor chunk: 183 ms -> a few ms).
   const literals: string[] = [];
   const skeleton = kind === 'cjs' && out.includes('eval("') ? out.replace(EVAL_LITERAL, (_m, literal: string) => `eval("${PLACEHOLDER}${literals.push(literal) - 1}")`) : out;
-  const transformed = yield {
-    code: skeleton,
-    options: {
-      loader,
-      format: kind === 'cjs' ? undefined : 'cjs',
-      sourcefile: kind === 'esm' && loader === 'js' ? esmSourcefile(path) : path,
-      target: 'es2022',
-      supported: LOWER,
-      define: kind === 'cjs' ? undefined : marked ? ESM_DEFINE : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' },
-      logLevel: 'silent',
-    },
+  const options: esbuild.TransformOptions = {
+    loader,
+    format: kind === 'cjs' ? undefined : 'cjs',
+    sourcefile: kind === 'esm' && loader === 'js' ? esmSourcefile(path) : path,
+    target: 'es2022',
+    supported: LOWER,
+    define: kind === 'cjs' ? undefined : marked ? ESM_DEFINE : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' },
+    logLevel: 'silent',
   };
+  // The eval literals' placeholders are strings: the rewrite leaves them as they are.
+  const lowered = { ...options, supported: LOWER_ASYNC };
+  const transformed = mayRewrite(skeleton) ? (contextAwaits(yield { code: skeleton, options }) ?? (yield { code: skeleton, options: lowered })) : yield { code: skeleton, options: lowered };
   out = transformed;
   if (literals.length) {
     let restored = 0;
     out = transformed.replace(PLACEHOLDER_CALL, (_m, i: string) => (restored++, `eval(${literals[Number(i)]})`));
     // Every placeholder must come back as it went in; otherwise transform the whole code.
     if (restored !== literals.length) {
-      out = yield {
-        code: skeleton.replace(PLACEHOLDER_CALL, (_m, i: string) => `eval(${literals[Number(i)]})`),
-        options: { loader, sourcefile: path, target: 'es2022', supported: LOWER, logLevel: 'silent' },
-      };
+      const whole = skeleton.replace(PLACEHOLDER_CALL, (_m, i: string) => `eval(${literals[Number(i)]})`);
+      const wholeOptions: esbuild.TransformOptions = { loader, sourcefile: path, target: 'es2022', supported: LOWER, logLevel: 'silent' };
+      const wholeLowered = { ...wholeOptions, supported: LOWER_ASYNC };
+      out = mayRewrite(whole) ? (contextAwaits(yield { code: whole, options: wholeOptions }) ?? (yield { code: whole, options: wholeLowered })) : yield { code: whole, options: wholeLowered };
     }
   }
   if (marked) out = `${ESM_MARKER}\n${out}`;
@@ -296,7 +304,9 @@ function* lowerEvalSteps(code: string): Generator<TransformStep, string, string>
       }
       if (inner !== null && /\basync\b|\bawait\b|\bimport\s*\(/.test(inner)) {
         const sourceUrl = /\n\/\/# sourceURL=[^\n]*$/.exec(inner)?.[0] ?? '';
-        const lowered: string | null = yield { code: inner, options: { loader: 'js', target: 'es2022', supported: LOWER, logLevel: 'silent' }, optional: true };
+        const rewrite = mayRewrite(inner);
+        let lowered: string | null = yield { code: inner, options: { loader: 'js', target: 'es2022', supported: rewrite ? LOWER : LOWER_ASYNC, logLevel: 'silent' }, optional: true };
+        if (lowered !== null && rewrite) lowered = contextAwaits(lowered) ?? (yield { code: inner, options: { loader: 'js', target: 'es2022', supported: LOWER_ASYNC, logLevel: 'silent' }, optional: true });
         if (lowered !== null) replacement = JSON.stringify(patchInterop(lowered) + sourceUrl);
       }
       loweredEvals.set(m[1], replacement);
