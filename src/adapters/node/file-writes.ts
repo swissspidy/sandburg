@@ -16,46 +16,54 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 
 const TAG = 'sandburg-file-writes';
 
-let writer: Worker | null = null;
+/** The writer and the writes it has, by id. */
+let writer: { worker: Worker; waiting: Map<number, (ok: boolean) => void> } | null = null;
 let ids = 0;
-const waiting = new Map<number, (ok: boolean) => void>();
+/** A writer failed: later writes are made on this thread (a writer that cannot start is not started again for each). */
+let onThisThread = false;
 
 /** Writes `body` to `file` atomically, on the writer's thread; resolves true once it is there, false if it could not be written. */
 export function writeSoon(file: string, body: string | Uint8Array): Promise<boolean> {
+  if (onThisThread) return Promise.resolve(writeNow(file, body));
   return new Promise((done) => {
     try {
       writer ??= startWriter();
+      const { worker, waiting } = writer;
       const id = ++ids;
       waiting.set(id, done);
       // Held open while it has writes (a process that ends meanwhile would lose them), not after.
-      if (waiting.size === 1) writer.ref();
-      writer.postMessage({ id, file, body });
+      if (waiting.size === 1) worker.ref();
+      worker.postMessage({ id, file, body });
     } catch {
-      done(false);
+      onThisThread = true;
+      done(writeNow(file, body));
     }
   });
 }
 
-function startWriter(): Worker {
-  const w = new Worker(new URL(import.meta.url), { workerData: { tag: TAG } });
-  w.unref();
-  w.on('message', ({ id, ok }: { id: number; ok: boolean }) => {
+function startWriter(): { worker: Worker; waiting: Map<number, (ok: boolean) => void> } {
+  const worker = new Worker(new URL(import.meta.url), { workerData: { tag: TAG } });
+  const waiting = new Map<number, (ok: boolean) => void>();
+  worker.unref();
+  worker.on('message', ({ id, ok }: { id: number; ok: boolean }) => {
     waiting.get(id)?.(ok);
     waiting.delete(id);
-    if (!waiting.size) w.unref();
+    if (!waiting.size) worker.unref();
   });
-  // A writer that fails: what it had is not written (a later process writes it again), the next write starts another.
+  // A writer that fails: its writes are not made (a later process makes them again), and later ones
+  // are made on this thread.
   const lost = () => {
-    if (writer === w) writer = null;
+    onThisThread = true;
+    if (writer?.worker === worker) writer = null;
     for (const done of waiting.values()) done(false);
     waiting.clear();
   };
-  w.on('error', lost);
-  w.on('exit', lost);
-  return w;
+  worker.on('error', lost);
+  worker.on('exit', lost);
+  return { worker, waiting };
 }
 
-/** Directories the writer made or found (a cache's 256 fan-out directories, made once each). */
+/** Directories the writer (or this thread, see onThisThread) made or found (a cache's 256 fan-out directories, made once each). */
 const made = new Set<string>();
 
 function writeNow(file: string, body: string | Uint8Array): boolean {

@@ -33,7 +33,9 @@ export function diskCompileStore(dir: string, max = COMPILED_MAX): Pick<CompileS
     },
     write(key, out) {
       return writeSoon(fileOf(dir, key), out)
-        .then(() => {
+        .then((ok) => {
+          // What was not written does not count toward the next sweep.
+          if (!ok) return;
           written += Buffer.byteLength(out);
           if (written < max / 4 || sweeping) return sweeping ?? undefined;
           written = 0;
