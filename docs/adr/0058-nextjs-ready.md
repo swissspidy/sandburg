@@ -1,4 +1,4 @@
-# ADR NNNN: Next.js' time to ready: source maps for the project only, server chunks compiled ahead, seeds without checks
+# ADR 0058: Next.js' time to ready: source maps for the project only, server chunks compiled ahead, seeds without checks
 
 - Status: Accepted
 - Date: 2026-10-26
