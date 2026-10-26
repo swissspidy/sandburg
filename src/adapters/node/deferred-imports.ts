@@ -1,6 +1,6 @@
 /**
  * Imports a framework evaluates as its dev server starts, for features a project may not use: the
- * module is loaded at its first use instead (ADR NNNN). Astro's config entry point re-exports the svgo
+ * module is loaded at its first use instead (ADR 0052). Astro's config entry point re-exports the svgo
  * optimizer (svgo, csso, css-tree: ~0.13 s of a warm start, for the `svgOptimizer` option); its fonts
  * plugin imports unifont and capsize (for the `fonts` option); its Markdown processor the MDX
  * compiler, whose import instantiates Sätteri's WebAssembly build (for .mdx files). Nuxt's dev server

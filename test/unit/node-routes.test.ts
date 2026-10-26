@@ -106,7 +106,7 @@ test("what a run sends as its cache is kept only for files inside the cache's di
   for (const value of [null, 'text', 42, []]) assert.deepEqual(cacheEntries(value, dirs), {});
 });
 
-test('the runtime module is served under the digest of its text only, to GET (ADR NNNN)', async () => {
+test('the runtime module is served under the digest of its text only, to GET (ADR 0049)', async () => {
   const bootstrap = text(await serve(req('/__sandburg/node-worker.js')));
   const digest = /runtime\/([0-9a-f]{64})\.mjs/.exec(bootstrap ?? '')?.[1];
   assert.ok(digest, bootstrap ?? 'no bootstrap');

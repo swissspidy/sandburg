@@ -1,5 +1,5 @@
 /**
- * The runtime's script as a module the service worker answers from Cache Storage (ADR NNNN,
+ * The runtime's script as a module the service worker answers from Cache Storage (ADR 0049,
  * src/node-runtime/runtime-module.ts): the worker's script holds its messages until the module has
  * run, a later worker of the same browser context starts from V8's code for it, and nothing else
  * does. In Chromium, with the node adapter's own service worker; the module here stands in for the

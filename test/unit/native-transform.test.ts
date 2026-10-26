@@ -1,5 +1,5 @@
 /**
- * esbuild's transforms on the host's native esbuild (ADR NNNN), tried from a sandbox's side: the host
+ * esbuild's transforms on the host's native esbuild (ADR 0051), tried from a sandbox's side: the host
  * answers only transforms (no plugins, no files), only for esbuild versions whose output its own
  * matches, within its bounds (size, transforms in progress per sandbox and in all, time), and only to
  * the sandbox's own pages; its answers are the WebAssembly build's.
