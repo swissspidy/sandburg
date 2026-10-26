@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { acceptFileChannel, MAX_BODY, MAX_FRAME, MAX_POST } from '../../src/orchestrator/host-socket.ts';
+import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
+import { MAX_BODY, MAX_FRAME, MAX_POST } from '../../src/file-channel.ts';
 import type { HostRequest } from '../../src/types.ts';
 
 const ORIGIN = 'http://box.sandburg.localhost:1';

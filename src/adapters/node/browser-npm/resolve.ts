@@ -15,6 +15,7 @@
  */
 import semver from 'semver';
 import type { Manifest, Registry } from './registry.ts';
+import { parseRegistrySpec } from '../spec-guard.ts';
 
 export interface Placed {
   /** Where it goes, relative to the project: "node_modules/a" or "node_modules/a/node_modules/b". */
@@ -35,14 +36,15 @@ export interface RootPackage {
 
 export class UnsupportedSpecError extends Error {}
 
-/** A dependency spec as a registry name and range ("npm:other@^1" aliases another package). */
+/**
+ * A dependency spec as a registry name and range ("npm:other@^1" aliases another package). Only
+ * registry specs, by the host installer's rule and parse (spec-guard.ts): an allowlist of their shapes.
+ */
 function parseSpec(name: string, spec: string): { name: string; range: string } {
-  const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@(.*))?$/.exec(spec);
-  if (alias) return { name: alias[1], range: alias[2] || 'latest' };
-  if (/^(file|link|git|git\+[a-z]+|github|gitlab|bitbucket|gist|https?|workspace):|^[^@][^:]*\/[^:]*$/.test(spec)) {
-    throw new UnsupportedSpecError(`${name}@${spec}: only registry versions can be installed in the browser (not files, links, git or URLs)`);
-  }
-  return { name, range: spec.trim() || 'latest' };
+  const parsed = parseRegistrySpec(name, spec);
+  if (parsed) return parsed;
+  if (spec.includes('$')) throw new UnsupportedSpecError(`${name}@${spec}: a $ reference (to the project's own spec of a package) is only an override's whole value`);
+  throw new UnsupportedSpecError(`${name}@${spec}: only registry versions can be installed in the browser (not files, links, git or URLs)`);
 }
 
 function pick(packument: { 'dist-tags': Record<string, string>; versions: Record<string, Manifest> }, range: string): Manifest | null {
@@ -87,7 +89,14 @@ export async function resolveTree(
     }
     options.log?.('package-lock.json is not a v2/v3 lockfile: resolving the ranges instead');
   }
-  const overrides = Object.fromEntries(Object.entries(root.overrides ?? {}).filter(([, v]) => typeof v === 'string')) as Record<string, string>;
+  // A value "$name" is the project's own spec of that package, as npm reads it.
+  const overrides: Record<string, string> = {};
+  for (const [name, value] of Object.entries(root.overrides ?? {})) {
+    if (typeof value !== 'string') continue;
+    const ref = value.startsWith('$') ? (root.dependencies?.[value.slice(1)] ?? root.devDependencies?.[value.slice(1)]) : value;
+    if (ref === undefined) throw new Error(`npm error Unable to resolve reference ${value}`);
+    overrides[name] = ref;
+  }
   const placed = new Map<string, Placed>();
   let level: { from: string; name: string; spec: string; peer?: boolean }[] = Object.entries({ ...root.devDependencies, ...root.dependencies, ...options.extra }).map(([name, spec]) => ({ from: '', name, spec }));
   while (level.length) {

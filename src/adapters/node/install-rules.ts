@@ -1,6 +1,6 @@
 /**
  * What an install changes in the packages it installs, for the browser runtime: shared by the host's
- * installer (install.ts, npm) and the browser's (node-runtime/npm/install.ts). Browser-safe: data
+ * installer (install.ts, npm) and the browser's (browser-npm/install.ts). Browser-safe: data
  * and strings only.
  */
 import type { Project } from '../../types.ts';

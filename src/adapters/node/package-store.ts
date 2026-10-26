@@ -40,7 +40,7 @@ import {
 } from 'node:fs';
 import { lstat, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import { TarReader, type TarFile } from '../../node-runtime/npm/tar.ts';
+import { TarReader, type TarFile } from './browser-npm/tar.ts';
 
 interface LockEntry {
   version?: string;
