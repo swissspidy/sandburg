@@ -1,4 +1,4 @@
-# ADR NNNN: The architecture as checked rules, one table per framework, contracts in one module each
+# ADR 0056: The architecture as checked rules, one table per framework, contracts in one module each
 
 - Status: Accepted
 - Date: 2026-10-26
