@@ -67,6 +67,16 @@ the seed was 27 MB of gzip (78 MB inflated for the client), inflated and restore
 
   A cold run and its close (what a one-off `sandburg run` waits for): App Router 32.7 → 26.6 s (−19%),
   Pages Router 23.2 → 21.9 s. Cold installs move with npm (±1 s between rounds).
+- **Seedless runs** (what a user meets first: installs and transforms warm, no Next.js seed yet, so
+  the run compiles Next.js itself and starts the seed run beside it): origin/main 2d3bd48 against the
+  branch after merging it (e88c763), each side's `.sandburg/dev-cache` removed before each run, one run
+  per session, interleaved, 3 rounds, medians, all passed:
+
+  | Fixture | Total | Ready | Checks | `Session.close` |
+  |---|---|---|---|---|
+  | next-app-router | 17.19 → 14.75 s (−14%) | 10.99 → 8.99 s (−18%) | 1.43 → 0.99 s | 4.03 → 1.11 s (−72%) |
+  | next-pages-router | 11.72 → 10.02 s (−15%) | 5.92 → 4.86 s (−18%) | 0.74 → 0.55 s | 1.99 → 0.92 s (−54%) |
+
 - Each change's own A/B is in its commit message: source maps, warm 6.82 → 5.74 s and cold 29.2 →
   25.0 s (n=3; the seed 27 → 9.5 MB, `main-app.js` 12.0 → 4.6 MB; the seedless run's ready 11.0 →
   9.3 s in one session); compiles ahead, warm ready 2.95 → 2.81 s, cold total unchanged (on a cold
