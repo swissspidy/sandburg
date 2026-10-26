@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { acceptFileChannel, MAX_BODY, MAX_FRAME } from '../../src/orchestrator/host-socket.ts';
+import { acceptFileChannel, MAX_BODY, MAX_FRAME, MAX_POST } from '../../src/orchestrator/host-socket.ts';
 import type { HostRequest } from '../../src/types.ts';
 
 const ORIGIN = 'http://box.sandburg.localhost:1';
@@ -11,6 +11,7 @@ async function channelServer() {
   const asked: string[] = [];
   const serve = async (req: HostRequest) => {
     asked.push(`${req.method} ${req.path}`);
+    if (req.method === 'POST') return { status: 200, body: `posted ${req.query.get('v')} ${(await req.body(1 << 20)).toString('utf8')}` };
     if (req.path.endsWith('/missing.js')) return null;
     if (req.path.endsWith('/big.wasm')) return { status: 200, body: new Uint8Array(MAX_BODY + 1) };
     return { status: 200, body: `file ${decodeURIComponent(req.path.split('/').pop()!)}` };
@@ -81,4 +82,52 @@ test('the file channel closes on a frame larger than a request can be', async ()
   await closed;
   server.close();
   assert.deepEqual(asked, []);
+});
+
+/** A POST frame: the id and the path's length (u32 little-endian), the path, the body. */
+function post(ws: WebSocket, id: number, path: string, body: Uint8Array | string): Promise<{ id: number; status: number; body: string }> {
+  return new Promise((resolve) => {
+    const onMessage = (e: MessageEvent) => {
+      const view = new DataView(e.data as ArrayBuffer);
+      if (view.getUint32(0, true) !== id) return;
+      ws.removeEventListener('message', onMessage);
+      resolve({ id, status: view.getUint32(4, true), body: new TextDecoder().decode(new Uint8Array(e.data as ArrayBuffer, 8)) });
+    };
+    ws.addEventListener('message', onMessage);
+    const p = new TextEncoder().encode(path);
+    const b = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+    const frame = new Uint8Array(8 + p.length + b.length);
+    new DataView(frame.buffer).setUint32(0, id, true);
+    new DataView(frame.buffer).setUint32(4, p.length, true);
+    frame.set(p, 8);
+    frame.set(b, 8 + p.length);
+    ws.send(frame);
+  });
+}
+
+test("the file channel takes POSTs of esbuild's transforms only, as the route's own bound says", async () => {
+  const { server, asked, url } = await channelServer();
+  const ws = await open(url, ORIGIN);
+  assert.deepEqual(await post(ws, 1, '/__sandburg/esbuild-transform?v=0.25.0', '[{},"x"]'), { id: 1, status: 200, body: 'posted 0.25.0 [{},"x"]' });
+  // Any other path, a GET path among them, goes to HTTP; nothing is served.
+  for (const path of ['/__sandburg/compile?kind=cjs', '/__sandburg/dev-cache/0123456789abcdef01234567', '/__sandburg/nm/k/t/node_modules/a/index.js', '/__sandburg/esbuild-transform/../compile']) {
+    assert.equal((await post(ws, 2, path, 'x')).status, 0, path);
+  }
+  // A body over what the route reads (the route's bound, here 1 MB): refused before it is served.
+  assert.equal((await post(ws, 3, '/__sandburg/esbuild-transform', new Uint8Array((1 << 20) + 1))).status, 0);
+  ws.close();
+  server.close();
+  assert.deepEqual(asked, ['POST /__sandburg/esbuild-transform', 'POST /__sandburg/esbuild-transform']);
+});
+
+test('the file channel closes on a POST larger than a transform can be, or a malformed one', async () => {
+  for (const frame of [new Uint8Array(MAX_POST + 1), new Uint8Array(4), (() => { const f = new Uint8Array(16); new DataView(f.buffer).setUint32(4, 1000, true); return f; })()]) {
+    const { server, asked, url } = await channelServer();
+    const ws = await open(url, ORIGIN);
+    const closed = new Promise<void>((r) => ws.addEventListener('close', () => r()));
+    ws.send(frame);
+    await closed;
+    server.close();
+    assert.deepEqual(asked, []);
+  }
 });

@@ -1,5 +1,5 @@
 /**
- * The runtime's script as an ES module, imported by a small classic script (ADR NNNN).
+ * The runtime's script as an ES module, imported by a small classic script (ADR 0051).
  *
  * Every runtime of a run (the program's, its spares, worker threads and child processes: a Vite run
  * starts 6-8) compiles the runtime's 0.86 MB script again: Chromium gives a dedicated worker's
