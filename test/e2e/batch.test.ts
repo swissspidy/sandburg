@@ -6,7 +6,7 @@ import { before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { chromium, type Browser } from 'playwright-core';
+import { chromium, type Browser, type Page } from 'playwright-core';
 import { Session } from '../../src/orchestrator/session.ts';
 import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
 import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
@@ -218,30 +218,40 @@ test('without the gateway, the dead-proxy backstop alone keeps every connection 
 });
 
 test("Chromium's own connections (a preconnect to its search engine) do not reach a run's egress proxy", async () => {
-  // A context as a run's, with a page that requests nothing: whatever reaches the proxy is Chromium's.
-  const reached = async (options: Parameters<typeof chromium.launch>[0]) => {
+  // A context as a run's (no gateway here), whose page requests nothing until `then` runs: whatever
+  // else reaches the proxy is Chromium's own.
+  const reached = async (options: Parameters<typeof chromium.launch>[0], then?: (page: Page) => Promise<unknown>) => {
     const stats = newEgressStats();
     const proxy = new EgressProxy(originMatcher([]), stats, { noTunnels: true });
     const browser = await chromium.launch(options);
     try {
       await proxy.listen();
+      // Full Chromium reports itself as Chrome; Playwright's headless shell, which has no search
+      // engine (nothing to preconnect to), as HeadlessChrome.
+      const { product } = await (await browser.newBrowserCDPSession()).send('Browser.getVersion');
       const context = await browser.newContext({ proxy: { server: proxy.server } });
       const page = await context.newPage();
       await page.goto('data:text/html,<h1>quiet</h1>');
+      await then?.(page);
       await page.waitForTimeout(3000);
       await context.close();
-      return stats.blocked.map((b) => `${b.method} ${b.url}`);
+      return { product, connects: stats.blocked.map((b) => `${b.method} ${b.url}`) };
     } finally {
       await browser.close();
       await proxy.close();
     }
   };
-  assert.deepEqual(await reached(launchOptions({})), []);
-  // Control: with Playwright's switches alone, Chromium preconnects to www.google.com.
+  // With Sandburg's switches: nothing, on any build. The proxy does see what goes around the gateway
+  // (the page's own request here), so an empty list is not a proxy that records nothing.
+  const own = await reached(launchOptions({}), (page) => page.evaluate(() => fetch('https://unlisted.sandburg.test/').catch(() => {})));
+  assert.deepEqual(own.connects, ['CONNECT https://unlisted.sandburg.test'], own.product);
+  // Control, with Playwright's switches alone: full Chromium preconnects to www.google.com; the
+  // headless shell has nothing of the kind, so there it must stay quiet too.
   const { args, ignoreDefaultArgs, ...playwrightOnly } = launchOptions({});
   assert.ok(args && ignoreDefaultArgs);
   const control = await reached({ ...playwrightOnly, args: args.filter((a) => !a.startsWith('--disable-features=')) });
-  assert.ok(control.includes('CONNECT https://www.google.com'), `control: ${JSON.stringify(control)}; the test would prove nothing`);
+  if (control.product.startsWith('HeadlessChrome/')) assert.deepEqual(control.connects, [], control.product);
+  else assert.ok(control.connects.includes('CONNECT https://www.google.com'), `${control.product}: ${JSON.stringify(control.connects)}; the test would prove nothing`);
 });
 
 test('the gateway sees HTTPS from pages and workers; another sandbox refuses requests', async () => {

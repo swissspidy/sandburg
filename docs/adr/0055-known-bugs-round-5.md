@@ -55,7 +55,9 @@ that fails without it.
   `launch.ts` reads Playwright's list from playwright-core (which does not export it), leaves
   Playwright's switch out (`ignoreDefaultArgs`) and passes one with both lists. If the list cannot be
   read, Playwright's switch stays as it was; a unit test fails if a Playwright version builds it
-  otherwise.
+  otherwise. Playwright's default headless shell (CI's) has no search engine and makes no such
+  connections; full Chromium (`SANDBURG_CHROMIUM`) does. The browser test tells the two apart
+  (`Browser.getVersion`: `HeadlessChrome/` or `Chrome/`) and requires the control to fire in full Chromium.
 - **Next.js' advisories check is off by default**: a source patch sets `experimental.agentUpgrade`'s
   default to `false` in `next/dist/server/config-shared.js`, as `experimental: { agentUpgrade: false
   }` in next.config would. An app that sets the option itself still gets the check (and the POST is
