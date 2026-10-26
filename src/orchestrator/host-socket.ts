@@ -106,9 +106,22 @@ async function answer(target: string, serve: (req: HostRequest) => Promise<HostR
   }
 }
 
-/** Calls `onFrame` for each complete frame from the client (masked, unfragmented: what browsers send for these messages). */
-function readFrames(socket: Duplex, onFrame: (opcode: number, payload: Buffer) => void): void {
+/**
+ * Calls `onMessage` for each complete message from the client (masked frames). A data message may
+ * come in fragments (a frame without FIN, then continuation frames): Chromium splits larger ones,
+ * so a POST over ~32 KB arrives in pieces. The pieces are put together, and a message larger than
+ * its kind may be (MAX_FRAME for text, MAX_POST for binary) closes the channel as soon as it is.
+ * Control frames (close, ping) may come between the fragments.
+ */
+function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer) => void): void {
   let buf: Buffer = Buffer.alloc(0);
+  /** The data message being received in fragments: its opcode, the fragments, their length. */
+  let message: { opcode: number; parts: Buffer[]; length: number } | null = null;
+  const fail = () => {
+    buf = Buffer.alloc(0);
+    message = null;
+    socket.destroy();
+  };
   socket.on('data', (chunk: Buffer) => {
     buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
     for (;;) {
@@ -124,10 +137,14 @@ function readFrames(socket: Duplex, onFrame: (opcode: number, payload: Buffer) =
         length = Number(buf.readBigUInt64BE(2));
         at = 10;
       }
-      if (length > ((buf[0] & 0x0f) === 0x2 ? MAX_POST : MAX_FRAME)) {
-        buf = Buffer.alloc(0);
-        return void socket.destroy();
-      }
+      const fin = (buf[0] & 0x80) !== 0;
+      const opcode = buf[0] & 0x0f;
+      const control = opcode >= 0x8;
+      const continuation = opcode === 0x0;
+      // A continuation without a message, a new message before the last ended, or a fragmented control frame.
+      if (control ? !fin || length > 125 : continuation !== (message !== null)) return fail();
+      const received = continuation ? message!.length : 0;
+      if (received + length > ((continuation ? message!.opcode : opcode) === 0x2 ? MAX_POST : MAX_FRAME)) return fail();
       const masked = (buf[1] & 0x80) !== 0;
       const end = at + (masked ? 4 : 0) + length;
       if (buf.length < end) return;
@@ -136,9 +153,21 @@ function readFrames(socket: Duplex, onFrame: (opcode: number, payload: Buffer) =
         const mask = buf.subarray(at, at + 4);
         for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
       }
-      const opcode = buf[0] & 0x0f;
       buf = buf.subarray(end);
-      onFrame(opcode, payload);
+      if (control) {
+        onMessage(opcode, payload);
+      } else if (!fin) {
+        message ??= { opcode, parts: [], length: 0 };
+        message.parts.push(payload);
+        message.length += length;
+      } else if (message) {
+        const whole = Buffer.concat([...message.parts, payload]);
+        const kindOf = message.opcode;
+        message = null;
+        onMessage(kindOf, whole);
+      } else {
+        onMessage(opcode, payload);
+      }
     }
   });
 }
