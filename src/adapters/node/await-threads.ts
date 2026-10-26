@@ -56,13 +56,18 @@ export function contextAwaitsSoon(code: string): Promise<string | null> {
 }
 
 function startHelper(): Helper {
-  const worker = new Worker(new URL(import.meta.url), { workerData: { tag: TAG } });
+  // A smaller stack than this thread's (Node gives a worker 4 MB): code nested deep enough to
+  // overflow here (its parse check) overflows there first, and is done again here (below).
+  const worker = new Worker(new URL(import.meta.url), { workerData: { tag: TAG }, resourceLimits: { stackSizeMb: 0.5, maxOldGenerationSizeMb: 512 } });
   const started: Helper = { worker, ready: false, waiting: new Map() };
   const { waiting } = started;
   worker.on('message', ({ id, out }: { id: number; out: string | null }) => {
     // The first message: the helper has loaded the scan.
     if (!id) return void (started.ready = true);
-    waiting.get(id)?.done(out);
+    const file = waiting.get(id);
+    // Not rewritten there: this thread decides (a stack overflow, or a heap the helper did not have,
+    // is no answer; lowering is rare, and redone it costs one more scan).
+    file?.done(out ?? contextAwaits(file.code));
     waiting.delete(id);
     if (!waiting.size) worker.unref();
   });

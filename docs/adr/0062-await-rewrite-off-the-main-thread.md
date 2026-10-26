@@ -40,6 +40,16 @@ files' requests go on meanwhile.
 - **The same function, the same output.** The helper runs `contextAwaits` from `await-context.ts`:
   the scan, the cap on open awaits, the size bounds, and the `new Function` check, which compiles and
   never calls. A null answer lowers the file, as before. `TRANSFORM_VERSION` is unchanged.
+- **The main thread's answer, whatever the stack.** The parse check (V8's parser) and the scan can
+  overflow the stack on deeply nested code (1,500-5,000 levels of `((…))`, `h(h(…))`, `{a:{a:…}}`,
+  `[[…]]`), and a worker's stack is 4 MB by default against the main thread's ~1 MB: the helper
+  rewrote code the main thread lowered, and the transform cache (keyed by content, not by thread)
+  kept whichever came first. The helper now has a smaller stack (`resourceLimits.stackSizeMb: 0.5`,
+  and a 512 MB heap), and any file it does not rewrite (null: an overflow, a heap it did not have, or
+  code the scan does not understand) is done again on the main thread, whose answer is the one
+  kept. So what the helper rewrites the main thread would rewrite too (measured: of 35 nested
+  shapes and depths, 6 overflowed on the helper only, none on the main thread only), and lowering,
+  rare, costs one more scan. A test compares the two threads' answers on those shapes and depths.
 - **One helper, not a pool.** With two (`availableParallelism() - 2` on this machine), a cold
   astro-app run was 11% *slower* than main (3 rounds: 16.8-18.0 s against 16.0-16.3 s): the helpers
   took cores from the browser's threads and esbuild. With one, 4% faster.
@@ -49,7 +59,7 @@ files' requests go on meanwhile.
   message, once it has loaded the scan), files are rewritten on the main thread, as before.
 - **Small code stays on the main thread** (under 1 KB, or no `await`): posting a file costs ~0.03 ms,
   rewriting 1 KB ~0.1 ms.
-- **A helper that fails** (an error, an exit) is not started again: the files it had are rewritten on
+- **A helper that fails** (an error, an exit, its heap's limit) is not started again: the files it had are rewritten on
   the main thread, and so are later ones.
 - **It does not hold the process open**: unref'd while it has no files, after its listeners are
   added (a `'message'` listener added after `unref()` refs the worker's port again; a test runs a

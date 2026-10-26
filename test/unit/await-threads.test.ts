@@ -65,8 +65,28 @@ test('contextAwaitsSoon answers what contextAwaits does, on a helper thread', as
   }
 });
 
+test("deeply nested code gets this thread's answer, whichever thread overflows first", async () => {
+  // Nesting whose parse (or rewrite) overflows the stack somewhere between these depths: on a thread
+  // with a larger stack it would be rewritten where this thread lowers it, and the cache keeps either.
+  const SHAPES: [string, string, string][] = [
+    ['(', 'x', ')'],
+    ['h(', 'x', ')'],
+    ['{a:', '1', '}'],
+    ['[', '1', ']'],
+    ['await h(', 'x', ')'],
+  ];
+  const DEPTHS = [200, 1000, 1500, 2000, 3000, 4000, 6000];
+  const codes = SHAPES.flatMap(([open, inner, close]) => DEPTHS.map((n) => large(`async function f() { await g(); return ${open.repeat(n)}${inner}${close.repeat(n)}; }`)));
+  const outs = await Promise.all(codes.map((c) => contextAwaitsSoon(c)));
+  const here = codes.map((c) => contextAwaits(c));
+  for (const [i, c] of codes.entries()) assert.ok(outs[i] === here[i], `${c.slice(39, 50)}… (${c.length} chars): ${outs[i] === null ? 'lowered' : 'rewritten'} on the helper, ${here[i] === null ? 'lowered' : 'rewritten'} here`);
+  // Both answers occur: some depths are rewritten, some lowered.
+  assert.ok(here.some((o) => o === null));
+  assert.ok(here.some((o) => o !== null));
+});
+
 test('a helper that fails: its files and later ones are rewritten on this thread, with the same result', async () => {
-  // The helper the test above made ready.
+  // The helper the tests above made ready.
   const codes = random(11, 10).map(large);
   const before = Worker.prototype.postMessage;
   let killed = false;
