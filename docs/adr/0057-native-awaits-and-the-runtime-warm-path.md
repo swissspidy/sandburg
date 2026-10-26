@@ -106,7 +106,11 @@ async function f(x) {                         async function f(x) {
   the rewrite runs on that path. A body in braces that awaits gets `try { … } catch (__sbe) {
   k(__sbac); throw __sbe; }` (no cost per iteration); a body not in braces, whose end the scan does
   not look for, gets its iterable wrapped (`__sandburg_ac.i(__sbac, xs)`: the same iterator, whose
-  `return()` restores the context first). Neither lowers anything: in the nine fixtures' installs,
+  `return()` restores the context first; arrays, Sets and Maps with their own iterators, which have
+  no `return()`, are passed on as they are, keeping V8's fast paths: a wrapped loop over an array or
+  a Set runs as fast as a plain one, where an always-wrapped one was ~10 times slower). A loop whose
+  binding awaits (`for (const { a = await f() } of xs)`, evaluated each iteration outside the body)
+  has its iterable wrapped too. Neither lowers anything: in the nine fixtures' installs,
   the scan leaves the same 11 files to the lowering as before (all over 4 MB); Vite's chunk alone
   has 63 for-of bodies not in braces in async functions. Every place that lowered does this: installed files (`install.ts`), the host's
   compile of project files, Vite's SSR modules and webpack's `eval` literals (`compile.ts`), and the

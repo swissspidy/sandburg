@@ -56,8 +56,26 @@ interface AwaitState {
   s: boolean;
 }
 
+/**
+ * Built-in iterables whose iterators have no return(), with their own iterator method as the runtime
+ * started: for-of over one of them is passed on as it is, keeping V8's fast paths. (Whether their
+ * iterators gained a return() since is checked once per loop.)
+ */
+const arrayValues = Array.prototype[Symbol.iterator];
+const setValues = Set.prototype[Symbol.iterator];
+const mapEntries = Map.prototype[Symbol.iterator];
+const iteratorPrototypes = [[], new Set(), new Map()].map((x) => Object.getPrototypeOf(x[Symbol.iterator]()) as { return?: unknown });
+
+function plainIterable(iterable: Iterable<unknown>): boolean {
+  const values = (iterable as { [Symbol.iterator]?: unknown })[Symbol.iterator];
+  const kind = values === arrayValues ? 0 : values === setValues ? 1 : values === mapEntries ? 2 : -1;
+  if (kind < 0) return false;
+  if (iteratorPrototypes[kind].return !== undefined) return false;
+  return kind === 0 ? Array.isArray(iterable) : kind === 1 ? iterable instanceof Set : iterable instanceof Map;
+}
+
 /** What rewritten awaits call (await-context.ts explains the calls). */
-const awaitContext = {
+export const awaitContext = {
   e: (): AwaitState => ({ c: current, p: null, s: false }),
   s<V>(st: AwaitState, value: V): V {
     // Suspended still: a rejected await resumed into code before a `k` (a lowered function has none;
@@ -84,24 +102,25 @@ const awaitContext = {
     if (!st.s && st.p !== null) current = st.p;
   },
   /**
-   * The iterable of a for-of loop whose body is not in braces: its iterator, whose return() (a
-   * generator's finally, an iterator's cleanup) restores the function's context first when a
-   * rejected await unwinds the loop. Otherwise the same iterator, used as for-of uses it.
+   * The iterable of a for-of loop whose body is not in braces (or whose binding awaits): its
+   * iterator, whose return() (a generator's finally, an iterator's cleanup) restores the function's
+   * context first when a rejected await unwinds the loop. An iterator without return() needs none:
+   * arrays, Sets, Maps and strings (with their own iterators) are passed on untouched, keeping V8's
+   * fast paths, and other iterators without return() as they are.
    */
   i(st: AwaitState, iterable: Iterable<unknown>): Iterable<unknown> {
+    if (plainIterable(iterable)) return iterable;
+    const it = iterable[Symbol.iterator]();
+    if (it === null || (typeof it !== 'object' && typeof it !== 'function') || it.return === undefined || it.return === null) return { [Symbol.iterator]: () => it };
+    const next = it.next;
     return {
-      [Symbol.iterator]() {
-        const it = iterable[Symbol.iterator]();
-        const next = it.next;
-        return {
-          next: (value?: unknown) => next.call(it, value),
-          return(value?: unknown) {
-            awaitContext.k(st);
-            const close = it.return;
-            return close === undefined || close === null ? { done: true, value } : close.call(it, value);
-          },
-        };
-      },
+      [Symbol.iterator]: () => ({
+        next: () => next.call(it),
+        return() {
+          awaitContext.k(st);
+          return it.return!.call(it);
+        },
+      }),
     };
   },
 };

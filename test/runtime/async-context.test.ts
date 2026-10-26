@@ -189,3 +189,28 @@ test('AsyncLocalStorage in an iterator a for-of loop closes when an await in its
   assert.equal(out.fatal, null, out.fatal ?? '');
   assert.equal(out.stdout.trim(), 'block-return:A block-return:B bare-finally:A bare-finally:B break-return:A break-return:B');
 });
+
+// A for-of binding named \`of\` (minifiers make such names), an await in a loop's binding (run each
+// iteration, outside the body), and next() and return() called with no arguments, as for-of calls
+// them. Node's output.
+test('AsyncLocalStorage in for-of loops: a binding named of, an await in the binding, the iterator\'s calls', async () => {
+  const program = `
+    const { AsyncLocalStorage } = require('async_hooks');
+    const als = new AsyncLocalStorage();
+    const out = [];
+    const tick = () => new Promise((r) => setTimeout(r, 1));
+    const fail = () => new Promise((_, j) => setTimeout(() => j(new Error('x')), 1));
+    function* gen(tag) { try { yield { a: undefined }; yield { a: undefined }; } finally { out.push(tag + ':' + als.getStore()); } }
+    const counting = () => ({ [Symbol.iterator]() { let n = 0; return { next() { out.push('next-args:' + arguments.length); return { done: n++ > 0, value: n }; }, return() { out.push('return-args:' + arguments.length); return { done: true }; } }; } });
+    async function named() { await tick(); try { for (const of of gen('of-named')) { await fail(); } } catch {} }
+    async function head() { await tick(); try { for (const { a = await fail() } of gen('head-finally')) { out.push('body'); } } catch {} }
+    async function arity() { await tick(); for (const x of counting()) break; for (const y of counting()) await tick(); }
+    (async () => {
+      for (const f of [named, head]) await Promise.all([als.run('A', f), als.run('B', f)]);
+      await als.run('C', arity);
+      console.log(out.join(' '));
+    })();`;
+  const out = await h.run({ 'main.js': program }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? '');
+  assert.equal(out.stdout.trim(), 'of-named:A of-named:B head-finally:A head-finally:B next-args:0 return-args:0 next-args:0 next-args:0');
+});

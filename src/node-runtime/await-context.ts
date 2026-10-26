@@ -124,6 +124,8 @@ interface Group {
   /** `(` of a for-of head: where its `of` ends and its iterable ends. */
   ofEnd?: number;
   headEnd?: number;
+  /** `(` of a for head: an await of the function is in its binding (before `of`), run each iteration. */
+  headAwaits?: boolean;
   /** `{` of a for-of loop's body: the frame it is in, and whether an await of that frame is in it. */
   loopFrame?: Frame;
   loopAwaits?: boolean;
@@ -327,9 +329,10 @@ class Scanner {
     this.advancePending();
     const loop = this.forOfClosed;
     if (loop) {
-      // A for-of body not in braces: its iterable is wrapped (if the function is rewritten).
+      // A for-of body not in braces, or a binding that awaits: its iterable is wrapped (if the
+      // function is rewritten).
       this.forOfClosed = null;
-      if (!(this.type === T.Open && this.value === '{')) {
+      if (!(this.type === T.Open && this.value === '{') || loop.headAwaits) {
         this.edit(this.frame, loop.ofEnd!, Edit.IterOpen);
         this.edit(this.frame, loop.headEnd!, Edit.IterClose);
       }
@@ -434,8 +437,13 @@ class Scanner {
         this.edit(this.frame, this.end, Edit.AwaitOperand);
         if (this.pending.length >= MAX_PENDING) throw new Unsupported('awaits');
         this.pending.push({ frame: this.frame, depth: this.groups.length, phase: 0, bodies: 0 });
-        // In for-of bodies (of this function): each restores the context on a rejection.
-        for (let i = this.groups.length - 1; i >= 0 && !this.groups[i].frame; i--) if (this.groups[i].loopFrame === this.frame) this.groups[i].loopAwaits = true;
+        // In for-of bodies (of this function): each restores the context on a rejection. In a for
+        // head's binding, before its `of` (evaluated each iteration, outside the body).
+        for (let i = this.groups.length - 1; i >= 0 && !this.groups[i].frame; i--) {
+          const g = this.groups[i];
+          if (g.loopFrame === this.frame) g.loopAwaits = true;
+          if (g.kind === 40 && g.before === 'for' && !g.iterates) g.headAwaits = true;
+        }
       }
     }
     if (!this.property) this.memberToken(value);
@@ -765,7 +773,7 @@ class Scanner {
       case 'of': {
         // The keyword right after a for head's binding (`for (const x of`), once; a name elsewhere.
         const top = this.top;
-        return top?.kind === 40 && top.before === 'for' && !top.iterates && this.prevExprEnd && this.prevValue !== 'of';
+        return top?.kind === 40 && top.before === 'for' && !top.iterates && this.prevExprEnd;
       }
       case 'await':
         return this.frame.async;

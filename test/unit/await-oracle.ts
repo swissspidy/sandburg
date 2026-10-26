@@ -67,7 +67,11 @@ export function oracleRewrite(code: string): string | null {
     }
     if (node.type === 'ForOfStatement' && fn && !node.await) {
       const body = node.body as Node;
-      for (const key of ['left', 'right'] as const) visit(node[key] as Node, fn, loops);
+      const before = fn.awaits.length;
+      visit(node.left as Node, fn, loops);
+      const headAwaits = fn.awaits.length > before;
+      visit(node.right as Node, fn, loops);
+      if (headAwaits && body.type === 'BlockStatement') fn.bare.push({ ofEnd: code.indexOf('of', (node.left as Node).end) + 2, right: node.right as Node });
       if (body.type === 'BlockStatement') {
         const loop = { body, awaits: false };
         fn.loops.push(loop);

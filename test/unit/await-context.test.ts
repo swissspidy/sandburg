@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as esbuild from 'esbuild';
@@ -59,6 +60,7 @@ const CASES = [
   'async function f() { L: for (const x of xs) { for (const y of x) { await y; continue L; } } }',
   'async function f() { for (const x of xs) { await x; } for (const k in o) await k; }',
   'async function f() { for (const x of xs) await x; for (const y of await ys) g(y); for (const [a] of (b, c)) if (a) await a; else h(); await z; }',
+  'async function f(of) { for (const of of xs) { await of; } for (const x of of / 2) await x; for (const { a = await r() } of g()) { h(a); } for ((await o).p of xs) await y; }',
 ];
 
 test('the token scan rewrites awaits as the parse does (acorn), and the result parses', () => {
@@ -201,4 +203,28 @@ test('large or await-dense code is lowered at once, not scanned (the host compil
   const out = compileForRuntime(unit.repeat(Math.ceil((8 << 20) / unit.length)), '/app/dense.js', 'cjs');
   assert.doesNotMatch(out.slice(0, 2000), /__sandburg_ac/); // lowered
   assert.ok(performance.now() - t0 < 15_000, `${(performance.now() - t0).toFixed(0)} ms`);
+});
+
+test('a for-of loop whose iterable is wrapped (its body not in braces) iterates an array or a Set at native speed', () => {
+  // The rewrite wraps such a loop's iterable (awaitContext.i); arrays, Sets and Maps with their own
+  // iterators pass through, so V8's fast paths stay. Each measurement runs in a process of its own:
+  // in one process, V8's feedback from one variant skews the next.
+  const time = (variant: 'native' | 'wrapped', kind: 'array' | 'set') => {
+    const script = `
+      import { awaitContext } from ${JSON.stringify(new URL('../../src/node-runtime/async-context.ts', import.meta.url).href)};
+      globalThis.__sandburg_ac = awaitContext;
+      const arr = Array.from({ length: 1000 }, (_, i) => i);
+      const xs = ${kind === 'set' ? 'new Set(arr)' : 'arr'};
+      const src = ${JSON.stringify(variant === 'native' ? 'let s = 0; for (let k = 0; k < n; k++) for (const x of xs) s += x; return s;' : 'const __sbac = __sandburg_ac.e(); let s = 0; for (let k = 0; k < n; k++) for (const x of __sandburg_ac.i(__sbac, xs)) s += x; return s;')};
+      const f = new Function('xs', 'n', src);
+      f(xs, 200);
+      let best = Infinity;
+      for (let r = 0; r < 7; r++) { const t0 = performance.now(); f(xs, 5000); best = Math.min(best, performance.now() - t0); }
+      console.log(best);`;
+    return Number(execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' }));
+  };
+  for (const kind of ['array', 'set'] as const) {
+    const [a, b] = [time('native', kind), time('wrapped', kind)];
+    assert.ok(b < a * 1.5 + 2, `${kind}: ${b.toFixed(1)} ms wrapped, ${a.toFixed(1)} ms native`);
+  }
 });
