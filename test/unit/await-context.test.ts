@@ -103,3 +103,28 @@ test('installed packages: the token scan rewrites as the parse does', () => {
   }
   assert.ok(checked > 10, `${checked} files`);
 });
+
+test('the scan never throws and stays linear on arbitrary or crafted input (the host runs it on app code)', () => {
+  // A fixed-seed soup of JavaScript's tokens, async and await among them.
+  let seed = 0x2545f491;
+  const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+  const vocabulary = ['async', 'await', 'function', 'class', '=>', '(', ')', '{', '}', '[', ']', '`a${', '}`', '/', '/x/g', '"s"', "'t'", '1', '.5', 'x', '.', '?.', '?', ':', ',', ';', '++', '\n', 'catch', 'finally', 'try', 'case', 'default', 'static', 'get', '*', '=', '#p', 'new', 'typeof', '//c\n', '/*c*/'];
+  for (let i = 0; i < 3000; i++) {
+    const n = 1 + Math.floor(rnd() * 40);
+    let code = 'async function f() { await x; ';
+    for (let k = 0; k < n; k++) code += vocabulary[Math.floor(rnd() * vocabulary.length)] + ' ';
+    const out = rewriteAwaits(code);
+    assert.ok(out === null || typeof out === 'string');
+  }
+  // Thousands of awaits open at once: given up on (lowered instead), quickly.
+  for (const code of [`async function f() { return ${'await '.repeat(100_000)}x; }`, `async function f() { return ${'await ('.repeat(50_000)}x${')'.repeat(50_000)}; }`]) {
+    const t0 = performance.now();
+    assert.equal(rewriteAwaits(code), null);
+    assert.ok(performance.now() - t0 < 2000, `${(performance.now() - t0).toFixed(0)} ms`);
+  }
+  // Many awaits one after another: rewritten, in linear time.
+  const many = `async function f() { ${'await x; '.repeat(50_000)} }`;
+  const t0 = performance.now();
+  assert.match(rewriteAwaits(many) ?? '', /__sandburg_ac\.r\(__sbac, await __sandburg_ac\.s\(__sbac, x\)\);/);
+  assert.ok(performance.now() - t0 < 2000, `${(performance.now() - t0).toFixed(0)} ms`);
+});

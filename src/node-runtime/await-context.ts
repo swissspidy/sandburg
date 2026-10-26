@@ -119,11 +119,18 @@ export function rewriteAwaits(code: string): string | null {
   if (!code.includes('await')) return code;
   try {
     return new Scanner(code).run();
-  } catch (e) {
-    if (e instanceof Unsupported) return null;
-    throw e;
+  } catch {
+    // Unsupported, or a bug of the scan's: the code is lowered instead.
+    return null;
   }
 }
+
+/**
+ * Awaits whose operands are open at once (`await f(await g())`: two). Each token moves every open
+ * one on, so a crafted input with thousands (`await await …`, `await (await (…`) would take quadratic
+ * time on the host; real code has a handful. More, and the code is lowered instead.
+ */
+const MAX_PENDING = 64;
 
 /**
  * rewriteAwaits, checked: the rewritten code must parse (compiled, never called, here). Null to
@@ -203,7 +210,7 @@ class Scanner {
     while (this.frame.expression) this.endExpressionBody();
     if (this.groups.length || this.frames.length !== 1 || this.functionDue || this.classDue || this.arrowDue) throw new Unsupported('unbalanced');
     const edits: [number, Edit][] = [];
-    for (const f of this.done) if (f.async && f.awaits) edits.push(...f.edits);
+    for (const f of this.done) if (f.async && f.awaits) for (const e of f.edits) edits.push(e);
     if (!edits.length) return this.code;
     edits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     let out = '';
@@ -331,6 +338,7 @@ class Scanner {
       } else if (value === 'await' && this.frame.async && this.peek() !== ':') {
         this.frame.awaits++;
         this.frame.edits.push([this.start, Edit.AwaitOpen], [this.end, Edit.AwaitOperand]);
+        if (this.pending.length >= MAX_PENDING) throw new Unsupported('awaits');
         this.pending.push({ frame: this.frame, depth: this.groups.length, phase: 0 });
       }
     }
