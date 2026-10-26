@@ -121,18 +121,22 @@ const modules = new Map();
 async function runtimeModule(request, path) {
   try {
     const cache = await caches.open(RUNTIME_CACHE);
-    const hit = await cache.match(path);
-    if (hit) return hit;
-    let stored = modules.get(path);
-    if (!stored) {
-      stored = fetch(request).then(async (res) => {
-        if (!res.ok) throw new Error(`${path}: ${res.status}`);
-        await cache.put(path, res);
-      });
-      modules.set(path, stored);
+    let res = await cache.match(path);
+    if (!res) {
+      let stored = modules.get(path);
+      if (!stored) {
+        // The module's text, whatever asked: a HEAD's empty body cached under the path would be the
+        // module every later import got.
+        stored = fetch(path).then(async (got) => {
+          if (!got.ok) throw new Error(`${path}: ${got.status}`);
+          await cache.put(path, got);
+        });
+        modules.set(path, stored);
+      }
+      await stored;
+      res = (await cache.match(path)) ?? new Response(`${path}: not cached`, { status: 502 });
     }
-    await stored;
-    return (await cache.match(path)) ?? new Response(`${path}: not cached`, { status: 502 });
+    return request.method === 'HEAD' ? new Response(null, { status: res.status, headers: res.headers }) : res;
   } catch (e) {
     modules.delete(path);
     return new Response(String(e?.message ?? e), { status: 502 });

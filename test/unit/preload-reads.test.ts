@@ -61,3 +61,9 @@ test('then what they read from bundles and asked for, in the order first loaded'
   await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(await preloadEntries(key), ['t:node_modules/p/a.js', 'f:node_modules/p/b.js', 't:node_modules/p/c.js']);
 });
+
+test('a file read from a bundle that runs never asked for one by one (borrowed from another install) stays', async () => {
+  // f:node_modules/p/d.js is not in the install's own list (t: is): a bundle borrowed it from another install's.
+  assert.equal((await report(key, ['f/node_modules/p/d.js']))?.status, 204);
+  assert.deepEqual(await preloadEntries(key), ['t:node_modules/p/a.js', 'f:node_modules/p/b.js', 't:node_modules/p/c.js', 'f:node_modules/p/d.js']);
+});
