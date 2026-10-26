@@ -23,8 +23,14 @@ export const FILE_CHANNEL_PATH = `/__sandburg/${FILE_CHANNEL_NAME}`;
 export const MAX_BODY = 1 << 20;
 /** Larger text frames from a runtime close the channel: a request is `<id> <path>`, and nothing is buffered beyond this. */
 export const MAX_FRAME = 1 << 16;
-/** Larger POST frames close the channel (a transform's code and options; the route's own bound is 4 MB). */
+/** Larger POST messages close the channel (a transform's code and options, or a compile's code; the routes' own bound is 4 MB). */
 export const MAX_POST = (4 << 20) + MAX_FRAME;
+/**
+ * What each fragment of a message costs against its bound (MAX_FRAME, MAX_POST) besides its bytes:
+ * the host keeps a message's fragments until its last, so their number is bounded as their bytes
+ * are. Chromium splits a 4 MB message into ~33 fragments (~33 KB of MAX_POST's 64 KB headroom).
+ */
+export const FRAGMENT_COST = 1024;
 /**
  * A runtime's compile is posted over the channel when its code is shorter (larger code, next dev's
  * chunks, is asked for by digest first and posted over HTTP); its answer still has to fit MAX_BODY.

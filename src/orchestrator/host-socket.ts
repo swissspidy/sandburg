@@ -7,15 +7,17 @@
  * Playwright), for a file the host has in memory. A WebSocket's messages are not intercepted: the
  * runtime's helper worker asks over one, and the runtime waits on shared memory, ~0.5 ms a request.
  *
- * Only esbuild's transforms are posted (see src/adapters/node/native-transform.ts): an asynchronous
- * request each, which over HTTP took 15-60 ms.
+ * Posted: esbuild's transforms (src/adapters/node/native-transform.ts, asynchronous requests that
+ * over HTTP took 15-60 ms each) and the runtime's compiles (hostCompile in node-runtime/worker.ts,
+ * synchronous, ~7-10 ms each over HTTP). An answer over MAX_BODY is status 0: the runtime asks again
+ * over HTTP, and the host compiles again (from its cache of compiles, by digest).
  */
 import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { HostRequest, HostResponse } from '../types.ts';
 import { traceTransfer } from '../transfer-trace.ts';
-import { ANSWER_HEADER, MAX_BODY, MAX_FRAME, MAX_POST, POST_HEADER } from '../file-channel.ts';
+import { ANSWER_HEADER, FRAGMENT_COST, MAX_BODY, MAX_FRAME, MAX_POST, POST_HEADER } from '../file-channel.ts';
 
 /** The paths a runtime asks for over the channel: installed files. */
 const SERVED = /^\/__sandburg\/nm\//;
@@ -100,10 +102,12 @@ async function answer(target: string, serve: (req: HostRequest) => Promise<HostR
 
 /**
  * Calls `onMessage` for each complete message from the client (masked frames). A data message may
- * come in fragments (a frame without FIN, then continuation frames): Chromium splits larger ones,
- * so a POST over ~32 KB arrives in pieces. The pieces are put together, and a message larger than
- * its kind may be (MAX_FRAME for text, MAX_POST for binary) closes the channel as soon as it is.
- * Control frames (close, ping) may come between the fragments.
+ * come in fragments (a frame without FIN, then continuation frames): Chromium splits larger ones
+ * (here, messages over ~131 KB). The pieces are put together, and a message larger than its kind
+ * may be (MAX_FRAME for text, MAX_POST for binary) closes the channel as soon as it is; each
+ * fragment counts FRAGMENT_COST bytes against that bound besides its own, so what the host holds
+ * for a message is bounded in fragments as in bytes. Control frames (close, ping) may come between
+ * the fragments.
  */
 function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer) => void): void {
   let buf: Buffer = Buffer.alloc(0);
@@ -135,8 +139,10 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
       const continuation = opcode === 0x0;
       // A continuation without a message, a new message before the last ended, or a fragmented control frame.
       if (control ? !fin || length > 125 : continuation !== (message !== null)) return fail();
+      // What the message holds so far, and this frame (a fragment of it, unless it is a whole one).
       const received = continuation ? message!.length : 0;
-      if (received + length > ((continuation ? message!.opcode : opcode) === 0x2 ? MAX_POST : MAX_FRAME)) return fail();
+      const cost = length + (continuation || !fin ? FRAGMENT_COST : 0);
+      if (!control && received + cost > ((continuation ? message!.opcode : opcode) === 0x2 ? MAX_POST : MAX_FRAME)) return fail();
       const masked = (buf[1] & 0x80) !== 0;
       const end = at + (masked ? 4 : 0) + length;
       if (buf.length < end) return;
@@ -151,7 +157,7 @@ function readFrames(socket: Duplex, onMessage: (opcode: number, payload: Buffer)
       } else if (!fin) {
         message ??= { opcode, parts: [], length: 0 };
         message.parts.push(payload);
-        message.length += length;
+        message.length += cost;
       } else if (message) {
         const whole = Buffer.concat([...message.parts, payload]);
         const kindOf = message.opcode;

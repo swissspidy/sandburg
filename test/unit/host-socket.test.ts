@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { acceptFileChannel } from '../../src/orchestrator/host-socket.ts';
-import { MAX_BODY, MAX_FRAME, MAX_POST } from '../../src/file-channel.ts';
+import { FRAGMENT_COST, MAX_BODY, MAX_FRAME, MAX_POST } from '../../src/file-channel.ts';
 import type { HostRequest } from '../../src/types.ts';
 
 const ORIGIN = 'http://box.sandburg.localhost:1';
@@ -159,7 +159,7 @@ test('the file channel closes on a POST larger than a transform can be, or a mal
  * A raw client of the channel, for what Node's WebSocket never sends: fragmented messages (Chromium
  * splits larger ones into a first frame without FIN and continuation frames).
  */
-async function rawChannel(url: string): Promise<{ send(fin: boolean, opcode: number, payload: Uint8Array): void; messages: Buffer[]; closed: Promise<void>; end(): void }> {
+async function rawChannel(url: string): Promise<{ send(fin: boolean, opcode: number, payload: Uint8Array): void; messages: Buffer[]; closed: Promise<void>; isClosed(): boolean; end(): void }> {
   const { connect } = await import('node:net');
   const { port } = new URL(url);
   const socket = connect(Number(port), '127.0.0.1');
@@ -189,7 +189,9 @@ async function rawChannel(url: string): Promise<{ send(fin: boolean, opcode: num
       }
     });
   });
-  const closed = new Promise<void>((r) => socket.on('close', () => r()));
+  socket.on('error', () => {}); // the host closes the channel on some of what these tests send
+  let isClosed = false;
+  const closed = new Promise<void>((r) => socket.on('close', () => ((isClosed = true), r())));
   socket.write(`GET /__sandburg/files HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: ${ORIGIN}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
   await ready;
   return {
@@ -198,10 +200,11 @@ async function rawChannel(url: string): Promise<{ send(fin: boolean, opcode: num
       const n = payload.length;
       const head = n < 126 ? Buffer.from([(fin ? 0x80 : 0) | opcode, 0x80 | n]) : n < 65536 ? Buffer.from([(fin ? 0x80 : 0) | opcode, 0x80 | 126, n >> 8, n & 0xff]) : Buffer.concat([Buffer.from([(fin ? 0x80 : 0) | opcode, 0x80 | 127]), (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; })()]);
       const body = Buffer.from(payload).map((b, i) => b ^ mask[i & 3]);
-      socket.write(Buffer.concat([head, mask, body]));
+      if (!socket.destroyed) socket.write(Buffer.concat([head, mask, body]));
     },
     messages,
     closed,
+    isClosed: () => isClosed,
     end: () => socket.destroy(),
   };
 }
@@ -240,11 +243,11 @@ test('the file channel puts a fragmented message together, with a ping between i
   assert.deepEqual(asked.sort(), ['GET /__sandburg/nm/k/t/node_modules/a/index.js', 'POST /__sandburg/esbuild-transform']);
 });
 
-test('the file channel closes on fragments larger together than a message may be, or out of order', async () => {
+test('the file channel closes on fragments larger together than a message may be, or out of order', { timeout: 20_000 }, async () => {
   const cases: [boolean, number, Uint8Array][][] = [
-    // Fragments each under the bound, together over it.
-    [[false, 0x2, new Uint8Array(MAX_POST - 10)], [true, 0x0, new Uint8Array(20)]],
-    [[false, 0x1, new Uint8Array(MAX_FRAME - 10)], [true, 0x0, new Uint8Array(20)]],
+    // Fragments each under the bound, together over it (each also counts FRAGMENT_COST).
+    [[false, 0x2, new Uint8Array(MAX_POST - 2 * FRAGMENT_COST)], [true, 0x0, new Uint8Array(FRAGMENT_COST)]],
+    [[false, 0x1, new Uint8Array(MAX_FRAME - 2 * FRAGMENT_COST)], [true, 0x0, new Uint8Array(FRAGMENT_COST)]],
     // A continuation with no message, a new message inside one, a fragmented control frame.
     [[true, 0x0, new Uint8Array(8)]],
     [[false, 0x2, new Uint8Array(8)], [true, 0x2, new Uint8Array(8)]],
@@ -258,4 +261,30 @@ test('the file channel closes on fragments larger together than a message may be
     server.close();
     assert.deepEqual(asked, []);
   }
+});
+
+test('the file channel bounds a message in fragments as in bytes: a flood of empty or one-byte fragments closes it', { timeout: 20_000 }, async () => {
+  for (const size of [0, 1]) {
+    const { server, asked, url } = await channelServer();
+    const raw = await rawChannel(url);
+    raw.send(false, 0x2, new Uint8Array(size));
+    // Far fewer bytes than MAX_POST, far more fragments than it allows (MAX_POST / FRAGMENT_COST).
+    for (let i = 0; i < 10_000 && !raw.isClosed(); i++) raw.send(false, 0x0, new Uint8Array(size));
+    await raw.closed;
+    server.close();
+    assert.deepEqual(asked, []);
+  }
+});
+
+test("a message within the bound in as many fragments as Chromium sends (~33 for 4 MB) is put together", { timeout: 20_000 }, async () => {
+  const { server, asked, url } = await channelServer();
+  const raw = await rawChannel(url);
+  const message = postMessage(9, '/__sandburg/esbuild-transform?v=2', new Uint8Array((4 << 20) - 64));
+  const piece = 131_072;
+  for (let at = 0; at < message.length; at += piece) raw.send(at + piece >= message.length, at ? 0x0 : 0x2, message.subarray(at, at + piece));
+  for (let i = 0; i < 200 && !raw.messages.length; i++) await new Promise((r) => setTimeout(r, 10));
+  raw.end();
+  server.close();
+  assert.equal(raw.messages[0]?.readUInt32LE(0), 9);
+  assert.deepEqual(asked, ['POST /__sandburg/esbuild-transform']);
 });

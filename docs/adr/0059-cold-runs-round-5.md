@@ -19,8 +19,8 @@ answered (over HTTP and over the file channel, with its latency) showed:
   routed context; the file channel (ADR 0041) took only GETs and esbuild's transforms. With every
   cache but the project's compile cache in place, those compiles alone made ready 4.4 s instead of
   2.0 s.
-- **The file channel lost its larger messages.** Chromium sends a WebSocket message over ~32 KB in
-  fragments (a frame without FIN, then continuation frames); the host's frame reader took each
+- **The file channel lost its larger messages.** Chromium sends a larger WebSocket message (here, over
+  ~131 KB) in fragments (a frame without FIN, then continuation frames); the host's frame reader took each
   frame for a whole message. A larger POST was answered from its first fragment, and the channel
   closed soon after (~4 s into a cold astro-app run's start): every later request of that runtime
   went over HTTP.
@@ -51,7 +51,10 @@ answered (over HTTP and over the file channel, with its latency) showed:
 - **Whole WebSocket messages** (`readFrames` in `host-socket.ts`): fragments are put together before
   a message is answered; control frames may come between them. A message whose fragments together
   exceed its kind's bound (`MAX_FRAME` for text, `MAX_POST` for binary), a continuation without a
-  message, a new data frame inside one, or a fragmented control frame closes the channel.
+  message, a new data frame inside one, or a fragmented control frame closes the channel. Each
+  fragment is charged a fixed cost (`FRAGMENT_COST`, 1 KB, in `src/file-channel.ts`) against the
+  message's bound besides its bytes, so what the host holds for a message is bounded in fragments as
+  in bytes (Chromium sends ~33 fragments for 4 MB, within `MAX_POST`'s headroom).
 - **Installed files over the channel's bound go over HTTP at once** (`syncGet` in `host-files.ts`):
   the runtime knows each file's size from the install's index.
 - **Transform and compile cache files written on a thread** (`src/adapters/node/file-writes.ts`): the
@@ -109,9 +112,9 @@ answered (over HTTP and over the file channel, with its latency) showed:
   the token reaches the route as the header and leaves the query; only `esbuild-transform` and
   `compile` are taken as POSTs (other paths, `..` included, answer status 0 and nothing is served).
 - **Fragments stay bounded.** The reader keeps at most one message's fragments, at most `MAX_POST`
-  bytes; fragments over the bound together, a continuation without a message, a data frame inside a
-  message and a fragmented control frame close the channel with nothing served
-  (`test/unit/host-socket.test.ts`, with a raw client, as Node's WebSocket never fragments; the frame
+  bytes counting `FRAGMENT_COST` per fragment (so at most ~4,200 fragments); fragments over the bound together, a continuation without a message, a data frame inside a
+  message, a fragmented control frame, and a flood of empty or one-byte fragments close the channel
+  with nothing served (`test/unit/host-socket.test.ts`, with a raw client, as Node's WebSocket never fragments; the frame
   reader's fuzzer, `test/unit/parser-fuzz.test.ts`, passes).
 - **The writer thread** writes the files the host wrote before, under the host's own digests; it is
   the host's code on a thread of the host process, and nothing reaches it from a run but bytes the
