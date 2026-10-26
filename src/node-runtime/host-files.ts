@@ -6,7 +6,7 @@
  */
 import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
-import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack } from './worker.ts';
+import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack, nodeModulesIndex } from './worker.ts';
 
 let installedRequests = 0;
 
@@ -124,6 +124,10 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
     if (side) return { status: 200, body: binary ? side : new TextDecoder().decode(side) };
     const early = sentAhead(key, url);
     if (early) return { status: 200, body: binary ? early : new TextDecoder().decode(early) };
+    // A file over the channel's bound (a WebAssembly binary, Vite's largest chunk) over HTTP at once:
+    // the host would read or transform it for the channel, answer that it is too large (status 0),
+    // and read it again for HTTP (rolldown's 11 MB binary: ~100 ms of the host's thread, twice a run).
+    if ((nodeModulesIndex?.[key.slice(2)] ?? 0) >= CHANNEL_BODY_MAX) return httpSync(url, binary);
     const res = key.startsWith('f/') ? readAhead(url, key.slice(2)) : key.startsWith('t/') ? withPushed(url) : null;
     if (res) return { status: res.status, body: binary ? res.body : new TextDecoder().decode(res.body) };
   }
@@ -253,6 +257,10 @@ export function loadCompiles(into: Map<string, string>, asyncModules: boolean): 
 export function requestSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   const fast = url.startsWith(`${base}/nm/`) ? viaChannel(url) : null;
   if (fast) return { status: fast.status, body: binary ? fast.body : new TextDecoder().decode(fast.body) };
+  return httpSync(url, binary);
+}
+
+function httpSync(url: string, binary: boolean): { status: number; body: Uint8Array | string } {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', url, false);
   if (binary) xhr.responseType = 'arraybuffer';
@@ -377,7 +385,10 @@ export function startDigester(): void {
  */
 let channel: { post(message: unknown, transfer?: Transferable[]): void; ready: SharedArrayBuffer; mailbox: SharedArrayBuffer | null } | null = null;
 
-const CHANNEL_MAILBOX = 12 + (1 << 20);
+/** The largest body the host answers over the channel (MAX_BODY in host-socket.ts). */
+const CHANNEL_BODY_MAX = 1 << 20;
+
+const CHANNEL_MAILBOX = 12 + CHANNEL_BODY_MAX;
 
 function openChannel(worker: Worker): void {
   if (channel || !globalThis.location || typeof WebSocket === 'undefined') return;

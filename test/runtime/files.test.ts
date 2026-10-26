@@ -165,3 +165,30 @@ test("the runtime's compiles go over the file channel once it is open, with thei
   const compiles = h.asked.filter((a) => a.includes('/__sandburg/compile'));
   assert.deepEqual(compiles.map((a) => a.split('?')[0]), ['ws /__sandburg/compile', 'ws /__sandburg/compile']);
 });
+
+test('installed files over the channel\'s bound are asked for over HTTP at once', async () => {
+  const big = 'x'.repeat((1 << 20) + 1);
+  const install = {
+    files: {
+      'node_modules/big/package.json': JSON.stringify({ name: 'big' }),
+      'node_modules/big/blob.bin': big,
+      'node_modules/big/small.bin': 'small',
+    },
+    bundled: [],
+  };
+  const main = {
+    'main.js': `
+      const fs = require('fs');
+      setTimeout(() => {
+        console.log(fs.readFileSync('/app/node_modules/big/blob.bin', 'utf8').length + ' ' + fs.readFileSync('/app/node_modules/big/small.bin', 'utf8'));
+        process.exit(0);
+      }, 300);`,
+  };
+  const out = await h.runInstalled(main, install, '/app/main.js');
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, `${big.length} small\n`);
+  const nm = `/__sandburg/nm/${INSTALL_KEY}/f/node_modules/big`;
+  // Not over the channel first (whose answer would be "too large", status 0), then over HTTP.
+  assert.deepEqual(h.asked.filter((a) => a.includes(`${nm}/blob.bin`)), [`http ${nm}/blob.bin`]);
+  assert.ok(h.asked.some((a) => a.startsWith(`ws ${nm}/small.bin`)));
+});

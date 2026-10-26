@@ -182,7 +182,7 @@ export let thread: ThreadInit | null = null;
 let tsRunner = false;
 export let threads: ReturnType<typeof createWorkerThreads>;
 export let childProcess: ReturnType<typeof createChildProcess>;
-let nodeModulesIndex: Record<string, number> | null = null;
+export let nodeModulesIndex: Record<string, number> | null = null;
 let nodeModulesWrites: Int32Array | undefined;
 let transformCache: TransformCache | null = null;
 
