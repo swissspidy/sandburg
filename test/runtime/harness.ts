@@ -71,7 +71,7 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
     if (!requests.length) setTimeout(finish, 30_000);
   };
   // As the page does when it prepares a runtime as it loads (adapters/node/browser.ts): the runtime starts its file helper.
-  if (extra.prepare) w.postMessage({ type: 'prepare' });
+  if (extra.prepare) w.postMessage({ type: 'prepare', helperDelay: extra.helperDelay });
   if (extra.spares) {
     w.postMessage({ type: 'spares' });
     setTimeout(start, extra.spares);
@@ -354,15 +354,16 @@ export class RuntimeHarness {
    * bundle of `bundled` (downloaded by the page as it starts the runtime if `prefetch`), and the
    * file channel (with `holdChannel`, opened only once the program asks for it: see CHANNEL_OPEN).
    * `prepare`: the page prepares the runtime that long before its init message, as a host page does.
+   * `helperDelay`: its file helper then spins that long before it handles a message (one slow to start).
    * `asked` records what the host was asked for.
    */
-  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; compileAhead?: string[]; prepare?: number; holdChannel?: boolean; until?: (state: RunState) => boolean } = {}) {
+  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; compileAhead?: string[]; prepare?: number; helperDelay?: number; holdChannel?: boolean; until?: (state: RunState) => boolean } = {}) {
     this.install = install;
     this.asked = [];
     this.release();
     if (options.holdChannel) this.held = [];
     const nodeModules = Object.fromEntries(Object.entries(install.files).map(([rel, text]) => [rel, Buffer.byteLength(text)]));
-    const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch, ...(options.compileAhead ? { compileAhead: options.compileAhead } : {}), ...(options.prepare ? { prepare: options.prepare } : {}) };
+    const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch, ...(options.compileAhead ? { compileAhead: options.compileAhead } : {}), ...(options.prepare ? { prepare: options.prepare } : {}), ...(options.helperDelay ? { helperDelay: options.helperDelay } : {}) };
     return this.until(this.page.evaluate(([f, m, e]) => (window as unknown as { runNode: Function }).runNode(f, m, [], e), [files, main, extra] as const) as Promise<{
       stdout: string;
       stderr: string;

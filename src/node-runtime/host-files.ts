@@ -90,14 +90,28 @@ function downloadOnSide(mode: string, rel: string, size: number): void {
   }
 }
 
-/** A file downloaded on the side (a copy: decoders do not read shared memory), or null to request it. */
+/**
+ * A file downloaded on the side (a copy: decoders do not read shared memory), or null to request it.
+ * The download's state: 0 asked for, 4 downloading, 1 downloaded, 2 failed, 3 taken by the runtime.
+ * Waited for only if the helper runs: one that has not started yet may not start while the runtime
+ * blocks (see preparedHelper), so the runtime takes the file itself, and the helper, once it starts,
+ * does not download it again (a second request for rolldown's 11 MB binary).
+ */
 function downloadedOnSide(key: string): Uint8Array | null {
   const side = onSide.get(key);
   if (!side) return null;
   onSide.delete(key);
-  // Waited for only if the helper runs (it may not have started yet).
-  if (!digester || Atomics.load(digester.state, 1) !== 1) return null;
-  if (Atomics.wait(side.state, 0, 0, 60_000) === 'timed-out' || Atomics.load(side.state, 0) !== 1) return null;
+  const running = !!digester && Atomics.load(digester.state, 1) === 1;
+  if (!running && Atomics.compareExchange(side.state, 0, 0, 3) === 0) return null;
+  const deadline = performance.now() + 60_000;
+  for (let now = performance.now(); now < deadline; now = performance.now()) {
+    const state = Atomics.load(side.state, 0);
+    if (state !== 0 && state !== 4) break;
+    Atomics.wait(side.state, 0, state, deadline - now);
+  }
+  // Still not started when the wait ran out: taken, so a helper that starts later does not download it too.
+  Atomics.compareExchange(side.state, 0, 0, 3);
+  if (Atomics.load(side.state, 0) !== 1) return null;
   return new Uint8Array(side.shared, 8, Atomics.load(side.state, 1)).slice();
 }
 
@@ -360,6 +374,8 @@ const handle = async ({ data }) => {
   const state = new Int32Array(data.shared, 0, 2);
   if (data.hello) return Atomics.store(state, 1, 1);
   if (data.fetch) {
+    // Unless the runtime took the file itself first (3); 4 while downloading (see downloadedOnSide).
+    if (Atomics.compareExchange(state, 0, 0, 4) !== 0) return;
     try {
       const res = await fetch(data.fetch);
       const body = new Uint8Array(await res.arrayBuffer());
@@ -395,17 +411,19 @@ let digester: { worker: Worker; shared: SharedArrayBuffer; state: Int32Array } |
  */
 let preparedHelper: { worker: Worker; shared: SharedArrayBuffer } | null = null;
 
-function newHelper(): { worker: Worker; shared: SharedArrayBuffer } {
-  const worker = new NativeWorker(URL.createObjectURL(new Blob([DIGEST_HELPER], { type: 'text/javascript' })));
+function newHelper(delay = 0): { worker: Worker; shared: SharedArrayBuffer } {
+  const spin = delay > 0 ? `for (const until = performance.now() + ${Number(delay)}; performance.now() < until; );\n` : '';
+  const worker = new NativeWorker(URL.createObjectURL(new Blob([spin + DIGEST_HELPER], { type: 'text/javascript' })));
   const shared = new SharedArrayBuffer(40);
   nativeWorkerPost.call(worker, { hello: true, shared });
   return { worker, shared };
 }
 
-export function prepareDigester(): void {
+/** `delay`, for tests: ms the helper spins before it handles a message (see the 'prepare' message). */
+export function prepareDigester(delay?: number): void {
   if (preparedHelper || digester) return;
   try {
-    preparedHelper = newHelper();
+    preparedHelper = newHelper(delay);
   } catch {
     preparedHelper = null;
   }
