@@ -1,4 +1,4 @@
-# ADR NNNN: Cold runs, round 5: the runtime's compiles over the file channel, whole WebSocket messages, cache writes off the host's main thread
+# ADR 0059: Cold runs, round 5: the runtime's compiles over the file channel, whole WebSocket messages, cache writes off the host's main thread
 
 - Status: Accepted
 - Date: 2026-10-26
