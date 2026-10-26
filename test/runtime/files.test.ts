@@ -33,13 +33,16 @@ const program = {
     parentPort.postMessage(require('bundled') + ', ' + require('single'));`,
 };
 
-/** Both runtimes have told the host what they read of the bundle (the thread does not exit: see threads.ts). */
-const bothReported = ({ asked }: { asked: string[] }) => asked.filter((a) => a.includes('/read?')).length >= 2;
+/** What the program prints. */
+const programPrints = 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n';
+
+/** Both runtimes have told the host what they read of the bundle, and the program has printed it all (the thread does not exit: see threads.ts). */
+const bothReported = ({ asked, stdout }: { asked: string[]; stdout: string }) => asked.filter((a) => a.includes('/read?')).length >= 2 && stdout === programPrints;
 
 test('installed files: the preload bundle, shared with threads, and single files over the file channel', async () => {
   const out = await h.runInstalled(program, install, '/app/main.js', { holdChannel: true, until: bothReported });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n');
+  assert.equal(out.stdout, programPrints);
   const nm = `/__sandburg/nm/${INSTALL_KEY}`;
   // The thread reads the bundled package in its parent's shared memory, and asks for the rest
   // through its parent's channel; nothing installed is asked for over HTTP but the bundle. Each
@@ -61,7 +64,7 @@ test('installed files: what a runtime read before its file channel opened is tol
   // program asks for it. Before, such a report was dropped: a run whose channel opened late (a
   // loaded machine) left out of its install's next bundle the files it read first.
   const main = { 'main.js': `${CHANNEL_OPEN}\nconsole.log(require('bundled'));\nsetInterval(() => {}, 1000);\nsetTimeout(channelOpen, 700);` };
-  const out = await h.runInstalled(main, install, '/app/main.js', { holdChannel: true, until: ({ asked }) => asked.some((a) => a.includes('/read?')) });
+  const out = await h.runInstalled(main, install, '/app/main.js', { holdChannel: true, until: ({ asked, stdout }) => asked.some((a) => a.includes('/read?')) && stdout === 'from the bundle\n' });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'from the bundle\n');
   assert.deepEqual(h.asked.filter((a) => a.startsWith('ws ')), [`ws /__sandburg/nm/${INSTALL_KEY}/read?files=${encodeURIComponent('f/node_modules/bundled/package.json\nt/node_modules/bundled/index.js')}`]);
@@ -189,7 +192,7 @@ test('installed files: a CommonJS file required as soon as written does not wait
 test('installed files: a preload bundle the page downloaded is not requested again', async () => {
   const out = await h.runInstalled(program, install, '/app/main.js', { prefetch: true, holdChannel: true, until: bothReported });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, 'main: from the bundle\nmain: asked for on its own\nthread: from the bundle, asked for on its own\n');
+  assert.equal(out.stdout, programPrints);
   // One request for the bundle: the page's.
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/preload/')).map((a) => a.endsWith('?by=page')), [true]);
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/nm/')), []);

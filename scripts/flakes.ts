@@ -61,36 +61,28 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]
 
 /**
  * One run of the files: the tests that failed ("file › parent › name"), and its spec output. A
- * failing test is counted by its own name, and once: a parent that fails because a subtest did is
- * not counted again (node:test reports a subtest before its parent, and a file's tests one after
- * another).
+ * failing test is counted by its own name, and once: a parent that failed only because a subtest did
+ * (node:test's failureType "subtestsFailed") is not counted again; one with its own error is. A
+ * failing todo test is not a failure (node --test passes with it).
  */
 async function once(): Promise<{ failed: string[]; log: string }> {
   const failed: string[] = [];
   let log = '';
-  /** By file: the names of the tests running at each nesting, and whether a subtest at each nesting failed. */
-  const byFile = new Map<string, { names: string[]; childFailed: boolean[] }>();
-  const of = (file = '?') => byFile.get(file) ?? (byFile.set(file, { names: [], childFailed: [] }), byFile.get(file)!);
+  /** By file: the names of the tests running at each nesting (a file's tests run one after another). */
+  const names = new Map<string, string[]>();
+  const of = (file = '?') => names.get(file) ?? (names.set(file, []), names.get(file)!);
   // As npm test runs them: one process per file (e2e files one at a time, as their scripts do).
   const stream = run({ files, concurrency: files.some((f) => f.includes('/e2e/')) ? 1 : true });
-  for await (const event of stream as AsyncIterable<{ type: string; data: { name: string; nesting: number; file?: string; details?: { error?: unknown; duration_ms?: number } } }>) {
+  for await (const event of stream as AsyncIterable<{ type: string; data: { name: string; nesting: number; file?: string; todo?: unknown; details?: { error?: unknown; duration_ms?: number } } }>) {
     const { type, data } = event;
-    let leaf = false;
-    if (type === 'test:start') of(data.file).names[data.nesting] = data.name;
-    else if (type === 'test:pass' || type === 'test:fail') {
-      const f = of(data.file);
-      const fromSubtest = f.childFailed[data.nesting + 1] === true;
-      f.childFailed[data.nesting + 1] = false;
-      if (type === 'test:fail') {
-        f.childFailed[data.nesting] = true;
-        leaf = !fromSubtest;
-        if (leaf) failed.push([data.file ?? '?', ...f.names.slice(0, data.nesting), data.name].join(' › '));
-      }
-    }
+    if (type === 'test:start') of(data.file)[data.nesting] = data.name;
+    const failure = type === 'test:fail' && data.todo === undefined;
+    const leaf = failure && (data.details?.error as { failureType?: string } | undefined)?.failureType !== 'subtestsFailed';
+    if (leaf) failed.push([data.file ?? '?', ...of(data.file).slice(0, data.nesting), data.name].join(' › '));
     if (leaf) {
       const error = ((data.details?.error as Error | undefined)?.cause ?? data.details?.error) as Error | undefined;
       log += `✖ ${'  '.repeat(data.nesting)}${data.name} (${data.details?.duration_ms?.toFixed(0)} ms)\n  ${(error?.stack ?? String(error)).split('\n').join('\n  ')}\n`;
-    } else if (type === 'test:fail' && data.nesting === 0) log += `✖ ${data.name} (its subtests failed)\n`;
+    } else if (failure && data.nesting === 0) log += `✖ ${data.name} (its subtests failed)\n`;
     else if (type === 'test:pass' && data.nesting === 0) log += `✔ ${data.name} (${data.details?.duration_ms?.toFixed(0)} ms)\n`;
     else if (type === 'test:stderr' || type === 'test:stdout') log += (data as unknown as { message: string }).message;
   }
