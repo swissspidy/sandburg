@@ -17,23 +17,29 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { HostRequest, HostResponse } from '../types.ts';
 import { traceTransfer } from '../transfer-trace.ts';
-import { ANSWER_HEADER, FRAGMENT_COST, MAX_BODY, MAX_FRAME, MAX_POST, POST_HEADER } from '../file-channel.ts';
+import { ANSWER_HEADER, MAX_BODY, MAX_FRAGMENTS, MAX_FRAME, MAX_POST, POST_HEADER } from '../file-channel.ts';
 
 /** The paths a runtime asks for over the channel: installed files. */
 const SERVED = /^\/__sandburg\/nm\//;
 /** The paths it posts to: esbuild's transforms, and the runtime's compiles. */
 const POSTED = /^\/__sandburg\/(?:esbuild-transform|compile)$/;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-/** Requests one channel may have in progress; past it, the host reads no more until one is answered. */
-export const MAX_IN_FLIGHT = 32;
-/** Bytes of answers waiting to be sent on one channel past which the host reads no more until they drain. */
-export const MAX_UNSENT = 4 << 20;
+/**
+ * What one channel may hold of answers not sent yet, counting each request in progress as an answer
+ * of MAX_BODY (what it may add): a request is taken only while it fits, so at most 8 are in
+ * progress, and what waits to be sent stays under MAX_UNSENT (plus frame headers and a pong).
+ */
+export const MAX_UNSENT = 8 << 20;
+/** Requests one channel may have in progress, notes (id 0, not answered) among them. */
+const MAX_IN_PROGRESS = 64;
+/** A channel whose answers have not drained this long (its client does not read) is closed. */
+const DRAIN_TIMEOUT_MS = 30_000;
 
 /**
  * Accepts the upgrade if it comes from `origin` (a WebSocket is not bound by CORS: another page could
  * open one to any host) and answers requests with `serve`. Returns whether the upgrade was accepted.
  */
-export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: string, serve: (req: HostRequest) => Promise<HostResponse | null>): boolean {
+export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: string, serve: (req: HostRequest) => Promise<HostResponse | null>, options: { drainTimeoutMs?: number } = {}): boolean {
   const key = req.headers['sec-websocket-key'];
   if (req.headers.origin !== origin || typeof key !== 'string' || req.headers.upgrade?.toLowerCase() !== 'websocket') {
     socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
@@ -44,22 +50,47 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
   (socket as Duplex & { setNoDelay?: (on: boolean) => void }).setNoDelay?.(true);
   socket.on('error', () => socket.destroy());
   const channel = {};
-  // A client that sends requests and does not read the answers is not answered without bound: past
-  // MAX_IN_FLIGHT requests in progress, or MAX_UNSENT bytes not sent yet, nothing more is read (the
-  // socket is paused, and TCP holds the client back) until answers go out.
+  // A client that sends requests and does not read the answers is not answered without bound: a
+  // request is read only while what waits to be sent, and MAX_BODY for each request in progress and
+  // for it, fit in MAX_UNSENT; otherwise the socket is paused (TCP holds the client back) until
+  // answers go out. Answers that do not drain within the timeout close the channel (and free its slot:
+  // a client that ends its side while the socket is paused is not read until then).
+  /** Requests in progress, and those of them that will be answered (notes are not). */
   let inFlight = 0;
-  const reader = readFrames(socket, () => inFlight < MAX_IN_FLIGHT && socket.writableLength <= MAX_UNSENT, (opcode, payload) => {
+  let answering = 0;
+  let stalled: ReturnType<typeof setTimeout> | null = null;
+  const send = (data: Buffer) => {
+    if (socket.destroyed || socket.writableEnded) return;
+    if (!socket.write(data) && !stalled) {
+      stalled = setTimeout(() => {
+        stalled = null;
+        if (socket.writableNeedDrain) socket.destroy();
+      }, options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS);
+      stalled.unref?.();
+    }
+  };
+  const unstall = () => {
+    if (stalled) clearTimeout(stalled);
+    stalled = null;
+  };
+  socket.on('close', unstall);
+  const reader = readFrames(socket, () => inFlight < MAX_IN_PROGRESS && socket.writableLength + (answering + 1) * MAX_BODY <= MAX_UNSENT, (opcode, payload) => {
     if (opcode === 0x8) return void socket.end(frame(0x8, Buffer.alloc(0)));
-    if (opcode === 0x9) return void socket.write(frame(0xa, payload));
+    if (opcode === 0x9) return send(frame(0xa, payload));
     if (opcode !== 0x1 && opcode !== 0x2) return;
     const t0 = performance.now();
+    // A note (id 0: a GET whose answer the runtime does not read) is served, and not answered.
+    const note = opcode === 0x1 && payload[0] === 0x30 && payload[1] === 0x20;
     inFlight++;
+    if (!note) answering++;
     const reply = (id: number, what: string) => (res: { status: number; body: Buffer }) => {
       inFlight--;
+      if (note) return reader.resume();
+      answering--;
       const head = Buffer.alloc(ANSWER_HEADER);
       head.writeUInt32LE(id >>> 0, 0);
       head.writeUInt32LE(res.status, 4);
-      if (!socket.destroyed && !socket.writableEnded) socket.write(frame(0x2, Buffer.concat([head, res.body])));
+      send(frame(0x2, Buffer.concat([head, res.body])));
       reader.resume();
       traceTransfer({ hop: 'host→runtime ws', what, bytes: res.body.length, encoding: 'binary', ms: performance.now() - t0 });
     };
@@ -73,7 +104,7 @@ export function acceptFileChannel(req: IncomingMessage, socket: Duplex, origin: 
     const space = text.indexOf(' ');
     void answer(text.slice(space + 1), serve, channel).then(reply(Number(text.slice(0, space)), text.slice(space + 1)));
   });
-  socket.on('drain', reader.resume);
+  socket.on('drain', () => (unstall(), reader.resume()));
   return true;
 }
 
@@ -121,10 +152,9 @@ async function answer(target: string, serve: (req: HostRequest) => Promise<HostR
  * Calls `onMessage` for each complete message from the client (masked frames). A data message may
  * come in fragments (a frame without FIN, then continuation frames): Chromium splits larger ones
  * (here, messages over ~131 KB). The pieces are put together, and a message larger than its kind
- * may be (MAX_FRAME for text, MAX_POST for binary) closes the channel as soon as it is; each
- * fragment counts FRAGMENT_COST bytes against that bound besides its own, so what the host holds
- * for a message is bounded in fragments as in bytes. Control frames (close, ping) may come between
- * the fragments.
+ * may be (MAX_FRAME for text, MAX_POST for binary), or in more than MAX_FRAGMENTS pieces, closes the
+ * channel as soon as it is: what the host holds for a message is bounded in fragments as in bytes.
+ * Control frames (close, ping) may come between the fragments.
  */
 function readFrames(socket: Duplex, ready: () => boolean, onMessage: (opcode: number, payload: Buffer) => void): { resume(): void } {
   // What came and is not read yet, as it came: put together once it holds `need` bytes (the next
@@ -180,10 +210,11 @@ function readFrames(socket: Duplex, ready: () => boolean, onMessage: (opcode: nu
       const continuation = opcode === 0x0;
       // A continuation without a message, a new message before the last ended, or a fragmented control frame.
       if (control ? !fin || length > 125 : continuation !== (message !== null)) return fail();
-      // What the message holds so far, and this frame (a fragment of it, unless it is a whole one).
+      // What the message holds so far, and this frame (a fragment of it, unless it is a whole one):
+      // bounded in bytes, and in fragments.
       const received = continuation ? message!.length : 0;
-      const cost = length + (continuation || !fin ? FRAGMENT_COST : 0);
-      if (!control && received + cost > ((continuation ? message!.opcode : opcode) === 0x2 ? MAX_POST : MAX_FRAME)) return fail();
+      if (!control && received + length > ((continuation ? message!.opcode : opcode) === 0x2 ? MAX_POST : MAX_FRAME)) return fail();
+      if (continuation && message!.parts.length >= MAX_FRAGMENTS) return fail();
       const masked = (buf[1] & 0x80) !== 0;
       const end = at + (masked ? 4 : 0) + length;
       if (buf.length < end) {
@@ -210,7 +241,7 @@ function readFrames(socket: Duplex, ready: () => boolean, onMessage: (opcode: nu
       } else if (!fin) {
         message ??= { opcode, parts: [], length: 0 };
         message.parts.push(payload);
-        message.length += cost;
+        message.length += length;
       } else if (message) {
         const whole = Buffer.concat([...message.parts, payload]);
         const kindOf = message.opcode;

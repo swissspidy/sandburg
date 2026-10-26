@@ -51,14 +51,15 @@ answered (over HTTP and over the file channel, with its latency) showed:
 - **Whole WebSocket messages** (`readFrames` in `host-socket.ts`): fragments are put together before
   a message is answered; control frames may come between them. A message whose fragments together
   exceed its kind's bound (`MAX_FRAME` for text, `MAX_POST` for binary), a continuation without a
-  message, a new data frame inside one, or a fragmented control frame closes the channel. Each
-  fragment is charged a fixed cost (`FRAGMENT_COST`, 1 KB, in `src/file-channel.ts`) against the
-  message's bound besides its bytes, so what the host holds for a message is bounded in fragments as
-  in bytes (Chromium sends ~33 fragments for 4 MB, within `MAX_POST`'s headroom).
+  message, a new data frame inside one, or a fragmented control frame closes the channel. A message
+  in more than `MAX_FRAGMENTS` (1,024, in `src/file-channel.ts`) fragments closes it too, so what the
+  host holds for a message is bounded in fragments as in bytes (Chromium sends ~33 fragments for
+  4 MB; 1,024 take a full `MAX_POST` in fragments down to ~4 KB).
 - **The channel's reader, bounded throughout** (`host-socket.ts`, `host-server.ts`): a frame in many
-  chunks put together once; nothing read after a close frame; no more requests taken while
-  `MAX_IN_FLIGHT` are in progress or `MAX_UNSENT` bytes wait to be sent; a half-closed socket closed
-  by the host too (see Security).
+  chunks put together once; nothing read after a close frame; a request taken only while the answers
+  waiting to be sent and `MAX_BODY` for each request in progress fit in `MAX_UNSENT`; a channel whose
+  answers do not drain within `DRAIN_TIMEOUT_MS` closed; a half-closed socket closed by the host too
+  (see Security).
 - **Installed files over the channel's bound go over HTTP at once** (`syncGet` in `host-files.ts`):
   the runtime knows each file's size from the install's index.
 - **Transform and compile cache files written on a thread** (`src/adapters/node/file-writes.ts`): the
@@ -117,18 +118,21 @@ answered (over HTTP and over the file channel, with its latency) showed:
   the token reaches the route as the header and leaves the query; only `esbuild-transform` and
   `compile` are taken as POSTs (other paths, `..` included, answer status 0 and nothing is served).
 - **Fragments stay bounded.** The reader keeps at most one message's fragments, at most `MAX_POST`
-  bytes, each fragment counting `FRAGMENT_COST` besides its bytes (so at most ~4,200 fragments).
+  bytes, in at most `MAX_FRAGMENTS` (1,024) fragments.
   Fragments over the bound together, a continuation without a message, a data frame inside a
   message, a fragmented control frame, and a flood of empty or one-byte fragments close the channel
   with nothing served (`test/unit/host-socket.test.ts`, with a raw client, as Node's WebSocket never
   fragments; the frame reader's fuzzer, `test/unit/parser-fuzz.test.ts`, passes).
 - **The channel's other bounds** (pre-existing, on the reader this ADR changes; from the review of
   this work): a frame that comes in many chunks is put together once (linear in its size); nothing
-  after a client's close frame is read or served; a channel takes no more requests while
-  `MAX_IN_FLIGHT` (32) are in progress or more than `MAX_UNSENT` (4 MB) of answers wait to be sent,
-  and reads on as they go out, so a client that does not read its answers holds a bounded amount of
-  the host's memory; a client that ends its side of the socket ends the channel, so a socket never
-  outlives its slot in the per-sandbox bound (ADR 0054). Each has a test in
+  after a client's close frame is read or served; a channel takes a request only while the answers
+  waiting to be sent, plus `MAX_BODY` (1 MB) for each request in progress and for the new one, fit
+  in `MAX_UNSENT` (8 MB), so at most 8 requests are in progress and at most 8 MB of answers (plus
+  frame headers) wait per channel; with the per-sandbox bound on channels (256, ADR 0054), at most
+  ~2 GB per sandbox while every one of them is stalled. A channel whose answers have not drained
+  within `DRAIN_TIMEOUT_MS` (30 s) is closed, which frees its slot (a client that ends its side while
+  its socket is paused is not read until then). A client that ends its side of the socket ends the
+  channel, so a socket never outlives its slot. Each has a test in
   `test/unit/host-socket.test.ts` or `test/unit/host-server.test.ts` that fails without it.
 - **The writer thread** writes the files the host wrote before, under the host's own digests; it is
   the host's code on a thread of the host process, and nothing reaches it from a run but bytes the

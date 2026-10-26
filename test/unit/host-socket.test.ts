@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { acceptFileChannel, traced } from '../../src/orchestrator/host-socket.ts';
-import { FRAGMENT_COST, MAX_BODY, MAX_FRAME, MAX_POST } from '../../src/file-channel.ts';
+import { MAX_BODY, MAX_FRAGMENTS, MAX_FRAME, MAX_POST } from '../../src/file-channel.ts';
 import type { HostRequest } from '../../src/types.ts';
 
 const ORIGIN = 'http://box.sandburg.localhost:1';
@@ -209,6 +209,12 @@ async function rawChannel(url: string): Promise<{ send(fin: boolean, opcode: num
   };
 }
 
+/** `promise`, or a failure after `ms` (a test whose fix is undone fails instead of hanging). */
+function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([promise, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} after ${ms} ms`)), ms)))]).finally(() => clearTimeout(timer));
+}
+
 /** A POST message's bytes: the id and the path's length (u32 little-endian), the path, the body. */
 function postMessage(id: number, path: string, body: Uint8Array): Uint8Array {
   const p = new TextEncoder().encode(path);
@@ -245,9 +251,9 @@ test('the file channel puts a fragmented message together, with a ping between i
 
 test('the file channel closes on fragments larger together than a message may be, or out of order', { timeout: 20_000 }, async () => {
   const cases: [boolean, number, Uint8Array][][] = [
-    // Fragments each under the bound, together over it (each also counts FRAGMENT_COST).
-    [[false, 0x2, new Uint8Array(MAX_POST - 2 * FRAGMENT_COST)], [true, 0x0, new Uint8Array(FRAGMENT_COST)]],
-    [[false, 0x1, new Uint8Array(MAX_FRAME - 2 * FRAGMENT_COST)], [true, 0x0, new Uint8Array(FRAGMENT_COST)]],
+    // Fragments each under the bound, together over it.
+    [[false, 0x2, new Uint8Array(MAX_POST - 10)], [true, 0x0, new Uint8Array(20)]],
+    [[false, 0x1, new Uint8Array(MAX_FRAME - 10)], [true, 0x0, new Uint8Array(20)]],
     // A continuation with no message, a new message inside one, a fragmented control frame.
     [[true, 0x0, new Uint8Array(8)]],
     [[false, 0x2, new Uint8Array(8)], [true, 0x2, new Uint8Array(8)]],
@@ -256,9 +262,13 @@ test('the file channel closes on fragments larger together than a message may be
   for (const frames of cases) {
     const { server, asked, url } = await channelServer();
     const raw = await rawChannel(url);
-    for (const [fin, opcode, payload] of frames) raw.send(fin, opcode, payload);
-    await raw.closed;
-    server.close();
+    try {
+      for (const [fin, opcode, payload] of frames) raw.send(fin, opcode, payload);
+      await within(raw.closed, 5000, 'the channel is still open');
+    } finally {
+      raw.end();
+      server.close();
+    }
     assert.deepEqual(asked, []);
   }
 });
@@ -267,20 +277,24 @@ test('the file channel bounds a message in fragments as in bytes: a flood of emp
   for (const size of [0, 1]) {
     const { server, asked, url } = await channelServer();
     const raw = await rawChannel(url);
-    raw.send(false, 0x2, new Uint8Array(size));
-    // Far fewer bytes than MAX_POST, far more fragments than it allows (MAX_POST / FRAGMENT_COST).
-    for (let i = 0; i < 10_000 && !raw.isClosed(); i++) raw.send(false, 0x0, new Uint8Array(size));
-    await raw.closed;
-    server.close();
+    try {
+      raw.send(false, 0x2, new Uint8Array(size));
+      // Far fewer bytes than MAX_POST, far more fragments than MAX_FRAGMENTS.
+      for (let i = 0; i < 10 * MAX_FRAGMENTS && !raw.isClosed(); i++) raw.send(false, 0x0, new Uint8Array(size));
+      await within(raw.closed, 5000, 'the channel is still open');
+    } finally {
+      raw.end();
+      server.close();
+    }
     assert.deepEqual(asked, []);
   }
 });
 
-test("a message within the bound in as many fragments as Chromium sends (~33 for 4 MB) is put together", { timeout: 20_000 }, async () => {
+test('a message within the bound in many fragments (4 MB in 8 KB pieces; Chromium sends ~33) is put together', { timeout: 20_000 }, async () => {
   const { server, asked, url } = await channelServer();
   const raw = await rawChannel(url);
   const message = postMessage(9, '/__sandburg/esbuild-transform?v=2', new Uint8Array((4 << 20) - 64));
-  const piece = 131_072;
+  const piece = 8192;
   for (let at = 0; at < message.length; at += piece) raw.send(at + piece >= message.length, at ? 0x0 : 0x2, message.subarray(at, at + piece));
   for (let i = 0; i < 200 && !raw.messages.length; i++) await new Promise((r) => setTimeout(r, 10));
   raw.end();
@@ -334,37 +348,87 @@ test('nothing after a close frame is served: not a message it left unfinished, n
   socket.destroy();
 });
 
-test('a client that does not read its answers is not answered without bound: the host stops reading until they drain', { timeout: 20_000 }, async () => {
+/** A channel on a socket whose writes are not taken until `read()`: a client that does not read. */
+async function unreadChannel(answer: number, options: { drainTimeoutMs?: number } = {}) {
   const { Duplex } = await import('node:stream');
-  const { MAX_IN_FLIGHT, MAX_UNSENT } = await import('../../src/orchestrator/host-socket.ts');
-  // A socket whose writes are not taken until `drain()`: a client that does not read.
   const held: (() => void)[] = [];
   let reading = false;
   const socket = new Duplex({ read() {}, write(_c, _e, done) { if (reading) done(); else held.push(done); } });
   const req = { headers: { origin: ORIGIN, 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', upgrade: 'websocket' } } as unknown as import('node:http').IncomingMessage;
-  let served = 0;
-  acceptFileChannel(req, socket, ORIGIN, async () => ((served++), { status: 200, body: 'x'.repeat(512 << 10) }));
-  const gets = Buffer.concat(Array.from({ length: 1500 }, (_, i) => clientFrame(true, 0x1, new TextEncoder().encode(`${i + 1} /__sandburg/nm/k/t/node_modules/a/f${i}.js`))));
-  socket.push(gets);
-  await new Promise((r) => setTimeout(r, 200));
-  // Requests are taken while fewer than MAX_IN_FLIGHT are in progress and at most MAX_UNSENT bytes
-  // wait to be sent: what waits is bounded by those, and nothing more is read.
-  const answer = 512 << 10;
-  assert.ok(served > 0 && served <= MAX_IN_FLIGHT + MAX_UNSENT / answer + 1, `served ${served}`);
-  const unsent = socket.writableLength;
-  assert.ok(unsent <= MAX_UNSENT + (MAX_IN_FLIGHT + 1) * (answer + 16), `${unsent} bytes unsent`);
-  await new Promise((r) => setTimeout(r, 200));
-  assert.equal(socket.writableLength, unsent);
-  // Once the client reads, the host reads on.
-  reading = true;
-  for (const done of held.splice(0)) done();
-  for (let i = 0; i < 400 && served < 1500; i++) await new Promise((r) => setTimeout(r, 5));
-  assert.equal(served, 1500);
-  socket.destroy();
+  const state = { served: 0, closed: false };
+  socket.on('close', () => (state.closed = true));
+  acceptFileChannel(req, socket, ORIGIN, async () => ((state.served++), { status: 200, body: 'x'.repeat(answer) }), options);
+  const read = () => {
+    reading = true;
+    for (const done of held.splice(0)) done();
+  };
+  return { socket, state, read };
+}
+
+const gets = (n: number) => Buffer.concat(Array.from({ length: n }, (_, i) => clientFrame(true, 0x1, new TextEncoder().encode(`${i + 1} /__sandburg/nm/k/t/node_modules/a/f${i}.js`))));
+
+test('clients that do not read their answers each hold at most MAX_UNSENT of them; reading, they are answered in full', { timeout: 20_000 }, async () => {
+  const { MAX_UNSENT } = await import('../../src/orchestrator/host-socket.ts');
+  const channels = await Promise.all([1, 2, 3, 4].map(() => unreadChannel(MAX_BODY)));
+  for (const c of channels) c.socket.push(gets(500));
+  await new Promise((r) => setTimeout(r, 300));
+  for (const c of channels) {
+    // What waits to be sent, with frame headers: at most MAX_UNSENT; nothing more is read.
+    assert.ok(c.state.served > 0 && c.socket.writableLength <= MAX_UNSENT + c.state.served * 64, `${c.socket.writableLength} bytes unsent, ${c.state.served} served`);
+    const served = c.state.served;
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(c.state.served, served);
+  }
+  for (const c of channels) c.read();
+  for (let i = 0; i < 400 && channels.some((c) => c.state.served < 500); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(channels.map((c) => c.state.served), [500, 500, 500, 500]);
+  for (const c of channels) c.socket.destroy();
+});
+
+test('a channel whose answers do not drain within the timeout is closed', { timeout: 20_000 }, async () => {
+  const c = await unreadChannel(256 << 10, { drainTimeoutMs: 200 });
+  c.socket.push(gets(20));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(c.state.closed, false);
+  for (let i = 0; i < 100 && !c.state.closed; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(c.state.closed, true);
+  // One that reads in time stays open.
+  const ok = await unreadChannel(256 << 10, { drainTimeoutMs: 200 });
+  ok.socket.push(gets(20));
+  await new Promise((r) => setTimeout(r, 50));
+  ok.read();
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(ok.state.closed, false);
+  ok.socket.destroy();
 });
 
 test("a POST's capability token is left out of what traces show", () => {
   assert.equal(traced('/__sandburg/compile?kind=cjs&token=secret&cache=abc'), '/__sandburg/compile?kind=cjs&token=…&cache=abc');
   assert.equal(traced('/__sandburg/compile?token=secret'), '/__sandburg/compile?token=…');
   assert.equal(traced('/__sandburg/esbuild-transform?v=1'), '/__sandburg/esbuild-transform?v=1');
+});
+
+test('a note (id 0) is served and not answered; notes in progress are bounded too', { timeout: 20_000 }, async () => {
+  const { Duplex } = await import('node:stream');
+  const written: Buffer[] = [];
+  const socket = new Duplex({ read() {}, write(chunk: Buffer, _e, done) { written.push(chunk); done(); } });
+  const req = { headers: { origin: ORIGIN, 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', upgrade: 'websocket' } } as unknown as import('node:http').IncomingMessage;
+  let served = 0;
+  const pending: (() => void)[] = [];
+  acceptFileChannel(req, socket, ORIGIN, () => ((served++), new Promise((r) => pending.push(() => r({ status: 204, body: '' })))));
+  const handshake = written.length;
+  socket.push(Buffer.concat(Array.from({ length: 500 }, (_, i) => clientFrame(true, 0x1, new TextEncoder().encode(`0 /__sandburg/nm/k/read?files=f${i}`)))));
+  await new Promise((r) => setTimeout(r, 100));
+  // Taken while fewer than a bounded number are in progress (they wait on the host here).
+  assert.ok(served > 0 && served < 500, `served ${served}`);
+  for (let i = 0; i < 200 && served < 500; i++) {
+    for (const done of pending.splice(0)) done();
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  for (const done of pending.splice(0)) done();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(served, 500);
+  // No answer was written for any of them.
+  assert.equal(written.length, handshake);
+  socket.destroy();
 });

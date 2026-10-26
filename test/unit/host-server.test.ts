@@ -262,10 +262,12 @@ test("a file channel's client that ends its side ends the channel: no socket out
   const host = new HostServer({ maxFileChannels: 1 });
   await host.listen();
   const origin = host.register('half', adapter('half'));
+  const sockets: ReturnType<typeof connect>[] = [];
   const open = (): Promise<{ status: number; socket: ReturnType<typeof connect> }> =>
     new Promise((resolve, reject) => {
       // allowHalfOpen: the client's end of the socket stays readable after it ends its side.
       const socket = connect({ port: host.port, host: '127.0.0.1', allowHalfOpen: true }, () => {
+        sockets.push(socket);
         socket.write(`GET ${FILE_CHANNEL_PATH} HTTP/1.1\r\nHost: ${new URL(origin).host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: ${origin}\r\n\r\n`);
       });
       let head = '';
@@ -290,6 +292,8 @@ test("a file channel's client that ends its side ends the channel: no socket out
     assert.equal(second.status, 101);
     second.socket.destroy();
   } finally {
-    await host.close();
+    // A test whose fix is undone fails instead of waiting on the sockets the host kept.
+    for (const socket of sockets) socket.destroy();
+    await Promise.race([host.close(), new Promise((r) => setTimeout(r, 2000).unref())]);
   }
 });

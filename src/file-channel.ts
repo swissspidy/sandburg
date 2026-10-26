@@ -4,8 +4,8 @@
  * asks the host for installed files over a WebSocket of its own instead of synchronous HTTP (a
  * WebSocket's messages are not intercepted by Playwright: ~0.5 ms a request instead of 5-7 ms).
  *
- * - A GET is a text frame `<id> <path>?<query>`; id 0 is a note (the host answers it, the helper
- *   drops the answer): the files a runtime read, or a file sent ahead that it used.
+ * - A GET is a text frame `<id> <path>?<query>`; id 0 is a note, which the host serves and does
+ *   not answer: the files a runtime read, or a file sent ahead that it used.
  * - A POST is a binary frame: the id and the path's length (u32 little-endian each), the path, then
  *   the body.
  * - An answer is a binary frame: the id and the HTTP status (u32 little-endian each, ANSWER_HEADER
@@ -26,11 +26,11 @@ export const MAX_FRAME = 1 << 16;
 /** Larger POST messages close the channel (a transform's code and options, or a compile's code; the routes' own bound is 4 MB). */
 export const MAX_POST = (4 << 20) + MAX_FRAME;
 /**
- * What each fragment of a message costs against its bound (MAX_FRAME, MAX_POST) besides its bytes:
- * the host keeps a message's fragments until its last, so their number is bounded as their bytes
- * are. Chromium splits a 4 MB message into ~33 fragments (~33 KB of MAX_POST's 64 KB headroom).
+ * The most fragments a message may come in: the host keeps a message's fragments until its last, so
+ * their number is bounded as their bytes are (MAX_FRAME, MAX_POST). Chromium splits a 4 MB message
+ * into ~33 fragments (of ~131 KB); this takes a full MAX_POST in fragments down to ~4 KB.
  */
-export const FRAGMENT_COST = 1024;
+export const MAX_FRAGMENTS = 1024;
 /**
  * A runtime's compile is posted over the channel when its code is shorter (larger code, next dev's
  * chunks, is asked for by digest first and posted over HTTP); its answer still has to fit MAX_BODY.
