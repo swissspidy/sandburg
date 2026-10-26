@@ -12,12 +12,17 @@
  * renderers that fitted every look: the page's own fits each one, and the others drop out as their
  * times part, even when no single look tells them apart (identical apps started together). The pid
  * then gives the renderer's memory, from /proc (Linux).
+ *
+ * Inside Chromium's OS sandbox a renderer cannot read its process's CPU time (ProcessTime is 0).
+ * There the page works instead (RendererMemorySource.mark: a busy loop on its main thread), and its
+ * renderer is one whose main thread, read from /proc just before and just after, used at least that
+ * much meanwhile; the looks narrow the renderers down as above.
  */
 import { readFileSync } from 'node:fs';
 
 export interface ProcessCpu {
   pid: number;
-  /** CPU seconds the process has used. */
+  /** CPU seconds the process (or with RendererMemorySource.mark, its main thread) has used. */
   cpuSeconds: number;
 }
 
@@ -38,6 +43,12 @@ function fittingRenderers(pageCpuS: number, before: ProcessCpu[], after: Process
       return was !== undefined && was <= pageCpuS + CPU_TICK_S && r.cpuSeconds >= pageCpuS - CPU_TICK_S;
     })
     .map((r) => r.pid);
+}
+
+/** The renderers that used at least `usedS` CPU seconds between the readings `before` and `after`. */
+function busyRenderers(usedS: number, before: ProcessCpu[], after: ProcessCpu[]): number[] {
+  const earlier = new Map(before.map((r) => [r.pid, r.cpuSeconds]));
+  return after.filter((r) => r.cpuSeconds - (earlier.get(r.pid) ?? Infinity) >= usedS).map((r) => r.pid);
 }
 
 /** The renderer whose CPU time is the page's, or null when none or more than one fits. */
@@ -64,9 +75,31 @@ export function processMemory(pid: number): number | null {
   return Number.isFinite(bytes) ? bytes : null;
 }
 
+/**
+ * CPU seconds a process's main thread has used (/proc/<pid>/task/<pid>/stat: utime and stime, in
+ * clock ticks of 10 ms), or null where /proc cannot say (not Linux, or the process has ended).
+ */
+export function mainThreadCpu(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/task/${pid}/stat`, 'utf8');
+    // The fields after the command (which may hold spaces and parentheses): state is the first, utime the 12th.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const ticks = Number(fields[11]) + Number(fields[12]);
+    return Number.isFinite(ticks) ? ticks / 100 : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface RendererMemorySource {
   /** The page's renderer's CPU seconds, as the page reports it. */
   pageCpu(): Promise<number>;
+  /**
+   * Where the page cannot report it (inside the OS sandbox): spends CPU time on the page's thread
+   * and returns the seconds its renderer's reading (renderers()) is sure to grow by meanwhile.
+   * locate() then uses this in place of pageCpu.
+   */
+  mark?(): Promise<number>;
   /** Every renderer's pid and CPU seconds, as the browser reports them. */
   renderers(): Promise<ProcessCpu[]>;
   /** A process's memory (default: processMemory). */
@@ -95,9 +128,11 @@ export class RendererMemory {
     if (this.pid !== null || this.stopped) return this.pid !== null;
     this.locating ??= (async () => {
       const before = await this.source.renderers();
-      const pageCpu = await this.source.pageCpu();
-      const after = await this.source.renderers();
-      const fits = new Set(fittingRenderers(pageCpu, before, after));
+      const fits = new Set(
+        this.source.mark
+          ? busyRenderers(await this.source.mark(), before, await this.source.renderers())
+          : fittingRenderers(await this.source.pageCpu(), before, await this.source.renderers()),
+      );
       const kept = this.candidates ? new Set([...this.candidates].filter((p) => fits.has(p))) : fits;
       // None left (a reading a tick off, or a renderer replaced): start again from this look.
       this.candidates = kept.size > 0 ? kept : fits;

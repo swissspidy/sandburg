@@ -163,6 +163,7 @@ interface BatchSummary {
     startedAt: string;
     finishedAt: string;
     wallMs: number;
+    browserSandbox: boolean;
     totals: {
         runs: number;
         passed: number;
@@ -245,6 +246,7 @@ interface RunRenderer {
 
 class Session {
     readonly store: SnapshotStore;
+    readonly browserSandbox: boolean;
     constructor(options?: SessionOptions);
     open(): Promise<void>;
     close(): Promise<void>;
@@ -262,6 +264,7 @@ interface SessionOptions {
     offline?: boolean;
     headless?: boolean;
     executablePath?: string;
+    browserSandbox?: boolean;
     extraCaCerts?: string | null;
     spareTab?: boolean;
 }
@@ -475,6 +478,7 @@ interface RunResult {
     environment: {
         sandburgVersion: string;
         browser: string;
+        browserSandbox: boolean;
         platform: string;
         offline: boolean;
     };

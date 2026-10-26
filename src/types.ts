@@ -230,6 +230,8 @@ export interface RunResult {
   environment: {
     sandburgVersion: string;
     browser: string;
+    /** The browser ran inside Chromium's OS sandbox (false: turned off with SessionOptions.browserSandbox or its CLI flag or env var). */
+    browserSandbox: boolean;
     platform: string;
     offline: boolean;
   };

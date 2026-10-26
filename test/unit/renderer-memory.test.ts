@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RendererMemory, matchRenderer, processMemory } from '../../src/orchestrator/renderer-memory.ts';
+import { RendererMemory, mainThreadCpu, matchRenderer, processMemory } from '../../src/orchestrator/renderer-memory.ts';
 
 test("a page's renderer is the one renderer whose CPU time, read before and after the page's, brackets it", () => {
   const before = [
@@ -103,4 +103,35 @@ test("a process's memory is its resident anonymous and shared memory, null for n
   const bytes = processMemory(process.pid);
   assert.ok(bytes !== null && bytes > 10 * 2 ** 20 && bytes < process.memoryUsage().rss * 2, String(bytes));
   assert.equal(processMemory(2 ** 30), null);
+});
+
+test("where the page cannot read its CPU time (the OS sandbox), its renderer is the one busy while it works, over every look", async () => {
+  // Main-thread CPU seconds of three renderers: 11 is the page's; 12 is busy now and then, 13 is idle.
+  const cpu: Record<number, number> = { 11: 1, 12: 1, 13: 1 };
+  const busy = [[11, 12], [11]];
+  let look = 0;
+  const memory = new RendererMemory({
+    pageCpu: () => Promise.reject(new Error('not read where the page works instead')),
+    mark: async () => {
+      for (const pid of busy[look]) cpu[pid] += 0.04;
+      look++;
+      return 0.02;
+    },
+    renderers: async () => Object.entries(cpu).map(([pid, cpuSeconds]) => ({ pid: Number(pid), cpuSeconds })),
+    memory: (pid) => pid * 1000,
+  });
+  // The first look: 11 and 12 were both busy meanwhile. The second: only 11, which fitted both.
+  assert.equal(await memory.locate(), false);
+  assert.equal(memory.used(), null);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+});
+
+test("a process's main thread's CPU time is read from /proc, null for none", { skip: process.platform !== 'linux' }, () => {
+  const start = mainThreadCpu(process.pid)!;
+  const until = performance.now() + 100;
+  while (performance.now() < until);
+  // Clock ticks of 10 ms: at least 80 ms more after 100 ms of work on this thread.
+  assert.ok(mainThreadCpu(process.pid)! - start >= 0.08);
+  assert.equal(mainThreadCpu(2 ** 22 + 1), null);
 });

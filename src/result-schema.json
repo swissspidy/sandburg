@@ -33,10 +33,11 @@
     },
     "environment": {
       "type": "object",
-      "required": ["sandburgVersion", "browser", "platform", "offline"],
+      "required": ["sandburgVersion", "browser", "browserSandbox", "platform", "offline"],
       "properties": {
         "sandburgVersion": { "type": "string" },
         "browser": { "type": "string" },
+        "browserSandbox": { "type": "boolean" },
         "platform": { "type": "string" },
         "offline": { "type": "boolean" }
       }

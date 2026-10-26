@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runBatch, type BatchItem } from '../../src/orchestrator/batch.ts';
@@ -48,12 +48,16 @@ test('a batch starts its next app when one reaches its checks, with at most twic
         timings: { totalMs: 40 },
       } as unknown as RunResult;
     },
+    browserSandbox: false,
   } as unknown as Session;
   try {
     const items: BatchItem[] = ['slow', 'a', 'b', 'c', 'd', 'e'].map((p) => ({ project: p }));
     const { summary, results } = await runBatch(session, items, { parallel: 2, prewarm: false, batchDir: dir });
     assert.deepEqual(results.map((r) => r.project.name), ['slow', 'a', 'b', 'c', 'd', 'e']);
     assert.equal(summary.totals.passed, 6);
+    // The summary says when the session's browser ran without its OS sandbox.
+    assert.equal(summary.browserSandbox, false);
+    assert.equal((JSON.parse(await readFile(join(dir, summary.batchId, 'summary.json'), 'utf8')) as typeof summary).browserSandbox, false);
     assert.equal(maxStarting, 2);
     assert.ok(maxOpen > 2 && maxOpen <= 4, `open at once: ${maxOpen}`);
     // The others finished while "slow" was in its checks.

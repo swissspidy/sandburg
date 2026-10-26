@@ -83,6 +83,12 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci
+      # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
+      # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
+      # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
+      - run: |
+          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
       - run: npx playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm test

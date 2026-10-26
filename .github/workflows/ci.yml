@@ -44,6 +44,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
+      # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
+      # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
+      - run: |
+          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
       # The runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
       # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror.
       - run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)
@@ -62,6 +68,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
+      # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
+      # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
+      - run: |
+          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
       # The runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
       # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror.
       - run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)
@@ -86,6 +98,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
+      # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
+      # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
+      - run: |
+          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
       # The runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
       # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror.
       - run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)

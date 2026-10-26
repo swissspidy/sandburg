@@ -7,7 +7,7 @@ import { projectFromFiles } from '../../src/project.ts';
 // The errors a run reports have one shape: a phase that fails or times out records a
 // SerializedError ({ name, message, code?, stack? }) in its PhaseRecord, and the run's Failure is
 // classified from those.
-const run = () => new RunState('run-1', projectFromFiles({ 'index.html': '<p>hi</p>' }, { name: 'p', path: '/p' }), { name: 'node', version: '1' }, false, 'chromium');
+const run = () => new RunState('run-1', projectFromFiles({ 'index.html': '<p>hi</p>' }, { name: 'p', path: '/p' }), { name: 'node', version: '1' }, false, 'chromium', true);
 
 test('a phase that throws records the error with its name, message, code and stack, and rethrows it', async () => {
   const r = run();
