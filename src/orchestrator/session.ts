@@ -97,7 +97,7 @@ export interface NodeRuntime {
 
 /** Options of one run (Session.run): the runtime, the checks, where results go, deadlines. */
 export interface RunOptions {
-  /** In-browser runtime adapter name, or `auto` (the default) to choose one per project. Ignored when nodeRuntime is set. */
+  /** In-browser runtime adapter name (`adapterNames`); `node`, the only one, by default. Ignored when nodeRuntime is set. */
   runtime?: string;
   /** Run in an out-of-browser runtime instead (e.g. the Docker reference); called once per run. */
   nodeRuntime?: () => NodeRuntime;

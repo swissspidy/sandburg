@@ -6,7 +6,9 @@ are checked by `test/unit/architecture.test.ts` (`scripts/architecture.ts`), the
 (`.oxlintrc.json`, `lint/sandburg-plugin.ts`) and the API report (`api/sandburg.api.md`); the
 tables at the end are rewritten by `node scripts/architecture.ts --update`, and
 `node scripts/architecture.ts` prints each module's layer and environments. The security
-model is ADR 0001 and 0005; its boundaries are mapped in ADR 0054.
+model: ADR 0001 gives each sandbox its own origin (isolation), ADR 0005 routes everything a sandbox
+fetches through a per-sandbox egress gateway, and ADR 0054 maps every boundary an app can reach and
+how the host holds it.
 
 ## One run
 
