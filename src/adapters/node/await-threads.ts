@@ -14,70 +14,61 @@ import { contextAwaits } from '../../node-runtime/await-context.ts';
 
 const TAG = 'sandburg-await-threads';
 
-/**
- * One helper: the main thread, esbuild and the browser's threads need the other cores (with two, a
- * cold astro-app run on 4 cores was 11% slower than on main; with one, 4% faster).
- */
-const SIZE = 1;
-
 /** Code smaller than this is rewritten on this thread: posting a file costs ~0.03 ms, rewriting 1 KB ~0.1 ms. */
 const INLINE_MAX = 1 << 10;
 
 interface Helper {
   worker: Worker;
+  /** It has loaded the scan (its first message). */
+  ready: boolean;
   /** Its files not answered yet, by id: their code is kept, to be rewritten here if the helper fails. */
   waiting: Map<number, { code: string; done: (out: string | null) => void }>;
 }
 
-let helpers: Helper[] = [];
+/**
+ * One helper: the main thread, esbuild and the browser's threads need the other cores (with two, a
+ * cold astro-app run on 4 cores was 11% slower than on main; with one, 4% faster). Started by the
+ * first file it would take (a warm run, whose transforms are cached, starts none); until it is
+ * ready (~90 ms, loading the scan), files are rewritten on this thread.
+ */
+let helper: Helper | null = null;
 let ids = 0;
-/** A helper failed: later rewrites are made on this thread (a helper that cannot start is not started again for each). */
+/** The helper failed: later rewrites are made on this thread (a helper that cannot start is not started again for each). */
 let onThisThread = false;
 
-/** contextAwaits(code), on a helper's thread when it is worth it. */
+/** contextAwaits(code), on the helper's thread when it is worth it. */
 export function contextAwaitsSoon(code: string): Promise<string | null> {
   if (onThisThread || code.length < INLINE_MAX || !code.includes('await')) return Promise.resolve(contextAwaits(code));
-  return new Promise((done) => {
-    try {
-      if (helpers.length < SIZE) helpers.push(startHelper());
-      const { worker, waiting } = helpers.reduce((a, b) => (b.waiting.size < a.waiting.size ? b : a));
-      const id = ++ids;
-      waiting.set(id, { code, done });
-      // Held open while it has files (as the file writer is), not after.
-      if (waiting.size === 1) worker.ref();
-      worker.postMessage({ id, code });
-    } catch {
-      onThisThread = true;
-      done(contextAwaits(code));
-    }
-  });
-}
-
-/**
- * Starts the helpers ahead of the first transform (a helper takes ~90 ms to load the scan, which
- * the first files of a cold start would wait for). They stay idle, and do not keep the process
- * alive, until then.
- */
-export function warmAwaitThreads(): void {
   try {
-    while (!onThisThread && helpers.length < SIZE) helpers.push(startHelper());
+    helper ??= startHelper();
   } catch {
     onThisThread = true;
   }
+  if (!helper?.ready) return Promise.resolve(contextAwaits(code));
+  const { worker, waiting } = helper;
+  return new Promise((done) => {
+    const id = ++ids;
+    waiting.set(id, { code, done });
+    // Held open while it has files (as the file writer is), not after.
+    if (waiting.size === 1) worker.ref();
+    worker.postMessage({ id, code });
+  });
 }
 
 function startHelper(): Helper {
   const worker = new Worker(new URL(import.meta.url), { workerData: { tag: TAG } });
-  const helper: Helper = { worker, waiting: new Map() };
-  const { waiting } = helper;
+  const started: Helper = { worker, ready: false, waiting: new Map() };
+  const { waiting } = started;
   worker.on('message', ({ id, out }: { id: number; out: string | null }) => {
+    // The first message: the helper has loaded the scan.
+    if (!id) return void (started.ready = true);
     waiting.get(id)?.done(out);
     waiting.delete(id);
     if (!waiting.size) worker.unref();
   });
   const lost = () => {
     onThisThread = true;
-    helpers = helpers.filter((h) => h !== helper);
+    if (helper === started) helper = null;
     for (const { code, done } of waiting.values()) done(contextAwaits(code));
     waiting.clear();
   };
@@ -85,9 +76,10 @@ function startHelper(): Helper {
   worker.on('exit', lost);
   // After the listeners: adding a 'message' listener holds the process open again.
   worker.unref();
-  return helper;
+  return started;
 }
 
 if (!isMainThread && (workerData as { tag?: string } | null)?.tag === TAG) {
   parentPort!.on('message', ({ id, code }: { id: number; code: string }) => parentPort!.postMessage({ id, out: contextAwaits(code) }));
+  parentPort!.postMessage({ id: 0, out: null });
 }

@@ -47,6 +47,12 @@ test('contextAwaitsSoon answers what contextAwaits does, on a helper thread', as
     posted++;
     return before.apply(this, a);
   };
+  // Files are rewritten on this thread until the helper is ready.
+  while (!posted) {
+    await contextAwaitsSoon(codes[0]);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  posted = 0;
   try {
     const outs = await Promise.all(codes.map((c) => contextAwaitsSoon(c)));
     assert.deepEqual(outs, codes.map((c) => contextAwaits(c)));
@@ -60,6 +66,7 @@ test('contextAwaitsSoon answers what contextAwaits does, on a helper thread', as
 });
 
 test('a helper that fails: its files and later ones are rewritten on this thread, with the same result', async () => {
+  // The helper the test above made ready.
   const codes = random(11, 10).map(large);
   const before = Worker.prototype.postMessage;
   let killed = false;
@@ -86,10 +93,11 @@ test('helpers do not hold the process open, idle or after their files', () => {
   const script = join(dir, 'run.mjs');
   writeFileSync(
     script,
-    `import { contextAwaitsSoon, warmAwaitThreads } from ${JSON.stringify(new URL('../../src/adapters/node/await-threads.ts', import.meta.url).href)};
-    warmAwaitThreads();
+    `import { contextAwaitsSoon } from ${JSON.stringify(new URL('../../src/adapters/node/await-threads.ts', import.meta.url).href)};
     const code = 'async function f() { return await g(); }\\n' + 'void 0;\\n'.repeat(1024);
-    if (process.argv[2] === 'used') for (let i = 0; i < 3; i++) await contextAwaitsSoon(code);`,
+    // Idle: started, its first file rewritten here; used: files posted to it once it is ready.
+    await contextAwaitsSoon(code);
+    if (process.argv[2] === 'used') for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 10)).then(() => contextAwaitsSoon(code));`,
   );
   try {
     for (const mode of ['idle', 'used']) {
