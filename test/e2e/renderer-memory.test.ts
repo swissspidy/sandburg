@@ -2,7 +2,8 @@
  * Finding each page's renderer (src/orchestrator/renderer-memory.ts) as a session does, with
  * Chromium as a session launches it (inside its OS sandbox unless SANDBURG_NO_BROWSER_SANDBOX=1):
  * pages that look for their renderers side by side on a machine whose cores are all busy each find
- * their own, or none, never another page's.
+ * their own, or none, never another page's. (An e2e suite, run alone: it keeps every core busy, which
+ * would slow the files run beside it in a parallel suite, as the runtime suite runs them.)
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';

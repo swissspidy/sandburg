@@ -98,7 +98,7 @@ wrong renderer in 218 pages of an independent review. But tabs opened together s
 run without its renderer memory in 8 of 10 runs: the offsets parted too slowly for a warm run of a
 second or two. Run time in nanoseconds (`schedstat`) narrows the bounds to a few ms.
 
-`test/runtime/renderer-memory.test.ts` holds 8 pages, each with 48 MB more memory than the one
+`test/e2e/renderer-memory.test.ts` (an e2e suite, a CI job of its own: it keeps every core busy, which would slow the runtime suite's other files running beside it) holds 8 pages, each with 48 MB more memory than the one
 before, while every core is busy. Its first test has the pages look a little apart, and checks that
 a page's renderer, when one is taken, holds that page's memory: the first version failed it in 1 of
 3 runs. Its second has them opened together, each with an app at work on its main thread, and
