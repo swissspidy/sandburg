@@ -55,6 +55,10 @@ answered (over HTTP and over the file channel, with its latency) showed:
   fragment is charged a fixed cost (`FRAGMENT_COST`, 1 KB, in `src/file-channel.ts`) against the
   message's bound besides its bytes, so what the host holds for a message is bounded in fragments as
   in bytes (Chromium sends ~33 fragments for 4 MB, within `MAX_POST`'s headroom).
+- **The channel's reader, bounded throughout** (`host-socket.ts`, `host-server.ts`): a frame in many
+  chunks put together once; nothing read after a close frame; no more requests taken while
+  `MAX_IN_FLIGHT` are in progress or `MAX_UNSENT` bytes wait to be sent; a half-closed socket closed
+  by the host too (see Security).
 - **Installed files over the channel's bound go over HTTP at once** (`syncGet` in `host-files.ts`):
   the runtime knows each file's size from the install's index.
 - **Transform and compile cache files written on a thread** (`src/adapters/node/file-writes.ts`): the
@@ -95,7 +99,8 @@ answered (over HTTP and over the file channel, with its latency) showed:
   run times within the noise.
 - Cold-run medians on this machine move ±5-10% between rounds (npm's resolution, the registry's
   revalidations, the seed run beside Next.js); warm runs ±3-5%.
-- **Behaviour.** A runtime's compiles (`/__sandburg/compile`) go over its file channel when it is
+- **Behaviour.** A file channel whose client sends faster than it reads is held back (TCP) instead of
+  answered without bound; a client's half-close or close frame ends the channel. A runtime's compiles (`/__sandburg/compile`) go over its file channel when it is
   open (bodies under 256 KB, answers up to 1 MB); errors are the same. Installed files of 1 MB or more
   are asked for over HTTP. The host writes `.sandburg/transforms` and `.sandburg/compiled` from a
   worker thread. Nothing an app sees changes.
@@ -112,10 +117,19 @@ answered (over HTTP and over the file channel, with its latency) showed:
   the token reaches the route as the header and leaves the query; only `esbuild-transform` and
   `compile` are taken as POSTs (other paths, `..` included, answer status 0 and nothing is served).
 - **Fragments stay bounded.** The reader keeps at most one message's fragments, at most `MAX_POST`
-  bytes counting `FRAGMENT_COST` per fragment (so at most ~4,200 fragments); fragments over the bound together, a continuation without a message, a data frame inside a
+  bytes, each fragment counting `FRAGMENT_COST` besides its bytes (so at most ~4,200 fragments).
+  Fragments over the bound together, a continuation without a message, a data frame inside a
   message, a fragmented control frame, and a flood of empty or one-byte fragments close the channel
-  with nothing served (`test/unit/host-socket.test.ts`, with a raw client, as Node's WebSocket never fragments; the frame
-  reader's fuzzer, `test/unit/parser-fuzz.test.ts`, passes).
+  with nothing served (`test/unit/host-socket.test.ts`, with a raw client, as Node's WebSocket never
+  fragments; the frame reader's fuzzer, `test/unit/parser-fuzz.test.ts`, passes).
+- **The channel's other bounds** (pre-existing, on the reader this ADR changes; from the review of
+  this work): a frame that comes in many chunks is put together once (linear in its size); nothing
+  after a client's close frame is read or served; a channel takes no more requests while
+  `MAX_IN_FLIGHT` (32) are in progress or more than `MAX_UNSENT` (4 MB) of answers wait to be sent,
+  and reads on as they go out, so a client that does not read its answers holds a bounded amount of
+  the host's memory; a client that ends its side of the socket ends the channel, so a socket never
+  outlives its slot in the per-sandbox bound (ADR 0054). Each has a test in
+  `test/unit/host-socket.test.ts` or `test/unit/host-server.test.ts` that fails without it.
 - **The writer thread** writes the files the host wrote before, under the host's own digests; it is
   the host's code on a thread of the host process, and nothing reaches it from a run but bytes the
   host computed. No new route, socket or cache shared across runs.
