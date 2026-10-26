@@ -34,13 +34,13 @@ interface Sent {
 }
 
 /**
- * POSTs to the host as sandbox `s-a`: `declared` as its Content-Length (or chunked without one), then
+ * POSTs to the host as sandbox `s-a`, as its own page would (Sec-Fetch-Site: same-origin): `declared` as its Content-Length (or chunked without one), then
  * body bytes in 64 KB chunks, up to `send` bytes, until the host answers or closes the connection.
  */
 function post(path: string, { declared, send, headers = {} }: { declared?: number; send: number; headers?: Record<string, string> }): Promise<Sent> {
   return new Promise((resolve, reject) => {
     const sock = connect(host.port, '127.0.0.1');
-    const head = [`POST ${path} HTTP/1.1`, `Host: s-a.sandburg.localhost:${host.port}`, declared === undefined ? 'Transfer-Encoding: chunked' : `Content-Length: ${declared}`, ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), '', ''].join('\r\n');
+    const head = [`POST ${path} HTTP/1.1`, `Host: s-a.sandburg.localhost:${host.port}`, 'Sec-Fetch-Site: same-origin', declared === undefined ? 'Transfer-Encoding: chunked' : `Content-Length: ${declared}`, ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), '', ''].join('\r\n');
     let answer = '';
     let written = 0;
     let done = false;
@@ -98,7 +98,7 @@ test('an oversized body to each route is refused with a 413, without the host re
   const cache = { 'node_modules/.vite/deps/_metadata.json': '{}' };
   const body = JSON.stringify(cache);
   const ok = await new Promise<number>((resolve, reject) => {
-    const sock = connect(host.port, '127.0.0.1', () => sock.write(`POST /__sandburg/dev-cache/${key} HTTP/1.1\r\nHost: s-a.sandburg.localhost:${host.port}\r\nx-sandburg-token: ${token}\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`));
+    const sock = connect(host.port, '127.0.0.1', () => sock.write(`POST /__sandburg/dev-cache/${key} HTTP/1.1\r\nHost: s-a.sandburg.localhost:${host.port}\r\nSec-Fetch-Site: same-origin\r\nx-sandburg-token: ${token}\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`));
     let answer = '';
     sock.on('data', (d) => (answer += String(d)));
     sock.on('close', () => resolve(Number(answer.slice(9, 12))));
