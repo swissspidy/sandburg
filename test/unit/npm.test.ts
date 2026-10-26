@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { TarReader, untar } from '../../src/node-runtime/npm/tar.ts';
-import { Registry, type Fetch, type Manifest } from '../../src/node-runtime/npm/registry.ts';
-import { resolveTree, UnsupportedSpecError } from '../../src/node-runtime/npm/resolve.ts';
-import { installInBrowser, packFiles } from '../../src/node-runtime/npm/install.ts';
+import { TarReader, untar } from '../../src/adapters/node/browser-npm/tar.ts';
+import { Registry, type Fetch, type Manifest } from '../../src/adapters/node/browser-npm/registry.ts';
+import { resolveTree, UnsupportedSpecError } from '../../src/adapters/node/browser-npm/resolve.ts';
+import { installInBrowser, packFiles } from '../../src/adapters/node/browser-npm/install.ts';
 
 /** A tar archive (ustar, one pax long name when a path needs it), as npm pack writes them. */
 function tar(entries: Record<string, string>): Uint8Array {
@@ -115,11 +115,26 @@ test('resolve: peers installed, optional dependencies left out, unsupported spec
   const tree = await resolveTree({ dependencies: { plugin: '1.0.0' } }, registry);
   assert.equal(tree.get('node_modules/host')?.version, '3.2.0');
   assert.equal(tree.has('node_modules/native'), false);
-  for (const spec of ['github:user/x', 'gitlab:user/x', 'bitbucket:user/x', 'gist:abc123', 'user/x']) {
+  // The host's rule (spec-guard.ts), which the prefix list this replaced let through: a directory, a
+  // local tarball, a protocol it did not list.
+  for (const spec of ['github:user/x', 'gitlab:user/x', 'bitbucket:user/x', 'gist:abc123', 'user/x', '..', '.', 'x.tgz', 'ssh://host/x', 'npm:x@file:../y']) {
     await assert.rejects(resolveTree({ dependencies: { x: spec } }, registry), UnsupportedSpecError, spec);
   }
   await assert.rejects(resolveTree({ dependencies: { missing: '^1' } }, registry), /404 Not Found - GET https:\/\/registry\.npmjs\.org\/missing - Not found/);
   await assert.rejects(resolveTree({ dependencies: { host: '^9' } }, registry), /No matching version found for host@\^9/);
+});
+
+test("resolve: specs parsed as the host parses them; an override's $ reference is the project's own spec", async () => {
+  const registry = fakeRegistry({ host: { '3.0.0': {}, '3.2.0': {} }, react: { '18.3.1': {}, '19.1.0': {} }, dom: { '1.0.0': { deps: { react: '^19' } } } });
+  // An alias with spaces around it is the aliased package (before: the alias's text as a range of "x").
+  assert.equal((await resolveTree({ dependencies: { x: ' npm:host@^3 ' } }, registry)).get('node_modules/x')?.version, '3.2.0');
+  // "$react": the project's own spec of react, wherever the override applies.
+  const pinned = await resolveTree({ dependencies: { react: '18.3.1', dom: '1.0.0' }, overrides: { react: '$react' } }, registry);
+  assert.equal(pinned.get('node_modules/react')?.version, '18.3.1');
+  assert.equal(pinned.has('node_modules/dom/node_modules/react'), false);
+  await assert.rejects(resolveTree({ dependencies: { dom: '1.0.0' }, overrides: { react: '$react' } }, registry), /Unable to resolve reference \$react/);
+  // A $ reference anywhere but an override's whole value is refused, as the host refuses it, and said so.
+  await assert.rejects(resolveTree({ dependencies: { x: 'npm:host@$react' } }, registry), (e: Error) => e instanceof UnsupportedSpecError && /a \$ reference/.test(e.message));
 });
 
 test('resolve: a v3 lockfile is installed as it is, and says so', async () => {

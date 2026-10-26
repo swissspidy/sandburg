@@ -14,7 +14,8 @@ import type { AdapterDescriptor } from '../types.ts';
 import { source } from '../sources.ts';
 import { PAGE_CHECKS_PATH, runtimeBundle } from '../page-checks/index.ts';
 import { CLASSIC_CHARSET, classicBody, type HostScript } from './code-cache.ts';
-import { acceptFileChannel, FILE_CHANNEL_PATH } from './host-socket.ts';
+import { acceptFileChannel } from './host-socket.ts';
+import { FILE_CHANNEL_PATH } from '../file-channel.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 
 const HOST_ENTRY = source('host/host.ts');

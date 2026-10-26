@@ -5,7 +5,7 @@
 import { asLocator, getByAltTextSelector, getByLabelSelector, getByPlaceholderSelector, getByRoleSelector, getByTestIdSelector, getByTextSelector, getByTitleSelector } from 'ivya';
 import { getAriaChecked, getAriaDisabled, isElementVisible } from 'ivya/utils';
 import { userEvent } from '@testing-library/user-event';
-import { ivya, appDocument, settings, poll, named } from './runtime.ts';
+import { ivya, appDocument, settings, poll, named } from './frame.ts';
 
 export type Text = string | RegExp;
 

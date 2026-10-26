@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { connect } from 'node:net';
 import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
-import { FILE_CHANNEL_PATH } from '../../src/orchestrator/host-socket.ts';
+import { FILE_CHANNEL_PATH } from '../../src/file-channel.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse } from '../../src/types.ts';
 
 const served: string[] = [];

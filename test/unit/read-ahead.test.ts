@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 const root = mkdtempSync(join(tmpdir(), 'sandburg-ahead-'));
 process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
 const { serve } = await import('../../src/adapters/node/index.ts');
-const { MAX_BODY } = await import('../../src/orchestrator/host-socket.ts');
+const { MAX_BODY } = await import('../../src/file-channel.ts');
 after(() => rmSync(root, { recursive: true, force: true }));
 
 const key = 'c'.repeat(24);

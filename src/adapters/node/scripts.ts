@@ -12,19 +12,18 @@
  *
  * Pure: it reads only the project files.
  */
+import { FRAMEWORKS } from '../../framework.ts';
+
 type Files = Record<string, string | Uint8Array | { base64: string }>;
 
 /**
  * The environment of the programs a run starts, here and in the Docker reference: a developer's
  * machine, not CI. CI=1 changes what dev servers do (the Angular CLI turns its build cache off: its
  * rebuilds took 4-6x as long), so telemetry, analytics prompts and update checks are turned off by
- * their own switches instead.
+ * their own switches instead (FRAMEWORKS' quietEnv, and the common ones).
  */
 export const DEV_ENV: Record<string, string> = {
-  NEXT_TELEMETRY_DISABLED: '1',
-  NUXT_TELEMETRY_DISABLED: '1',
-  ASTRO_TELEMETRY_DISABLED: '1',
-  NG_CLI_ANALYTICS: 'false',
+  ...Object.assign({}, ...Object.values(FRAMEWORKS).map((f) => f.quietEnv)),
   DO_NOT_TRACK: '1',
   NO_UPDATE_NOTIFIER: '1',
 };
