@@ -28,7 +28,7 @@ export const DOC = join(ROOT, 'docs/architecture.md');
 export interface Import {
   from: string;
   to: string;
-  /** Erased at compile time (`import type`, or every name imported is a type). */
+  /** Erased at compile time: `import type` or `export type` (not `import { type A }`, which stays a side-effect import). */
   typeOnly: boolean;
   dynamic: boolean;
   line: number;
@@ -77,8 +77,13 @@ export function importGraph(dir = join(ROOT, 'src')): Graph {
       imports.push({ from, to, typeOnly, dynamic, line: lineAt(offset) });
     };
     const r = parseSync(file, code);
-    for (const i of r.module.staticImports) add(i.moduleRequest.value, i.entries.length > 0 && i.entries.every((e) => e.isType), false, i.start);
-    for (const e of r.module.staticExports) for (const entry of e.entries) if (entry.moduleRequest) add(entry.moduleRequest.value, entry.isType, false, e.start);
+    // Erased only as a whole statement (`import type`, `export type`): under verbatimModuleSyntax,
+    // `import { type A } from` stays as an import of the module (for its side effects).
+    for (const n of r.program.body as unknown as Node[]) {
+      if ((n.type === 'ImportDeclaration' || n.type === 'ExportNamedDeclaration' || n.type === 'ExportAllDeclaration') && n.source) {
+        add((n.source as Node).value as string, (n.importKind ?? n.exportKind) === 'type', false, n.start);
+      }
+    }
     walk(r.program, (n) => {
       const literal = (arg: unknown) => {
         const a = arg as Node | undefined;

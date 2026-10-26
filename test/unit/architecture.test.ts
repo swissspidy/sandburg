@@ -103,3 +103,25 @@ test('a cycle of value imports is found; type imports and dynamic imports make n
   assert.deepEqual(cycles(g), [['src/a.ts', 'src/b.ts', 'src/c.ts']]);
   assert.ok(KNOWN_CYCLES.every((c) => c.length > 1));
 });
+
+test('a statement is type-only only as `import type` or `export type`: `{ type A }` stays an import of the module', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'sandburg-arch-'));
+  try {
+    writeFileSync(join(dir, 'b.ts'), 'export type B = 1;\nexport const c = 1;\n');
+    writeFileSync(
+      join(dir, 'a.ts'),
+      ["import type { B } from './b.ts';", "import { type B as B2 } from './b.ts';", "export type { B as B3 } from './b.ts';", "export { type B as B4 } from './b.ts';", "export type * from './b.ts';", "import { c, type B as B5 } from './b.ts';", "import './b.ts';", ''].join('\n'),
+    );
+    const g = importGraph(dir);
+    assert.deepEqual(g.imports.filter((i) => i.from.endsWith('a.ts')).map((i) => [i.line, i.typeOnly]), [[1, true], [2, false], [3, true], [4, false], [5, true], [6, false], [7, false]]);
+    // So a cycle made only of `{ type … }` imports is a cycle.
+    writeFileSync(join(dir, 'b.ts'), "import { type A } from './a.ts';\nexport type B = 1;\n");
+    writeFileSync(join(dir, 'a.ts'), "export { type B } from './b.ts';\nexport type A = 1;\n");
+    assert.equal(cycles(importGraph(dir)).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
