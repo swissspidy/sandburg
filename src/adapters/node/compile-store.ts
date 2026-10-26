@@ -10,10 +10,10 @@
  * process writes (a batch, or a long session, runs many apps in one process).
  */
 import { readFileSync } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { readdir, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import type { CompileStore } from './compile.ts';
-import { tmpSuffix } from './install.ts';
+import { writeSoon } from './file-writes.ts';
 
 const COMPILED_MAX = 1 << 30;
 
@@ -32,12 +32,10 @@ export function diskCompileStore(dir: string, max = COMPILED_MAX): Pick<CompileS
       }
     },
     write(key, out) {
-      const file = fileOf(dir, key);
-      const tmp = `${file}.${tmpSuffix()}.tmp`;
-      return mkdir(dirname(file), { recursive: true })
-        .then(() => writeFile(tmp, out))
-        .then(() => rename(tmp, file))
-        .then(() => {
+      return writeSoon(fileOf(dir, key), out)
+        .then((ok) => {
+          // What was not written does not count toward the next sweep.
+          if (!ok) return;
           written += Buffer.byteLength(out);
           if (written < max / 4 || sweeping) return sweeping ?? undefined;
           written = 0;
