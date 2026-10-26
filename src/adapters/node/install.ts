@@ -19,6 +19,7 @@ import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-name
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
 import { ESM_MARKER } from '../../node-runtime/names.ts';
 import type { Project } from '../../types.ts';
+import { deferImports } from './deferred-imports.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
@@ -34,9 +35,9 @@ const NO_GIT = '/nonexistent/sandburg-git-is-disabled';
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error', `--git=${NO_GIT}`];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 22;
+export const TRANSFORM_VERSION = 24;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 16;
+const LAYOUT_VERSION = 17;
 
 export interface InstallInfo {
   key: string;
@@ -148,7 +149,7 @@ export class Installer {
   }
 
   /** Installs `project`'s dependencies plus `extra` (name → spec) unless already cached. */
-  install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
+  async install(project: Project, extra: Record<string, string>, log: (line: string) => void): Promise<InstallInfo> {
     const { key, manifest, lock } = this.plan(project, extra);
     // Registry dependencies only: a git or directory dependency's prepare script runs on the host,
     // even with --ignore-scripts (see spec-guard.ts). Refused here, before npm or pacote sees it.
@@ -168,7 +169,7 @@ export class Installer {
     const done = join(dir, '.sandburg-complete');
     const exists = await access(done).then(() => true, () => false);
     if (!exists) {
-      const tmp = `${dir}.tmp-${process.pid}-${Date.now()}`;
+      const tmp = `${dir}.tmp-${tmpSuffix()}`;
       await mkdir(tmp, { recursive: true });
       await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
       if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
@@ -183,11 +184,13 @@ export class Installer {
       // The resolved tree holds only registry packages: a transitive git, directory, or
       // off-registry-host tarball dependency (a registry package may declare one) is refused before
       // anything is unpacked or the full npm install fetches it.
+      // npm writes one even for a project without dependencies: none means nothing was checked.
       const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
-      if (resolvedLock !== null) assertRegistryLockfile(resolvedLock);
+      if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
+      assertRegistryLockfile(resolvedLock);
       // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
       // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
-      const packages = installedPackages(JSON.parse(resolvedLock ?? '{}'));
+      const packages = installedPackages(JSON.parse(resolvedLock));
       const sides = this.sides;
       const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
@@ -200,9 +203,11 @@ export class Installer {
       const [placeBindings, placeBuilds] = await additions;
       await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
       await writeBinIndex(tmp);
+      // The index is written with the install (see loadIndex): this process walked it anyway.
+      const index = walkIndex(tmp);
+      await writeFile(join(tmp, INDEX_FILE), JSON.stringify(index));
       await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
-      await rm(dir, { recursive: true, force: true });
-      await rename(tmp, dir);
+      if (await settle(tmp, dir, done)) this.indexes.set(key, Promise.resolve(index));
     }
     const resolved: Record<string, string> = {};
     for (const name of Object.keys((manifest as { dependencies: object }).dependencies)) {
@@ -284,7 +289,7 @@ export class Installer {
     }
     let idx = this.indexes.get(key);
     if (!idx) {
-      idx = buildIndex(join(this.root, key));
+      idx = loadIndex(join(this.root, key));
       this.indexes.set(key, idx);
     }
     return idx;
@@ -432,7 +437,8 @@ export async function transformForRuntime(source: string, path: string, esm: boo
   // A declaration of a CommonJS name that esbuild does not rename (see esm-names.ts): renamed first.
   const convert = async (code: string) => {
     const out = (await esbuild.transform(code, TRANSFORM_OPTIONS(path, esm))).code;
-    return esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+    const cjs = esm && collidesWithWrapper(out) ? (await esbuild.transform(renameCommonJsNames(code), TRANSFORM_OPTIONS(path, esm))).code : out;
+    return esm ? deferImports(cjs, path) : cjs;
   };
   try {
     return mark(await convert(source));
@@ -485,6 +491,7 @@ function packageType(installDir: string, rel: string, index: FileIndex): Promise
       }
       return packageType(installDir, dir, index);
     })();
+    // oxlint-disable-next-line sandburg/cache-key-digest -- installDir is the install's, named by its lockfile's digest
     typeCache.set(id, type);
   }
   return type;
@@ -735,6 +742,30 @@ async function wasmBuildsFor(dir: string, sideRoot: Sides, packages: InstalledPa
 }
 
 /**
+ * Puts a finished install (`tmp`, with its `.sandburg-complete`) in place at `dir`. Another process
+ * on the same .sandburg/ (or another Installer) may have finished the same install first: its
+ * directory stays, as runs may be reading from it, and this one goes. Replacing it (as an earlier
+ * version did, removing it first) pulled the files from under those runs. Only a directory without
+ * the record (left by an older version) is replaced.
+ */
+async function settle(tmp: string, dir: string, done: string): Promise<boolean> {
+  const complete = () => access(done).then(() => true, () => false);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(tmp, dir);
+      return true;
+    } catch (err) {
+      if (await complete()) {
+        await rm(tmp, { recursive: true, force: true });
+        return false;
+      }
+      if (attempt) throw err;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+/**
  * Writes a file as a new file: an install may share files with another through hard links (see
  * Installer.startFromClosest), and writing into one would change both.
  */
@@ -784,10 +815,50 @@ async function place(from: string, to: string): Promise<void> {
   }
 }
 
-async function buildIndex(dir: string): Promise<FileIndex> {
+/**
+ * An install's index, as written beside its node_modules when it was made (or by the first process
+ * that walked it, for an install made before indexes were written): ~5 ms to read for the 12,500
+ * files of a Next.js install, where walking them took the host's main thread 50-150 ms, once per
+ * install and process (a CLI batch walked each of its installs again; a single CLI run waited for
+ * it). An install does not change once made (installs replace their files, never write them in
+ * place), so the index stays true. One that is not an object of node_modules paths and sizes is
+ * walked again.
+ */
+async function loadIndex(dir: string): Promise<FileIndex> {
+  const file = join(dir, INDEX_FILE);
+  const saved = await readFile(file, 'utf8')
+    .then((t) => JSON.parse(t) as unknown)
+    .catch(() => null);
+  if (isIndex(saved)) return saved;
+  const index = walkIndex(dir);
+  // Kept for later processes, for a finished install only (written as other caches are: whole, by rename).
+  if (await access(join(dir, '.sandburg-complete')).then(() => true, () => false)) {
+    const tmp = `${file}.${tmpSuffix()}.tmp`;
+    await writeFile(tmp, JSON.stringify(index))
+      .then(() => rename(tmp, file))
+      .catch(() => rm(tmp, { force: true }));
+  }
+  return index;
+}
+
+const INDEX_FILE = '.sandburg-index.json';
+const DOTDOT = /\/\.\.(?:\/|$)/;
+
+function isIndex(value: unknown): value is FileIndex {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  for (const [rel, size] of Object.entries(value)) {
+    // A `..` segment (paths start with node_modules/, so only after a slash): splitting each of a
+    // Next.js install's 12,500 paths took ~10 ms.
+    if (typeof size !== 'number' || !rel.startsWith('node_modules/') || DOTDOT.test(rel)) return false;
+  }
+  return true;
+}
+
+/** The files under an install's node_modules (paths relative to `dir`) and their sizes. */
+function walkIndex(dir: string): FileIndex {
   const index: FileIndex = {};
   // Synchronous: 0.1-0.2 s for the 10,500 files of a Next.js install, where awaiting each lstat took
-  // 1.1-1.3 s (0.6 s with each directory's entries side by side). Once per install and process.
+  // 1.1-1.3 s (0.6 s with each directory's entries side by side).
   function walk(abs: string): void {
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
       if (entry.name === '.bin' || entry.name === '.cache' || entry.name === '.sandburg-transformed') continue;

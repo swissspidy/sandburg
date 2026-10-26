@@ -4,7 +4,7 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "lib": [
-      "es2023",
+      "es2024",
       "dom",
       "dom.iterable"
     ],
@@ -23,6 +23,7 @@
     "src",
     "test",
     "scripts/pages",
+    "lint",
     "scripts/profile.ts",
     "scripts/edit-loop.ts",
     "scripts/split-module.ts",
@@ -33,6 +34,8 @@
     "pages/generate",
     "evals",
     "integrations/harbor/build-tasks.ts",
-    "fixtures/vite-react-counter/checks.spec.ts"
+    "fixtures/vite-react-counter/checks.spec.ts",
+    "scripts/code-stats.ts",
+    "scripts/api-report.ts"
   ]
 }

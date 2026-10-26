@@ -3,7 +3,7 @@ import { Transform } from 'readable-stream';
 
 /**
  * node:crypto's common hashes (MD5, SHA-1 and SHA-2) in the runtime's script, so that a program that
- * only hashes does not load crypto-browserify (a 1.2 MB runtime library, ADR 0028), and hashes faster
+ * only hashes does not load crypto-browserify (a 0.7 MB runtime library, ADR 0028), and hashes faster
  * than its sha.js and md5.js: blocks are read from the input in place, not copied into a Buffer and
  * read back with readInt32BE. Vite hashes every response it serves (its ETag is a SHA-1) and its
  * lockfile; webpack, Next.js and many tools hash file contents and ids.

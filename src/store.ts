@@ -13,11 +13,13 @@ import { mkdir, readdir, readFile, rename, writeFile, access } from 'node:fs/pro
 import { join } from 'node:path';
 import type { FileContent, FileTree } from './types.ts';
 
+/** A file tree by content: path → the sha256 of its bytes. */
 export interface SnapshotManifest {
   /** Path → sha256 of the file's bytes. */
   files: Record<string, string>;
 }
 
+/** A stored snapshot: its manifest, id (the manifest's digest), name and when it was stored. */
 export interface SnapshotRecord extends SnapshotManifest {
   id: string;
   /** Informational; not part of the id. First writer wins. */
@@ -48,6 +50,7 @@ export function snapshotId(manifest: SnapshotManifest): string {
   return hash.digest('hex');
 }
 
+/** File trees on disk by content (see the module's comment): put() a tree, get() it back by id or prefix. */
 export class SnapshotStore {
   readonly root: string;
 
@@ -55,6 +58,7 @@ export class SnapshotStore {
     this.root = root;
   }
 
+  /** Stores a file tree under its snapshot id, and returns the id. */
   async put(files: FileTree, name: string): Promise<string> {
     const manifest = manifestOf(files);
     const id = snapshotId(manifest);
@@ -79,6 +83,7 @@ export class SnapshotStore {
     return matches[0];
   }
 
+  /** A stored snapshot and its files, by id or unique prefix; throws on a blob whose bytes do not match its hash. */
   async get(ref: string): Promise<{ record: SnapshotRecord; files: FileTree }> {
     const id = await this.resolve(ref);
     const record = JSON.parse(await readFile(join(this.root, 'snapshots', `${id}.json`), 'utf8')) as SnapshotRecord;

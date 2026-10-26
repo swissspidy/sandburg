@@ -73,6 +73,12 @@ test('assertRegistryLockfile refuses git entries in a v1 lockfile', () => {
   assert.throws(() => assertRegistryLockfile(JSON.stringify({ dependencies: { x: { version: 'git+https://h/r.git#abc', from: 'git+https://h/r.git' } } })), UnsupportedDependencyError);
 });
 
+test('assertRegistryLockfile allows an npm: alias version in a v1/v2 tree, but not an alias to a path', () => {
+  const alias = { version: 'npm:string-width@4.2.3', resolved: 'https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz', from: 'npm:string-width@^4.2.0' };
+  assert.doesNotThrow(() => assertRegistryLockfile(JSON.stringify({ lockfileVersion: 2, dependencies: { 'string-width-cjs': alias } })));
+  assert.throws(() => assertRegistryLockfile(JSON.stringify({ dependencies: { x: { version: 'npm:../x.tgz' } } })), UnsupportedDependencyError);
+});
+
 test('assertRegistryLockfile allows a registry lockfile and ignores non-JSON', () => {
   assert.doesNotThrow(() => assertRegistryLockfile(JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/x': { version: '1.0.0', resolved: 'https://registry.npmjs.org/x/-/x-1.0.0.tgz', integrity: 'sha512-x' } } })));
   assert.doesNotThrow(() => assertRegistryLockfile('not json at all'));

@@ -140,6 +140,8 @@ export function createModuleSystem(host: LoaderHost) {
     builtinModules: string[];
     isBuiltin(name: string): boolean;
     globalPaths: string[];
+    /** The program's module (require.main), once it loads. */
+    mainModule?: Mod;
   };
 
   Module._cache = Object.create(null);
@@ -312,7 +314,7 @@ export function createModuleSystem(host: LoaderHost) {
     }
     const mod = new Module(filename, parent);
     if (isMain) {
-      (Module as unknown as { mainModule: Mod }).mainModule = mod;
+      Module.mainModule = mod;
       mod.id = '.';
     }
     Module._cache[filename] = mod;
@@ -487,7 +489,7 @@ export function createModuleSystem(host: LoaderHost) {
     const resolve = (request: string, options?: { paths?: string[] }) => Module._resolveFilename(request, mod, false, options);
     resolve.paths = (request: string) => Module._resolveLookupPaths(request, mod);
     require.resolve = resolve;
-    require.main = (Module as unknown as { mainModule?: Mod }).mainModule;
+    require.main = Module.mainModule;
     require.extensions = Module._extensions;
     require.cache = Module._cache;
     return require;

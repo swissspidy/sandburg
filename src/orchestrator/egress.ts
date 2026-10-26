@@ -6,12 +6,13 @@
  * are answered from a content-addressed disk cache, fetched upstream by Node on
  * a miss; everything else is aborted and recorded.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { STATUS_CODES } from 'node:http';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { request as playwrightRequest, type APIRequestContext, type BrowserContext, type CDPSession, type Frame, type Page } from 'playwright-core';
 import type { NetworkEntry } from '../types.ts';
+import { traceTransfer } from '../transfer-trace.ts';
 
 export interface EgressOptions {
   cacheDir: string;
@@ -29,7 +30,7 @@ export interface EgressStats {
   blocked: NetworkEntry[];
 }
 
-interface CachedResponse {
+export interface CachedResponse {
   status: number;
   headers: Record<string, string>;
   body: Buffer;
@@ -41,6 +42,12 @@ interface CacheMeta {
   url: string;
   status: number;
   headers: Record<string, string>;
+  /**
+   * SHA-256 (hex) of the body the metadata goes with. The body and the metadata are two files, each
+   * renamed into place: two processes on one cache directory fetching the same URL could leave one's
+   * metadata with the other's body. Entries written before this was recorded have none.
+   */
+  body?: string;
 }
 
 /** Headers that describe the upstream transfer rather than the content. */
@@ -261,7 +268,9 @@ export class EgressGateway {
       if (headers.origin && headers.origin.trim() !== new URL(request.url).origin && !('access-control-allow-origin' in responseHeaders)) {
         fulfilled.push({ name: 'access-control-allow-origin', value: headers.origin }, { name: 'access-control-allow-credentials', value: 'true' }, { name: 'vary', value: 'Origin' });
       }
+      const t0 = performance.now();
       await session.send('Fetch.fulfillRequest', { requestId, responseCode: status, responsePhrase: STATUS_CODES[status] ?? '', responseHeaders: fulfilled, body: body.toString('base64') });
+      traceTransfer({ hop: 'host→page cdp', what: request.url, bytes: body.length, encoding: 'base64', ms: performance.now() - t0 });
     } catch {
       // the request is gone (its page closed or it was cancelled)
     }
@@ -337,21 +346,22 @@ export class EgressGateway {
   }
 }
 
-async function readCache(path: string): Promise<CachedResponse | null> {
+export async function readCache(path: string): Promise<CachedResponse | null> {
   try {
     const meta = JSON.parse(await readFile(`${path}.json`, 'utf8')) as CacheMeta;
     const body = await readFile(`${path}.body`);
+    if (meta.body !== undefined && createHash('sha256').update(body).digest('hex') !== meta.body) return null;
     return { status: meta.status, headers: meta.headers, body, fetchedAt: (await stat(`${path}.json`)).mtimeMs };
   } catch {
     return null;
   }
 }
 
-async function writeCache(path: string, url: string, response: CachedResponse): Promise<void> {
+export async function writeCache(path: string, url: string, response: CachedResponse): Promise<void> {
   await mkdir(join(path, '..'), { recursive: true });
-  const meta: CacheMeta = { url, status: response.status, headers: response.headers };
+  const meta: CacheMeta = { url, status: response.status, headers: response.headers, body: createHash('sha256').update(response.body).digest('hex') };
   // Body first, metadata last: a reader only trusts entries whose metadata exists.
-  const tmp = `${path}.${process.pid}.${Date.now()}`;
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}`;
   await writeFile(`${tmp}.body`, response.body);
   await rename(`${tmp}.body`, `${path}.body`);
   await writeFile(`${tmp}.json`, JSON.stringify(meta));

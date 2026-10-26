@@ -20,8 +20,9 @@ test('install() refuses a git, file or URL dependency as unsupported and install
   const root = await mkdtemp(join(tmpdir(), 'sandburg-install-specs-'));
   const inst = new Installer(join(root, 'installs'));
   for (const spec of ['git+ssh://git@example.invalid/a/b.git', 'github:a/b', 'file:../x', 'https://example.invalid/x.tgz', 'link:../p']) {
+    // A rejection, not a synchronous throw: install() is a promise either way.
     await assert.rejects(
-      async () => inst.install(project({ x: spec }), {}, () => {}),
+      () => inst.install(project({ x: spec }), {}, () => {}),
       (e: unknown) => e instanceof Error && (e as { code?: string }).code === 'UNSUPPORTED',
       spec,
     );

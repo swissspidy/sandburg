@@ -17,7 +17,7 @@
  * - On disk (.sandburg/code-cache), each entry carries a digest of its bytes, checked on read: a
  *   damaged entry is produced again.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Browser, CDPSession, Frame, Page } from 'playwright-core';
@@ -84,7 +84,8 @@ export class CodeCache {
     const data = await produce(this.browser, source);
     if (data && file) {
       const bytes = Buffer.from(data, 'base64');
-      const tmp = `${file}.${process.pid}.tmp`;
+      // Two sessions in one process may produce the same entry at once: each writes a file of its own.
+      const tmp = `${file}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
       await mkdir(dirname(file), { recursive: true })
         .then(() => writeFile(tmp, Buffer.concat([createHash('sha256').update(bytes).digest(), bytes])))
         .then(() => rename(tmp, file))

@@ -6,7 +6,12 @@
 import { AdapterError, type Activity } from '../../host/types.ts';
 import type { FileTree } from '../../types.ts';
 import type { FromWorker, ToWorker } from '../../node-runtime/messages.ts';
+import type { CacheEntry } from '../../node-runtime/cache-tree.ts';
 import type { BridgeReply, BridgedRequest } from '../sw-bridge.ts';
+import { traceTransfer } from '../../transfer-trace.ts';
+
+/** Whether the host traces transfers (src/transfer-trace.ts): the host page says so. */
+const tracing = () => !!(globalThis as { __sandburgTraceTransfers?: boolean }).__sandburgTraceTransfers;
 
 export interface NodeProcessOptions {
   files: FileTree;
@@ -37,19 +42,22 @@ export interface NodeProcessOptions {
 /** A file of a dev server's cache: text, or binary as base64. */
 export type CacheFile = string | { base64: string };
 
+/** A dev server's cache as the runtime read it (readCache): its files [path, size], and their bytes as a bundle if asked. */
+export interface CacheSnapshot {
+  files: CacheEntry[];
+  bundle: ArrayBuffer | null;
+}
+
 /**
  * Where the runtime reaches the host (worker script, installed files, compiles). /__sandburg on a
  * sandbox origin; a page may set another (the static demos serve it under their own path).
  */
 export function hostBase(): string {
-  return (globalThis as { __sandburgBase?: string }).__sandburgBase ?? '/__sandburg';
+  return globalThis.__sandburgBase ?? '/__sandburg';
 }
 
 /** The largest bundle downloaded ahead (prefetchBundle); a larger one fails there and the runtime asks for it. */
 const PREFETCH_MAX = 1 << 30;
-/** A growable SharedArrayBuffer (ES2024; this project's lib is older). */
-type Growable = SharedArrayBuffer & { grow(length: number): void };
-const GrowableSharedArrayBuffer = SharedArrayBuffer as unknown as new (length: number, options: { maxByteLength: number }) => Growable;
 
 /**
  * Starts downloading a bundle the runtime reads as it starts (the install's preload bundle, a dev
@@ -60,9 +68,9 @@ const GrowableSharedArrayBuffer = SharedArrayBuffer as unknown as new (length: n
  */
 function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | null {
   if (!url || !globalThis.crossOriginIsolated) return null;
-  let sab: Growable;
+  let sab: SharedArrayBuffer;
   try {
-    sab = new GrowableSharedArrayBuffer(8, { maxByteLength: 8 + PREFETCH_MAX });
+    sab = new SharedArrayBuffer(8, { maxByteLength: 8 + PREFETCH_MAX });
   } catch {
     return null;
   }
@@ -72,6 +80,7 @@ function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | nul
     Atomics.store(state, 0, status);
     Atomics.notify(state, 0);
   };
+  const t0 = performance.now();
   void (async () => {
     const res = await fetch(url);
     if (!res.ok || !res.body) return settle(2);
@@ -88,6 +97,7 @@ function prefetchBundle(url: string | null | undefined): SharedArrayBuffer | nul
       length += value.length;
     }
     settle(1, length);
+    traceTransfer({ hop: 'host→page prefetch', what: url, bytes: length, encoding: 'shared', ms: performance.now() - t0 });
   })().catch(() => settle(2));
   return sab;
 }
@@ -135,7 +145,8 @@ export class NodeProcess {
   private nextId = 1;
   private label: string;
   private partial = { stdout: '', stderr: '' };
-  private trees = new Map<number, (files: Record<string, CacheFile> | null) => void>();
+  private trees = new Map<number, (files: Record<string, CacheFile>) => void>();
+  private caches = new Map<number, (cache: CacheSnapshot | null) => void>();
   /** When the page last sent the runtime a request or heard from it (see activity()). */
   private lastActivity = performance.now();
 
@@ -155,7 +166,7 @@ export class NodeProcess {
     this.crashes.onmessage = (e: MessageEvent<{ message: string; stack?: string }>) =>
       this.fail(new AdapterError('INTERNAL', [e.data.message, ...(e.data.stack ?? '').split('\n').slice(1)].join('\n').trim()));
     this.send(
-      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv },
+      { type: 'init', cwd: '/app', env: opts.env, files: opts.files, installKey: opts.installKey, preload: opts.preload ?? null, filesBundle: opts.filesBundle ?? null, prefetched, compileCache: opts.compileCache ?? null, nodeModules: opts.nodeModules, pack: opts.pack ?? null, compilePort: opts.compilePort ?? null, base, tsRunner: opts.tsRunner, execArgv: opts.execArgv, ...(tracing() ? { trace: true } : {}) },
       opts.compilePort ? [opts.compilePort] : [],
     );
   }
@@ -170,7 +181,7 @@ export class NodeProcess {
     return this.until(() => this.ready);
   }
 
-  /** `track`: project directories whose changes the runtime notes from now on (see readTree's ifChanged). */
+  /** `track`: project directories whose changes the runtime notes from now on (see readCache's ifChanged). */
   run(main: string, argv: string[] = [], track?: string[]): void {
     this.send({ type: 'run', main, argv, track });
   }
@@ -312,18 +323,25 @@ export class NodeProcess {
     this.send({ type: 'write-file', path, content });
   }
 
-  /**
-   * The files under project directories, keyed by project-relative path; with match (a regular
-   * expression's source), also the project's files whose path matches, as base64.
-   */
-  readTree(dirs: string[], match?: string): Promise<Record<string, CacheFile>>;
-  /** With ifChanged: null when no file under the directories run() tracks changed since the program started. */
-  readTree(dirs: string[], match: undefined, ifChanged: true): Promise<Record<string, CacheFile> | null>;
-  readTree(dirs: string[], match?: string, ifChanged?: boolean): Promise<Record<string, CacheFile> | null> {
+  /** The project's files whose path matches `match` (a regular expression's source), outside node_modules and dot directories, as base64. */
+  readTree(match: string): Promise<Record<string, CacheFile>> {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.trees.set(id, resolve);
-      this.send({ type: 'read-tree', id, dirs, match, ifChanged });
+      this.send({ type: 'read-tree', id, match });
+    });
+  }
+
+  /**
+   * A dev server's cache under project directories (see node-runtime/cache-tree.ts): its files, and
+   * with `bytes` their bytes as a bundle; with `ifChanged`, null when no file under the directories
+   * run() tracks changed since the program started.
+   */
+  readCache(dirs: string[], { bytes, ifChanged = false }: { bytes: boolean; ifChanged?: boolean }): Promise<CacheSnapshot | null> {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      this.caches.set(id, resolve);
+      this.send({ type: 'read-cache', id, dirs, bytes, ifChanged });
     });
   }
 
@@ -383,8 +401,14 @@ export class NodeProcess {
           }, EPHEMERAL_PATIENCE_MS);
         } else if (!this.ports.includes(m.port)) this.ports.push(m.port);
         break;
+      case 'cache':
+        if (tracing() && m.bundle) traceTransfer({ hop: 'runtime→page postMessage', what: 'cache', bytes: m.bundle.byteLength, encoding: 'binary', ms: 0 });
+        this.caches.get(m.id)?.(m.unchanged ? null : { files: m.files, bundle: m.bundle });
+        this.caches.delete(m.id);
+        break;
       case 'tree':
-        this.trees.get(m.id)?.(m.unchanged ? null : m.files);
+        if (tracing()) traceTransfer({ hop: 'runtime→page postMessage', what: 'tree', bytes: Object.values(m.files).reduce((n, f) => n + f.base64.length, 0), encoding: 'base64', ms: 0 });
+        this.trees.get(m.id)?.(m.files);
         this.trees.delete(m.id);
         break;
       case 'process-exit':
@@ -495,7 +519,7 @@ export function webSocketPort(url: string, ports: number[], samePort: (path: str
 
 /** Lets app pages open WebSockets through the host page (ws-shim.js calls window.top.__sandburgWs). */
 export function exposeWebSockets(route: (url: string) => { proc: NodeProcess; port: number } | null): void {
-  (window as unknown as Record<string, unknown>).__sandburgWs = (url: string, protocols: string[], channel: MessagePort) => {
+  window.__sandburgWs = (url: string, protocols: string[], channel: MessagePort) => {
     const target = route(url);
     if (!target) return false;
     target.proc.connectWebSocket(target.port, url, protocols, channel);

@@ -256,11 +256,18 @@ const context = (options = {}) =>
 const sync = (name) => () => {
   throw new Error('esbuild.' + name + '() is not available in the browser runtime (esbuild-wasm has no synchronous API there); use the asynchronous API');
 };
+// A transform the host's native esbuild can answer goes there; anything else, and any call it does
+// not answer, runs here (src/node-runtime/native-transform.ts).
+const native = globalThis[Symbol.for('sandburg.esbuildTransform')];
+const transform = (input, options) => {
+  const viaHost = native ? native(esbuild.version, input, options) : null;
+  return viaHost ? viaHost.then((r) => r || later('transform')(input, options)) : later('transform')(input, options);
+};
 module.exports = {
   version: esbuild.version,
   build,
   context,
-  transform: later('transform'),
+  transform,
   formatMessages: later('formatMessages'),
   analyzeMetafile: later('analyzeMetafile'),
   buildSync: sync('buildSync'),
@@ -338,6 +345,20 @@ const ROLLDOWN_BUILTIN_HOOKS = `
  * MessagePort (browsers have none): they use its message-event mode instead, as under WebContainers.
  */
 export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }[] = [
+  {
+    // Vite bundles the project's config file on every start, with esbuild's WebAssembly build (5-7)
+    // or rolldown's (8): the bundle of the project's last run is used while the files it was made
+    // from are unchanged (node-runtime/config-bundles.ts).
+    file: /(^|\/)node_modules\/vite\/dist\/node\/chunks\/[^/]+\.js$/,
+    // Once: the browser's install patches a file as it installs it, and its compiler again.
+    from: /\nasync function bundleConfigFile\(fileName, isESM\) \{\n(?!  const sandburgBundles)/,
+    to:
+      '\nasync function bundleConfigFile(fileName, isESM) {\n' +
+      "  const sandburgBundles = globalThis[Symbol.for('sandburg.configBundles')]; // sandburg: see SOURCE_PATCHES\n" +
+      '  return sandburgBundles ? sandburgBundles(fileName, isESM, () => sandburgBundleConfigFile(fileName, isESM)) : sandburgBundleConfigFile(fileName, isESM);\n' +
+      '}\n' +
+      'async function sandburgBundleConfigFile(fileName, isESM) {\n',
+  },
   {
     // Next.js' webpack cache: read-only unless the run keeps it (a seed run). next dev gzips its cache
     // packs as it stores them, 2.1 s of a warm run's main thread, for a cache no later run reads.

@@ -1,10 +1,11 @@
-/** Builds the runtime worker bundle (served by the host at /__sandburg/node-worker.js). */
+/** Builds the runtime worker bundle (served by the host as a module, /__sandburg/runtime/<digest>.mjs, which /__sandburg/node-worker.js imports: runtime-module.ts). */
 import * as esbuild from 'esbuild';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { cachedBuild } from './bundle-cache.ts';
+import { dedupedPath } from './bundle-dedupe.ts';
 import { dirname, join, relative, sep } from 'node:path';
 import { source } from '../sources.ts';
 import { LIBS_KEY, MODULES_KEY, RUNTIME_LIBS, type RuntimeLib } from './libs.ts';
@@ -57,6 +58,8 @@ const aliases: esbuild.Plugin = {
   name: 'process-alias',
   setup(build) {
     build.onResolve({ filter: /^process\/?$/ }, () => ({ path: here('process-alias.cjs') }));
+    // The url polyfill's query strings are node:querystring's, as in Node (url-querystring.cjs).
+    build.onResolve({ filter: /^qs$/ }, (args) => (args.importer.includes(`${sep}node_modules${sep}url${sep}`) ? { path: here('url-querystring.cjs') } : undefined));
     // Polyfills require Node built-ins among themselves; map them to their polyfills.
     const map: Record<string, string> = { stream: 'readable-stream', path: 'path-browserify', crypto: 'crypto-browserify', zlib: 'browserify-zlib', querystring: 'querystring-es3' };
     build.onResolve({ filter: /^(stream|path|crypto|zlib|querystring|buffer|events|util|assert|string_decoder|url)\/?$/ }, (args) => {
@@ -64,6 +67,21 @@ const aliases: esbuild.Plugin = {
       const name = args.path.replace(/\/$/, '');
       if (args.importer.includes('/src/node-runtime/') && !map[name]) return undefined;
       return build.resolve(map[name] ?? `${name}/`, { resolveDir: args.resolveDir, kind: args.kind, pluginData: 'sandburg-inner' });
+    });
+  },
+};
+
+/** A package npm installed more than once at one version is bundled once (bundle-dedupe.ts). */
+const dedupe: esbuild.Plugin = {
+  name: 'dedupe',
+  setup(build) {
+    build.onResolve({ filter: /.*/ }, async (args) => {
+      // An inner resolve (its own, or another plugin's: the outer one is deduplicated) is left as it is.
+      if (args.pluginData !== undefined || args.kind === 'entry-point' || !args.resolveDir.includes(`${sep}node_modules${sep}`)) return undefined;
+      const r = await build.resolve(args.path, { resolveDir: args.resolveDir, kind: args.kind, importer: args.importer, pluginData: 'dedupe' });
+      if (r.errors.length || r.external || r.namespace !== 'file') return undefined;
+      const path = dedupedPath(r.path);
+      return path === r.path ? undefined : { ...r, path };
     });
   },
 };
@@ -83,9 +101,9 @@ let cached: Promise<string> | null = null;
 
 /**
  * What a build's output depends on besides the files it reads: this module (the builds' options,
- * plugins and post-processing) and the libraries' table.
+ * plugins and post-processing), the libraries' table and how packages are deduplicated.
  */
-const BUILD_SALT = [import.meta.url, here('libs.ts')].map((u) => readFileSync(u.startsWith('file:') ? fileURLToPath(u) : u, 'utf8')).join('\0');
+const BUILD_SALT = [import.meta.url, here('libs.ts'), here('bundle-dedupe.ts')].map((u) => readFileSync(u.startsWith('file:') ? fileURLToPath(u) : u, 'utf8')).join('\0');
 
 export function bundleNodeRuntime(): Promise<string> {
   cached ??= cachedBuild('node-worker', BUILD_SALT, ROOT, () => esbuild
@@ -102,7 +120,8 @@ export function bundleNodeRuntime(): Promise<string> {
       inject: [here('globals-shim.ts')],
       banner: { js: SPARE_BANNER },
       footer: { js: '}' },
-      define: { global: 'globalThis' },
+      // The host's esbuild, which answers the runtime's transforms (native-transform.ts).
+      define: { global: 'globalThis', __SANDBURG_ESBUILD__: JSON.stringify(esbuild.version) },
       plugins: [
         {
           name: 'runtime-libs',
@@ -112,6 +131,7 @@ export function bundleNodeRuntime(): Promise<string> {
             build.onResolve({ filter: new RegExp(`^(${names.join('|')})/?$`) }, (args) => ({ errors: [{ text: `${args.path} is a runtime library (RUNTIME_LIBS): load it with runtimeLib()` }] }));
           },
         },
+        dedupe,
         aliases,
       ],
     }), (text) => {
@@ -169,8 +189,9 @@ export function bundleRuntimeLib(name: RuntimeLib): Promise<string> {
                 if (args.pluginData === 'runtime-modules' || args.pluginData === 'sandburg-inner' || args.kind === 'entry-point') return undefined;
                 const r = await build.resolve(args.path, { resolveDir: args.resolveDir, kind: args.kind, importer: args.importer, pluginData: 'runtime-modules' });
                 if (r.errors.length) return undefined; // esbuild's own answer (a require in a try block may fail)
-                const path = relative(ROOT, r.path).split(sep).join('/');
-                return shared.has(path) ? { path, namespace: 'runtime-module' } : r;
+                const file = dedupedPath(r.path);
+                const path = relative(ROOT, file).split(sep).join('/');
+                return shared.has(path) ? { path, namespace: 'runtime-module' } : { ...r, path: file };
               });
               build.onLoad({ filter: /.*/, namespace: 'runtime-module' }, (args) => ({ contents: `module.exports = ${key(MODULES_KEY)}[${JSON.stringify(args.path)}]();`, loader: 'js' }));
             },

@@ -101,7 +101,9 @@ export function registryOrigins(): Set<string> {
 
 /** A `version`/`from` string that names a non-registry source (a protocol or a path): git, file, link, a URL. */
 function nonRegistryVersion(value: string): boolean {
-  return /:\/\/|^(git\+|git:|file:|link:|workspace:|github:|gitlab:|bitbucket:|gist:|https?:|npm:)/.test(value) || value.startsWith('/') || /^\.\.?[/\\]/.test(value);
+  // A v1 lockfile (and v2's back-compat tree) records an alias's version as `npm:name@version`.
+  if (value.startsWith('npm:')) return !isRegistrySpec(value);
+  return /:\/\/|^(git\+|git:|file:|link:|workspace:|github:|gitlab:|bitbucket:|gist:|https?:)/.test(value) || value.startsWith('/') || /^\.\.?[/\\]/.test(value);
 }
 
 /** A `resolved` string that points anywhere but an allowed registry origin (another host, or a non-URL such as git+…/file:). */

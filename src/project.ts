@@ -16,6 +16,7 @@ const IGNORED_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 
 const IGNORED_FILES = /\.(spec|test)\.[cm]?[jt]sx?$/;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
+/** Loads a project from a directory, a .zip, a JSON file tree or "snapshot:<id>" (from `store`). */
 export async function loadProject(path: string, store?: SnapshotStore): Promise<Project> {
   if (path.startsWith('snapshot:')) {
     if (!store) throw new Error('loading a snapshot needs a snapshot store');
@@ -41,6 +42,7 @@ export async function loadProject(path: string, store?: SnapshotStore): Promise<
   return projectFromFiles(files, { name, path: abs });
 }
 
+/** A project from a file tree in memory: its package.json, framework and snapshot id. */
 export function projectFromFiles(files: FileTree, meta: { name: string; path: string }): Project {
   let packageJson: PackageJson | null = null;
   const pkgSource = files['package.json'];

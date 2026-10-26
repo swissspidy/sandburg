@@ -150,7 +150,7 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
     // npm's record of the tree it installed (node_modules/.package-lock.json): the lockfile's
     // packages as installed.
     const hidden = { ...lock, packages: Object.fromEntries(installed) };
-    await writeFile(join(nm, '.package-lock.json'), `${JSON.stringify(hidden, null, 2)}\n`);
+    await writeFile(join(nm, '.package-lock.json'), `${JSON.stringify(hidden, null, 2)}\n`, { flag: 'wx' });
   } catch (e) {
     rmSync(nm, { recursive: true, force: true });
     log(`package store: ${e instanceof Error ? e.message : String(e)}; npm installs instead`);
@@ -474,10 +474,12 @@ async function unpack(job: Job): Promise<void> {
     if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return;
     const parent = dirname(abs);
     if (!made.has(parent)) {
+      // oxlint-disable-next-line sandburg/cache-key-digest -- a file of the tarball, in a new directory beside the entry its integrity names
       mkdirSync(parent, { recursive: true });
       made.add(parent);
     }
     // The process's umask applies, as when npm writes the file.
+    // oxlint-disable-next-line sandburg/cache-key-digest -- a file of the tarball, in a new directory beside the entry its integrity names
     writeFileSync(abs, file.data, { mode: (file.mode | 0o666 | 0o600) & 0o7777 });
   };
   try {
@@ -551,6 +553,7 @@ export function normalizeBin(pkg: Placed): Record<string, string> {
 function fixBin(path: string): void {
   const mode = 0o777 & ~umask;
   const st = statSync(path);
+  // oxlint-disable-next-line sandburg/no-write-in-place -- a directory: the store's are not linked, an install has its own
   if (!st.isFile()) return chmodSync(path, mode);
   const text = readFileSync(path, 'utf8');
   const crlf = /^#![^\n]+\r\n/.test(text.slice(0, 2048));

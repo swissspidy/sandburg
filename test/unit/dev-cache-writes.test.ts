@@ -11,11 +11,11 @@ import { join } from 'node:path';
 import type { HostRequest, HostResponse } from '../../src/types.ts';
 
 let root: string;
-let node: typeof import('../../src/adapters/node/index.ts');
+let node: typeof import('../../src/adapters/node/index.ts') & typeof import('../../src/adapters/node/dev-cache.ts');
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'sandburg-dev-cache-'));
   process.env.SANDBURG_INSTALL_DIR = join(root, 'installs');
-  node = await import('../../src/adapters/node/index.ts');
+  node = { ...(await import('../../src/adapters/node/index.ts')), ...(await import('../../src/adapters/node/dev-cache.ts')) };
 });
 after(() => rm(root, { recursive: true, force: true }));
 
@@ -102,4 +102,113 @@ test('compiles are recorded under a project\'s key only with its run\'s token, f
     paths = await recorded();
   }
   assert.deepEqual(paths, ['/own.js']);
+});
+
+test('a stored cache\'s digests are kept beside it, and computed again once the cache is written again', async () => {
+  const { createHash } = await import('node:crypto');
+  const { writeFile } = await import('node:fs/promises');
+  const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+  const key = 'f'.repeat(24);
+  const write = async (files: Record<string, string>) => {
+    const token = node.issueCacheWrite(key, DIRS, Promise.resolve('s-d'));
+    await new Promise((r) => setImmediate(r));
+    assert.equal((await post(key, 's-d', token, files))?.status, 200);
+  };
+  // Only files under the run's directories are stored (writeDevCache).
+  await write({ '.next/dev/cache/a': 'one', 'elsewhere/b': 'not kept' });
+  assert.deepEqual(await node.devCacheDigests(key, DIRS), { count: 1, digests: { '.next/dev/cache/a': sha('one') } });
+  const side = `${cacheFile(key)}.digests`;
+  const kept = JSON.parse(await readFile(side, 'utf8')) as { from: string; digests: Record<string, string> };
+  assert.deepEqual(kept.digests, { '.next/dev/cache/a': sha('one') });
+  // Read from beside the cache while the cache is the same file (a record marked to tell).
+  await writeFile(side, JSON.stringify({ ...kept, digests: { '.next/dev/cache/a': 'from the record' } }));
+  assert.deepEqual((await node.devCacheDigests(key, DIRS)).digests, { '.next/dev/cache/a': 'from the record' });
+  // Other directories, or a record that is not one: computed from the cache.
+  assert.deepEqual(await node.devCacheDigests(key, ['.next/dev/other']), { count: 0, digests: {} });
+  await writeFile(side, '{"from":1}');
+  assert.deepEqual((await node.devCacheDigests(key, DIRS)).digests, { '.next/dev/cache/a': sha('one') });
+  // The cache written again: computed again.
+  await write({ '.next/dev/cache/a': 'two', '.next/dev/cache/c': 'three' });
+  assert.deepEqual(await node.devCacheDigests(key, DIRS), { count: 2, digests: { '.next/dev/cache/a': sha('two'), '.next/dev/cache/c': sha('three') } });
+  assert.deepEqual(await node.devCacheDigests('9'.repeat(24), DIRS), { count: 0, digests: {} });
+});
+
+/** A cache as the page sends it (node-runtime/cache-tree.ts): u32 header length, JSON header, bytes. */
+function bundle(files: [string, Uint8Array | string][], tamper?: (header: [string, string, number][]) => void): Buffer {
+  const bodies = files.map(([, b]) => Buffer.from(b));
+  const entries = files.map(([path], i) => ['f', path, bodies[i].length] as [string, string, number]);
+  tamper?.(entries);
+  const header = Buffer.from(JSON.stringify(entries));
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(header.length);
+  return Buffer.concat([length, header, ...bodies]);
+}
+
+function postBundle(key: string, sandbox: string, token: string, body: Buffer): Promise<HostResponse | null> {
+  return node.serve({ method: 'POST', path: `/__sandburg/dev-cache/${key}`, query: new URLSearchParams(), sandbox, headers: { 'x-sandburg-token': token, 'content-type': 'application/octet-stream' }, body: async () => body });
+}
+
+test('a cache sent as a bundle is stored as text and base64, only under its directories', async () => {
+  const key = 'd'.repeat(24);
+  const token = node.issueCacheWrite(key, DIRS, Promise.resolve('s-bin'));
+  await new Promise((r) => setImmediate(r));
+  const pack = Uint8Array.from([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00]);
+  const body = bundle([
+    ['.next/dev/cache/webpack/client-development/0.pack.gz', pack],
+    ['.next/dev/cache/webpack/client-development/index.pack.gz.old', '﻿text with a BOM'],
+    ['.next/dev/cache/../../../package.json', 'escaped'],
+    ['src/app/page.tsx', 'not a cache file'],
+  ]);
+  // From another sandbox, with this run's token: refused, as a JSON write is.
+  assert.equal((await postBundle(key, 's-other', token, body))?.status, 403);
+  assert.equal((await postBundle(key, 's-bin', token, body))?.status, 200);
+  assert.deepEqual(JSON.parse(await readFile(cacheFile(key), 'utf8')), {
+    '.next/dev/cache/webpack/client-development/0.pack.gz': { base64: Buffer.from(pack).toString('base64') },
+    '.next/dev/cache/webpack/client-development/index.pack.gz.old': '﻿text with a BOM',
+  });
+});
+
+test('a malformed bundle is refused, nothing is stored, and the token is kept', async () => {
+  const key = 'e'.repeat(24);
+  const token = node.issueCacheWrite(key, DIRS, Promise.resolve('s-bad'));
+  await new Promise((r) => setImmediate(r));
+  const good = bundle([['.next/dev/cache/a', 'a']]);
+  const huge = Buffer.from(good);
+  huge.writeUInt32LE(0xffffffff);
+  const malformed = [
+    Buffer.alloc(2),
+    huge,
+    // Lengths that do not add up to the body: longer, shorter, negative, not integers.
+    bundle([['.next/dev/cache/a', 'a']], (h) => (h[0][2] = 5)),
+    Buffer.concat([good, Buffer.from('trailing')]),
+    bundle([['.next/dev/cache/a', 'a']], (h) => (h[0][2] = -1)),
+    bundle([['.next/dev/cache/a', 'a']], (h) => (h[0][2] = 0.5)),
+    // A header that is not a list of files.
+    bundle([['.next/dev/cache/a', 'a']], (h) => ((h[0] as unknown as unknown[])[1] = 7)),
+    Buffer.concat([Buffer.from([2, 0, 0, 0]), Buffer.from('{}')]),
+  ];
+  for (const body of malformed) assert.equal((await postBundle(key, 's-bad', token, body))?.status, 403);
+  await assert.rejects(readFile(cacheFile(key)));
+  assert.equal((await postBundle(key, 's-bad', token, good))?.status, 200);
+  assert.deepEqual(JSON.parse(await readFile(cacheFile(key), 'utf8')), { '.next/dev/cache/a': 'a' });
+});
+
+test('bundledEntries reads what bundleCache writes', async () => {
+  const { bundleCache, listCache } = await import('../../src/node-runtime/cache-tree.ts');
+  const { Vfs } = await import('../../src/node-runtime/vfs.ts');
+  const vfs = new Vfs(() => new Uint8Array());
+  vfs.mkdir('/app/.next/dev/cache/webpack', true);
+  vfs.write('/app/.next/dev/cache/webpack/index.pack.gz', Uint8Array.from([0x1f, 0x8b, 0xff]));
+  vfs.write('/app/.next/dev/cache/webpack/x.json', new TextEncoder().encode('{"a":1}'));
+  const files = listCache(vfs, '/app', ['.next/dev/cache', 'node_modules/.vite']);
+  assert.deepEqual(files.map(([path, size]) => [path, size]), [['.next/dev/cache/webpack/index.pack.gz', 3], ['.next/dev/cache/webpack/x.json', 7]]);
+  assert.deepEqual(node.bundledEntries(Buffer.from(bundleCache(vfs, '/app', files))), {
+    '.next/dev/cache/webpack/index.pack.gz': { base64: Buffer.from([0x1f, 0x8b, 0xff]).toString('base64') },
+    '.next/dev/cache/webpack/x.json': '{"a":1}',
+  });
+  // A rewrite of the same length is a change: its mtime moves.
+  const before = files[1][2];
+  while (Date.now() <= before) await new Promise((r) => setTimeout(r, 1));
+  vfs.write('/app/.next/dev/cache/webpack/x.json', new TextEncoder().encode('{"a":2}'));
+  assert.notEqual(listCache(vfs, '/app', ['.next/dev/cache'])[1][2], before);
 });

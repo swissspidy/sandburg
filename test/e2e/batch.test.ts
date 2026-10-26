@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser } from 'playwright-core';
-import { Session, launchOptions } from '../../src/orchestrator/session.ts';
+import { Session } from '../../src/orchestrator/session.ts';
 import { HostServer, SANDBOX_DOMAIN } from '../../src/orchestrator/host-server.ts';
 import { EgressGateway, newEgressStats, originMatcher } from '../../src/orchestrator/egress.ts';
 import { EgressProxy } from '../../src/orchestrator/egress-proxy.ts';
@@ -21,6 +21,7 @@ import { loadProject, projectFromFiles } from '../../src/project.ts';
 import { sharedInstaller } from '../../src/adapters/node/install.ts';
 import { extraDependencies } from '../../src/adapters/node/install-rules.ts';
 import type { Project } from '../../src/types.ts';
+import { launchOptions } from '../../src/orchestrator/launch.ts';
 
 const fixtureDir = fileURLToPath(new URL('../../fixtures/vite-react-counter', import.meta.url));
 const outDir = fileURLToPath(new URL('../../.sandburg/test-runs', import.meta.url));
@@ -90,6 +91,32 @@ test('a batch of 10 projects runs 8 tabs at a time, isolated from each other', a
   } finally {
     delete (sharedInstaller() as unknown as { doInstall?: unknown }).doInstall;
     await session.close();
+  }
+});
+
+test('two sessions in one process run apps side by side on one .sandburg/, each in its own browser', async () => {
+  const sessions = [new Session(), new Session()];
+  // Both opens settle first: one that opened is closed even when the other failed to.
+  const opened = await Promise.allSettled(sessions.map((s) => s.open()));
+  try {
+    for (const o of opened) if (o.status === 'rejected') throw o.reason;
+    // The same install, the same dev-cache key's neighbours, the same host modules: only the heading differs.
+    const results = await Promise.all(
+      sessions.map((session, i) =>
+        session.run(variant(`twin-${i}`, { 'src/App.tsx': (counter.files['src/App.tsx'] as string).replace('Counter and todos', `Twin ${i}`) }), {
+          outDir,
+          checks: {
+            'renders its own heading': async ({ app, expect }) => {
+              await expect(app.getByRole('heading', { level: 1 })).toHaveText(`Twin ${i}`);
+            },
+          },
+        }),
+      ),
+    );
+    for (const r of results) assert.equal(r.status, 'passed', JSON.stringify([r.failure, r.checks.filter((c) => c.status !== 'passed')]));
+    assert.notEqual(results[0].runId, results[1].runId);
+  } finally {
+    await Promise.all(sessions.filter((_, i) => opened[i].status === 'fulfilled').map((s) => s.close()));
   }
 });
 

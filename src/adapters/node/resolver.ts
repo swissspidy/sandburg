@@ -15,12 +15,13 @@
  */
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { execFileSync } from 'node:child_process';
-import { realpathSync, existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { realpathSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, writeFileSync } from 'node:fs';
 import { setPriority } from 'node:os';
 import { createRequire, enableCompileCache } from 'node:module';
 import { dirname, join } from 'node:path';
 import { format } from 'node:url';
 import { Writable } from 'node:stream';
+import { UnsupportedDependencyError } from './spec-guard.ts';
 
 /** Bytes of packuments (by their length on the wire) the worker keeps. */
 const PACKUMENT_BYTES = 96 << 20;
@@ -55,7 +56,8 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
   let ready: Promise<{ flat: object; Arborist: new (o: object) => { reify(o: object): Promise<unknown> } }> | null = null;
   const cache = new PackumentCache(PACKUMENT_BYTES);
   // Before npm loads: pacote's packuments are parsed through minipass-fetch's Body.json.
-  new TrimmedPackuments(require).install();
+  const trimmed = new TrimmedPackuments(require);
+  trimmed.install();
   // The packages npm picks, as it goes: the host unpacks them meanwhile (package-store.ts's unpackHint).
   const ahead = new ReadAhead(require, cache, (picked) => parentPort!.postMessage({ picked }));
   /** Resolutions running (a small one runs beside another). */
@@ -68,6 +70,7 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
         const npm = new Npm({ argv: ['install', ...flags], stdout: sink, stderr: sink });
         npm.config.cwd = configDir;
         await npm.load();
+        trimmed.cacheDir = String((npm.flatOptions as { cache?: unknown }).cache ?? '') || null;
         return { flat: npm.flatOptions, Arborist: require('@npmcli/arborist') };
       })();
       const { flat, Arborist } = await ready;
@@ -251,19 +254,25 @@ interface CachedResponse {
   headers: { get(name: string): string | null };
 }
 
-/** The packument cache entry a response came from: npm's cache, its key and the body's integrity. */
-function cachedBody(res: CachedResponse): { cache: string; key: string; source: string } | null {
+/**
+ * The packument cache entry a response came from: npm's cache, its key and the body's integrity.
+ * Only an entry in npm's own cache (cacheDir) counts: make-fetch-happen passes a response it does not
+ * store (`Cache-Control: no-store`) with the registry's headers, which could name any directory.
+ */
+export function cachedBody(res: CachedResponse, cacheDir: string | null): { cache: string; key: string; source: string } | null {
   const [cache, key, source] = ['x-local-cache', 'x-local-cache-key', 'x-local-cache-hash'].map((h) => res.headers.get(h));
-  if (res.status !== 200 || !cache || !key || !source || Number(res.headers.get('content-length')) < TRIM_MIN) return null;
+  if (!cacheDir || res.status !== 200 || !cache || !key || !source || Number(res.headers.get('content-length')) < TRIM_MIN) return null;
   try {
     const entry = { cache: decodeURIComponent(cache), key: decodeURIComponent(key), source: decodeURIComponent(source) };
-    return entry.key.startsWith('make-fetch-happen:request-cache:') ? entry : null;
+    return entry.cache === cacheDir && entry.key.startsWith('make-fetch-happen:request-cache:') ? entry : null;
   } catch {
     return null;
   }
 }
 
 class TrimmedPackuments {
+  /** npm's cache (its flat options' `cache`), once npm has loaded; nothing is trimmed before. */
+  cacheDir: string | null = null;
   private readonly require: NodeJS.Require;
   private cacache!: Cacache;
   private helper: Worker | null = null;
@@ -284,8 +293,9 @@ class TrimmedPackuments {
       // The cache's own methods, for the functions below (their `this` is the response).
       const readEntry = this.read.bind(this);
       const offer = this.offer.bind(this);
+      const cacheDir = () => this.cacheDir;
       Body.prototype.json = async function (this: CachedResponse & Record<symbol, () => Promise<Buffer>>) {
-        const entry = cachedBody(this);
+        const entry = cachedBody(this, cacheDir());
         if (!entry) return json.call(this);
         const trimmed = await readEntry(entry);
         if (trimmed) return trimmed;
@@ -619,7 +629,7 @@ export class Resolver {
       // fetch what the worker would not. The caller reports it as unsupported.
       if (error.includes(NON_REGISTRY_MARK)) {
         const detail = error.slice(error.indexOf(NON_REGISTRY_MARK) + NON_REGISTRY_MARK.length + 2);
-        throw Object.assign(new Error(`only registry versions can be installed: ${detail}`), { code: 'UNSUPPORTED' });
+        throw new UnsupportedDependencyError(`only registry versions can be installed: ${detail}`);
       }
       log(`npm (in process): ${error.split('\n')[0]}; npm resolves again`);
       return false;
@@ -672,7 +682,7 @@ export class Resolver {
     const dir = join(this.dir, '.npm-resolver-warm');
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'package.json'), '{"name":"sandburg-warm","private":true}\n');
+      writeOnce(join(dir, 'package.json'), '{"name":"sandburg-warm","private":true}\n');
     } catch {
       return;
     }
@@ -684,7 +694,7 @@ export class Resolver {
     if (this.worker) return this.worker;
     const configDir = join(this.dir, '.npm-resolver');
     mkdirSync(configDir, { recursive: true });
-    writeFileSync(join(configDir, 'package.json'), '{}\n');
+    writeOnce(join(configDir, 'package.json'), '{}\n');
     const worker = new Worker(new URL(import.meta.url), {
       workerData: { tag: WORKER_TAG, npmRoot: this.root!, configDir, flags: this.flags } satisfies Init,
     });
@@ -716,6 +726,17 @@ export class Resolver {
     void this.worker?.terminate();
     this.worker = null;
   }
+}
+
+/**
+ * Writes a file that never changes once written, unless it is there: other processes on the same
+ * .sandburg/ may be reading it (a rewrite truncates it first), and two may write it at once.
+ */
+function writeOnce(path: string, content: string): void {
+  if (existsSync(path)) return;
+  const tmp = `${path}.${process.pid}-${Math.random().toString(36).slice(2)}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
 }
 
 // Last: the worker needs the classes above.

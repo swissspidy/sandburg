@@ -1,4 +1,4 @@
-# ADR NNNN: Security review (round 4): registry-only installs, parser fuzzing, the boundary map
+# ADR 0054: Security review (round 4): registry-only installs, parser fuzzing, the boundary map
 
 - Status: Accepted
 - Date: 2026-10-25
@@ -42,7 +42,7 @@ and the host must hold against, each of these:
 ## Decision
 
 - **The host installs registry dependencies only** (`src/adapters/node/spec-guard.ts`, wired into
-  `install.ts`). A dependency that is not a registry package — a git or directory dependency, a URL or
+  `install.ts`; landed with #67, with its review fixes). A dependency that is not a registry package — a git or directory dependency, a URL or
   a `file:`/`link:`/`workspace:` spec — is fetched by npm through pacote, which *prepares* git and
   directory dependencies (installs their dependencies and runs their `prepare` script) regardless of
   `--ignore-scripts`: that flag governs the project's own lifecycle scripts, not the preparation of
@@ -172,10 +172,10 @@ No change was needed in these; they are recorded so the next round need not re-d
 - `INSTALL_FLAGS` gains `--git=<nonexistent>`; npm accepts it and a normal registry install is
   unchanged.
 - No run's speed changes: the spec check is a handful of regex tests over the manifest and lockfile
-  before npm runs; the fuzzers are tests only. Against `origin/quality-structure` (`scripts/bench.ts`,
-  warm, 3 rounds, medians): next-app-router 6.23 s → 6.17 s (−1%); vite-react-counter 1.71 s → 1.83 s,
-  a median pulled by one noisy round (head rounds 1.8/1.8/2.3 s against base 1.7 s throughout) rather
-  than any work the change adds to a run.
+  before npm runs, the file-channel bound a counter per sandbox, and the fuzzers are tests only.
+  Measured on the round-4 tree (`scripts/bench.ts`, warm, 3 rounds, medians): next-app-router
+  6.23 s → 6.17 s (−1%); vite-react-counter 1.71 s → 1.83 s, a median pulled by one noisy round (head
+  rounds 1.8/1.8/2.3 s against base 1.7 s throughout) rather than any work the change adds to a run.
 
 ## Reporting
 
