@@ -116,7 +116,8 @@ almostnode's hard-coded React 18.2.0 map. The adapter does not populate
   Checks run against the app frame. The frame is not a security boundary
   between the app and the runtime. The boundaries are the origin (between
   sandboxes), the browser process sandbox (to the machine) and the network
-  gateway (to the outside).
+  gateway (to the outside). (The browser process sandbox was off until ADR 0061:
+  Playwright launched Chromium with `--no-sandbox`.)
 - **Reserved paths.** On a sandbox origin the host owns `/`, `/__sandburg/*`
   and `/__sw__.js`, and the runtime owns everything else. Adapters may rely on
   this. almostnode's adapter serves a small worker prelude at `/__sw__.js`.

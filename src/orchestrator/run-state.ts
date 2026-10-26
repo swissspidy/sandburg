@@ -77,13 +77,15 @@ export class RunState {
   private runtime: { name: string; version: string };
   private offline: boolean;
   private browserVersion: string;
+  private browserSandbox: boolean;
 
-  constructor(runId: string, project: Project, runtime: { name: string; version: string }, offline: boolean, browserVersion: string) {
+  constructor(runId: string, project: Project, runtime: { name: string; version: string }, offline: boolean, browserVersion: string, browserSandbox: boolean) {
     this.runId = runId;
     this.project = project;
     this.runtime = { name: runtime.name, version: runtime.version };
     this.offline = offline;
     this.browserVersion = browserVersion;
+    this.browserSandbox = browserSandbox;
   }
 
   /** Runs one lifecycle phase under a deadline and records its outcome. Rethrows on failure. */
@@ -179,6 +181,7 @@ export class RunState {
       environment: {
         sandburgVersion: SANDBURG_VERSION,
         browser: `chromium ${this.browserVersion}`,
+        browserSandbox: this.browserSandbox,
         platform: `${platform()}-${arch()}`,
         offline: this.offline,
       },

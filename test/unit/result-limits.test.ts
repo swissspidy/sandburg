@@ -22,7 +22,7 @@ test('an app that throws, logs and fails a check with 50 MB strings leaves a sma
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-limits-'));
   try {
     const huge = 'x'.repeat(BIG);
-    const run = new RunState('run-1', projectFromFiles({ 'index.html': '<p>hi</p>' }, { name: 'p', path: '/p' }), { name: 'node', version: '1' }, false, 'chromium');
+    const run = new RunState('run-1', projectFromFiles({ 'index.html': '<p>hi</p>' }, { name: 'p', path: '/p' }), { name: 'node', version: '1' }, false, 'chromium', true);
     // The page: an uncaught error and a console error, each of 50 MB.
     const page = new EventEmitter();
     run.capture(page as unknown as Page, 'http://s.sandburg.localhost:1');
@@ -49,6 +49,21 @@ test('an app that throws, logs and fails a check with 50 MB strings leaves a sma
     for (const e of result.failure.evidence) assert.ok(e.length < TEXT_MAX + 100);
     const written = JSON.parse(await readFile(file, 'utf8')) as typeof result;
     assert.equal(written.phases.find((p) => p.name === 'start')!.error!.message, start.error!.message);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("result.json records whether the browser ran inside Chromium's OS sandbox", async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sandburg-sandbox-'));
+  try {
+    for (const sandboxed of [true, false]) {
+      const run = new RunState('run-1', projectFromFiles({ 'index.html': '<p>hi</p>' }, { name: 'p', path: '/p' }), { name: 'node', version: '1' }, false, '156.0', sandboxed);
+      const result = await run.finish(dir);
+      assert.equal(result.environment.browserSandbox, sandboxed);
+      const written = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as typeof result;
+      assert.equal(written.environment.browserSandbox, sandboxed);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

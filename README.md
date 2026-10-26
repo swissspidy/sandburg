@@ -97,6 +97,8 @@ sandburg open <project>                                 # load it in a visible t
   with `.` or `_`, are skipped.
 - Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a
   usage error.
+- `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start
+  (see [Security](#security)).
 - `sandburg --help` lists the other options (`--ready`, `--save-files`, `--headed`, `--json`, `--out`, …).
 
 Every run also has built-in checks, without a checks file ([`src/orchestrator/checks.ts`](src/orchestrator/checks.ts)).
@@ -178,6 +180,25 @@ routes every request through the egress gateway (allowlist, cache);
 [ADR 0005](docs/adr/0005-wordpress-playground.md) (named for an adapter since removed) adds a per-sandbox egress proxy
 for what the gateway cannot intercept; [ADR 0054](docs/adr/0054-security-review-round-4.md) maps every boundary an app
 can reach and how the host holds it.
+
+## Security
+
+An app runs in a tab of its own: its own browser context and origin, every request through the
+egress gateway and the sandbox's egress proxy (the allowlist). Under that, Chromium runs inside its
+OS sandbox (on Linux: namespaces and a seccomp-bpf filter for each renderer), and with
+`--site-per-process` a frame of another site gets a renderer process of its own
+([ADR 0061](docs/adr/0061-chromium-sandbox.md)).
+
+The sandbox needs a host that allows it. On Linux it needs unprivileged user namespaces, which
+Chromium does not use as root, and which Ubuntu 23.10 and later restrict with AppArmor
+(`sysctl kernel.apparmor_restrict_unprivileged_userns=0` lifts that, as does an AppArmor profile for
+the Chromium binary). Where the sandbox cannot start, `sandburg` stops before the first run and says
+what to change. It does not fall back on its own. To run without the sandbox, say so:
+`--no-browser-sandbox`, `SANDBURG_NO_BROWSER_SANDBOX=1`, or `new Session({ browserSandbox: false })`
+(`--browser-sandbox` asks for the sandbox where the environment variable turns it off).
+The CLI warns, and each `result.json` (`environment.browserSandbox`) and batch `summary.json`
+(`browserSandbox`) records it.
+
 The study method and every report are in [`docs/fidelity`](docs/fidelity/README.md).
 
 ## Development

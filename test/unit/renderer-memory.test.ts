@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RendererMemory, matchRenderer, processMemory } from '../../src/orchestrator/renderer-memory.ts';
+import { RendererMemory, mainThreadCpu, matchRenderer, processMemory, schedstatSeconds } from '../../src/orchestrator/renderer-memory.ts';
 
 test("a page's renderer is the one renderer whose CPU time, read before and after the page's, brackets it", () => {
   const before = [
@@ -103,4 +103,88 @@ test("a process's memory is its resident anonymous and shared memory, null for n
   const bytes = processMemory(process.pid);
   assert.ok(bytes !== null && bytes > 10 * 2 ** 20 && bytes < process.memoryUsage().rss * 2, String(bytes));
   assert.equal(processMemory(2 ** 30), null);
+});
+
+/**
+ * A source inside the OS sandbox: each look reads the renderers' main threads, the renderers in a
+ * look's entry use that much CPU, and reads them again; the page counts (ThreadTime) what renderer
+ * 11, its own, used, or what key 0 says.
+ */
+function marking(looks: Record<number, number>[]) {
+  const cpu: Record<number, number> = { 11: 1, 12: 1, 13: 1 };
+  let page = 0;
+  let look = 0;
+  return new RendererMemory({
+    mark: async (read) => {
+      const used = look < looks.length ? looks[look++] : { 11: 0.04 };
+      const first = { from: page, renderers: await read(), to: page };
+      for (const [pid, s] of Object.entries(used)) if (pid !== '0') cpu[Number(pid)] += s;
+      page += used[0] ?? used[11] ?? 0;
+      return [first, { from: page, renderers: await read(), to: page }];
+    },
+    renderers: async () => Object.entries(cpu).map(([pid, cpuSeconds]) => ({ pid: Number(pid), cpuSeconds })),
+    memory: (pid) => pid * 1000,
+  });
+}
+
+test("inside the OS sandbox, the page's renderer is the one whose main thread kept pace with the page's count, over two looks", async () => {
+  // Look 1: 11 (the page's) used 40 ms, 12 about as much, 13 nothing (13 parts at once). Look 2: 11
+  // alone works; 12 has used 50 ms less than the page counted, and parts too.
+  const memory = marking([{ 11: 0.04, 12: 0.05 }, { 11: 0.04 }]);
+  assert.equal(await memory.locate(), false);
+  assert.equal(memory.used(), null);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+});
+
+test('inside the OS sandbox, one look that fits one renderer alone is not enough', async () => {
+  const memory = marking([{ 11: 0.04 }, { 11: 0.04 }]);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+});
+
+test("inside the OS sandbox, a renderer that worked more than the page counted is not the page's", async () => {
+  const memory = marking([{ 11: 0.04, 12: 0.09 }, { 11: 0.04, 12: 0.09 }]);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+});
+
+test('inside the OS sandbox, when no renderer fits the looks start again rather than guess, and after 8 looks none is taken', async () => {
+  // Look 1: the page counted 40 ms its renderer's reading did not show, and 12 used 40 ms: 12 alone
+  // fits. Look 2: 11 works and 12 not: none fitted both, and none is taken (not 11, the last seen);
+  // the looks start again, and 11 is taken once it alone fitted two more.
+  const memory = marking([{ 0: 0.04, 12: 0.04 }, { 11: 0.04 }, { 11: 0.04 }, { 11: 0.04 }]);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), false);
+  assert.equal(await memory.locate(), true);
+  assert.equal(memory.used(), 11_000);
+  // Two renderers that always work alike: never one alone. After 8 looks it stops, and reads nothing.
+  const never = marking(Array.from({ length: 20 }, () => ({ 11: 0.04, 12: 0.04 })));
+  for (let i = 0; i < 9; i++) assert.equal(await never.locate(), false);
+  assert.equal(never.used(), null);
+});
+
+test("a process's main thread's CPU time is read from /proc, null for none", { skip: process.platform !== 'linux' }, () => {
+  const cpu = () => mainThreadCpu(process.pid)!.seconds;
+  const start = cpu();
+  // Work on this thread until /proc counts 80 ms more, however long a busy machine takes to give it
+  // that much CPU; 5 s at most.
+  const deadline = performance.now() + 5_000;
+  while (cpu() - start < 0.08 && performance.now() < deadline);
+  assert.ok(cpu() - start >= 0.08);
+  // In nanoseconds (schedstat, a few ms either way), or in clock ticks of 10 ms (stat, 15 ms).
+  assert.ok([0.003, 0.015].includes(mainThreadCpu(process.pid)!.toleranceSeconds));
+  assert.equal(mainThreadCpu(2 ** 22 + 1), null);
+});
+
+test('a schedstat line gives the run time in seconds, and none where the kernel keeps no scheduler statistics', () => {
+  assert.equal(schedstatSeconds('115234567 2034567 42\n'), 0.115234567);
+  // Without scheduler statistics the kernel prints zeros, or nothing: the clock ticks (stat) count instead.
+  assert.equal(schedstatSeconds('0 0 0\n'), null);
+  assert.equal(schedstatSeconds(''), null);
+  assert.equal(schedstatSeconds('\n'), null);
+  assert.equal(schedstatSeconds('garbage'), null);
 });

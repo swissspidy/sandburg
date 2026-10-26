@@ -18,10 +18,10 @@ import { EgressProxy } from './egress-proxy.ts';
 import { AXE_CLASSIC_PATH, AXE_SCRIPT, HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { CodeCache, type PageCode } from './code-cache.ts';
 import { SnapshotStore } from '../store.ts';
-import { RendererMemory } from './renderer-memory.ts';
+import { pageRendererMemory, type RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
-import { missingBrowser, launchOptions } from './launch.ts';
+import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
 import { recordRequestFailures, recordDocuments, RunState, unwrap } from './run-state.ts';
 import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError } from './app-ready.ts';
 
@@ -38,6 +38,13 @@ export interface SessionOptions {
   headless?: boolean;
   /** Chromium binary; defaults to Playwright's, or $SANDBURG_CHROMIUM. */
   executablePath?: string;
+  /**
+   * Run Chromium inside its OS sandbox. Default: true, unless $SANDBURG_NO_BROWSER_SANDBOX is 1.
+   * Where the sandbox cannot start (as root; where user namespaces are restricted), open() fails and
+   * says so: there is no fallback to running without it. False turns it off; each run's result
+   * records which (environment.browserSandbox).
+   */
+  browserSandbox?: boolean;
   /**
    * PEM bundle of extra CAs the browser should accept for tunneled HTTPS, for
    * networks whose egress proxy re-terminates TLS. Default: $SANDBURG_EXTRA_CA_CERTS,
@@ -199,8 +206,12 @@ export class Session {
   /** The browser's own DevTools session (the renderers' pids and CPU times; see rendererMemory). */
   private browserCdp: Promise<CDPSession> | null = null;
 
+  /** The browser runs inside Chromium's OS sandbox (SessionOptions.browserSandbox, or its default). */
+  readonly browserSandbox: boolean;
+
   constructor(options: SessionOptions = {}) {
     this.options = options;
+    this.browserSandbox = browserSandbox(options);
     this.store = new SnapshotStore(resolve(options.storeDir ?? '.sandburg/store'));
     this.egress = new EgressGateway({
       cacheDir: resolve(options.cacheDir ?? '.sandburg/cache'),
@@ -214,13 +225,13 @@ export class Session {
     getAdapter(DEFAULT_RUNTIME).prepare?.();
     await this.host.listen();
     try {
-      const launch = launchOptions(this.options);
+      const launch = launchOptions({ ...this.options, browserSandbox: this.browserSandbox });
       this.browser = await chromium.launch(launch);
       const dir = this.options.codeCacheDir === undefined ? '.sandburg/code-cache' : this.options.codeCacheDir;
       this.codeCache = new CodeCache(this.browser, (launch.args ?? []).join(' '), dir === null ? null : resolve(dir));
     } catch (err) {
       await this.host.close();
-      throw missingBrowser(err) ?? err;
+      throw missingBrowser(err) ?? sandboxUnavailable(err) ?? err;
     }
     // axe-core's compiled code, for the checks of every run (read from disk, or produced in a context of its own).
     void this.codeCache.prepare(AXE_SCRIPT);
@@ -303,26 +314,8 @@ export class Session {
    */
   private rendererMemory(tab: Tab): RendererMemory | null {
     const browser = this.browser;
-    if (process.platform !== 'linux' || !browser) return null;
-    let page: Promise<CDPSession> | null = null;
-    return new RendererMemory({
-      pageCpu: async () => {
-        page ??= tab.context.newCDPSession(tab.page).then(async (s) => (await s.send('Performance.enable'), s));
-        const { metrics } = await (await page).send('Performance.getMetrics');
-        const cpu = metrics.find((m) => m.name === 'ProcessTime')?.value;
-        if (cpu === undefined) throw new Error('no ProcessTime');
-        return cpu;
-      },
-      renderers: async () => {
-        this.browserCdp ??= browser.newBrowserCDPSession();
-        const { processInfo } = (await (await this.browserCdp).send('SystemInfo.getProcessInfo'));
-        return processInfo.filter((p) => p.type === 'renderer').map((p) => ({ pid: p.id, cpuSeconds: p.cpuTime }));
-      },
-      release: () => {
-        void page?.then((s) => s.detach()).catch(() => {});
-        page = null;
-      },
-    });
+    if (!browser) return null;
+    return pageRendererMemory(tab.page, () => (this.browserCdp ??= browser.newBrowserCDPSession()), this.browserSandbox);
   }
 
   private async closeTab(tab: Tab): Promise<void> {
@@ -425,7 +418,7 @@ export class Session {
         : (options.checks ?? null);
     const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
 
-    const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version());
+    const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version(), this.browserSandbox);
     run.onPhase = options.onPhase;
     let context: BrowserContext | null = null;
     let proxy: EgressProxy | null = null;

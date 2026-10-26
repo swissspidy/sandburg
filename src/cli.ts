@@ -3,6 +3,7 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { Session, type RunOptions, type SessionOptions } from './orchestrator/session.ts';
 import { defaultParallel, discoverProjects, runBatch } from './orchestrator/batch.ts';
+import { BrowserSetupError, NO_SANDBOX } from './orchestrator/launch.ts';
 import { loadProject } from './project.ts';
 import { SnapshotStore } from './store.ts';
 import type { FileTree, RunResult } from './types.ts';
@@ -37,6 +38,10 @@ Options:
   --save-files <regex> run: after the checks, write the app's files whose path matches <regex>
                        (its SQLite database, say) back into the project directory
   --headed             Show the browser window
+  --no-browser-sandbox Run Chromium without its OS sandbox (default: sandboxed; also
+                       SANDBURG_NO_BROWSER_SANDBOX=1). Only for hosts where the sandbox cannot
+                       start (as root, or user namespaces restricted); results record it
+  --browser-sandbox    Run it sandboxed even where SANDBURG_NO_BROWSER_SANDBOX=1 is set
   --json               Print full JSON instead of a summary
   -h, --help           Show this help
 
@@ -56,6 +61,8 @@ const OPTIONS = {
   ready: { type: 'string' },
   'save-files': { type: 'string' },
   headed: { type: 'boolean', default: false },
+  // No default: unset leaves it to SessionOptions' (on, unless $SANDBURG_NO_BROWSER_SANDBOX is 1).
+  'browser-sandbox': { type: 'boolean' },
   json: { type: 'boolean', default: false },
   help: { type: 'boolean', short: 'h', default: false },
   // compare
@@ -64,10 +71,37 @@ const OPTIONS = {
   report: { type: 'string' },
 } satisfies ParseArgsConfig['options'];
 
+/** The command line, parsed (throws on an unknown or malformed option). */
+export function parseCommandLine(argv: string[]) {
+  return parseArgs({ args: argv, allowPositionals: true, allowNegative: true, options: OPTIONS });
+}
+
+/** The session options a command's options ask for. */
+export function sessionOptions(values: ReturnType<typeof parseCommandLine>['values'], command: string): SessionOptions {
+  return {
+    cacheDir: values.cache,
+    storeDir: values.store,
+    offline: values.offline,
+    headless: !values.headed && command !== 'open',
+    browserSandbox: values['browser-sandbox'],
+  };
+}
+
 export async function main(argv: string[]): Promise<number> {
+  try {
+    return await command(argv);
+  } catch (err) {
+    // What to change on this host, without Playwright's launch log (the error's cause).
+    if (!(err instanceof BrowserSetupError)) throw err;
+    console.error(`error: ${err.message}`);
+    return 2;
+  }
+}
+
+async function command(argv: string[]): Promise<number> {
   let parsed;
   try {
-    parsed = parseArgs({ args: argv, allowPositionals: true, allowNegative: true, options: OPTIONS });
+    parsed = parseCommandLine(argv);
   } catch (err) {
     console.error(`${(err as Error).message}\n\n${USAGE}`);
     return 64;
@@ -82,12 +116,7 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`${command}: missing argument\n\n${USAGE}`);
     return 64;
   }
-  const sessionOptions: SessionOptions = {
-    cacheDir: values.cache,
-    storeDir: values.store,
-    offline: values.offline,
-    headless: !values.headed && command !== 'open',
-  };
+  const options = sessionOptions(values, command);
   if (values['install-in'] !== 'host' && values['install-in'] !== 'browser') {
     console.error('--install-in must be host or browser');
     return 64;
@@ -133,7 +162,7 @@ export async function main(argv: string[]): Promise<number> {
         }
       }
       let saved: FileTree | null = null;
-      const result = await withSession(sessionOptions, (s) =>
+      const result = await withSession(options, (s) =>
         s.run(target, {
           ...runOptions,
           hold: command === 'open',
@@ -151,7 +180,7 @@ export async function main(argv: string[]): Promise<number> {
         console.error(`no projects in ${target}`);
         return 64;
       }
-      const { summary } = await withSession(sessionOptions, (s) =>
+      const { summary } = await withSession(options, (s) =>
         runBatch(s, items, {
           ...runOptions,
           parallel,
@@ -175,7 +204,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     case 'compare': {
       const { compareCommand } = await import('./compare/cli.ts');
-      return compareCommand(target, { ...values, parallel }, sessionOptions, runOptions);
+      return compareCommand(target, { ...values, parallel }, options, runOptions);
     }
     default:
       console.error(`unknown command "${command}"\n\n${USAGE}`);
@@ -186,6 +215,7 @@ export async function main(argv: string[]): Promise<number> {
 async function withSession<T>(options: SessionOptions, fn: (s: Session) => Promise<T>): Promise<T> {
   const session = new Session(options);
   await session.open();
+  if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
   try {
     return await fn(session);
   } finally {
@@ -219,6 +249,7 @@ function summarize(r: RunResult, dir: string): string {
     const mark = c.status === 'passed' ? 'ok  ' : c.blocking ? 'FAIL' : 'warn';
     lines.push(`  ${mark} ${c.name}${c.message ? ` — ${c.message.split('\n')[0]}` : ''}`);
   }
+  if (!r.environment.browserSandbox) lines.push(`  browser  ${NO_SANDBOX}`);
   if (r.failure) lines.push(`  failure  ${r.failure.class} in ${r.failure.phase} [${r.failure.rule}]: ${r.failure.message.split('\n')[0]}`);
   lines.push(`  result   ${join(dir, 'result.json')}`);
   return lines.join('\n');
