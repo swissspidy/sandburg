@@ -15,6 +15,7 @@
  */
 import semver from 'semver';
 import type { Manifest, Registry } from './registry.ts';
+import { isRegistrySpec } from '../spec-guard.ts';
 
 export interface Placed {
   /** Where it goes, relative to the project: "node_modules/a" or "node_modules/a/node_modules/b". */
@@ -35,13 +36,14 @@ export interface RootPackage {
 
 export class UnsupportedSpecError extends Error {}
 
-/** A dependency spec as a registry name and range ("npm:other@^1" aliases another package). */
+/**
+ * A dependency spec as a registry name and range ("npm:other@^1" aliases another package). Only
+ * registry specs, by the host installer's rule (spec-guard.ts): an allowlist of their shapes.
+ */
 function parseSpec(name: string, spec: string): { name: string; range: string } {
+  if (!isRegistrySpec(spec)) throw new UnsupportedSpecError(`${name}@${spec}: only registry versions can be installed in the browser (not files, links, git or URLs)`);
   const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@(.*))?$/.exec(spec);
   if (alias) return { name: alias[1], range: alias[2] || 'latest' };
-  if (/^(file|link|git|git\+[a-z]+|github|gitlab|bitbucket|gist|https?|workspace):|^[^@][^:]*\/[^:]*$/.test(spec)) {
-    throw new UnsupportedSpecError(`${name}@${spec}: only registry versions can be installed in the browser (not files, links, git or URLs)`);
-  }
   return { name, range: spec.trim() || 'latest' };
 }
 

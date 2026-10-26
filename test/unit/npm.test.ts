@@ -115,7 +115,9 @@ test('resolve: peers installed, optional dependencies left out, unsupported spec
   const tree = await resolveTree({ dependencies: { plugin: '1.0.0' } }, registry);
   assert.equal(tree.get('node_modules/host')?.version, '3.2.0');
   assert.equal(tree.has('node_modules/native'), false);
-  for (const spec of ['github:user/x', 'gitlab:user/x', 'bitbucket:user/x', 'gist:abc123', 'user/x']) {
+  // The host's rule (spec-guard.ts), which the prefix list this replaced let through: a directory, a
+  // local tarball, a protocol it did not list.
+  for (const spec of ['github:user/x', 'gitlab:user/x', 'bitbucket:user/x', 'gist:abc123', 'user/x', '..', '.', 'x.tgz', 'ssh://host/x', 'npm:x@file:../y']) {
     await assert.rejects(resolveTree({ dependencies: { x: spec } }, registry), UnsupportedSpecError, spec);
   }
   await assert.rejects(resolveTree({ dependencies: { missing: '^1' } }, registry), /404 Not Found - GET https:\/\/registry\.npmjs\.org\/missing - Not found/);

@@ -168,6 +168,7 @@
         "src/adapters/node/interop.ts",
         "src/adapters/node/process.ts",
         "src/adapters/node/scripts.ts",
+        "src/adapters/node/spec-guard.ts",
         "src/adapters/node/sw.js",
         "src/adapters/node/tla.ts",
         "src/adapters/node/ws-shim.js",
