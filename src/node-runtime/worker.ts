@@ -28,7 +28,7 @@ import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './tr
 import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
-import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel } from './host-files.ts';
+import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested } from './peers.ts';
 
@@ -283,7 +283,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   if (installKey && !pageCompiler && (!thread || thread.process)) {
     startDigester();
     vfs.watch((_event, path) => digestWhenWritten(path));
-  }
+  } else dropPreparedDigester();
   if (Object.keys(sources).length && pageCompiler) {
     asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
   } else if (Object.keys(sources).length) {
@@ -715,6 +715,9 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
     init(msg);
   }
   else if (msg.type === 'run') run(msg);
+  else if (msg.type === 'prepare') {
+    if (!proc) prepareDigester();
+  }
   else if (msg.type === 'spares') {
     if (!proc) warmRuntimes(location.pathname.replace(/\/node-worker\.js$/, ''), WARM_RUNTIMES);
   }

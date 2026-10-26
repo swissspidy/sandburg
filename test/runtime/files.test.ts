@@ -116,6 +116,22 @@ test('installed files: a preload bundle the page downloaded is not requested aga
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/nm/')), []);
 });
 
+test('installed files: a file downloaded on the side is downloaded once when the program reads it as it starts', async () => {
+  // A large file the preload bundle only names (a WebAssembly binary), read by the program before it
+  // yields to the event loop once: the runtime's file helper, started while the runtime waited for
+  // its init, downloads it, and the read waits for that download instead of making its own.
+  const big = {
+    files: { ...install.files, 'node_modules/big/big.wasm': 'w'.repeat(200_000) },
+    bundled: install.bundled,
+    side: ['node_modules/big/big.wasm'],
+  };
+  const main = { 'main.js': `console.log(require('fs').readFileSync('/app/node_modules/big/big.wasm', 'utf8').length + ' ' + require('bundled'));` };
+  const out = await h.runInstalled(main, big, '/app/main.js', { prefetch: true, prepare: 300 });
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, '200000 from the bundle\n');
+  assert.deepEqual(h.asked.filter((a) => a.includes('big.wasm')), [`http /__sandburg/nm/${INSTALL_KEY}/f/node_modules/big/big.wasm`]);
+});
+
 test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare runtimes; another thread does', async () => {
   // Each thread loads worker_threads, as napi-rs' wasi-worker.mjs does; the program waits for the
   // runtimes they start to load. emnapi's threads ask the thread that loaded the build to spawn

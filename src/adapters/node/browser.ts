@@ -203,6 +203,7 @@ export function prepare(): void {
     if (!preparing) return;
     preparing = false;
     const p = { worker: new Worker(`${hostBase()}/node-worker.js`), failed: false };
+    p.worker.postMessage({ type: 'prepare' });
     p.worker.onerror = (e) => {
       e.preventDefault();
       p.failed = true;
