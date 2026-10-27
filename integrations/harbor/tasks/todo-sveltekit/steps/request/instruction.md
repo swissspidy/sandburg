@@ -14,7 +14,7 @@ How to write the app:
 
 ## Where you work
 
-The project in the current directory is the scaffold to start from: SvelteKit 2 with Svelte 5 (runes: $state, $derived, $effect, $props) on Vite 8, JavaScript. Server code in +page.server.js (load, form actions) and +server.js (API routes); server-only modules in src/lib/server/. Data in SQLite through node:sqlite (src/lib/server/db.js).
+The project in the current directory is the scaffold to start from: SvelteKit 3 with Svelte 5 (runes: $state, $derived, $effect, $props) on Vite 8, JavaScript. Server code in +page.server.js (load, form actions) and +server.js (API routes); server-only modules in src/lib/server/, imported as #lib/server/... (package.json "imports"; SvelteKit 3 has no $lib). Data in SQLite through node:sqlite (src/lib/server/db.js).
 
 You edit its files here; you cannot run `npm`, `node` or the app on this machine. To run it, use
 `sandburg run .`: it installs the packages and starts the dev server in a browser tab, and reports
