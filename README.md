@@ -155,7 +155,7 @@ point at the file and line where the dev server reported them.
 
 | | |
 |---|---|
-| Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit 2, Astro 7, Nuxt 4, React Router 8, SolidStart 2; `next dev` (Next.js 15–16, App and Pages Router, webpack, SWC); `ng serve` (Angular 22); static sites. Each framework is one entry of the table in [`src/framework.ts`](src/framework.ts), which also sets the order detection tries them in |
+| Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit 2–3, Astro 7, Nuxt 4, React Router 8, SolidStart 2; `next dev` (Next.js 15–16, App and Pages Router, webpack, SWC); `ng serve` (Angular 22); static sites. Each framework is one entry of the table in [`src/framework.ts`](src/framework.ts), which also sets the order detection tries them in |
 | Back ends | Express and other Node servers next to the front end, reached through Vite's proxy, from the page (`http://localhost:<port>`) or over WebSockets; SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) |
 | Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn scripts, package binaries, `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly |
 | Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, `AsyncLocalStorage` across native `await`s ([ADR 0057](docs/adr/0057-native-awaits-and-the-runtime-warm-path.md)), top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide; TypeScript 7's `tsc` runs tsrs ([ADR 0024](docs/adr/0024-typescript-7.md)) |
