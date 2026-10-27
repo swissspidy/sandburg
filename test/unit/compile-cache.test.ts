@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CompileCache, MAX_CODE } from '../../src/adapters/node/compile-cache.ts';
+import { version as esbuildVersion } from 'esbuild';
+import { COMPILER, CompileCache, MAX_CODE, compilerKey } from '../../src/adapters/node/compile-cache.ts';
 import { tempDir } from './temp-dir.ts';
 
 /** The bundle's entries, as the runtime reads them (worker.ts loadCompiles). */
@@ -58,4 +59,9 @@ test('a stored file that is cut off or not a compile bundle counts as none, and 
     await cache.record(key, 'cjs', false, '/app/b.js', 'module.exports = 2;', 'lowered b');
     assert.deepEqual(entries((await cache.bundle(key))!), [['cjs', false, '/app/b.js', 'module.exports = 2;', 'lowered b']]);
   }
+});
+
+test("stored compiles are keyed by the esbuild that made them, not only the compiler's sources", () => {
+  assert.equal(COMPILER, compilerKey(esbuildVersion));
+  assert.notEqual(compilerKey('0.28.2'), compilerKey('0.28.3'));
 });

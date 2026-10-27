@@ -466,6 +466,7 @@ export class NodeProcess {
         break;
       case 'exit':
         this.exitCode = m.code;
+        this.settlePending(`${this.label} exited with code ${m.code}`);
         if (!this.ports.length) this.fail(new AdapterError('APP', `${this.label} exited with code ${m.code} before it started listening`));
         break;
       case 'response-start':
@@ -511,6 +512,7 @@ export class NodeProcess {
         break;
       case 'response-error':
         this.pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
+        this.pending.get(m.id)?.close();
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         break;
@@ -530,7 +532,18 @@ export class NodeProcess {
   /** Ends the wait for the program (listening(), pagePort()) with an error. */
   fail(e: Error) {
     this.failure ??= e;
+    this.settlePending(`${this.label} crashed: ${e.message.split('\n')[0]}`);
     for (const w of this.waiters) w();
+  }
+
+  /** Answers the requests still waiting with an error: the runtime that would have answered them is gone. */
+  private settlePending(message: string) {
+    for (const reply of this.pending.values()) {
+      reply.postMessage({ type: 'error', message });
+      reply.close();
+    }
+    this.pending.clear();
+    this.sent.clear();
   }
 
   private until(cond: () => boolean): Promise<void> {
