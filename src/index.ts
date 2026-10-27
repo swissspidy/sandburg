@@ -35,7 +35,7 @@ export { runBatch, discoverProjects } from './orchestrator/batch.ts';
 export type { BatchItem, BatchSummary, BatchRunSummary, BatchOptions } from './orchestrator/batch.ts';
 export type { NodeRuntime } from './orchestrator/session.ts';
 export { dockerReference } from './reference/docker.ts';
-export type { DockerReferenceOptions } from './reference/docker.ts';
+export type { DockerExec, DockerReferenceFactory, DockerReferenceOptions } from './reference/docker.ts';
 export { compare } from './compare/compare.ts';
 export type { CompareReport, CompareOptions, ComparePair, Rates as CompareRates, SideOutcome, TimingStats } from './compare/compare.ts';
 export { renderReport } from './compare/report.ts';

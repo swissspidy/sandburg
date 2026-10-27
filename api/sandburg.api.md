@@ -292,7 +292,17 @@ function projectFromFiles(files: FileTree, meta: {
 }): Project;
 
 // reference/docker.ts
+type DockerExec = (args: string[], options: {
+    timeoutMs: number;
+    signal?: AbortSignal;
+    onData?: (text: string) => void;
+}) => Promise<string>;
+
 function dockerReference(options?: DockerReferenceOptions): DockerReferenceFactory;
+
+type DockerReferenceFactory = (() => NodeRuntime) & {
+    disposeAll(): Promise<void>;
+};
 
 interface DockerReferenceOptions {
     image?: string;
@@ -508,17 +518,6 @@ interface SerializedError {
 }
 
 // --- referenced, not exported by the package ---
-
-// reference/docker.ts
-type DockerExec = (args: string[], options: {
-    timeoutMs: number;
-    signal?: AbortSignal;
-    onData?: (text: string) => void;
-}) => Promise<string>;
-
-type DockerReferenceFactory = (() => NodeRuntime) & {
-    disposeAll(): Promise<void>;
-};
 
 // types.ts
 interface HostInstallOptions {
