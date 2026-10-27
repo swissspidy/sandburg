@@ -95,8 +95,10 @@ sandburg open <project>                                 # load it in a visible t
   project's own `checks.spec.ts` (or `app.checks.spec.ts` next to `app.zip`) takes precedence over
   `--checks`. Directories whose name starts with `.`, and archives or JSON files whose name starts
   with `.` or `_`, are skipped.
-- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a
-  usage error.
+- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks (or its
+  project or checks file did not load), `64` a usage error. `compare` exits `0` once it has its
+  report, and `2` when nothing could be compared (the reference judged no app, or one side ran none
+  to its checks).
 - `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start
   (see [Security](#security)).
 - `--save-files <regex>` (run, with a project directory) writes the app's files whose path matches
