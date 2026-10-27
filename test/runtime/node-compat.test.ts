@@ -47,6 +47,7 @@ test('fs: open flags as open(2) has them, writeFile flags, read and write signat
         fd = fs.openSync(f, 'r');
         const b = Buffer.alloc(4);
         out.readSyncOpts = [fs.readSync(fd, b, { offset: 1, length: 2, position: 2 }), b.toString('latin1')];
+        out.readSyncRange = code(() => fs.readSync(fd, b, 2, 3, 0));
         fs.read(fd, { buffer: Buffer.alloc(3), position: 1 }, (err, n, buf) => {
           out.readOpts = [err, n, buf.toString()];
           fs.read(fd, Buffer.alloc(5), { length: 2, position: 0 }, (err, n, buf) => {
@@ -126,6 +127,7 @@ test('fs: open flags as open(2) has them, writeFile flags, read and write signat
     writeRplus: 'XYcdefgh',
     writeRplusMissing: 'ENOENT',
     readSyncOpts: [2, '\u0000cd\u0000'],
+    readSyncRange: 'ERR_OUT_OF_RANGE',
     readOpts: [null, 3, 'Ycd'],
     readBufOpts: [null, 2, 'XY\u0000\u0000\u0000'],
     writeBuf: [null, 5, true],
@@ -202,6 +204,46 @@ test("process.exit in an 'exit' listener ends the process with its code, and 'ex
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout, 'exit 3 3\n');
   assert.equal(out.exit, 5);
+});
+
+test('process.exit(undefined) exits 0 whatever exitCode was; an integer string is the exit code', async () => {
+  const codes = [];
+  for (const program of ['process.exitCode = 4; process.exit(undefined);', "process.exitCode = '2'; console.log(typeof process.exitCode);", "process.exit('3');"]) {
+    const out = await h.run({ 'main.js': program }, '/app/main.js');
+    assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+    codes.push([out.exit, out.stdout]);
+  }
+  assert.deepEqual(codes, [[0, ''], [2, 'number\n'], [3, '']]);
+});
+
+test("http: a request in flight to a child process's server is answered after its parent exits", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const child = require('child_process').fork(require('path').join(__dirname, 'child.js'));
+        child.on('message', (m) => m === 'asked' && process.exit(0));`,
+      'child.js': `
+        require('http').createServer((req, res) => {
+          process.send('asked');
+          setTimeout(() => res.end('from the child'), 300);
+        }).listen(3001);`,
+    },
+    '/app/main.js',
+    [{ url: '/' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.exit, 0);
+  assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[200, 'from the child']]);
+});
+
+test("http: a request in flight to the program's own server gets an error when it exits", { timeout: 30_000 }, async () => {
+  const out = await h.run(
+    { 'main.js': `require('http').createServer(() => setTimeout(() => process.exit(0), 50)).listen(3000);` },
+    '/app/main.js',
+    [{ url: '/' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[0, 'the process exited with code 0']]);
 });
 
 test('net: a socket ends its side once the peer ends, unless allowHalfOpen; then both close and the process ends', async () => {

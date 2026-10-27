@@ -524,7 +524,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     // process.exit() from a callback (timer, I/O) ends the process there too.
     if (e.error instanceof ExitError) {
       e.preventDefault();
-      return post({ type: 'exit', code: e.error.code });
+      return exited(e.error.code);
     }
     // In a worker thread an uncaught exception ends the thread ('error' on its Worker), as in Node.
     if (thread && !proc.listenerCount('uncaughtException')) {
@@ -540,7 +540,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   self.addEventListener('unhandledrejection', (e) => {
     if (e.reason instanceof ExitError) {
       e.preventDefault();
-      return post({ type: 'exit', code: e.reason.code });
+      return exited(e.reason.code);
     }
     if (proc.listenerCount('unhandledRejection')) {
       e.preventDefault();
@@ -601,7 +601,7 @@ function exitWhenIdle() {
       (proc.exit as (c: number) => void)(Number(proc.exitCode ?? 0));
     } catch (e) {
       nativeClearInterval(timer);
-      post({ type: 'exit', code: e instanceof ExitError ? e.code : 1 });
+      exited(e instanceof ExitError ? e.code : 1);
     }
   }, 25);
 }
@@ -632,12 +632,12 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
     const tla = (exports as Record<string, unknown> | null)?.__sandburg_tla as Promise<unknown> | undefined;
     if (tla && typeof tla.then === 'function') {
       tla.catch((e: unknown) => {
-        if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
+        if (e instanceof ExitError) return exited(e.code);
         postFatal(e);
       });
     }
   } catch (e) {
-    if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
+    if (e instanceof ExitError) return exited(e.code);
     postFatal(e);
   }
 }
@@ -674,18 +674,39 @@ function releaseHeld(depth: number) {
   for (const release of held) release();
 }
 
+/** Requests to this runtime's own servers not yet answered (those to nested runtimes' are theirs). */
+const inflight = new Set<number>();
+
+/**
+ * The program exited (process.exit, or its event loop drained). Its servers are gone, and what they
+ * had not answered is answered with an error; servers of its child processes, which keep running,
+ * still answer theirs.
+ */
+function exited(code: number) {
+  for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
+  inflight.clear();
+  for (const port of [...servers.keys()]) {
+    servers.delete(port);
+    serverEvents.emit('closed', port);
+  }
+  post({ type: 'exit', code });
+}
+
 function request(msg: Extract<ToWorker, { type: 'request' }>) {
   const server = servers.get(msg.port);
   if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}` });
   const id = msg.id;
+  inflight.add(id);
+  /** To the page, while the request is this runtime's to answer (not once its process exited). */
+  const answer = (m: Parameters<typeof post>[0], transfer?: Transferable[]) => inflight.has(id) && post(m, transfer);
   /** The start and chunks held until the end of the task; null once the response streams. */
   let held: { start: [number, string, [string, string][]] | null; chunks: Uint8Array[]; size: number } | null = { start: null, chunks: [], size: 0 };
   const release = () => {
     if (!held) return;
     const h = held;
     held = null;
-    if (h.start) post({ type: 'response-start', id, status: h.start[0], statusText: h.start[1], headers: h.start[2] });
-    for (const chunk of h.chunks) post({ type: 'response-chunk', id, chunk }, [chunk.buffer as ArrayBuffer]);
+    if (h.start) answer({ type: 'response-start', id, status: h.start[0], statusText: h.start[1], headers: h.start[2] });
+    for (const chunk of h.chunks) answer({ type: 'response-chunk', id, chunk }, [chunk.buffer as ArrayBuffer]);
   };
   const hold = () => {
     if (heldResponses.length === 0) releaseHeld(RESPONSE_HOLD_MICROTASKS);
@@ -694,7 +715,7 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
   try {
     server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
       start: (status, statusText, headers) => {
-        if (!held) return post({ type: 'response-start', id, status, statusText, headers });
+        if (!held) return void answer({ type: 'response-start', id, status, statusText, headers });
         held.start = [status, statusText, headers];
         hold();
       },
@@ -705,7 +726,7 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
           return;
         }
         release();
-        post({ type: 'response-chunk', id, chunk: data }, [data.buffer as ArrayBuffer]);
+        answer({ type: 'response-chunk', id, chunk: data }, [data.buffer as ArrayBuffer]);
       },
       end: () => {
         const start = held?.start;
@@ -713,15 +734,18 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
           const h = held;
           held = null;
           const body = h.chunks.length === 1 && h.chunks[0].byteOffset === 0 && h.chunks[0].byteLength === h.chunks[0].buffer.byteLength ? h.chunks[0] : concatBytes(h.chunks, h.size);
-          return post({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
+          answer({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
+          return void inflight.delete(id);
         }
         release();
-        post({ type: 'response-end', id });
+        answer({ type: 'response-end', id });
+        inflight.delete(id);
       },
     });
   } catch (e) {
     release();
-    post({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
+    answer({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
+    inflight.delete(id);
   }
 }
 

@@ -21,20 +21,33 @@ function start(t: TestContext) {
   return { proc, from, ask };
 }
 
-test('requests waiting when the program exits or crashes get an error, and their ports are closed', (t) => {
+test('requests waiting when the runtime crashes or is stopped get an error, as do those sent after', (t) => {
+  const crashed = start(t);
+  crashed.from({ type: 'listening', port: 3000 });
+  const first = crashed.ask();
+  const second = crashed.ask();
+  crashed.proc.fail(new Error('runtime worker error: boom\nat x'));
+  for (const got of [first, second, crashed.ask()]) assert.deepEqual(got, ['error: the app crashed: runtime worker error: boom', 'closed']);
+  assert.equal(crashed.proc.activity().inflight, 0);
+
+  // A run's page stops its runtime while the service worker still sends it requests.
+  const stopped = start(t);
+  stopped.from({ type: 'listening', port: 3000 });
+  const waiting = stopped.ask();
+  stopped.proc.terminate();
+  for (const got of [waiting, stopped.ask()]) assert.deepEqual(got, ['error: the app stopped', 'closed']);
+  assert.equal(stopped.proc.activity().inflight, 0);
+});
+
+test('a request waiting when the program exits is left to the runtime (a child process may still answer it)', (t) => {
   const { proc, from, ask } = start(t);
   from({ type: 'listening', port: 3000 });
-  const waiting = ask();
-  from({ type: 'exit', code: 1 });
-  assert.deepEqual(waiting, ['error: the app exited with code 1', 'closed']);
+  const got = ask();
+  from({ type: 'exit', code: 0 });
+  assert.deepEqual(got, []);
+  from({ type: 'response-full', id: 1, status: 200, statusText: 'OK', headers: [], body: new ArrayBuffer(0) });
+  assert.deepEqual(got, ['full', 'closed']);
   assert.equal(proc.activity().inflight, 0);
-
-  const other = start(t);
-  other.from({ type: 'listening', port: 3000 });
-  const first = other.ask();
-  const second = other.ask();
-  other.proc.fail(new Error('runtime worker error: boom\nat x'));
-  for (const got of [first, second]) assert.deepEqual(got, ['error: the app crashed: runtime worker error: boom', 'closed']);
 });
 
 test('a request that failed in the runtime closes its port', (t) => {

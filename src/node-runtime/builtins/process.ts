@@ -233,7 +233,6 @@ export function createProcess(opts: ProcessOptions) {
     argv: opts.argv,
     argv0: 'node',
     env: opts.env,
-    exitCode: undefined,
     config: { variables: { napi_build_version: '10' } },
     features: { inspector: false, ipv6: true, tls: false, typescript: 'strip' },
     allowedNodeEnvironmentFlags: new Set<string>(),
@@ -280,10 +279,11 @@ export function createProcess(opts: ProcessOptions) {
       const name = typeof type === 'string' ? type : (type?.type ?? 'Warning');
       opts.write('stderr', `(node) ${name}: ${text}\n`);
     },
-    exit(code?: number) {
+    exit(...args: [code?: number | string | null]) {
       // As in Node: 'exit' listeners see the code as process.exitCode (and may change it); one that
       // calls process.exit() ends the process there, with its code, without emitting 'exit' again.
-      if (code !== undefined) proc.exitCode = code;
+      // process.exit(undefined) is process.exit(0), whatever exitCode was.
+      if (args.length) proc.exitCode = args[0];
       if (!exiting) {
         exiting = true;
         proc.emit('exit', Number(proc.exitCode ?? 0));
@@ -313,6 +313,16 @@ export function createProcess(opts: ProcessOptions) {
     setUncaughtExceptionCaptureCallback() {},
     hasUncaughtExceptionCaptureCallback: () => false,
     loadEnvFile() {},
+  });
+  // As in Node: an integer string ('2') is the number.
+  let exitCode: number | undefined;
+  Object.defineProperty(proc, 'exitCode', {
+    get: () => exitCode,
+    set: (code: unknown) => {
+      exitCode = code === null || code === undefined ? undefined : typeof code === 'string' && code !== '' && Number.isInteger(+code) ? +code : (code as number);
+    },
+    enumerable: true,
+    configurable: true,
   });
   return proc;
 }

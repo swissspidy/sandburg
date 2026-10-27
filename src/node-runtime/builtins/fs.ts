@@ -288,6 +288,9 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   function readSync(fd: number, buffer: Uint8Array, offset?: number | ReadOptions | null, length?: number, position?: number | bigint | null): number {
     if (typeof offset === 'object' && offset) ({ offset, length, position } = offset);
     const from = offset ?? 0;
+    if (length !== undefined && (length < 0 || from + length > buffer.byteLength)) {
+      throw Object.assign(new RangeError(`The value of "length" is out of range. It must be <= ${buffer.byteLength - from}. Received ${length}`), { code: 'ERR_OUT_OF_RANGE' });
+    }
     const f = fds.get(fd);
     if (!f) throw new FsError('EBADF', 'read', String(fd));
     const data = vfs.read(f.path);

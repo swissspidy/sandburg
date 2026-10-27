@@ -167,6 +167,7 @@ export class NodeProcess {
   failure: Error | null = null;
   exitCode: number | null = null;
   private worker: Worker;
+  private terminated = false;
   private crashes = new BroadcastChannel('sandburg-wasm-thread-crash');
   private ready = false;
   private waiters = new Set<() => void>();
@@ -317,8 +318,10 @@ export class NodeProcess {
 
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
   request(port: number, request: BridgedRequest, reply: BridgeReply): void {
-    if (this.failure && this.exitCode === null) {
-      reply.postMessage({ type: 'error', message: `${this.label} crashed: ${this.failure.message.split('\n')[0]}` });
+    const gone = this.terminated ? `${this.label} stopped` : this.failure && this.exitCode === null ? `${this.label} crashed: ${this.failure.message.split('\n')[0]}` : null;
+    if (gone) {
+      reply.postMessage({ type: 'error', message: gone });
+      reply.close();
       return;
     }
     const id = this.nextId++;
@@ -384,9 +387,12 @@ export class NodeProcess {
     });
   }
 
+  /** Stops the runtime: requests still waiting, and any sent after, are answered with an error. */
   terminate(): void {
+    this.terminated = true;
     this.crashes.close();
     this.worker.terminate();
+    this.settlePending(`${this.label} stopped`);
   }
 
   /**
@@ -465,8 +471,9 @@ export class NodeProcess {
         else this.fail(new AdapterError(m.message.startsWith('runtime asset failed to load') ? 'INTERNAL' : 'APP', m.stack ?? m.message));
         break;
       case 'exit':
+        // Not every request is gone with it: servers of child processes it started keep answering
+        // (the runtime answers those of its own servers with an error).
         this.exitCode = m.code;
-        this.settlePending(`${this.label} exited with code ${m.code}`);
         if (!this.ports.length) this.fail(new AdapterError('APP', `${this.label} exited with code ${m.code} before it started listening`));
         break;
       case 'response-start':
