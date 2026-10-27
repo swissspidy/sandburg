@@ -246,6 +246,20 @@ test("http: a request in flight to the program's own server gets an error when i
   assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[0, 'the process exited with code 0']]);
 });
 
+test("http: a child process that exits with a request in flight answers it itself, before its parent learns it is gone", { timeout: 30_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').fork(require('path').join(__dirname, 'child.js'));`,
+      'child.js': `require('http').createServer(() => setTimeout(() => process.exit(0), 50)).listen(3001);`,
+    },
+    '/app/main.js',
+    [{ url: '/' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // The child's own answer (it exited), not its parent's for a child that is gone ('socket hang up').
+  assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[0, 'the process exited with code 0']]);
+});
+
 test('net: a socket ends its side once the peer ends, unless allowHalfOpen; then both close and the process ends', async () => {
   const out = await h.run(
     {
