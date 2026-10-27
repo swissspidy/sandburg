@@ -81,6 +81,9 @@ test('a zip is a project: junk skipped, traversal rejected', async () => {
         'app/package.json': JSON.stringify({ name: 'zipped', devDependencies: { vite: '^6' } }),
         'app/index.html': '<div id="root"></div>',
         'app/node_modules/react/index.js': 'x',
+        'app/dist/index.js': 'built',
+        'app/src/build/x.js': 'source',
+        'app/src/node_modules/y/index.js': 'x',
         'app/checks.spec.ts': 'export default {}',
         '__MACOSX/app/._index.html': 'junk',
       }),
@@ -89,7 +92,8 @@ test('a zip is a project: junk skipped, traversal rejected', async () => {
     const project = await loadProject(good);
     assert.equal(project.name, 'zipped');
     assert.equal(project.framework, 'vite');
-    assert.deepEqual(Object.keys(project.files).sort(), ['index.html', 'package.json']);
+    // Build output is left out at the root only; node_modules at any depth.
+    assert.deepEqual(Object.keys(project.files).sort(), ['index.html', 'package.json', 'src/build/x.js']);
 
     const evil = join(dir, 'evil.zip');
     await writeFile(evil, makeZip({ '../outside.txt': 'x' }));
