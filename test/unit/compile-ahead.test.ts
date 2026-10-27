@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vfs } from '../../src/node-runtime/vfs.ts';
 
@@ -41,6 +41,8 @@ const { compileAhead, compileWhenWritten, compiledAhead } = await import('../../
 
 const DIR = '/app/.next/server';
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** The program's waits for a compile (Atomics.wait, as compiledAhead blocks), counted. */
+const waits = (t: TestContext) => t.mock.method(Atomics, 'wait').mock;
 const vfs = new Vfs(() => {
   throw new Error('no remote files');
 });
@@ -92,40 +94,40 @@ test('a file written again just before it is required is compiled again, not ser
   assert.equal(sent.length, 2);
 });
 
-test('a file removed is dropped; few files are kept waiting, each with memory sized from it', async () => {
+test('a file removed is dropped; few files are kept waiting, each with memory sized from it', async (t) => {
   start();
   answer = () => undefined;
   for (let i = 0; i < 40; i++) write(`many-${i}.js`, 'module.exports = async () => 0;');
   await tick();
   assert.equal(sent.length, 40);
   assert.ok(sent.every((m) => m.shared.maxByteLength <= 8 + (1 << 20)));
+  const waited = waits(t);
   // The oldest sent are no longer waited for (dropped at once, without waiting).
-  const t0 = performance.now();
   assert.equal(compiledAhead(`${DIR}/many-0.js`), null);
-  assert.ok(performance.now() - t0 < 100);
+  assert.equal(waited.callCount(), 0);
   // A removed file is not waited for (its compile would have nothing to serve).
   write('gone.js', 'module.exports = async () => 0;');
   await tick();
   vfs.unlink(`${DIR}/gone.js`);
-  const t1 = performance.now();
   assert.equal(compiledAhead(`${DIR}/gone.js`), null);
-  assert.ok(performance.now() - t1 < 100);
+  assert.equal(waited.callCount(), 0);
 });
 
-test('a helper that does not answer is waited for once: later files are compiled at once', async () => {
+test('a helper that does not answer is waited for once: later files are compiled at once', async (t) => {
   start(200);
   answer = () => undefined;
   write('d.js', 'module.exports = async () => 1;');
   write('e.js', 'module.exports = async () => 2;');
   write('f.js', 'module.exports = async () => 3;');
   await tick();
-  let t0 = performance.now();
+  const waited = waits(t);
+  const t0 = performance.now();
   assert.equal(compiledAhead(`${DIR}/d.js`), null);
   assert.ok(performance.now() - t0 >= 150);
-  t0 = performance.now();
+  assert.equal(waited.callCount(), 1);
   assert.equal(compiledAhead(`${DIR}/e.js`), null);
   assert.equal(compiledAhead(`${DIR}/f.js`), null);
-  assert.ok(performance.now() - t0 < 50, 'no second wait');
+  assert.equal(waited.callCount(), 1, 'no second wait');
   // Nor is it sent anything more.
   const before = sent.length;
   write('g.js', 'module.exports = async () => 4;');
