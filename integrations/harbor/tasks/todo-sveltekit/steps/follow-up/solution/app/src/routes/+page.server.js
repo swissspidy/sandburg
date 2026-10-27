@@ -1,5 +1,5 @@
 import { fail } from '@sveltejs/kit';
-import db from '$lib/server/db.js';
+import db from '#lib/server/db.js';
 
 const PRIORITY_VALUES = { low: 0, normal: 1, high: 2 };
 const PRIORITY_NAMES = ['low', 'normal', 'high'];

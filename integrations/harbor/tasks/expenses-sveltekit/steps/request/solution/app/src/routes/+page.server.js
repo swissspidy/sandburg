@@ -1,5 +1,5 @@
 import { fail } from '@sveltejs/kit';
-import db from '$lib/server/db.js';
+import db from '#lib/server/db.js';
 
 export function load() {
   const expenses = db
