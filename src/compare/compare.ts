@@ -10,7 +10,7 @@ import type { RunResult } from '../types.ts';
 
 /** Options of compare(): a batch's options, and the reference runtime the batch runs on too. */
 export interface CompareOptions extends RunOptions {
-  /** In-browser runtime under test (default: auto, chosen per project). */
+  /** In-browser runtime under test (`adapterNames`): `node`, the only one, by default. */
   runtime?: string;
   reference: { name: string; factory: () => NodeRuntime };
   parallel?: number;
@@ -35,6 +35,7 @@ export interface SideOutcome {
   passed: boolean;
   failureClass: string | null;
   rule: string | null;
+  /** Blocking checks that failed or broke; not those skipped (a checks phase out of time did not run them). */
   failedChecks: string[];
   totalMs: number;
   message: string | null;
@@ -125,7 +126,9 @@ export async function compare(session: Session, items: BatchItem[], options: Com
     const meta = await readMeta(items[i]);
     const browser = outcome(b);
     const reference = outcome(ref);
-    const comparable = ref.failure?.class !== 'infra';
+    // Not when the reference could not judge the app, nor when a side's project or checks file did not load.
+    const unloaded = [b, ref].find((r) => r.failure?.rule === 'project-load' || r.failure?.rule === 'checks-load');
+    const comparable = ref.failure?.class !== 'infra' && !unloaded;
     const agree = browser.passed === reference.passed;
     const disagreement = !comparable || agree ? null : browser.passed ? 'browser-lenient' : 'browser-stricter';
     let cause: string | null = null;
@@ -168,7 +171,7 @@ export async function compare(session: Session, items: BatchItem[], options: Com
           referenceAccuracy: ratio(truth.filter((p) => p.reference.passed === (p.meta!.expected === 'pass')).length, truth.length),
         }
       : null,
-    excluded: pairs.filter((p) => !p.comparable).map((p) => ({ label: p.label, reason: p.reference.message ?? 'reference infra error' })),
+    excluded: pairs.filter((p) => !p.comparable).map((p) => ({ label: p.label, reason: unloadedReason(p) ?? p.reference.message ?? 'reference infra error' })),
     timing: {
       browser: timing(browserRun.summary, browserRun.results, vcpus, vcpuHourUsd),
       reference: timing(referenceRun.summary, referenceRun.results, vcpus, vcpuHourUsd),
@@ -178,6 +181,12 @@ export async function compare(session: Session, items: BatchItem[], options: Com
   };
 }
 
+/** Why a pair was excluded when one of its sides did not load its project or checks file. */
+function unloadedReason(p: ComparePair): string | null {
+  const side = [p.browser, p.reference].find((s) => s.rule === 'project-load' || s.rule === 'checks-load');
+  return side ? `${side.rule}: ${side.message}` : null;
+}
+
 function outcome(r: RunResult): SideOutcome {
   return {
     runId: r.runId,
@@ -185,7 +194,7 @@ function outcome(r: RunResult): SideOutcome {
     passed: r.status === 'passed',
     failureClass: r.failure?.class ?? null,
     rule: r.failure?.rule ?? null,
-    failedChecks: r.checks.filter((c) => c.blocking && c.status !== 'passed').map((c) => c.name),
+    failedChecks: r.checks.filter((c) => c.blocking && (c.status === 'failed' || c.status === 'error')).map((c) => c.name),
     totalMs: r.timings.totalMs,
     message: r.failure?.message.split('\n')[0].slice(0, 300) ?? null,
   };

@@ -66,6 +66,8 @@ export class RunState {
   pageErrors: PageError[] = [];
   documents: { frame: Frame; url: string; status: number; csp?: boolean }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
+  /** The run's project or checks file did not load (failSetup). */
+  setupError: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null = null;
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];
   /** The run's renderer, once it has a tab (RunResult.memory). */
@@ -91,15 +93,21 @@ export class RunState {
   /** Runs one lifecycle phase under a deadline and records its outcome. Rethrows on failure. */
   onPhase?: (phase: PhaseName) => void;
 
-  async phase<T>(name: PhaseName, timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+  /** `fn`'s signal aborts at the deadline (with the PhaseTimeout), for work that can stop. */
+  async phase<T>(name: PhaseName, timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
     this.onPhase?.(name);
     const start = performance.now();
+    const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new PhaseTimeout(name, timeoutMs)), timeoutMs);
+        timer = setTimeout(() => {
+          const timeout = new PhaseTimeout(name, timeoutMs);
+          controller.abort(timeout);
+          reject(timeout);
+        }, timeoutMs);
       });
-      const value = await Promise.race([fn(), deadline]);
+      const value = await Promise.race([fn(controller.signal), deadline]);
       this.phases.push({ name, status: 'ok', durationMs: ms(start) });
       return value;
     } catch (err) {
@@ -111,6 +119,16 @@ export class RunState {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * The run cannot start: its project or checks file did not load. Recorded as its probe phase's
+   * failure; `appBug`: the project is there, but broken (not a JSON tree, a zip, …).
+   */
+  failSetup(rule: 'project-load' | 'checks-load', err: unknown, appBug = false): void {
+    const error = serialize(err);
+    this.phases.push({ name: 'probe', status: 'failed', durationMs: 0, error });
+    this.setupError = { rule, class: appBug ? 'app-bug' : 'unknown', message: error.message };
   }
 
   skipRemaining(): void {
@@ -162,6 +180,7 @@ export class RunState {
       ],
       runtimeOutput: this.console.filter((c) => c.source === 'host' && /^\[runtime:std(?:out|err)\]/.test(c.text)).map((c) => c.text),
       infraError: this.infraError,
+      setupError: this.setupError,
       declaredDependencies: Object.keys({ ...this.project.packageJson?.dependencies, ...this.project.packageJson?.devDependencies }),
     });
     const reachedChecks = this.phases.some((p) => p.name === 'checks' && p.status === 'ok');

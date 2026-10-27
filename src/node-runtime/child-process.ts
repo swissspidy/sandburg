@@ -261,7 +261,10 @@ export function createChildProcess(host: ChildProcessHost) {
         },
         exists: (path) => vfs.exists(path),
         write,
-        onExit: (code) => this.finish(code, null),
+        // Once killed, the script's end (its commands killed: 143) is not its exit: kill() reports the signal.
+        onExit: (code) => {
+          if (!this.killed) this.finish(code, null);
+        },
         stepsAhead: shellStepsAhead,
       });
       timers.setTimeout(() => this.emit('spawn'), 0);

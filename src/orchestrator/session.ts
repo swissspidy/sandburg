@@ -4,20 +4,21 @@
  */
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Frame, type Page } from 'playwright-core';
 import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
 import type { AdapterDescriptor } from '../types.ts';
-import { loadProject } from '../project.ts';
+import { loadProject, projectFromFiles } from '../project.ts';
 import type { FileTree, InstallReport, PhaseName, ProbeVerdict, Project, RunResult } from '../types.ts';
 import type { HostApi, RpcResult } from '../host/types.ts';
-import { loadChecks, runChecks, type Checks } from './checks.ts';
+import { ChecksProgress, loadChecks, runChecks, type Checks } from './checks.ts';
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
 import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
 import { AXE_CLASSIC_PATH, AXE_SCRIPT, HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { CodeCache, type PageCode } from './code-cache.ts';
-import { SnapshotStore } from '../store.ts';
+import { NO_SNAPSHOT, SnapshotStore } from '../store.ts';
 import { pageRendererMemory, type RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
@@ -93,8 +94,10 @@ export interface NodeRuntime {
   version: string;
   /** Origins the app page may reach besides its own (usually none). */
   egress: string[];
+  /** Phase deadlines this runtime needs instead of the defaults (RunOptions.timeouts still override them). */
+  timeouts?: Partial<Record<PhaseName, number>>;
   probe(project: Project): ProbeVerdict;
-  /** Prepares, installs and starts the app; returns the loopback port it listens on. */
+  /** Prepares, installs and starts the app; returns the loopback port it listens on. A phase's error with `infra: true` (the runtime itself could not run) classes the run infra. */
   mount(project: Project, log: (line: string) => void): Promise<void>;
   install(): Promise<InstallReport>;
   start(): Promise<{ port: number }>;
@@ -132,10 +135,11 @@ export interface RunOptions {
   timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
   /** Re-run a project whose run failed as infra (a flaky download, a crashed tab) this many times. Default 1. */
   infraRetries?: number;
-  /** Keep the tab open after checks until it is closed (for `sandburg open`, with a headed browser). */
+  /**
+   * Keep the tab open after the run until it is closed (for `sandburg open`, with a headed browser),
+   * also when a phase before the checks failed.
+   */
   hold?: boolean;
-  /** Internal: this run is a seed of shared caches (see HostInstallOptions.seed). */
-  seed?: boolean;
   /**
    * Where dependencies are installed: 'host' (npm on the host, the default) or 'browser' (opt-in:
    * the page resolves and fetches packages from the npm registry itself; see adapters/node/browser-npm).
@@ -165,6 +169,12 @@ export interface RunOptions {
    * open app.
    */
   onSeed?: () => Pick<RunOptions, 'onPhase' | 'onRenderer'> & { ended(): void };
+}
+
+/** A run's options as the session gives them to runOnce: a seed run is the session's own (runSeed). */
+interface RunOnceOptions extends RunOptions {
+  /** This run is a seed of shared caches (see HostInstallOptions.seed). */
+  seed?: boolean;
 }
 
 /** A run's renderer, for a batch (RunOptions.onRenderer). */
@@ -402,7 +412,7 @@ export class Session {
   }
 
   /** Runs a seed project (see HostInstallOptions.runSeed); its result goes to .sandburg/seeds. */
-  private runSeed(project: Project, checks: Checks, parent: RunOptions): Promise<void> {
+  private runSeed(project: Project, checks: Checks, parent: RunOnceOptions): Promise<void> {
     const watch = parent.onSeed?.();
     const seed = (async () => {
       const result = await this.runOnce(project, { runtime: parent.runtime, checks, seed: true, infraRetries: 0, outDir: resolve('.sandburg/seeds'), onPhase: watch?.onPhase, onRenderer: watch?.onRenderer });
@@ -413,21 +423,45 @@ export class Session {
     return seed;
   }
 
-  private async runOnce(projectInput: string | Project, options: RunOptions): Promise<RunResult> {
+  private async runOnce(projectInput: string | Project, options: RunOnceOptions): Promise<RunResult> {
     if (!this.browser) throw new Error('session is not open');
     const runId = `r-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
     const outDir = resolve(options.outDir ?? '.sandburg/runs', runId);
-    await mkdir(outDir, { recursive: true });
-    const project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
-    const node = options.nodeRuntime?.() ?? null;
-    const adapter = node ? null : getAdapter(options.runtime ?? DEFAULT_RUNTIME);
-    const runtimeInfo = node ?? adapter!;
+    const adapter = options.nodeRuntime ? null : getAdapter(options.runtime ?? DEFAULT_RUNTIME);
+    // A project or checks file that does not load ends this run as an error, not its batch.
+    const failedSetup = async (project: Project, rule: 'project-load' | 'checks-load', err: unknown, appBug = false) => {
+      const failed = new RunState(runId, project, adapter ?? options.nodeRuntime!(), this.options.offline ?? false, this.browser!.version(), this.browserSandbox);
+      failed.failSetup(rule, err, appBug);
+      failed.skipRemaining();
+      await mkdir(outDir, { recursive: true });
+      return failed.finish(outDir);
+    };
+    let project: Project;
+    try {
+      project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
+    } catch (err) {
+      const path = projectInput as string;
+      const snapshot = path.startsWith('snapshot:');
+      const project = { ...projectFromFiles({}, { name: snapshot ? path : basename(path), path: snapshot ? path : resolve(path) }), snapshotId: NO_SNAPSHOT };
+      // A path or snapshot that is not there is not the app's bug; a file that is no project is.
+      const missing = snapshot || (err as NodeJS.ErrnoException).code === 'ENOENT';
+      return failedSetup(project, 'project-load', err, !missing);
+    }
+    // Stored before its checks load, so that a run whose checks file is broken can be reopened.
     await this.store.put(project.files, project.name);
-    const checks =
-      typeof options.checks === 'string'
-        ? await (options.checksIn === 'page' ? loadPageChecks(options.checks) : loadChecks(options.checks))
-        : (options.checks ?? null);
-    const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
+    let checks: Checks | PageChecks | null;
+    try {
+      checks =
+        typeof options.checks === 'string'
+          ? await (options.checksIn === 'page' ? loadPageChecks(options.checks) : loadChecks(options.checks))
+          : (options.checks ?? null);
+    } catch (err) {
+      return failedSetup(project, 'checks-load', err);
+    }
+    await mkdir(outDir, { recursive: true });
+    const node = options.nodeRuntime?.() ?? null;
+    const runtimeInfo = node ?? adapter!;
+    const timeouts = { ...DEFAULT_TIMEOUTS, ...runtimeInfo.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version(), this.browserSandbox);
     run.onPhase = options.onPhase;
@@ -568,9 +602,11 @@ export class Session {
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
           const appSettled = () => host('settled', SETTLE_QUIET_MS, SETTLE_LONG_MS, SETTLE_MAX_MS);
-          await runChecksPhase(run, page, app, checks, timeouts, outDir, options, options.failFastChecks === false ? undefined : appIdle, origin, appSettled, tab?.code);
+          await runChecksPhase(run, page, app, checks, timeouts, outDir, options.failFastChecks === false ? undefined : appIdle, origin, appSettled, tab?.code);
         };
         await steps().catch(() => {}); // failures are recorded per phase
+        // Whether the app reached its checks or not, it stays up until its window is closed.
+        if (options.hold) await closed(page);
         if (options.collectFiles && options.onAppFiles) {
           const files = await page
             .evaluate((match) => window.__sandburgReadFiles?.(match) ?? null, options.collectFiles)
@@ -588,6 +624,8 @@ export class Session {
       stopped = true;
       clearTimeout(sampler);
       memory?.stop();
+      // A host page that did not load is held open too (a no-op once its window was closed).
+      if (options.hold && tab) await closed(tab.page);
       if (tab) await this.closeTab(tab);
       else {
         await context?.close().catch(() => {});
@@ -614,20 +652,26 @@ export class Session {
       await run.phase('load', timeouts.load, async () => {}); // no host page
       await run.phase('mount', timeouts.mount, () => node.mount(project, (l) => logs.push(l)));
       run.install = await run.phase('install', timeouts.install, () => node.install());
-      const { port } = await run.phase('start', timeouts.start, () => node.start());
-      // *.sandburg.localhost resolves to loopback and bypasses the proxy.
-      const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
-      await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
-      run.capture(page, origin);
+      // The tab's routes and capture for the app's origin are part of starting it: an error there is the phase's.
+      const origin = await run.phase('start', timeouts.start, async () => {
+        const { port } = await node.start();
+        // *.sandburg.localhost resolves to loopback and bypasses the proxy.
+        const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
+        await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
+        run.capture(page, origin);
+        return origin;
+      });
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });
         await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run);
         return page.mainFrame();
       });
-      await runChecksPhase(run, page, app, checks, timeouts, outDir, options);
-    } catch {
-      // failures are recorded per phase
+      await runChecksPhase(run, page, app, checks, timeouts, outDir);
+    } catch (err) {
+      // failures are recorded per phase; one the runtime marks as its own is infra (see NodeRuntime)
+      if ((err as { infra?: unknown })?.infra === true) run.infraError ??= { phase: run.phases.at(-1)?.name ?? 'mount', message: (err as Error).message };
     } finally {
+      if (options.hold) await closed(page);
       run.runtimeLogs = node.logs();
       await run.phase('dispose', timeouts.dispose, () => node.dispose()).catch(() => {});
     }
@@ -641,32 +685,51 @@ async function runChecksPhase(
   checks: Checks | PageChecks | null,
   timeouts: Record<PhaseName | 'check' | 'expect', number>,
   outDir: string,
-  options: RunOptions,
   appIdle?: (remainingMs: number) => Promise<boolean>,
   hostOrigin?: string,
   appSettled?: () => Promise<unknown>,
   axeCode?: PageCode,
 ): Promise<void> {
-  run.checksOutput = await run.phase('checks', timeouts.checks, () =>
-    runChecks({
-      page,
-      app,
-      checks,
-      checkTimeoutMs: timeouts.check,
-      expectTimeoutMs: timeouts.expect,
-      appIdle,
-      artifactsDir: outDir,
-      appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
-      appConsole: () => run.console.filter((c) => c.source === 'app'),
-      network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
-      appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
-      hostOrigin,
-      appSettled,
-      axeCode,
-    }),
-  );
-  if (options.hold) await page.waitForEvent('close', { timeout: 0 });
+  const progress = new ChecksProgress();
+  run.checksOutput = progress;
+  let checking: Promise<unknown> = Promise.resolve();
+  try {
+    await run.phase('checks', timeouts.checks, (signal) =>
+      (checking = runChecks({
+        page,
+        app,
+        checks,
+        checkTimeoutMs: timeouts.check,
+        expectTimeoutMs: timeouts.expect,
+        appIdle,
+        artifactsDir: outDir,
+        appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
+        appConsole: () => run.console.filter((c) => c.source === 'app'),
+        network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
+        appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
+        hostOrigin,
+        appSettled,
+        axeCode,
+        progress,
+        signal,
+      })),
+    );
+  } catch (err) {
+    // Out of time (or broken): the checks were stopped. What they report as they stop is kept, for a
+    // moment; then a check still running timed out, and one not started did not run.
+    await Promise.race([checking.catch(() => {}), sleep(STOP_CHECKS_MS, undefined, { ref: false })]);
+    progress.close(err instanceof Error ? err.message : String(err));
+    throw err;
+  }
 }
+
+/** Resolves once the page's window is closed (RunOptions.hold). */
+async function closed(page: Page): Promise<void> {
+  if (!page.isClosed()) await page.waitForEvent('close', { timeout: 0 }).catch(() => {});
+}
+
+/** How long checks stopped at the phase's deadline have to report how far they got (the checks file in the page, the check that was running). */
+const STOP_CHECKS_MS = 2_000;
 
 /**
  * Runs first in every document of a run: tracks the page's pending timeouts and when it last changed,

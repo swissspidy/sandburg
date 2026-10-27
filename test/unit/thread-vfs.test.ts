@@ -64,14 +64,25 @@ test('a thread whose parent is slow waits for it on paths its snapshot does not 
 
 // A parent that never answers is blocked, not slow: after a few seconds even a cache path is answered
 // from the snapshot (Tailwind v4's scanner, a WebAssembly thread, runs while its parent waits on it).
-test('a thread whose parent is blocked answers from its snapshot after all', () => {
-  // Blocked after 1 s here (5 s in the runtime), so that the test does not wait out the runtime's.
-  const thread = new ThreadVfs(() => {}, new Vfs(() => new Uint8Array()), '/app', { '/app/src/main.ts': new TextEncoder().encode('') }, undefined, 1000);
-  const started = performance.now();
+test('a thread whose parent is blocked answers from its snapshot after all', (t) => {
+  // A clock that only the thread's waits move: each wait for the parent times out at once, having
+  // taken all of its time.
+  let now = 0;
+  const waited: number[] = [];
+  t.mock.method(performance, 'now', () => now);
+  t.mock.method(Atomics, 'wait', (_a: Int32Array, _i: number, _v: number, timeout = Infinity) => {
+    waited.push(timeout);
+    now += timeout;
+    return 'timed-out';
+  });
+  let asked = 0;
+  // Blocked after 1 s here (5 s in the runtime).
+  const thread = new ThreadVfs(() => asked++, new Vfs(() => new Uint8Array()), '/app', { '/app/src/main.ts': new TextEncoder().encode('') }, undefined, 1000);
   assert.equal(thread.exists('/app/node_modules/.cache/vite'), false);
-  assert.ok(performance.now() - started >= 900);
+  // Its patience (200 ms), then the rest of the second.
+  assert.deepEqual(waited, [200, 800]);
   assert.equal(thread.exists('/app/.nuxt/nuxt.d.ts'), false); // at once now: the parent is known to be blocked
-  assert.ok(performance.now() - started < 2000);
+  assert.deepEqual({ waited, asked }, { waited: [200, 800], asked: 1 });
 });
 
 // Module resolution in a thread looks for many node_modules paths the install does not have

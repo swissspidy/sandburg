@@ -219,3 +219,14 @@ test('a WebAssembly trap on the dev server is the runtime, not the app', () => {
   }));
   assert.deepEqual([f?.class, f?.rule], ['runtime-unsupported', 'signature:wasm-trap']);
 });
+
+test('a project or checks file that did not load is the failure, even with no phase or check recorded', () => {
+  const setupError = { rule: 'checks-load', class: 'unknown', message: 'SyntaxError: Unexpected end of input' } as const;
+  assert.deepEqual(classify({ probe: null, phases: [], checks: [], pageErrors: [], infraError: null, declaredDependencies: [], setupError }), {
+    class: 'unknown',
+    phase: 'probe',
+    rule: 'checks-load',
+    message: 'SyntaxError: Unexpected end of input',
+    evidence: [],
+  });
+});

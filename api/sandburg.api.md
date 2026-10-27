@@ -25,6 +25,11 @@ interface ClassifyInput {
         phase: PhaseName;
         message: string;
     } | null;
+    setupError?: {
+        rule: 'project-load' | 'checks-load';
+        class: 'app-bug' | 'unknown';
+        message: string;
+    } | null;
 }
 
 // compare/compare.ts
@@ -191,6 +196,7 @@ interface CheckContext {
     page: Page;
     expect: typeof expect;
     appUrl(path: string): string;
+    signal: AbortSignal;
 }
 
 type CheckFn = (ctx: CheckContext) => Promise<void> | void;
@@ -204,6 +210,7 @@ interface NodeRuntime {
     name: string;
     version: string;
     egress: string[];
+    timeouts?: Partial<Record<PhaseName, number>>;
     probe(project: Project): ProbeVerdict;
     mount(project: Project, log: (line: string) => void): Promise<void>;
     install(): Promise<InstallReport>;
@@ -225,7 +232,6 @@ interface RunOptions {
     timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
     infraRetries?: number;
     hold?: boolean;
-    seed?: boolean;
     installIn?: 'host' | 'browser';
     collectFiles?: string;
     onAppFiles?: (files: FileTree, refused?: string) => void;
@@ -287,12 +293,23 @@ function projectFromFiles(files: FileTree, meta: {
 }): Project;
 
 // reference/docker.ts
-function dockerReference(options?: DockerReferenceOptions): () => NodeRuntime;
+type DockerExec = (args: string[], options: {
+    timeoutMs: number;
+    signal?: AbortSignal;
+    onData?: (text: string) => void;
+}) => Promise<string>;
+
+function dockerReference(options?: DockerReferenceOptions): DockerReferenceFactory;
+
+type DockerReferenceFactory = (() => NodeRuntime) & {
+    disposeAll(): Promise<void>;
+};
 
 interface DockerReferenceOptions {
     image?: string;
     npmCacheVolume?: string;
     workDir?: string;
+    docker?: DockerExec;
 }
 
 // store.ts
@@ -336,8 +353,6 @@ interface AdapterDescriptor {
     prepare?(): void;
 }
 
-type AdapterErrorCode = 'UNSUPPORTED' | 'APP' | 'INTERNAL';
-
 type CheckKind = 'functional' | 'document' | 'console' | 'network' | 'axe' | 'a11y-snapshot' | 'screenshot';
 
 interface CheckResult {
@@ -377,29 +392,6 @@ type FileContent = string | {
 type FileTree = Record<string, FileContent>;
 
 type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'solid-start' | 'react-router' | 'static' | 'unknown';
-
-interface HostInstallOptions {
-    seed?: boolean;
-    runSeed?(project: Project, checks: unknown): Promise<void>;
-    installIn?: 'host' | 'browser';
-    sandbox?: Promise<string>;
-}
-
-interface HostRequest {
-    method: string;
-    path: string;
-    query: URLSearchParams;
-    sandbox?: string;
-    headers?: Record<string, string | undefined>;
-    body(max?: number): Promise<Buffer>;
-    channel?: object;
-}
-
-interface HostResponse {
-    status: number;
-    headers?: Record<string, string>;
-    body: string | Uint8Array;
-}
 
 interface InstallReport {
     resolution: 'lockfile' | 'range' | 'none';
@@ -524,6 +516,32 @@ interface SerializedError {
     message: string;
     code?: string;
     stack?: string;
+}
+
+// --- referenced, not exported by the package ---
+
+// types.ts
+interface HostInstallOptions {
+    seed?: boolean;
+    runSeed?(project: Project, checks: unknown): Promise<void>;
+    installIn?: 'host' | 'browser';
+    sandbox?: Promise<string>;
+}
+
+interface HostRequest {
+    method: string;
+    path: string;
+    query: URLSearchParams;
+    sandbox?: string;
+    headers?: Record<string, string | undefined>;
+    body(max?: number): Promise<Buffer>;
+    channel?: object;
+}
+
+interface HostResponse {
+    status: number;
+    headers?: Record<string, string>;
+    body: string | Uint8Array;
 }
 
 // --- from other packages ---

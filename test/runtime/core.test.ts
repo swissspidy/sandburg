@@ -628,6 +628,164 @@ test('child_process: a program reaches a server another child process runs (a de
   assert.match(out.stdout, /api GET \/items ECONNREFUSED/, out.stdout + out.stderr);
 });
 
+// Without a response the run has no backstop: the test's timeout ends it.
+test('child_process: a request in flight to a child process fails when the child crashes, instead of hanging', { timeout: 30_000 }, async () => {
+  const out = await h.run(
+    {
+      // As concurrently starts a dev script's servers.
+      'main.js': `require('child_process').spawn('node server.js', { shell: true, stdio: 'inherit' });`,
+      'server.js': `require('http').createServer(() => setImmediate(() => { throw new Error('the child crashed'); })).listen(4310, () => console.log('child listening'));`,
+    },
+    '/app/main.js',
+    [{ url: '/' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.match(out.stderr, /the child crashed/);
+  assert.deepEqual(out.responses[0], { status: 0, body: 'socket hang up', chunks: 1 });
+});
+
+test('child_process: a child process\'s port is refused once its server closes or the child crashes', async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').spawn('node closes.js & node crashes.js & node web.js', { shell: true, stdio: 'inherit' });`,
+      // Closes its server after its first answer, and so exits.
+      'closes.js': `const server = require('http').createServer((req, res) => { res.end('bye'); server.close(); }).listen(4320);`,
+      'crashes.js': `require('http').createServer(() => setImmediate(() => { throw new Error('the child crashed'); })).listen(4321);`,
+      'web.js': `
+        const http = require('http');
+        const ask = (port) => new Promise((resolve) => {
+          http.get('http://localhost:' + port + '/', (res) => {
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('end', () => resolve(body));
+          }).on('error', (e) => resolve(e.code));
+        });
+        // The first answer from the server, once it listens; then the answers until the port is refused
+        // (the child may still be ending: its answer is an error too).
+        const answers = async (port) => {
+          let first = 'ECONNREFUSED';
+          for (let i = 0; i < 200 && first === 'ECONNREFUSED'; i++) {
+            first = await ask(port);
+            if (first === 'ECONNREFUSED') await new Promise((r) => setTimeout(r, 50));
+          }
+          let last = first;
+          for (let i = 0; i < 200 && last !== 'ECONNREFUSED'; i++) {
+            last = await ask(port);
+            if (last !== 'ECONNREFUSED') await new Promise((r) => setTimeout(r, 20));
+          }
+          return first + ' ' + last;
+        };
+        (async () => console.log('closed: ' + (await answers(4320)) + ', crashed: ' + (await answers(4321))))();`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { until: ({ stdout }) => /crashed: \S+ \S+/.test(stdout) },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.match(out.stdout, /closed: bye ECONNREFUSED, crashed: ECONNRESET ECONNREFUSED/, out.stdout + out.stderr);
+});
+
+test('child_process: a response cut short by a crashing child aborts the client\'s stream (for await and pipeline reject)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').spawn('node server.js 4330 & node server.js 4331 & node web.js', { shell: true, stdio: 'inherit' });`,
+      // Answers /ready; on any other path, sends its headers and a first chunk, then crashes.
+      'server.js': `require('http').createServer((req, res) => {
+        if (req.url === '/ready') return res.end('ready');
+        res.writeHead(200);
+        res.write('partial');
+        setImmediate(() => { throw new Error('the child crashed'); });
+      }).listen(Number(process.argv[2]));`,
+      'web.js': `
+        const http = require('http');
+        const { pipeline, Writable } = require('stream');
+        const get = (port, path) => new Promise((resolve, reject) => http.get('http://localhost:' + port + path, resolve).on('error', reject));
+        const up = async (port) => {
+          for (let i = 0; i < 200; i++) {
+            try { return await get(port, '/ready'); } catch { await new Promise((r) => setTimeout(r, 50)); }
+          }
+        };
+        (async () => {
+          await up(4330);
+          const res = await get(4330, '/stream');
+          const events = [];
+          res.on('aborted', () => events.push('aborted'));
+          res.on('close', () => events.push('close'));
+          let body = '';
+          let error;
+          try {
+            for await (const chunk of res) body += chunk;
+          } catch (e) {
+            error = e.code + ' ' + e.message;
+          }
+          await new Promise((r) => setImmediate(r));
+          console.log('for await: ' + body + ', ' + error + ', ' + events.join(' ') + ', aborted=' + res.aborted);
+          await up(4331);
+          pipeline(await get(4331, '/stream'), new Writable({ write: (c, e, cb) => cb() }), (e) => console.log('pipeline: ' + (e ? e.code + ' ' + e.message : 'ok')));
+        })();`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { until: ({ stdout }) => /pipeline: /.test(stdout) },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.match(out.stdout, /for await: partial, ECONNRESET aborted, aborted close, aborted=true/, out.stdout + out.stderr);
+  assert.match(out.stdout, /pipeline: ECONNRESET aborted/, out.stdout + out.stderr);
+});
+
+test('child_process: a server closed in the tick it listens is never announced', async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').spawn(process.execPath, ['server.js'], { stdio: 'inherit' });`,
+      'server.js': `
+        const http = require('http');
+        http.createServer().listen(4340).close();
+        http.createServer((req, res) => res.end('the other server')).listen(4341);`,
+    },
+    '/app/main.js',
+    [{ url: '/' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.listening, [4341]);
+  assert.deepEqual(out.responses[0], { status: 200, body: 'the other server', chunks: 1 });
+});
+
+test('child_process: a request that reaches a child just after its server closed is refused (ECONNREFUSED)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').spawn('node server.js & node web.js', { shell: true, stdio: 'inherit' });`,
+      // A request to 4351 closes the server on 4350; the child stays up.
+      'server.js': `
+        const http = require('http');
+        const target = http.createServer((req, res) => res.end('target')).listen(4350);
+        http.createServer((req, res) => { target.close(); res.end('closed'); }).listen(4351);
+        setInterval(() => {}, 1000);`,
+      'web.js': `
+        const http = require('http');
+        const ask = (port) => new Promise((resolve) => {
+          http.get('http://localhost:' + port + '/', (res) => {
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('end', () => resolve(body));
+          }).on('error', (e) => resolve(e.code));
+        });
+        (async () => {
+          for (let i = 0; i < 200 && (await ask(4350)) !== 'target'; i++) await new Promise((r) => setTimeout(r, 50));
+          // Both go to the child before it can tell its parent that 4350 closed: the second finds no server.
+          console.log('answers: ' + (await Promise.all([ask(4351), ask(4350)])).join(' '));
+        })();`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { until: ({ stdout }) => /answers: \S+ \S+/.test(stdout) },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.match(out.stdout, /answers: closed ECONNREFUSED/, out.stdout + out.stderr);
+});
+
 test('worker_threads: a blocked thread takes replies with receiveMessageOnPort (a synchronous call to the main thread)', async () => {
   const out = await h.run(
     {

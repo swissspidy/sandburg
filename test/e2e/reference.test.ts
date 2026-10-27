@@ -65,3 +65,14 @@ test('compare pairs browser and reference results and agrees on both fixtures', 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('an image the reference cannot pull fails the run as infra, without leaving a container', { skip: !docker && 'Docker is not available' }, async () => {
+  const dir = join(fixtures, 'vite-react-counter');
+  // Nothing listens on port 1: the pull fails at once.
+  const image = 'localhost:1/sandburg/missing:none';
+  const result = await session.run(dir, { nodeRuntime: dockerReference({ image }), outDir, timeouts: REF_TIMEOUTS, infraRetries: 0 });
+  assert.equal(result.failure?.class, 'infra', JSON.stringify(result.failure, null, 2));
+  assert.equal(result.failure?.phase, 'mount');
+  assert.match(result.failure?.message ?? '', /docker pull localhost:1\/sandburg\/missing:none failed/);
+  assert.equal(execFileSync('docker', ['ps', '-aq', '--filter', `ancestor=${image}`]).toString().trim(), '');
+});

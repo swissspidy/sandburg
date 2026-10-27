@@ -30,10 +30,44 @@ report of where and why the two disagree.
     for the reference.
 
   Install and server output become the `runtime.log` artifact and
-  classification evidence. When the host reaches the internet through a
-  loopback proxy, the container shares the host network and gets the proxy
-  and CA bundle. Otherwise it uses bridge networking with the port
-  published on 127.0.0.1.
+  classification evidence. Containers use bridge networking with the port
+  published on 127.0.0.1, and get the host's proxy and CA bundle. A proxy on
+  the host's loopback is reached through the bridge's gateway
+  (`--add-host=host.docker.internal:host-gateway`) when a probe container
+  can connect to it there (it listens on the bridge too, and no firewall on
+  `docker0` drops the traffic); otherwise, as for most local proxies, which
+  listen on 127.0.0.1 only, the container shares the host network instead
+  (`--network host`), the only way it can reach the proxy. The probe runs
+  once per `dockerReference()`. Bridge traffic leaves the host through the
+  FORWARD chain and MASQUERADE, so host egress rules written for OUTPUT or
+  matched by cgroup do not apply to it.
+- As a host user other than root, containers run as that user
+  (`--user <uid>:<gid>`, `HOME=/tmp`), so it can remove the `node_modules`
+  they write; npm's cache volume is then `sandburg-npm-cache-<uid>`, given
+  to the user once per `dockerReference()`.
+- Containers are cleaned up whatever ends the run. Each is started with
+  `--rm` and labelled `sandburg.ref=<container name>`, with its owner (the
+  host, its PID namespace and its boot id) and the pid that started it;
+  dispose stops a `docker run` or image pull still in flight and removes the
+  run's containers by label. The first run of a process removes the
+  containers of its owner whose pid is gone, and the project copies of its
+  owner whose pid is gone (both are in their names). Project copies live in
+  `sandburg-ref-<uid>` in the temp directory, which must be a directory of
+  the user's and not a symlink. The image is pulled before the first
+  container starts, under a mount deadline that allows for the pull; a
+  failed pull is an `infra` result (the reference could not judge the app),
+  not a `timeout`, and one for an image that does not exist fails the other
+  runs without pulling again. Ctrl-C or SIGTERM during `compare` removes the
+  containers and project copies and closes the browser, then exits 130 (143
+  for SIGTERM) without writing a report.
+- **The Docker reference is not a security boundary.** It runs real
+  `npm install`, with the dependencies' lifecycle scripts, and the project's
+  own dev script, with the project directory mounted read-write and the npm
+  cache volume shared by all runs (as root in the container when Sandburg
+  runs as root). With `--network host` the container can reach every
+  service on the host's loopback, and the host's proxy settings, with any
+  credentials in them, are in its environment. Use it only on projects you
+  trust; the in-browser runtimes are the ones meant for untrusted code.
 - Running dev servers, not production builds, matches what the in-browser
   runtimes do and what eval harnesses typically serve.
 
