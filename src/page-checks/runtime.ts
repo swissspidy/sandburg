@@ -38,6 +38,10 @@ const keyboard = {
 
 async function run(source: string, options: PageChecksOptions): Promise<PageChecksOutput> {
   Object.assign(settings, options);
+  const results: PageCheckResult[] = [];
+  // From the start: stop() may come while the file still loads.
+  const state: NonNullable<typeof progress> = { results, pending: [], stopped: false };
+  progress = state;
   const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
   let mod: { default?: unknown };
   try {
@@ -59,15 +63,14 @@ async function run(source: string, options: PageChecksOptions): Promise<PageChec
     expect: makeExpect(options.expectTimeoutMs),
     appUrl: app.appUrl,
   };
-  const results: PageCheckResult[] = [];
   const entries = Object.entries(checks as Record<string, (ctx: typeof context & { signal: AbortSignal }) => unknown>);
-  progress = { results, pending: entries.map(([name]) => name), stopped: false };
+  state.pending = entries.map(([name]) => name);
   for (const [name, fn] of entries) {
-    if (progress.stopped) break;
-    progress.pending.shift();
+    if (state.stopped) break;
+    state.pending.shift();
     const controller = new AbortController();
     const started = performance.now();
-    progress.running = { name, started, controller };
+    state.running = { name, started, controller };
     running.signal = controller.signal;
     const timer = setTimeout(() => controller.abort(named('TimeoutError', `check "${name}" timed out`)), options.checkTimeoutMs);
     let result: PageCheckResult;
@@ -81,10 +84,10 @@ async function run(source: string, options: PageChecksOptions): Promise<PageChec
       result = { name, status: isFailure(e) ? 'failed' : 'error', message: message(e), durationMs: Math.round(performance.now() - started) };
     } finally {
       clearTimeout(timer);
-      progress.running = undefined;
+      state.running = undefined;
       running.signal = new AbortController().signal;
     }
-    if (progress.stopped) break;
+    if (state.stopped) break;
     results.push(result);
     // Stopped at its timeout: the app loads again where it first loaded, so what the check left half done does not reach the next one.
     if (controller.signal.aborted) {

@@ -125,12 +125,17 @@ export default {
 ```
 
 Each check has a time limit (30 s; `timeouts.check` in the library's `RunOptions`), and all of them
-together have the checks phase's (180 s; `timeouts.checks`). A check that runs out of time is stopped, not left running beside the next one:
-the Playwright call it is waiting in fails, any call it makes after that fails at once, and its
-`expect(…).toPass()` stops retrying. The app is then loaded again at the URL it first loaded at, so
-what the check left half done does not carry over; its result (failed) says so. A check also gets
-`signal`, an `AbortSignal` that aborts when it is stopped: pass it to waits of its own (a timer, a
-`fetch`), which Sandburg cannot stop. When the checks phase runs out of time, the checks that
+together have the checks phase's (180 s; `timeouts.checks`). A check that runs out of time is
+stopped, not left running beside the next one: the Playwright call it is waiting in fails, any call
+it makes after that fails (after a moment, so a loop that ignores the error does not stall the run),
+its `expect(…).toPass()` stops retrying, and the route handlers and event listeners it added to
+`page` are removed (those it added to `page.context()` are not). The app is then loaded again at the
+URL it first loaded at; its result (failed) says so. Loading it again resets only what lives in the
+page: cookies, `localStorage`, IndexedDB, service workers, the context's routes, the viewport and a
+fake clock carry over to the next check. A check also gets `signal`, an `AbortSignal` that aborts
+when it is stopped: pass it to waits of its own (a timer, a `fetch`), which Sandburg cannot stop.
+With `--checks-in page`, waits and actions stop the same way, but code of a check that catches the
+error and goes on cannot be stopped. When the checks phase runs out of time, the checks that
 finished and the artifacts already taken are kept: the check that was running fails, and those that
 had not started are reported as skipped (`not run`); the run's status is `error`.
 

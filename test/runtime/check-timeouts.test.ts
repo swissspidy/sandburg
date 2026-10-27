@@ -7,7 +7,8 @@ import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
 import { chromium, type Browser, type Frame, type Page } from 'playwright-core';
-import { ChecksProgress, runChecks, type Checks, type ChecksInput } from '../../src/orchestrator/checks.ts';
+import { ChecksProgress, runChecks, type CheckContext, type Checks, type ChecksInput } from '../../src/orchestrator/checks.ts';
+import { signalCalls } from '../../src/orchestrator/check-signal.ts';
 import type { PageChecks } from '../../src/page-checks/index.ts';
 import type { CheckResult } from '../../src/types.ts';
 import { tempDir } from '../unit/temp-dir.ts';
@@ -52,7 +53,7 @@ const input = (checks: ChecksInput['checks'], more: Partial<ChecksInput> = {}): 
   page,
   app,
   checks,
-  checkTimeoutMs: 1_000,
+  checkTimeoutMs: 3_000,
   expectTimeoutMs: 5_000,
   artifactsDir: tempDir('sandburg-check-timeouts-'),
   appErrors: () => [],
@@ -69,8 +70,8 @@ test('a check stopped at its timeout stops clicking, and the next check sees the
   const checks: Checks = {
     'hangs waiting for a button': async ({ app, page }) => {
       await app.getByLabel('Name').fill('left over');
-      // The button shows after the check's 1 s, in the next check: a click still pending would land there.
-      await page.evaluate(() => ((window as unknown as { laterAt: number }).laterAt = Date.now() + 1_500));
+      // The button shows after the check's 3 s, in the next check: a click still pending would land there.
+      await page.evaluate(() => ((window as unknown as { laterAt: number }).laterAt = Date.now() + 3_500));
       await app.getByRole('button', { name: 'Later' }).click({ timeout: 10_000 });
     },
     'runs after it': async ({ app, expect }) => {
@@ -87,21 +88,68 @@ test('a check stopped at its timeout stops clicking, and the next check sees the
   assert.equal(await page.evaluate(() => (window as unknown as { laterClicks?: number }).laterClicks), 1, 'only the second check clicked');
 });
 
-test('a check stopped inside toPass is not retried after it', async () => {
-  let tries = 0;
+test('Playwright calls carry the check\'s signal on this Playwright', () => {
+  assert.equal(signalCalls(page), true);
+});
+
+test('a check stopped inside toPass is not retried after it, however toPass is reached', async () => {
+  const tries = { expect: 0, soft: 0, configured: 0 };
+  const retry = (counter: keyof typeof tries, app: Frame) => async () => {
+    tries[counter]++;
+    await app.getByRole('button', { name: 'Never' }).click({ timeout: 50 });
+  };
   const checks: Checks = {
-    retries: async ({ app, expect }) => {
-      await expect(async () => {
-        tries++;
-        await app.getByRole('button', { name: 'Never' }).click({ timeout: 50 });
-      }).toPass();
+    expect: async ({ app, expect }) => expect(retry('expect', app)).toPass(),
+    soft: async ({ app, expect }) => expect.soft(retry('soft', app)).toPass(),
+    configured: async ({ app, expect }) => expect.configure({ timeout: 60_000 })(retry('configured', app)).toPass(),
+  };
+  const { checks: results } = await runChecks(input(checks, { checkTimeoutMs: 1_000 }));
+  for (const name of Object.keys(tries)) assert.equal(byName(results)[name].status, 'failed', name);
+  const stopped = { ...tries };
+  await page.waitForTimeout(1_200); // longer than toPass's longest interval (1 s)
+  assert.deepEqual(tries, stopped);
+});
+
+test('a stopped check that ignores its errors in a loop does not hold up the run', async () => {
+  // Each of its calls fails at once once it is stopped: unpaced, the loop would starve the timers.
+  const spin = async ({ app }: CheckContext) => {
+    while (!(await app.getByRole('button', { name: 'Never' }).isVisible().catch(() => false)));
+  };
+  const t = performance.now();
+  const { checks: results } = await runChecks(input({ spins: spin, 'runs after it': async ({ app, expect }) => expect(app.getByLabel('Name')).toBeVisible() }, { checkTimeoutMs: 1_000 }));
+  assert.equal(byName(results).spins.status, 'failed');
+  assert.equal(byName(results)['runs after it'].status, 'passed', JSON.stringify(results));
+  assert.ok(performance.now() - t < 10_000, `${Math.round(performance.now() - t)} ms`);
+
+  // At the phase's deadline too: the deadline's own timer fires, and the run ends.
+  const progress = new ChecksProgress();
+  const phase = new AbortController();
+  const deadline = setTimeout(() => phase.abort(new Error('checks did not finish within 2000 ms')), 2_000);
+  const t2 = performance.now();
+  await runChecks(input({ spins: spin }, { checkTimeoutMs: 60_000, progress, signal: phase.signal }));
+  clearTimeout(deadline);
+  progress.close('checks did not finish within 2000 ms');
+  assert.ok(performance.now() - t2 < 6_000, `${Math.round(performance.now() - t2)} ms`);
+  assert.equal(byName(progress.checks).spins.message, 'timed out: checks did not finish within 2000 ms');
+});
+
+test("a stopped check's route handlers and listeners are removed before the next check", async () => {
+  let heard = 0;
+  const checks: Checks = {
+    'routes and listens, then hangs': async ({ app, page }) => {
+      await page.route('http://checks.test/app/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>routed</p>' }));
+      page.on('console', () => heard++);
+      await app.getByRole('button', { name: 'Never' }).click();
+    },
+    'runs after it': async ({ app, expect }) => {
+      // The app loaded again past the stopped check's route, and its listener hears nothing.
+      await expect(app.getByLabel('Name')).toBeVisible();
+      await app.evaluate(() => console.log('after'));
     },
   };
-  const { checks: results } = await runChecks(input(checks));
-  assert.equal(byName(results).retries.status, 'failed');
-  const stopped = tries;
-  await page.waitForTimeout(1_200); // longer than toPass's longest interval (1 s)
-  assert.equal(tries, stopped);
+  const { checks: results } = await runChecks(input(checks, { checkTimeoutMs: 1_000 }));
+  assert.equal(byName(results)['runs after it'].status, 'passed', JSON.stringify(results));
+  assert.equal(heard, 0);
 });
 
 test('a checks phase stopped at its deadline keeps what finished, fails the running check and skips the rest', async () => {
@@ -152,7 +200,7 @@ test('in the page: a check stopped at its timeout stops clicking, and the next c
   const code = `export default {
     'hangs waiting for a button': async ({ app }) => {
       await app.getByLabel('Name').fill('left over');
-      window.laterAt = Date.now() + 1500;
+      window.laterAt = Date.now() + 3500;
       await app.getByRole('button', { name: 'Later' }).click({ timeout: 10000 });
     },
     'runs after it': async ({ app, expect }) => {
@@ -199,5 +247,22 @@ test('in the page: a checks phase stopped at its deadline keeps what finished', 
   assert.deepEqual(
     progress.checks.filter((c) => c.kind !== 'functional').map((c) => c.status),
     ['passed', 'passed', 'passed', 'skipped', 'skipped', 'skipped'],
+  );
+});
+
+test('in the page: a checks file stopped before it loaded is reported as timed out', async () => {
+  const progress = new ChecksProgress();
+  const phase = new AbortController();
+  const code = `window.loading = true;
+  await new Promise(() => {});
+  export default {};`;
+  const running = runChecks(input(pageChecks(code), { progress, signal: phase.signal }));
+  await page.waitForFunction(() => (window as unknown as { loading?: boolean }).loading);
+  phase.abort(new Error('checks did not finish within 1000 ms'));
+  await running;
+  progress.close('checks did not finish within 1000 ms');
+  assert.deepEqual(
+    progress.checks.filter((c) => c.kind === 'functional').map((c) => [c.name, c.status, c.message]),
+    [['checks file', 'failed', 'timed out: checks did not finish within 1000 ms']],
   );
 });

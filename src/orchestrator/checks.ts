@@ -144,6 +144,9 @@ export class ChecksProgress implements ChecksOutput {
   }
 }
 
+/** Whether the run warned that checks cannot be stopped in their Playwright calls (once a process). */
+let warned = false;
+
 /** How long the checks file running in the page has to say how far it got, once the phase is out of time. */
 const STOP_PAGE_CHECKS_MS = 1_000;
 /** How long a check that timed out has to stop (its Playwright calls aborted) before the app is loaded again. */
@@ -159,7 +162,10 @@ const STOP_CHECK_MS = 1_000;
 export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   const progress = input.progress ?? new ChecksProgress();
   const phase = input.signal ?? new AbortController().signal;
-  signalCalls(input.page);
+  if (!signalCalls(input.page) && !warned) {
+    warned = true;
+    console.warn("warning: this Playwright's client is not the one Sandburg knows: a check that runs out of time is not stopped while it waits in a Playwright call");
+  }
   await withSignal(phase, () => checksIn(input, progress, phase));
   return progress;
 }
@@ -229,9 +235,10 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
     try {
       results = await runPageChecks(page, pageChecks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 }, pageChecksLoaded);
     } catch (err) {
-      // Out of time: the page says which of its checks finished (outside the phase's signal, which has aborted).
+      // Out of time: the page says which of its checks finished (outside the phase's signal, which has
+      // aborted). None, when the file had not loaded yet: then the checks file timed out (close()).
       results = phase.aborted
-        ? await withSignal(AbortSignal.timeout(STOP_PAGE_CHECKS_MS), () => stopPageChecks(page, reasonOf(phase))).catch(() => null)
+        ? await withSignal(AbortSignal.timeout(STOP_PAGE_CHECKS_MS), () => stopPageChecks(page, reasonOf(phase))).then((r) => (r.length ? r : null), () => null)
         : [{ ...checkOf(checksFile), durationMs: ms(started), status: 'error', message: stripAnsi(err instanceof Error ? err.message : String(err)) }];
     }
     if (results) progress.finish(checksFile, results);
@@ -240,6 +247,7 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
     const timeout = new AbortController();
     const signal = AbortSignal.any([phase, timeout.signal]);
     let work: Promise<unknown> = Promise.resolve();
+    const checkPage = tracked(page);
     const result = await run(
       check,
       async () => {
@@ -247,7 +255,7 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
         const checkExpect = stoppable(input.appIdle && input.expectTimeoutMs ? settlingExpect(expect, input.expectTimeoutMs, input.appIdle) : configured, signal);
         const timer = setTimeout(() => timeout.abort(named('TimeoutError', `check "${name}" timed out`)), input.checkTimeoutMs);
         try {
-          work = withSignal(signal, () => Promise.resolve().then(() => fn({ app, page, expect: checkExpect, appUrl, signal })));
+          work = withSignal(signal, () => Promise.resolve().then(() => fn({ app, page: checkPage.page, expect: checkExpect, appUrl, signal })));
           await Promise.race([work, aborted(signal)]);
         } finally {
           clearTimeout(timer);
@@ -258,6 +266,7 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
     );
     if (result && timeout.signal.aborted && !phase.aborted) {
       await Promise.race([work.catch(() => {}), sleep(STOP_CHECK_MS, undefined, { ref: false })]);
+      await checkPage.remove();
       result.message += await reload(app, start, input.checkTimeoutMs, input.appSettled);
     }
   }
@@ -292,6 +301,42 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
 }
 
 /**
+ * A check's page, which notes the route handlers and event listeners the check adds to it, so that
+ * those of a check stopped at its timeout can be removed (remove()): they would go on answering and
+ * acting beside the next check. Those it adds elsewhere (its page's context) are not noted.
+ */
+function tracked(page: Page): { page: Page; remove(): Promise<void> } {
+  const added: (() => Promise<unknown> | void)[] = [];
+  type Fn = (...a: unknown[]) => unknown;
+  const proxy: Page = new Proxy(page, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop) as unknown;
+      if (typeof value !== 'function') return value;
+      if (prop === 'route') {
+        return async (url: Parameters<Page['route']>[0], handler: Parameters<Page['route']>[1], options?: Parameters<Page['route']>[2]) => {
+          await target.route(url, handler, options);
+          added.push(() => target.unroute(url, handler));
+        };
+      }
+      if (prop === 'on' || prop === 'once' || prop === 'addListener' || prop === 'prependListener') {
+        return (event: string, listener: Fn) => {
+          (value as Fn).call(target, event, listener);
+          added.push(() => void target.off(event as 'load', listener));
+          return proxy;
+        };
+      }
+      return (value as Fn).bind(target);
+    },
+  });
+  return {
+    page: proxy,
+    remove: async () => {
+      await Promise.all(added.splice(0).map((undo) => Promise.resolve(undo()).catch(() => {})));
+    },
+  };
+}
+
+/**
  * After a check that timed out: the app loaded again at `url` (where it first loaded), and settled.
  * What the result's message says of it.
  */
@@ -307,19 +352,25 @@ async function reload(app: Frame, url: string, timeoutMs: number, settled?: () =
 
 /**
  * expect(), where a function given to it is no longer called once `signal` aborts (it returns
- * undefined instead). toPass retries its function with no deadline of its own: a check stopped in
+ * undefined instead), however it is reached: expect(fn), expect.soft(fn), expect.poll(fn), and those
+ * of expect.configure(…). toPass retries its function with no deadline of its own: a check stopped in
  * one would otherwise go on retrying for as long as Sandburg runs.
  */
 function stoppable(base: typeof expect, signal: AbortSignal): typeof expect {
-  const guard = (value: unknown) => (typeof value === 'function' ? (...a: unknown[]) => (signal.aborted ? undefined : (value as (...x: unknown[]) => unknown)(...a)) : value);
-  return new Proxy(base, {
-    apply: (target, thisArg, args: unknown[]) => Reflect.apply(target, thisArg, [guard(args[0]), ...args.slice(1)]),
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (prop !== 'poll' || typeof value !== 'function') return value;
-      return (fn: unknown, ...rest: unknown[]) => (value as (...x: unknown[]) => unknown).call(target, guard(fn), ...rest);
-    },
-  });
+  type Fn = (...a: unknown[]) => unknown;
+  const guard = (value: unknown) => (typeof value === 'function' ? (...a: unknown[]) => (signal.aborted ? undefined : (value as Fn)(...a)) : value);
+  const wrap = <T extends object>(fn: T, self: unknown): T =>
+    new Proxy(fn, {
+      apply: (target, _this, args: unknown[]) => Reflect.apply(target as Fn, self, [guard(args[0]), ...args.slice(1)]),
+      get(target, prop) {
+        const value = Reflect.get(target, prop) as unknown;
+        if (typeof value !== 'function') return value;
+        if (prop === 'soft' || prop === 'poll') return wrap(value, target);
+        if (prop === 'configure') return (...a: unknown[]) => wrap((value as Fn).apply(target, a) as object, undefined);
+        return value;
+      },
+    });
+  return wrap(base, undefined);
 }
 
 /** A web-first assertion not passed after this long is also checked once every PROBE_EVERY_MS (see settlingExpect). */
