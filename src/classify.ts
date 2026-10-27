@@ -72,8 +72,9 @@ export function classify(input: ClassifyInput): Failure | null {
   // dispose is cleanup: a failure there is recorded but never decides the run's class.
   const failedPhase = input.phases.find((p) => p.name !== 'dispose' && (p.status === 'failed' || p.status === 'timeout'));
   const failedChecks = input.checks.filter((c) => c.blocking && (c.status === 'failed' || c.status === 'error'));
-  if (!failedPhase && failedChecks.length === 0 && input.probe?.verdict !== 'unsupported') return null;
+  // A run whose project or checks file did not load failed, whatever phases and checks it records.
   if (input.setupError) return failure(input.setupError.class, 'probe', input.setupError.rule, input.setupError.message, []);
+  if (!failedPhase && failedChecks.length === 0 && input.probe?.verdict !== 'unsupported') return null;
 
   const appErrors = input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message);
   // Importing a package the project never declared fails in any environment: that is the app's bug.
