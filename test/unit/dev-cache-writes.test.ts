@@ -273,3 +273,35 @@ test('an install key with no install is not remembered, by an index asked for or
   assert.equal(res?.status, 204);
   assert.equal(installer.indexes.has(other), false);
 });
+
+test('a cache bundle made while its cache is written again is not kept: the next run gets the new cache', async () => {
+  const { createRequire, syncBuiltinESMExports } = await import('node:module');
+  const fsp = createRequire(import.meta.url)('node:fs/promises') as typeof import('node:fs/promises');
+  const key = '8'.repeat(24);
+  const write = async (files: Record<string, string>) => {
+    const token = node.issueCacheWrite(key, DIRS, Promise.resolve('s-race'));
+    await new Promise((r) => setImmediate(r));
+    assert.equal((await post(key, 's-race', token, files))?.status, 200);
+  };
+  await write({ '.next/dev/cache/a': 'old' });
+  node.readableCaches.set(key, DIRS);
+  // The run's page stores its cache again while the host reads the cache to make a bundle of it.
+  const readFile = fsp.readFile;
+  fsp.readFile = (async (...args: Parameters<typeof readFile>) => {
+    const text = await readFile(...args);
+    if (String(args[0]) === cacheFile(key)) {
+      fsp.readFile = readFile;
+      syncBuiltinESMExports();
+      await write({ '.next/dev/cache/a': 'new' });
+    }
+    return text;
+  }) as typeof readFile;
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(node.bundledEntries((await node.cacheBundle(key))!), { '.next/dev/cache/a': 'old' }, 'what was read');
+  } finally {
+    fsp.readFile = readFile;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(node.bundledEntries((await node.cacheBundle(key))!), { '.next/dev/cache/a': 'new' });
+});

@@ -5,7 +5,8 @@
 import type { NetMessage, ToParent, ToWorker } from './messages.ts';
 import { loopback, servers, type BridgeResponse } from './builtins/http.ts';
 import { netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
-import { thread, realPostMessage, post, announce } from './worker.ts';
+import { thread, realPostMessage, post, announce, exited } from './worker.ts';
+import { ExitError } from './builtins/process.ts';
 import { nestedReported } from './process-tree.ts';
 
 type Send = (m: NetMessage, transfer?: Transferable[]) => void;
@@ -201,27 +202,48 @@ export function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
   }
 }
 
+/** Loopback requests from nested runtimes that this runtime's own servers are answering (see loopbackServersGone). */
+const servingLoopback = new Set<{ error(message: string, code?: string): void }>();
+
+/** This runtime's program exited: its servers' loopback requests fail as with a process that died. */
+export function loopbackServersGone(): void {
+  for (const bridge of [...servingLoopback]) bridge.error('socket hang up', 'ECONNRESET');
+}
+
 /** A loopback request from a nested runtime: served here, or routed on (see loopback.route). */
 function loopbackRequest(m: { id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }, from: globalThis.Worker) {
   const reply = (x: ToWorker, t: Transferable[] = []) => from.postMessage(x, t);
   const id = m.id;
+  // Answered once: nothing is sent after its end, or after the program here exited (loopbackServersGone).
+  let open = true;
+  const close = () => {
+    const was = open;
+    open = false;
+    servingLoopback.delete(bridge);
+    return was;
+  };
   const bridge = {
-    start: (status: number, statusText: string, headers: [string, string][]) => reply({ type: 'lb-start', id, status, statusText, headers }),
+    start: (status: number, statusText: string, headers: [string, string][]) => open && reply({ type: 'lb-start', id, status, statusText, headers }),
     chunk: (data: Uint8Array) => {
+      if (!open) return;
       const chunk = data.slice().buffer;
       reply({ type: 'lb-chunk', id, chunk }, [chunk]);
     },
-    end: () => reply({ type: 'lb-end', id }),
-    error: (message: string, code?: string) => reply({ type: 'lb-error', id, message, code }),
+    end: () => close() && reply({ type: 'lb-end', id }),
+    error: (message: string, code?: string) => close() && reply({ type: 'lb-error', id, message, code }),
   };
   const body = m.body ? new Uint8Array(m.body) : null;
   const server = servers.get(m.port);
   try {
-    if (server) server.dispatch(m.method, m.url, m.headers, body, bridge);
-    else if (nestedPorts.get(m.port) === from || !loopback.route!(m.port, m.method, m.url, m.headers, body, bridge)) {
+    if (server) {
+      servingLoopback.add(bridge);
+      server.dispatch(m.method, m.url, m.headers, body, bridge);
+    } else if (nestedPorts.get(m.port) === from || !loopback.route!(m.port, m.method, m.url, m.headers, body, bridge)) {
       bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
     }
   } catch (e) {
+    // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
+    if (e instanceof ExitError) return exited(e.code);
     bridge.error(String((e as Error)?.message ?? e));
   }
 }

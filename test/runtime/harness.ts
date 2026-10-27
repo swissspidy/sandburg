@@ -32,10 +32,18 @@ window.prefetch = (url) => {
 };
 window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
-  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null, listening: [] };
+  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null, listening: [], ends: [] };
   const bodies = new Map();
   let pending = requests.length;
   const finish = () => { w.terminate(); resolve(out); };
+  // The run is over (it exited, or each request has its answer); with linger, kept that long to see what comes after.
+  let over = false;
+  const done = () => {
+    if (over) return;
+    over = true;
+    if (extra.linger) setTimeout(finish, extra.linger);
+    else finish();
+  };
   // The run the harness is waiting on (see RuntimeHarness.until): its output so far, and its end.
   window.current = { out, finish };
   w.onmessage = (e) => {
@@ -43,7 +51,7 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
     if (m.type === 'ready') w.postMessage({ type: 'run', main });
     else if (m.type === 'log') out[m.stream] += m.text;
     else if (m.type === 'fatal') { out.fatal = m.stack || m.message; finish(); }
-    else if (m.type === 'exit') { out.exit = m.code; if (!requests.length) finish(); }
+    else if (m.type === 'exit') { out.ends.push(['exit', m.code]); out.exit = m.code; if (!requests.length) done(); }
     else if (m.type === 'listening') {
       // The ports the page was told of.
       out.listening.push(m.port);
@@ -55,13 +63,15 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
       // A response that ended in the task that started it, in one message (see request() in worker.ts).
       const body = new TextDecoder().decode(m.body);
       out.whole.push(m.id);
+      out.ends.push([m.type, m.id]);
       out.responses[m.id] = { status: m.status, body, chunks: body ? 1 : 0 };
-      if (--pending === 0) finish();
+      if (--pending === 0) done();
     }
     else if (m.type === 'response-end' || m.type === 'response-error') {
       const b = bodies.get(m.id) || { status: 0, chunks: [m.message] };
+      out.ends.push([m.type, m.id]);
       out.responses[m.id] = { status: b.status, body: b.chunks.join(''), chunks: b.chunks.length };
-      if (--pending === 0) finish();
+      if (--pending === 0) done();
     }
   };
   w.onerror = (e) => { out.fatal = 'worker error: ' + e.message; finish(); };
@@ -98,6 +108,7 @@ window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => 
     } else if (m.type === 'ws-reject') { out.events.push(['reject', m.status, m.message]); finish(); }
     else if (m.type === 'ws-message') out.events.push(['message', typeof m.data === 'string' ? m.data : Array.from(new Uint8Array(m.data))]);
     else if (m.type === 'ws-closed') { out.events.push(['closed', m.code, m.reason, m.wasClean]); setTimeout(finish, 50); }
+    else if (m.type === 'exit') out.events.push(['exit', m.code]);
   };
   w.postMessage({ type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg' });
   setTimeout(finish, 3000);
@@ -338,7 +349,7 @@ export class RuntimeHarness {
     return run;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean } = {}) {
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number } = {}) {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();
@@ -351,6 +362,8 @@ export class RuntimeHarness {
       /** The ids of the requests whose response came in one message (response-full). */
       whole: number[];
       listening: (number | string)[];
+      /** Each message that ended a request ([type, id]) or the program (['exit', code]), in order. */
+      ends: [string, number][];
     }>, until);
   }
 
