@@ -46,6 +46,11 @@ function ask(ws: WebSocket, id: number, path: string): Promise<{ id: number; sta
   });
 }
 
+/** Resolves once `ready()` holds, checked on each turn of the event loop; fails after 10 s (a backstop: it holds at once, or within ms). */
+async function until(ready: () => boolean): Promise<void> {
+  for (const end = Date.now() + 10_000; !ready(); await new Promise((r) => setImmediate(r))) if (Date.now() > end) throw new Error('timed out waiting');
+}
+
 test('the file channel answers GETs of installed files, by id', async () => {
   const { server, asked, url } = await channelServer();
   const ws = await open(url, ORIGIN);
@@ -351,7 +356,8 @@ test('nothing after a close frame is served: not a message it left unfinished, n
   const post = postMessage(1, '/__sandburg/esbuild-transform', new Uint8Array(10));
   // A fragment, a close frame, the fragment's continuation, then a GET.
   socket.push(Buffer.concat([clientFrame(false, 0x2, post.subarray(0, 8)), clientFrame(true, 0x8, new Uint8Array(0)), clientFrame(true, 0x0, post.subarray(8)), clientFrame(true, 0x1, new TextEncoder().encode('2 /__sandburg/nm/k/t/node_modules/a/index.js'))]));
-  await new Promise((r) => setTimeout(r, 100));
+  // The frames came in one read: once the close is answered, what came with it was read too.
+  await until(() => socket.writableEnded);
   assert.deepEqual(asked, []);
   // The host's answer to the close: a close frame (after the 101), and its side ended.
   assert.equal(written.at(-1)?.[0], 0x88);
@@ -382,13 +388,15 @@ test('clients that do not read their answers each hold at most MAX_UNSENT of the
   const { MAX_UNSENT } = await import('../../src/orchestrator/host-socket.ts');
   const channels = await Promise.all([1, 2, 3, 4].map(() => unreadChannel(MAX_BODY)));
   for (const c of channels) c.socket.push(gets(500));
-  await new Promise((r) => setTimeout(r, 300));
-  for (const c of channels) {
+  // Each stops reading (its socket paused) once what it holds is full.
+  await until(() => channels.every((c) => c.socket.isPaused()));
+  const served = channels.map((c) => c.state.served);
+  // The answers in progress go out in this turn of the event loop; nothing more is read after them.
+  await new Promise((r) => setImmediate(r));
+  for (const [i, c] of channels.entries()) {
     // What waits to be sent, with frame headers: at most MAX_UNSENT; nothing more is read.
     assert.ok(c.state.served > 0 && c.socket.writableLength <= MAX_UNSENT + c.state.served * 64, `${c.socket.writableLength} bytes unsent, ${c.state.served} served`);
-    const served = c.state.served;
-    await new Promise((r) => setTimeout(r, 100));
-    assert.equal(c.state.served, served);
+    assert.equal(c.state.served, served[i]);
   }
   for (const c of channels) c.read();
   for (let i = 0; i < 400 && channels.some((c) => c.state.served < 500); i++) await new Promise((r) => setTimeout(r, 5));
@@ -396,19 +404,27 @@ test('clients that do not read their answers each hold at most MAX_UNSENT of the
   for (const c of channels) c.socket.destroy();
 });
 
-test('a channel whose answers do not drain within the timeout is closed', { timeout: 20_000 }, async () => {
+test('a channel whose answers do not drain within the timeout is closed', { timeout: 20_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const c = await unreadChannel(256 << 10, { drainTimeoutMs: 200 });
   c.socket.push(gets(20));
-  await new Promise((r) => setTimeout(r, 100));
+  // Its answers wait to be sent (the drain timer is armed).
+  await until(() => c.socket.writableNeedDrain);
+  t.mock.timers.tick(199);
+  await new Promise((r) => setImmediate(r));
   assert.equal(c.state.closed, false);
-  for (let i = 0; i < 100 && !c.state.closed; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(c.state.closed, true);
+  t.mock.timers.tick(1);
+  await until(() => c.state.closed);
   // One that reads in time stays open.
   const ok = await unreadChannel(256 << 10, { drainTimeoutMs: 200 });
   ok.socket.push(gets(20));
-  await new Promise((r) => setTimeout(r, 50));
+  await until(() => ok.socket.writableNeedDrain);
+  t.mock.timers.tick(50);
   ok.read();
-  await new Promise((r) => setTimeout(r, 400));
+  await until(() => !ok.socket.writableNeedDrain);
+  t.mock.timers.tick(400);
+  // A close would be told in this turn of the event loop (destroy() emits it on the next tick).
+  await new Promise((r) => setImmediate(r));
   assert.equal(ok.state.closed, false);
   ok.socket.destroy();
 });
@@ -432,16 +448,16 @@ test('a note (id 0) is served and not answered; notes in progress are bounded to
   const key = 'a'.repeat(24);
   const notes = Array.from({ length: 500 }, (_, i) => (i % 2 ? `0 /__sandburg/nm/${key}/read?files=t%2Fnode_modules%2Fa%2Ff${i}.js` : `0 http://box.sandburg.localhost:1/__sandburg/nm/${key}/t/node_modules/a/f${i}.js?used=1`));
   socket.push(Buffer.concat(notes.map((n) => clientFrame(true, 0x1, new TextEncoder().encode(n)))));
-  await new Promise((r) => setTimeout(r, 100));
-  // Taken while fewer than a bounded number are in progress (they wait on the host here).
+  // Taken while fewer than a bounded number are in progress (they wait on the host here): then it stops reading.
+  await until(() => socket.isPaused());
   assert.ok(served > 0 && served < 500, `served ${served}`);
-  for (let i = 0; i < 200 && served < 500; i++) {
+  await until(() => {
     for (const done of pending.splice(0)) done();
-    await new Promise((r) => setTimeout(r, 5));
-  }
+    return served === 500;
+  });
   for (const done of pending.splice(0)) done();
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(served, 500);
+  // An answer would be written in this turn of the event loop, as each is served.
+  await new Promise((r) => setImmediate(r));
   // No answer was written for any of them.
   assert.equal(written.length, handshake);
   socket.destroy();
