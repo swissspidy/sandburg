@@ -15,10 +15,14 @@ export const netConns = new Map<number, NetSocket>();
 /** Net servers in nested runtimes. */
 const nestedNet = new Map<number | string, globalThis.Worker>();
 
+/** Connections whose peer is in a nested runtime, by id: reset if it ends (forgetNested). */
+const netPeers = new Map<number, globalThis.Worker>();
+
 let nextNetId = -1 - Math.floor(Math.random() * 2 ** 40);
 
-function bindRemote(socket: NetSocket, id: number, send: Send) {
+function bindRemote(socket: NetSocket, id: number, send: Send, nested: globalThis.Worker | null) {
   netConns.set(id, socket);
+  if (nested) netPeers.set(id, nested);
   socket.peer = {
     data: (chunk) => {
       const buf = chunk.slice().buffer;
@@ -27,10 +31,14 @@ function bindRemote(socket: NetSocket, id: number, send: Send) {
     end: () => send({ type: 'net-end', id }),
     close: () => {
       netConns.delete(id);
+      netPeers.delete(id);
       send({ type: 'net-close', id });
     },
   };
-  socket.once('close', () => netConns.delete(id));
+  socket.once('close', () => {
+    netConns.delete(id);
+    netPeers.delete(id);
+  });
 }
 
 netLinks.connect = (key, socket) => {
@@ -39,13 +47,17 @@ netLinks.connect = (key, socket) => {
   const send: Send | null = nested ? (m, t) => nested.postMessage(m, t ?? []) : thread ? (m, t) => realPostMessage(m, t ?? []) : null;
   if (!send) return false;
   const id = nextNetId--;
-  bindRemote(socket, id, send);
+  bindRemote(socket, id, send, nested ?? null);
   send({ type: 'net-connect', id, key });
   return true;
 };
 
 netEvents.on('listening', (key: number | string) => {
   if (thread) realPostMessage({ type: 'net-listening', key } satisfies NetMessage);
+});
+
+netEvents.on('closed', (key: number | string) => {
+  if (thread) realPostMessage({ type: 'net-closed', key } satisfies NetMessage);
 });
 
 /** A net message from another runtime; `reply` goes back to it. */
@@ -55,7 +67,7 @@ export function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker |
       const server = netServers.get(m.key);
       if (!server) return reply({ type: 'net-refused', id: m.id, message: `connect ECONNREFUSED ${typeof m.key === 'string' ? m.key : `127.0.0.1:${m.key}`}` });
       const socket = new NetSocket();
-      bindRemote(socket, m.id, reply);
+      bindRemote(socket, m.id, reply, from);
       socket.connecting = false;
       socket.pending = false;
       server.accept(socket);
@@ -66,6 +78,7 @@ export function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker |
     case 'net-refused': {
       const socket = netConns.get(m.id);
       netConns.delete(m.id);
+      netPeers.delete(m.id);
       return socket?.refuse(m.message);
     }
     case 'net-data':
@@ -75,6 +88,7 @@ export function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker |
     case 'net-close': {
       const socket = netConns.get(m.id);
       netConns.delete(m.id);
+      netPeers.delete(m.id);
       if (socket) {
         socket.peer = null;
         socket.destroy();
@@ -83,6 +97,9 @@ export function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker |
     }
     case 'net-listening':
       if (from) nestedNet.set(m.key, from);
+      return;
+    case 'net-closed':
+      if (from && nestedNet.get(m.key) === from) nestedNet.delete(m.key);
       return;
   }
 }
@@ -94,6 +111,9 @@ export function netMessage(m: NetMessage, reply: Send, from: globalThis.Worker |
 export const nestedPorts = new Map<number | string, globalThis.Worker>();
 
 export const nestedSockets = new Map<number, globalThis.Worker>();
+
+/** Requests in flight to nested runtimes (from the page, a parent or loopback.route), by id: failed if the runtime ends first (forgetNested). */
+const inflight = new Map<number, globalThis.Worker>();
 
 /** Requests this runtime's programs made to servers in nested runtimes (http.request to localhost). */
 const loopbackRequests = new Map<number, BridgeResponse & { error(message: string, code?: string): void }>();
@@ -112,10 +132,61 @@ loopback.route = (target, method, url, headers, body, bridge) => {
   loopbackRequests.set(id, bridge);
   const buf = body ? body.slice().buffer : null;
   const msg = { id, port: target, method, url, headers, body: buf };
-  if (worker) worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
-  else realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
+  if (worker) {
+    inflight.set(id, worker);
+    worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
+  } else realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
   return true;
 };
+
+/** A request from the page or the parent for a port a nested runtime serves: down to it. */
+export function forwardRequest(msg: Extract<ToWorker, { type: 'request' }>) {
+  const worker = nestedPorts.get(msg.port)!;
+  inflight.set(msg.id, worker);
+  worker.postMessage(msg, msg.body ? [msg.body] : []);
+}
+
+/** No server for `port` here or below any more: the parent stops routing it here (see 'listening'). */
+export function unannounce(port: number | string) {
+  if (thread && !servers.has(port) && !nestedPorts.has(port)) realPostMessage({ type: 'closed', port });
+}
+
+/**
+ * A nested runtime ended (its process exited or was killed, its thread was terminated): its servers
+ * are gone, and what was in flight to them fails as it does when a real process dies, instead of
+ * waiting for an answer that never comes.
+ */
+export function forgetNested(worker: globalThis.Worker) {
+  for (const [port, w] of nestedPorts) {
+    if (w !== worker) continue;
+    nestedPorts.delete(port);
+    unannounce(port);
+  }
+  for (const [key, w] of nestedNet) if (w === worker) nestedNet.delete(key);
+  for (const [id, w] of inflight) {
+    if (w !== worker) continue;
+    inflight.delete(id);
+    const own = loopbackRequests.get(id);
+    loopbackRequests.delete(id);
+    if (own) own.error('socket hang up', 'ECONNRESET');
+    else post({ type: 'response-error', id, message: 'socket hang up' });
+  }
+  for (const [id, w] of nestedSockets) {
+    if (w !== worker) continue;
+    nestedSockets.delete(id);
+    post({ type: 'ws-closed', id, code: 1006, reason: '', wasClean: false });
+  }
+  for (const [id, w] of netPeers) {
+    if (w !== worker) continue;
+    const socket = netConns.get(id);
+    netConns.delete(id);
+    netPeers.delete(id);
+    if (!socket) continue;
+    socket.peer = null;
+    if (socket.connecting) socket.refuse(`connect ECONNREFUSED${socket.remotePort ? ` 127.0.0.1:${socket.remotePort}` : ''}`);
+    else socket.destroy(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET', errno: -104, syscall: 'read' }));
+  }
+}
 
 /** The parent's reply to a request sent up by loopback.route. */
 export function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
@@ -164,6 +235,7 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'net-end':
     case 'net-close':
     case 'net-listening':
+    case 'net-closed':
       netMessage(m, (x, t) => from.postMessage(x, t ?? []), from);
       return true;
     case 'response-start':
@@ -171,6 +243,7 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'response-full':
     case 'response-end':
     case 'response-error': {
+      if (m.type !== 'response-start' && m.type !== 'response-chunk') inflight.delete(m.id);
       const own = loopbackRequests.get(m.id);
       if (!own) break;
       if (m.type === 'response-start') own.start(m.status, m.statusText, m.headers);
@@ -204,6 +277,12 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'listening':
       nestedPorts.set(m.port, from);
       announce(m.port, m.ephemeral);
+      return true;
+    case 'closed':
+      if (nestedPorts.get(m.port) === from) {
+        nestedPorts.delete(m.port);
+        unannounce(m.port);
+      }
       return true;
     case 'response-chunk':
       post(m, [m.chunk.buffer as ArrayBuffer]);

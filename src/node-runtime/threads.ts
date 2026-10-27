@@ -474,6 +474,8 @@ export interface ThreadHost {
   postToParent(msg: ToParent, transfer?: Transferable[]): void;
   /** Messages of a nested runtime about servers it runs (listening, responses, WebSockets), which this runtime passes on. */
   relay(msg: ToParent, from: globalThis.Worker): boolean;
+  /** A nested runtime ended (terminated): what it served is gone, and requests in flight to it fail. */
+  ended(worker: globalThis.Worker): void;
   /** Ends this process with an error: a WebAssembly thread of it crashed (see Worker's 'fatal'). */
   crash(message: string, stack?: string): void;
 }
@@ -585,6 +587,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
     liveRuntimes.delete(worker);
     nestedEnded(worker);
     terminate();
+    host.ended(worker);
   };
   return worker;
 }
