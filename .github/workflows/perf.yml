@@ -2,14 +2,18 @@ name: Performance
 
 # Benchmarks the PR against its base branch (scripts/bench.ts) and fails only on a large regression:
 # hosted runners are noisy, so the table in the job summary is the signal, and the threshold a guard.
+# It also runs the unit tests' timing assertions (SANDBURG_PERF_TESTS), which need a quiet runner.
 on:
   pull_request:
     paths:
       - 'src/**'
       - 'pages/**'
       - 'scripts/bench.ts'
+      - 'test/unit/await-context.test.ts'
+      - 'test/unit/host-socket.test.ts'
       - 'package-lock.json'
       - '.github/workflows/perf.yml'
+      - '.github/actions/setup-chromium/**'
 
 permissions:
   contents: read
@@ -32,14 +36,16 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
-      # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
-      # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
-      - run: |
-          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
-          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
-      - run: npx playwright install --with-deps chromium
+      - uses: $/.github/actions/setup-chromium
       - run: git fetch --no-tags --depth=1 origin "${BASE_REF}"
         env:
           BASE_REF: ${{ github.base_ref }}
-      - run: node scripts/bench.ts --base FETCH_HEAD --head . --fixtures vite-react-counter,next-app-router --modes warm,cold --rounds 3 --summary "$GITHUB_STEP_SUMMARY" --fail-above 0.3
+      - id: bench
+        run: node scripts/bench.ts --base FETCH_HEAD --head . --fixtures vite-react-counter,next-app-router --modes warm,cold --rounds 3 --summary "$GITHUB_STEP_SUMMARY" --fail-above 0.3
+      # The unit tests' timing assertions (SANDBURG_PERF_TESTS), which CI's unit job leaves out: one
+      # file at a time, so that no other test shares the runner's cores. After the benchmark, whatever
+      # it found, so that neither hides the other's result; not when setup failed before it.
+      - if: ${{ !cancelled() && steps.bench.outcome != 'skipped' }}
+        run: node --test --test-reporter=spec --test-concurrency=1 test/unit/await-context.test.ts test/unit/host-socket.test.ts
+        env:
+          SANDBURG_PERF_TESTS: "1"
