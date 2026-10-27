@@ -38,6 +38,8 @@ export type DockerReferenceFactory = (() => NodeRuntime) & { disposeAll(): Promi
 const LOG_LIMIT = 2000;
 /** How long the image pull may take on a cold machine (node images are 70–250 MB). */
 const PULL_TIMEOUT_MS = 600_000;
+/** Docker's answers for an image that cannot exist; a bare "not found" (a proxy's or mirror's, often passing) is not one. */
+const PERMANENT_PULL_FAILURE = /manifest unknown|manifest for \S+ not found|repository does not exist|pull access denied|invalid reference format/i;
 /** Every container carries its run's id in this label, who started it (OWNER) in the next, and the pid in the last. */
 const LABEL = 'sandburg.ref';
 const OWNER_LABEL = 'sandburg.ref.owner';
@@ -155,7 +157,7 @@ async function prepareDocker(o: { docker: DockerExec; image: string; workRoot: s
       await docker(['pull', '--quiet', image], { timeoutMs: PULL_TIMEOUT_MS, signal });
     } catch (pullErr) {
       const text = (pullErr as Error).message;
-      throw infraError(`docker pull ${image} failed: ${tail(text)}`, { permanent: /manifest unknown|not found|pull access denied|repository does not exist|invalid reference format/i.test(text) });
+      throw infraError(`docker pull ${image} failed: ${tail(text)}`, { permanent: PERMANENT_PULL_FAILURE.test(text) });
     }
   }
   // npm's cache volume is root's when Docker makes it: the host user's containers need it as theirs.

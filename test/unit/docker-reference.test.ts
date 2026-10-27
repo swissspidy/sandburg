@@ -123,6 +123,34 @@ test('an image that does not exist fails every run as infra, with one pull', asy
   assert.equal(pulls, 1);
 });
 
+test('a "not found" from a registry mirror or proxy is not taken for an image that does not exist: the next run pulls again', async () => {
+  let pulls = 0;
+  const { docker } = fakeDocker({
+    image: missingImage,
+    pull: async () => {
+      pulls++;
+      throw new Error('docker pull exited with 1\nError response from daemon: Get "https://mirror.example/v2/": 404 not found');
+    },
+  });
+  const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker });
+  for (let i = 0; i < 2; i++) await assert.rejects(factory().mount(project, () => {}), (e: Error & { infra?: boolean }) => e.infra === true);
+  assert.equal(pulls, 2);
+});
+
+test('"manifest for … not found" is an image that does not exist', async () => {
+  let pulls = 0;
+  const { docker } = fakeDocker({
+    image: missingImage,
+    pull: async () => {
+      pulls++;
+      throw new Error('docker pull exited with 1\nError response from daemon: manifest for node:99-slim not found');
+    },
+  });
+  const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker });
+  for (let i = 0; i < 2; i++) await assert.rejects(factory().mount(project, () => {}));
+  assert.equal(pulls, 1);
+});
+
 test('no Docker daemon fails mount as infra, without a pull', async () => {
   const { docker, commands } = fakeDocker({
     image: () => Promise.reject(new Error('docker image inspect exited with 1\nfailed to connect to the docker API at unix:///var/run/docker.sock')),
