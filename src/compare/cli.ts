@@ -29,8 +29,8 @@ export async function compareCommand(
   if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
   const reference = dockerReference();
   // Ctrl-C (or a kill) removes the reference's containers and project copies and closes the browser,
-  // then exits 130. Playwright's own handlers (close the browser, exit at once) wait meanwhile: a
-  // second Ctrl-C gets them.
+  // then exits 130 (143 for SIGTERM). Playwright's own handlers (close the browser, exit at once) wait
+  // meanwhile: a second Ctrl-C gets them.
   const held = SIGNALS.map((signal) => [signal, process.listeners(signal)] as const);
   let released = false;
   /** Set once a signal came: it exits the process, and the runs it cut short are not reported. */
@@ -46,7 +46,7 @@ export async function compareCommand(
   const interrupted = (signal: NodeJS.Signals) => {
     release();
     console.error(`${signal}: removing the reference's containers`);
-    const exit = () => process.exit(130);
+    const exit = () => process.exit(signal === 'SIGTERM' ? 143 : 130);
     stop.exiting = reference.disposeAll().then(() => session.close()).then(exit, exit);
   };
   for (const [signal, listeners] of held) {

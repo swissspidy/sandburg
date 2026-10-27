@@ -602,11 +602,15 @@ export class Session {
       await run.phase('load', timeouts.load, async () => {}); // no host page
       await run.phase('mount', timeouts.mount, () => node.mount(project, (l) => logs.push(l)));
       run.install = await run.phase('install', timeouts.install, () => node.install());
-      const { port } = await run.phase('start', timeouts.start, () => node.start());
-      // *.sandburg.localhost resolves to loopback and bypasses the proxy.
-      const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
-      await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
-      run.capture(page, origin);
+      // The tab's routes and capture for the app's origin are part of starting it: an error there is the phase's.
+      const origin = await run.phase('start', timeouts.start, async () => {
+        const { port } = await node.start();
+        // *.sandburg.localhost resolves to loopback and bypasses the proxy.
+        const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
+        await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
+        run.capture(page, origin);
+        return origin;
+      });
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });
         await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run);

@@ -4,11 +4,12 @@
  * are the same as for in-browser runtimes, so only the runtime differs.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { connect, createServer } from 'node:net';
-import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { readFileSync, readlinkSync } from 'node:fs';
+import { lstat, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { contentBytes } from '../store.ts';
 import { DEV_ENV } from '../adapters/node/scripts.ts';
 import { AdapterError } from '../host/types.ts';
@@ -20,9 +21,9 @@ import type { NodeRuntime } from '../orchestrator/session.ts';
 export interface DockerReferenceOptions {
   /** Base image (default: node:22-slim). */
   image?: string;
-  /** Named volume shared by all runs as npm's cache (default: sandburg-npm-cache). */
+  /** Named volume shared by all runs as npm's cache (default: sandburg-npm-cache, and sandburg-npm-cache-<uid> for a user other than root). */
   npmCacheVolume?: string;
-  /** Where project copies live while they run (default: OS temp dir). */
+  /** Where project copies live while they run, a directory this user owns (default: sandburg-ref-<uid> in the OS temp dir). */
   workDir?: string;
   /** Runs the docker CLI with these arguments and returns its output (default: spawns `docker`; tests pass a fake). */
   docker?: DockerExec;
@@ -37,10 +38,33 @@ export type DockerReferenceFactory = (() => NodeRuntime) & { disposeAll(): Promi
 const LOG_LIMIT = 2000;
 /** How long the image pull may take on a cold machine (node images are 70–250 MB). */
 const PULL_TIMEOUT_MS = 600_000;
-/** Every container carries its run's id in this label, and the host and process that started it in the next two. */
+/** Every container carries its run's id in this label, who started it (OWNER) in the next, and the pid in the last. */
 const LABEL = 'sandburg.ref';
-const HOST_LABEL = 'sandburg.ref.host';
+const OWNER_LABEL = 'sandburg.ref.owner';
 const PID_LABEL = 'sandburg.ref.pid';
+
+/**
+ * Who starts this process's containers and project copies: the host, its PID namespace and its boot. A
+ * pid tells a gone process only with all three (two jobs may share a hostname and a Docker socket, each
+ * in a PID namespace of its own). Empty parts where the system has no /proc.
+ */
+const OWNER = [hostname(), orEmpty(() => readlinkSync('/proc/self/ns/pid')), orEmpty(() => readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim())].join('/');
+/** OWNER in a container's and project copy's name (sandburg-ref-<owner>-<pid>-…). */
+const OWNER_TAG = createHash('sha256').update(OWNER).digest('hex').slice(0, 8);
+
+function orEmpty(read: () => string): string {
+  try {
+    return read();
+  } catch {
+    return '';
+  }
+}
+
+/** The host user the containers run as, unless it is root: the files they write in the project copy are its own, so it can remove them. */
+interface HostUser {
+  uid: number;
+  gid: number;
+}
 
 /**
  * Returns a factory for Session.run({ nodeRuntime }). The first run removes what earlier processes on
@@ -50,18 +74,43 @@ const PID_LABEL = 'sandburg.ref.pid';
 export function dockerReference(options: DockerReferenceOptions = {}): DockerReferenceFactory {
   const image = options.image ?? 'node:22-slim';
   const docker = options.docker ?? runDocker;
-  const workRoot = options.workDir ?? join(tmpdir(), 'sandburg-ref');
+  const uid = process.getuid?.();
+  const user: HostUser | null = uid === undefined || uid === 0 ? null : { uid, gid: process.getgid!() };
+  const workRoot = options.workDir ?? join(tmpdir(), `sandburg-ref-${uid ?? 'user'}`);
+  const cacheVolume = options.npmCacheVolume ?? (user ? `sandburg-npm-cache-${user.uid}` : 'sandburg-npm-cache');
   const pool: Pool = { live: new Set(), closed: false };
-  let setup: Promise<Setup> | null = null;
-  const prepare = () => {
-    setup ??= prepareDocker(docker, image, workRoot).catch((err) => {
-      // A later run (the session's infra retry) tries again.
-      setup = null;
-      throw err;
-    });
-    return setup;
+  let setup: { promise: Promise<Setup>; abort: AbortController; waiting: number; settled: boolean } | null = null;
+  /** A pull that cannot succeed (no such image): every run fails with it without asking the registry again. */
+  let permanent: Error | null = null;
+  const prepare = async (signal: AbortSignal): Promise<Setup> => {
+    if (permanent) throw permanent;
+    if (!setup) {
+      const abort = new AbortController();
+      const current = { promise: prepareDocker({ docker, image, workRoot, cacheVolume, user }, abort.signal), abort, waiting: 0, settled: false };
+      current.promise.then(
+        () => (current.settled = true),
+        (err: Error & { permanent?: boolean }) => {
+          current.settled = true;
+          // A later run (the session's infra retry) tries again, unless the image does not exist.
+          if (setup === current) setup = null;
+          if (err.permanent) permanent = err;
+        },
+      );
+      setup = current;
+    }
+    const current = setup;
+    current.waiting++;
+    try {
+      return await abortable(current.promise, signal);
+    } finally {
+      // The last run waiting for it was disposed: the pull (or probe) is stopped, and the next run starts over.
+      if (--current.waiting === 0 && !current.settled) {
+        current.abort.abort();
+        if (setup === current) setup = null;
+      }
+    }
   };
-  const factory = () => new DockerRun(image, options.npmCacheVolume ?? 'sandburg-npm-cache', workRoot, docker, prepare, pool);
+  const factory = () => new DockerRun({ image, cacheVolume, workRoot, docker, prepare, pool, user });
   const disposeAll = async () => {
     pool.closed = true;
     await Promise.all([...pool.live].map((run) => run.dispose()));
@@ -83,56 +132,91 @@ interface Setup {
 }
 
 /** An error of the reference's own (no Docker daemon, an image it could not pull): the run is classed infra, not the app's. */
-function infraError(message: string): Error {
-  return Object.assign(new Error(message), { infra: true });
+function infraError(message: string, extra: { permanent?: boolean } = {}): Error {
+  return Object.assign(new Error(message), { infra: true }, extra);
 }
 
-async function prepareDocker(docker: DockerExec, image: string, workRoot: string): Promise<Setup> {
-  await removeLeftovers(docker, workRoot);
+/** The labels of a container this process starts: removeLeftovers finds it by them once the process is gone. */
+function ownerLabels(id: string): string[] {
+  return ['--label', `${LABEL}=${id}`, '--label', `${OWNER_LABEL}=${OWNER}`, '--label', `${PID_LABEL}=${process.pid}`];
+}
+
+async function prepareDocker(o: { docker: DockerExec; image: string; workRoot: string; cacheVolume: string; user: HostUser | null }, signal: AbortSignal): Promise<Setup> {
+  const { docker, image } = o;
+  await ownedRoot(o.workRoot);
+  await removeLeftovers(docker, o.workRoot);
   try {
-    await docker(['image', 'inspect', '--format', '{{.Id}}', image], { timeoutMs: 30_000 });
+    await docker(['image', 'inspect', '--format', '{{.Id}}', image], { timeoutMs: 30_000, signal });
   } catch (err) {
-    if (/Cannot connect to the Docker daemon|connect to the docker API/i.test((err as Error).message)) throw infraError(tail((err as Error).message));
+    const message = (err as Error).message;
+    if (/Cannot connect to the Docker daemon|connect to the docker API/i.test(message)) throw infraError(tail(message));
+    signal.throwIfAborted();
     try {
-      await docker(['pull', '--quiet', image], { timeoutMs: PULL_TIMEOUT_MS });
+      await docker(['pull', '--quiet', image], { timeoutMs: PULL_TIMEOUT_MS, signal });
     } catch (pullErr) {
-      throw infraError(`docker pull ${image} failed: ${tail((pullErr as Error).message)}`);
+      const text = (pullErr as Error).message;
+      throw infraError(`docker pull ${image} failed: ${tail(text)}`, { permanent: /manifest unknown|not found|pull access denied|repository does not exist|invalid reference format/i.test(text) });
     }
   }
-  return networkSetup(docker);
+  // npm's cache volume is root's when Docker makes it: the host user's containers need it as theirs.
+  if (o.user) {
+    await docker(['run', '--rm', ...ownerLabels('sandburg-ref-setup'), '-v', `${o.cacheVolume}:/cache`, image, 'chown', `${o.user.uid}:${o.user.gid}`, '/cache'], { timeoutMs: 60_000, signal }).catch((err: Error) => {
+      throw infraError(`could not give npm's cache volume ${o.cacheVolume} to uid ${o.user!.uid}: ${tail(err.message)}`);
+    });
+  }
+  return networkSetup(docker, image, signal);
 }
 
 /**
  * The proxy the container uses, and how it reaches it. A proxy on the host's loopback is reached from
- * a bridge network through the host's gateway when it listens there too; else (it listens on
- * 127.0.0.1 only, as most local proxies do) the container shares the host's network, with no
- * isolation from the host's services (ADR 0004).
+ * a bridge network through the host's gateway when a container can connect to it there (it listens on
+ * the bridge too, and no firewall drops the traffic); else (it listens on 127.0.0.1 only, as most
+ * local proxies do) the container shares the host's network, with no isolation from the host's
+ * services (ADR 0004).
  */
-async function networkSetup(docker: DockerExec): Promise<Setup> {
+async function networkSetup(docker: DockerExec, image: string, signal: AbortSignal): Promise<Setup> {
   const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy;
   if (!proxy) return { hostNetwork: false, proxy };
   const url = URL.canParse(proxy) ? new URL(proxy) : null;
   if (!url || !/^(127\.|localhost$|\[::1\]$)/.test(url.hostname)) return { hostNetwork: false, proxy };
-  const gateway = await docker(['network', 'inspect', 'bridge', '--format', '{{(index .IPAM.Config 0).Gateway}}'], { timeoutMs: 30_000 }).then((out) => out.trim(), () => '');
   const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-  if (!gateway || !(await reachable(gateway, port))) return { hostNetwork: true, proxy };
+  const probe = `const s = require('net').connect(${port}, 'host.docker.internal'); s.setTimeout(3000); s.on('connect', () => process.exit(0)); s.on('timeout', () => process.exit(1)); s.on('error', () => process.exit(1));`;
+  const reachable = await docker(['run', '--rm', ...ownerLabels('sandburg-ref-probe'), '--add-host=host.docker.internal:host-gateway', image, 'node', '-e', probe], { timeoutMs: 60_000, signal }).then(
+    () => true,
+    () => false,
+  );
+  signal.throwIfAborted();
+  if (!reachable) return { hostNetwork: true, proxy };
   url.hostname = 'host.docker.internal';
   return { hostNetwork: false, proxy: url.href.replace(/\/$/, '') };
 }
 
-/** Containers and project copies of reference runs whose process (on this host) is gone: Ctrl-C twice, a crash, a kill. */
+/** Makes the directory of project copies, and checks that it is a directory of this user's, not a symlink, before anything goes in or out of it. */
+async function ownedRoot(workRoot: string): Promise<void> {
+  await mkdir(workRoot, { recursive: true, mode: 0o700 });
+  const st = await lstat(workRoot);
+  const uid = process.getuid?.();
+  if (st.isSymbolicLink() || !st.isDirectory() || (uid !== undefined && st.uid !== uid)) {
+    throw infraError(`${workRoot} is not a directory of this user's: the Docker reference keeps its project copies there`);
+  }
+}
+
+/**
+ * Containers and project copies of reference runs whose process is gone (Ctrl-C twice, a crash, a
+ * kill): only those of this host, PID namespace and boot (OWNER), so a pid that is not alive here is
+ * one that is gone.
+ */
 async function removeLeftovers(docker: DockerExec, workRoot: string): Promise<void> {
-  const host = hostname();
-  const listed = await docker(['ps', '-a', '--filter', `label=${LABEL}`, '--format', `{{.ID}} {{.Label "${HOST_LABEL}"}} {{.Label "${PID_LABEL}"}}`], { timeoutMs: 30_000 }).catch(() => '');
+  const listed = await docker(['ps', '-a', '--filter', `label=${OWNER_LABEL}=${OWNER}`, '--format', `{{.ID}} {{.Label "${PID_LABEL}"}}`], { timeoutMs: 30_000 }).catch(() => '');
   const stale = listed.split('\n').flatMap((line) => {
-    const [id, h, pid] = line.trim().split(' ');
-    return id && h === host && !alive(Number(pid)) ? [id] : [];
+    const [id, pid] = line.trim().split(' ');
+    return id && !alive(Number(pid)) ? [id] : [];
   });
   if (stale.length) await docker(['rm', '-f', ...stale], { timeoutMs: 60_000 }).catch(() => {});
   const dirs = await readdir(workRoot).catch(() => []);
   for (const name of dirs) {
-    const pid = /^sandburg-ref-(\d+)-/.exec(name)?.[1];
-    if (pid && !alive(Number(pid))) await rm(join(workRoot, name), { recursive: true, force: true }).catch(() => {});
+    const m = /^sandburg-ref-([0-9a-f]{8})-(\d+)-/.exec(name);
+    if (m && m[1] === OWNER_TAG && !alive(Number(m[2]))) await rm(join(workRoot, name), { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -146,19 +230,6 @@ function alive(pid: number): boolean {
   }
 }
 
-function reachable(host: string, port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = connect({ host, port, timeout: 1_000 });
-    const done = (ok: boolean) => {
-      socket.destroy();
-      resolve(ok);
-    };
-    socket.once('connect', () => done(true));
-    socket.once('timeout', () => done(false));
-    socket.once('error', () => done(false));
-  });
-}
-
 class DockerRun implements NodeRuntime {
   name = 'docker';
   version: string;
@@ -169,10 +240,11 @@ class DockerRun implements NodeRuntime {
   private cacheVolume: string;
   private workRoot: string;
   private docker: DockerExec;
-  private prepare: () => Promise<Setup>;
+  private prepare: (signal: AbortSignal) => Promise<Setup>;
   private pool: Pool;
-  /** The container's name and the project copy's directory; the pid lets a later process tell leftovers (removeLeftovers). */
-  private id = `sandburg-ref-${process.pid}-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+  private user: HostUser | null;
+  /** The container's name and the project copy's directory; its owner and pid let a later process tell leftovers (removeLeftovers). */
+  private id = `sandburg-ref-${OWNER_TAG}-${process.pid}-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
   private dir = '';
   private project: Project | null = null;
   private server: ChildProcess | null = null;
@@ -182,14 +254,15 @@ class DockerRun implements NodeRuntime {
   private mounting: Promise<void> | null = null;
   private disposing: Promise<void> | null = null;
 
-  constructor(image: string, cacheVolume: string, workRoot: string, docker: DockerExec, prepare: () => Promise<Setup>, pool: Pool) {
-    this.image = image;
-    this.version = image;
-    this.cacheVolume = cacheVolume;
-    this.workRoot = workRoot;
-    this.docker = docker;
-    this.prepare = prepare;
-    this.pool = pool;
+  constructor(o: { image: string; cacheVolume: string; workRoot: string; docker: DockerExec; prepare: (signal: AbortSignal) => Promise<Setup>; pool: Pool; user: HostUser | null }) {
+    this.image = o.image;
+    this.version = o.image;
+    this.cacheVolume = o.cacheVolume;
+    this.workRoot = o.workRoot;
+    this.docker = o.docker;
+    this.prepare = o.prepare;
+    this.pool = o.pool;
+    this.user = o.user;
   }
 
   probe(project: Project): ProbeVerdict {
@@ -214,7 +287,7 @@ class DockerRun implements NodeRuntime {
 
   private async mountContainer(project: Project): Promise<void> {
     const signal = this.abort.signal;
-    const setup = await abortable(this.prepare(), signal);
+    const setup = await this.prepare(signal);
     this.project = project;
     this.dir = join(this.workRoot, this.id);
     for (const [path, content] of Object.entries(project.files)) {
@@ -225,8 +298,11 @@ class DockerRun implements NodeRuntime {
     }
     const { hostNetwork, proxy } = setup;
     // --rm: a container that stops is removed by Docker; the labels find the others (dispose, removeLeftovers).
-    const args = ['run', '-d', '--rm', '--name', this.id, '--label', `${LABEL}=${this.id}`, '--label', `${HOST_LABEL}=${hostname()}`, '--label', `${PID_LABEL}=${process.pid}`];
-    args.push('-v', `${this.dir}:/app`, '-v', `${this.cacheVolume}:/root/.npm`, '-w', '/app');
+    const args = ['run', '-d', '--rm', '--name', this.id, ...ownerLabels(this.id)];
+    // As the host user (not root), npm's home and cache are under /tmp.
+    const home = this.user ? '/tmp' : '/root';
+    if (this.user) args.push('--user', `${this.user.uid}:${this.user.gid}`, '-e', `HOME=${home}`);
+    args.push('-v', `${this.dir}:/app`, '-v', `${this.cacheVolume}:${home}/.npm`, '-w', '/app');
     for (const [k, v] of Object.entries(DEV_ENV)) args.push('-e', `${k}=${v}`);
     args.push('-e', 'npm_config_update_notifier=false');
     this.port = await freePort();
@@ -237,7 +313,7 @@ class DockerRun implements NodeRuntime {
     const ca = process.env.NODE_EXTRA_CA_CERTS;
     if (ca) args.push('-v', `${ca}:/sandburg-ca.crt:ro`, '-e', 'NODE_EXTRA_CA_CERTS=/sandburg-ca.crt', '-e', 'npm_config_cafile=/sandburg-ca.crt');
     this.hostNetwork = hostNetwork;
-    if (hostNetwork && proxy) this.lines.push('[sandburg] the container shares the host network: the proxy listens on the host\'s loopback only');
+    if (hostNetwork && proxy) this.lines.push('[sandburg] the container shares the host network: a container on a bridge cannot reach the proxy on the host\'s loopback');
     await this.exec([...args, this.image, 'sleep', 'infinity'], 120_000, signal);
   }
 

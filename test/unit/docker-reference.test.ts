@@ -4,10 +4,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import { createServer, type AddressInfo } from 'node:net';
-import { hostname } from 'node:os';
+import { chownSync, existsSync, readdirSync } from 'node:fs';
+import { mkdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dockerReference, type DockerExec } from '../../src/reference/docker.ts';
 import type { Project } from '../../src/types.ts';
@@ -48,11 +46,16 @@ async function withProxy<T>(proxy: string | undefined, fn: () => Promise<T>): Pr
   }
 }
 
+/** The run's container (`docker run -d`), not a one-off one (the proxy probe, the npm cache's chown). */
 function runArgs(calls: string[][]): string[] {
-  const run = calls.find((c) => c[0] === 'run');
-  assert.ok(run, 'docker run was called');
+  const run = calls.find((c) => c[0] === 'run' && c[1] === '-d');
+  assert.ok(run, 'docker run -d was called');
   return run;
 }
+
+const label = (args: string[], name: string) => args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
+/** As another user than root, the first run gives npm's cache volume to the user (`docker run --rm … chown`). */
+const asUser = process.getuid?.() ? ['run --rm'] : [];
 
 test('a cold machine pulls the image before the container starts; the container is labelled, --rm, and removed by its label', async () => {
   const workDir = tempDir('sandburg-ref-');
@@ -63,12 +66,14 @@ test('a cold machine pulls the image before the container starts; the container 
   });
   const run = dockerReference({ workDir, docker })();
   await withProxy(undefined, () => run.mount(project, () => {}));
-  assert.deepEqual(commands(), ['ps -a', 'image inspect', 'pull --quiet', 'run -d']);
+  assert.deepEqual(commands(), ['ps -a', 'image inspect', 'pull --quiet', ...asUser, 'run -d']);
   const args = runArgs(calls);
   const name = args[args.indexOf('--name') + 1];
   assert.ok(args.includes('--rm'));
-  assert.ok(args.includes(`sandburg.ref=${name}`));
-  assert.ok(args.includes(`sandburg.ref.pid=${process.pid}`));
+  assert.equal(label(args, 'sandburg.ref'), name);
+  assert.equal(label(args, 'sandburg.ref.pid'), String(process.pid));
+  // The host, PID namespace and boot that started it (Linux has all three).
+  assert.match(label(args, 'sandburg.ref.owner') ?? '', process.platform === 'linux' ? /^[^/]+\/pid:\[\d+\]\/[0-9a-f-]{36}$/ : /./);
   // No proxy: a bridge network, the port published on loopback.
   assert.ok(!args.includes('--network'));
   assert.match(args[args.indexOf('-p') + 1], /^127\.0\.0\.1:\d+:\d+$/);
@@ -104,6 +109,20 @@ test('a failed pull fails mount as infra, and the next run pulls again', async (
   assert.ok(!commands().includes('run -d'), 'no container without the image');
 });
 
+test('an image that does not exist fails every run as infra, with one pull', async () => {
+  let pulls = 0;
+  const { docker } = fakeDocker({
+    image: missingImage,
+    pull: async () => {
+      pulls++;
+      throw new Error('docker pull exited with 1\nError response from daemon: manifest unknown');
+    },
+  });
+  const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker });
+  for (let i = 0; i < 3; i++) await assert.rejects(factory().mount(project, () => {}), (e: Error & { infra?: boolean }) => e.infra === true && /manifest unknown/.test(e.message));
+  assert.equal(pulls, 1);
+});
+
 test('no Docker daemon fails mount as infra, without a pull', async () => {
   const { docker, commands } = fakeDocker({
     image: () => Promise.reject(new Error('docker image inspect exited with 1\nfailed to connect to the docker API at unix:///var/run/docker.sock')),
@@ -117,9 +136,13 @@ test('no Docker daemon fails mount as infra, without a pull', async () => {
 test('a run disposed while the image is still pulling never creates its container', async () => {
   const workDir = tempDir('sandburg-ref-');
   let pulled!: () => void;
+  let pullSignal: AbortSignal | undefined;
   const { docker, commands } = fakeDocker({
     image: missingImage,
-    pull: () => new Promise((resolve) => (pulled = () => resolve(''))),
+    pull: (_args, options) => {
+      pullSignal = options.signal;
+      return new Promise((resolve) => (pulled = () => resolve('')));
+    },
   });
   const run = dockerReference({ workDir, docker })();
   const mounting = run.mount(project, () => {}).then(() => 'mounted', () => 'rejected');
@@ -127,6 +150,7 @@ test('a run disposed while the image is still pulling never creates its containe
   // The session's mount deadline passed: dispose runs while the pull goes on.
   await run.dispose();
   assert.equal(await mounting, 'rejected');
+  assert.equal(pullSignal?.aborted, true, 'the pull no run waits for any more is stopped');
   pulled();
   await new Promise((r) => setTimeout(r, 10));
   assert.ok(!commands().includes('run -d'), commands().join(', '));
@@ -156,45 +180,94 @@ test('dispose stops a docker run still in flight and removes the container it cr
   assert.deepEqual(calls.at(-1), ['rm', '-f', 'late']);
 });
 
-test("startup removes the containers and project copies of this host's reference runs whose process is gone", async () => {
+test("startup removes the containers and project copies of this host's, PID namespace's and boot's reference runs whose process is gone", async () => {
   const workDir = tempDir('sandburg-ref-');
-  const gone = `sandburg-ref-${GONE}-x-1`;
-  const mine = `sandburg-ref-${process.pid}-x-2`;
-  await mkdir(join(workDir, gone));
-  await mkdir(join(workDir, mine));
+  // A first run tells this process's owner label and name.
+  const first = fakeDocker({});
+  await withProxy(undefined, () => dockerReference({ workDir, docker: first.docker })().mount(project, () => {}));
+  const args = runArgs(first.calls);
+  const owner = label(args, 'sandburg.ref.owner');
+  const tag = /^sandburg-ref-([0-9a-f]{8})-/.exec(args[args.indexOf('--name') + 1])![1];
+  const gone = `sandburg-ref-${tag}-${GONE}-x-1`;
+  const mine = `sandburg-ref-${tag}-${process.pid}-x-2`;
+  const elsewhere = `sandburg-ref-00000000-${GONE}-x-3`;
+  for (const dir of [gone, mine, elsewhere]) await mkdir(join(workDir, dir));
   const { docker, calls } = fakeDocker({
-    ps: async (args) => (args[1] === '-a' ? [`aaa ${hostname()} ${GONE}`, `bbb ${hostname()} ${process.pid}`, `ccc another-host ${GONE}`].join('\n') + '\n' : ''),
+    // Only this owner's containers are listed (the filter); of them, the one whose process is gone goes.
+    ps: async (a) => (a[1] === '-a' && a[3] === `label=sandburg.ref.owner=${owner}` ? [`aaa ${GONE}`, `bbb ${process.pid}`].join('\n') + '\n' : ''),
   });
   await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project, () => {}));
   assert.deepEqual(calls[1], ['rm', '-f', 'aaa']);
   assert.ok(!existsSync(join(workDir, gone)));
   assert.ok(existsSync(join(workDir, mine)));
+  assert.ok(existsSync(join(workDir, elsewhere)), 'another owner\'s copy stays');
 });
 
-test('a loopback proxy is reached over a bridge network through the host gateway when it listens there, else over the host network', async () => {
-  const server = createServer((s) => s.destroy());
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = (server.address() as AddressInfo).port;
-  // The fake bridge's gateway is the host's loopback, where the proxy listens.
-  const gateway: Handler = async () => '127.0.0.1\n';
-  try {
-    const reachable = fakeDocker({ network: gateway });
-    await withProxy(`http://127.0.0.1:${port}`, () => dockerReference({ workDir: tempDir('sandburg-ref-'), docker: reachable.docker })().mount(project, () => {}));
-    const bridged = runArgs(reachable.calls);
-    assert.ok(!bridged.includes('--network'));
-    assert.ok(bridged.includes('--add-host=host.docker.internal:host-gateway'));
-    assert.ok(bridged.includes(`HTTPS_PROXY=http://host.docker.internal:${port}`));
-    assert.ok(bridged.includes('-p'));
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
-  // Nothing listens on the port now: the container shares the host's network.
-  const unreachable = fakeDocker({ network: gateway });
-  await withProxy(`http://127.0.0.1:${port}`, () => dockerReference({ workDir: tempDir('sandburg-ref-'), docker: unreachable.docker })().mount(project, () => {}));
+test('the directory of project copies must be a directory of this user\'s, not a symlink', async () => {
+  const target = tempDir('sandburg-ref-target-');
+  const leftover = `sandburg-ref-00000000-${GONE}-x-1`;
+  await mkdir(join(target, leftover));
+  const link = join(tempDir('sandburg-ref-link-'), 'copies');
+  await symlink(target, link);
+  const { docker, commands } = fakeDocker({});
+  await assert.rejects(dockerReference({ workDir: link, docker })().mount(project, () => {}), (e: Error & { infra?: boolean }) => e.infra === true && /is not a directory of this user's/.test(e.message));
+  assert.deepEqual(commands(), []);
+  assert.ok(existsSync(join(target, leftover)));
+});
+
+test('as a user other than root, containers run as that user, with npm\'s home and its own cache volume under /tmp', async (t) => {
+  const workDir = tempDir('sandburg-ref-');
+  // As root, the test plays uid 1000 (the directory of copies must be its).
+  const uid = process.getuid!() || 1000;
+  const gid = process.getuid!() ? process.getgid!() : 1000;
+  if (!process.getuid!()) chownSync(workDir, uid, gid);
+  t.mock.method(process as { getuid(): number }, 'getuid', () => uid);
+  t.mock.method(process as { getgid(): number }, 'getgid', () => gid);
+  const { docker, calls } = fakeDocker({});
+  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project, () => {}));
+  const chown = calls.find((c) => c[0] === 'run' && c.includes('chown'));
+  assert.ok(chown, 'the cache volume is given to the user');
+  assert.deepEqual(chown.slice(-5), [`sandburg-npm-cache-${uid}:/cache`, 'node:22-slim', 'chown', `${uid}:${gid}`, '/cache']);
+  const args = runArgs(calls);
+  assert.deepEqual(args.slice(args.indexOf('--user'), args.indexOf('--user') + 2), ['--user', `${uid}:${gid}`]);
+  assert.ok(args.includes('HOME=/tmp'));
+  assert.ok(args.includes(`sandburg-npm-cache-${uid}:/tmp/.npm`));
+});
+
+test('a loopback proxy is reached over a bridge network through the host gateway when a container can connect to it there, else over the host network', async () => {
+  const proxy = 'http://127.0.0.1:3128';
+  /** A docker CLI whose probe container connects to the proxy, or not (a firewall on the bridge drops it). */
+  const probing = (connects: boolean) =>
+    fakeDocker({
+      run: async (args) => {
+        if (!args.includes('node')) return '';
+        if (connects) return '';
+        throw new Error('docker run exited with 1');
+      },
+    });
+  const reachable = probing(true);
+  await withProxy(proxy, () => dockerReference({ workDir: tempDir('sandburg-ref-'), docker: reachable.docker })().mount(project, () => {}));
+  const probe = reachable.calls.find((c) => c.includes('node'))!;
+  assert.ok(probe.includes('--add-host=host.docker.internal:host-gateway'));
+  assert.ok(probe.includes('--rm'));
+  assert.match(probe.at(-1)!, /connect\(3128, 'host\.docker\.internal'\).*setTimeout\(3000\)/);
+  const bridged = runArgs(reachable.calls);
+  assert.ok(!bridged.includes('--network'));
+  assert.ok(bridged.includes('--add-host=host.docker.internal:host-gateway'));
+  assert.ok(bridged.includes('HTTPS_PROXY=http://host.docker.internal:3128'));
+  assert.ok(bridged.includes('-p'));
+
+  const unreachable = probing(false);
+  const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker: unreachable.docker });
+  await withProxy(proxy, async () => {
+    await factory().mount(project, () => {});
+    await factory().mount(project, () => {});
+  });
   const host = runArgs(unreachable.calls);
   assert.deepEqual(host.slice(host.indexOf('--network'), host.indexOf('--network') + 2), ['--network', 'host']);
-  assert.ok(host.includes(`HTTPS_PROXY=http://127.0.0.1:${port}`));
+  assert.ok(host.includes(`HTTPS_PROXY=${proxy}`));
   assert.ok(!host.includes('-p'));
+  assert.equal(unreachable.calls.filter((c) => c.includes('node')).length, 1, 'the probe runs once per factory');
 });
 
 test('disposeAll removes every mounted run and refuses new ones (Ctrl-C during compare)', async () => {
@@ -209,7 +282,7 @@ test('disposeAll removes every mounted run and refuses new ones (Ctrl-C during c
     await factory().mount(project, () => {});
   });
   await factory.disposeAll();
-  const names = calls.filter((c) => c[0] === 'run').map((c) => c[c.indexOf('--name') + 1]);
+  const names = calls.filter((c) => c[0] === 'run' && c[1] === '-d').map((c) => c[c.indexOf('--name') + 1]);
   assert.deepEqual(calls.filter((c) => c[0] === 'rm').map((c) => c[2]).sort(), names.sort());
   await assert.rejects(factory().mount(project, () => {}), /shutting down/);
   assert.deepEqual(readdirSync(workDir), []);
