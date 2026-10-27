@@ -232,19 +232,24 @@ The demo site replays the host's answers from static files, recorded when the si
 ([ADR 0015](docs/adr/0015-static-demos.md)). The generator page installs and compiles in the page, so it
 only needs the runtime's own files ([ADR 0021](docs/adr/0021-generate-in-the-browser.md));
 `--verify` runs each of its framework scaffolds, and `--only generate` builds it alone. A GitHub Actions
-workflow builds and deploys the site on every push to `main`.
+workflow builds and deploys the site on every push to `main`, and builds and verifies it, without
+deploying, for a pull request that changes the demos, `src/` or the packages.
 
 CI runs on every pull request and push to `main`. It runs typecheck, lint and unit tests on Node 24 (LTS),
 the runtime tests in Chromium, the packed package, and each e2e file as its own job; the Docker reference tests run there too. Each
 job reports its tests' times, with a warning annotation for a file over its budget in `test/budgets.json`.
-A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, `package-lock.json` or the perf workflow
-is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
-That job fails only when a median is more than 30% slower, or when a side has no result. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
-after a week's cooldown. Every action is pinned to a commit.
+A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, the unit tests with timing assertions,
+`package-lock.json` or the perf workflow is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
+That job fails only when a median is more than 30% slower, or when a side has no result; it also runs
+the unit tests' timing assertions (`SANDBURG_PERF_TESTS=1`), one file at a time. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
+after a week's cooldown. Every action is pinned to a commit, and the jobs that launch Chromium share one setup
+with a cached browser ([ADR 0062](docs/adr/0062-ci-setup-and-coverage.md)).
 
 A pull request that changes what the package does adds a changeset (`npx changeset`): the bump and a line
 for the changelog ([`.changeset/`](.changeset)). The Release workflow gathers them on `main` into a
-"Version packages" pull request; merging it tests and stages that version on npm with npm's trusted
+"Version packages" pull request, and starts CI on its branch with a dispatch (its pushes, made with the
+workflow's token, start none themselves; the results are in Actions, not in the pull request's checks);
+merging it tests and stages that version on npm with npm's trusted
 publishing (no npm token in the repository) and provenance, tags it and creates its GitHub release. The
 version goes public once a maintainer approves the staged publish on npmjs.com.
 

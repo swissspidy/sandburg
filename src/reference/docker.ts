@@ -18,7 +18,7 @@ import type { NodeRuntime } from '../orchestrator/session.ts';
 
 /** Options of dockerReference(): the image and where the container's files and npm cache live. */
 export interface DockerReferenceOptions {
-  /** Base image (default: node:22-slim). */
+  /** Base image (default: node:24-slim). */
   image?: string;
   /** Named volume shared by all runs as npm's cache (default: sandburg-npm-cache). */
   npmCacheVolume?: string;
@@ -30,7 +30,7 @@ const LOG_LIMIT = 2000;
 
 /** Returns a factory for Session.run({ nodeRuntime }). */
 export function dockerReference(options: DockerReferenceOptions = {}): () => NodeRuntime {
-  const image = options.image ?? 'node:22-slim';
+  const image = options.image ?? 'node:24-slim';
   return () => new DockerRun(image, options.npmCacheVolume ?? 'sandburg-npm-cache', options.workDir ?? join(tmpdir(), 'sandburg-ref'));
 }
 
