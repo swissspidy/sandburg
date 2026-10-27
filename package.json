@@ -79,5 +79,8 @@
   "homepage": "https://github.com/swissspidy/sandburg#readme",
   "bugs": {
     "url": "https://github.com/swissspidy/sandburg/issues"
+  },
+  "allowScripts": {
+    "esbuild": false
   }
 }
