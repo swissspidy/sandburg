@@ -1,6 +1,6 @@
 # Dependency updates, weekly, grouped, after a week's cooldown: npm for the root package and for the
 # fixtures (which test the latest version of every framework; the fidelity corpus pins its versions
-# on purpose), and the GitHub Actions the workflows use.
+# on purpose), and the GitHub Actions the workflows and local actions use.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -42,7 +42,8 @@ updates:
         versions: [">= 7"]
 
   - package-ecosystem: github-actions
-    directory: /
+    # / is the workflows; the local composite actions pin actions of their own.
+    directories: ["/", "/.github/actions/*"]
     schedule:
       interval: weekly
     cooldown:
