@@ -20,8 +20,8 @@ import { installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
-import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive } from './builtins/process.ts';
-import { netServers } from './builtins/net.ts';
+import { ExitError, NODE_VERSION, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
+import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
@@ -33,7 +33,7 @@ import { COMPILE_POST_MAX } from '../file-channel.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
-import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce } from './peers.ts';
+import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone } from './peers.ts';
 
 patchBase64Url();
 
@@ -525,7 +525,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     // process.exit() from a callback (timer, I/O) ends the process there too.
     if (e.error instanceof ExitError) {
       e.preventDefault();
-      return post({ type: 'exit', code: e.error.code });
+      return exited(e.error.code);
     }
     // In a worker thread an uncaught exception ends the thread ('error' on its Worker), as in Node.
     if (thread && !proc.listenerCount('uncaughtException')) {
@@ -541,7 +541,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   self.addEventListener('unhandledrejection', (e) => {
     if (e.reason instanceof ExitError) {
       e.preventDefault();
-      return post({ type: 'exit', code: e.reason.code });
+      return exited(e.reason.code);
     }
     if (proc.listenerCount('unhandledRejection')) {
       e.preventDefault();
@@ -594,6 +594,7 @@ function exitWhenIdle() {
   const busy = () => timersActive() || servers.size > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
   let idle = 0;
   const timer = nativeSetInterval(() => {
+    if (hasExited) return nativeClearInterval(timer);
     idle = busy() ? 0 : idle + 1;
     if (idle < 8) return;
     idle = 0;
@@ -605,7 +606,7 @@ function exitWhenIdle() {
       (proc.exit as (c: number) => void)(Number(proc.exitCode ?? 0));
     } catch (e) {
       nativeClearInterval(timer);
-      post({ type: 'exit', code: e instanceof ExitError ? e.code : 1 });
+      exited(e instanceof ExitError ? e.code : 1);
     }
   }, 25);
 }
@@ -636,12 +637,12 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
     const tla = (exports as Record<string, unknown> | null)?.__sandburg_tla as Promise<unknown> | undefined;
     if (tla && typeof tla.then === 'function') {
       tla.catch((e: unknown) => {
-        if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
+        if (e instanceof ExitError) return exited(e.code);
         postFatal(e);
       });
     }
   } catch (e) {
-    if (e instanceof ExitError) return post({ type: 'exit', code: e.code });
+    if (e instanceof ExitError) return exited(e.code);
     postFatal(e);
   }
 }
@@ -678,19 +679,53 @@ function releaseHeld(depth: number) {
   for (const release of held) release();
 }
 
+/** Requests to this runtime's own servers not yet answered (those to nested runtimes' are theirs). */
+const inflight = new Set<number>();
+
+/** Whether the program exited (see exited). */
+let hasExited = false;
+
+/**
+ * The program exited (process.exit, or its event loop drained), once: what it scheduled no longer
+ * runs, its servers are gone, and what they had not answered is answered with an error (its
+ * WebSockets close); servers of its child processes, which keep running, still answer theirs.
+ */
+export function exited(code: number) {
+  if (hasExited) return;
+  hasExited = true;
+  stopTimers();
+  for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
+  inflight.clear();
+  loopbackServersGone();
+  for (const port of [...servers.keys()]) {
+    servers.delete(port);
+    serverEvents.emit('closed', port);
+  }
+  for (const key of [...netServers.keys()]) {
+    netServers.delete(key);
+    netEvents.emit('closed', key);
+  }
+  for (const id of sockets.keys()) post({ type: 'ws-closed', id, code: 1006, reason: '', wasClean: false });
+  sockets.clear();
+  post({ type: 'exit', code });
+}
+
 function request(msg: Extract<ToWorker, { type: 'request' }>) {
   const server = servers.get(msg.port);
   // A server that closed before its parent learnt of it (see unannounce): refused, as by a real port.
   if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}`, code: 'ECONNREFUSED' });
   const id = msg.id;
+  inflight.add(id);
+  /** To the page, while the request is this runtime's to answer (not once its process exited). */
+  const answer = (m: Parameters<typeof post>[0], transfer?: Transferable[]) => inflight.has(id) && post(m, transfer);
   /** The start and chunks held until the end of the task; null once the response streams. */
   let held: { start: [number, string, [string, string][]] | null; chunks: Uint8Array[]; size: number } | null = { start: null, chunks: [], size: 0 };
   const release = () => {
     if (!held) return;
     const h = held;
     held = null;
-    if (h.start) post({ type: 'response-start', id, status: h.start[0], statusText: h.start[1], headers: h.start[2] });
-    for (const chunk of h.chunks) post({ type: 'response-chunk', id, chunk }, [chunk.buffer as ArrayBuffer]);
+    if (h.start) answer({ type: 'response-start', id, status: h.start[0], statusText: h.start[1], headers: h.start[2] });
+    for (const chunk of h.chunks) answer({ type: 'response-chunk', id, chunk }, [chunk.buffer as ArrayBuffer]);
   };
   const hold = () => {
     if (heldResponses.length === 0) releaseHeld(RESPONSE_HOLD_MICROTASKS);
@@ -699,7 +734,7 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
   try {
     server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
       start: (status, statusText, headers) => {
-        if (!held) return post({ type: 'response-start', id, status, statusText, headers });
+        if (!held) return void answer({ type: 'response-start', id, status, statusText, headers });
         held.start = [status, statusText, headers];
         hold();
       },
@@ -710,7 +745,7 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
           return;
         }
         release();
-        post({ type: 'response-chunk', id, chunk: data }, [data.buffer as ArrayBuffer]);
+        answer({ type: 'response-chunk', id, chunk: data }, [data.buffer as ArrayBuffer]);
       },
       end: () => {
         const start = held?.start;
@@ -718,15 +753,20 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
           const h = held;
           held = null;
           const body = h.chunks.length === 1 && h.chunks[0].byteOffset === 0 && h.chunks[0].byteLength === h.chunks[0].buffer.byteLength ? h.chunks[0] : concatBytes(h.chunks, h.size);
-          return post({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
+          answer({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
+          return void inflight.delete(id);
         }
         release();
-        post({ type: 'response-end', id });
+        answer({ type: 'response-end', id });
+        inflight.delete(id);
       },
     });
   } catch (e) {
+    // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
+    if (e instanceof ExitError) return exited(e.code);
     release();
-    post({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
+    answer({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
+    inflight.delete(id);
   }
 }
 
@@ -829,16 +869,20 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   // The server may write (and so the client reply, e.g. pong) inside its 'upgrade' handler, before upgrade() returns.
   let early: Uint8Array[] | null = [];
   const codec = new WsClientCodec({
-    accept: (protocol, extensions) => post({ type: 'ws-accept', id, protocol, extensions }),
+    accept: (protocol, extensions) => !hasExited && post({ type: 'ws-accept', id, protocol, extensions }),
     reject: (status, message) => {
+      if (hasExited) return;
       sockets.delete(id);
       post({ type: 'ws-reject', id, status, message });
     },
     message: (data) => {
+      if (hasExited) return;
       if (typeof data === 'string') post({ type: 'ws-message', id, data });
       else post({ type: 'ws-message', id, data: data.buffer as ArrayBuffer }, [data.buffer as ArrayBuffer]);
     },
     closed: (code, reason, wasClean) => {
+      // Closed already, as the program exited.
+      if (hasExited) return;
       sockets.get(id)?.socket.hangUp();
       sockets.delete(id);
       post({ type: 'ws-closed', id, code, reason, wasClean });

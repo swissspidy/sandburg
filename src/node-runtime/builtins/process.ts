@@ -39,11 +39,18 @@ class Timeout {
     this.repeat = repeat;
     this.start();
   }
+  /** Scheduled, and pending (in byId) until it fires or is cleared; a refresh() after it fired schedules it again. */
   private start() {
     this.id = this.repeat ? nativeSetInterval(this.fn, this.ms) : nativeSetTimeout(this.fn, this.ms);
+    byId.set(Number(this.id), this);
+  }
+  /** It fired (a timeout: no longer pending). */
+  fired() {
+    if (this.id !== null) byId.delete(Number(this.id));
   }
   clear() {
     if (this.id === null) return;
+    byId.delete(Number(this.id));
     (this.repeat ? nativeClearInterval : nativeClearTimeout)(this.id);
     this.id = null;
   }
@@ -78,23 +85,23 @@ class Timeout {
 }
 
 const byId = new Map<number, Timeout>();
+/** The process exited: nothing it scheduled runs any more (see stopTimers). */
+let stopped = false;
 function make(repeat: boolean) {
   return (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
     if (typeof fn !== 'function') throw new TypeError('The "callback" argument must be of type function');
     const bound = bindContext(fn as never) as (...a: unknown[]) => void;
     const t: Timeout = new Timeout(() => {
-      if (!repeat) byId.delete(Number(t));
+      if (!repeat) t.fired();
+      if (stopped) return t.clear();
       bound(...args);
     }, Math.max(1, Number(ms) || 1), repeat);
-    byId.set(Number(t), t);
     return t;
   };
 }
 function clear(t: unknown) {
-  if (t instanceof Timeout) {
-    byId.delete(Number(t));
-    t.clear();
-  } else if (typeof t === 'number') {
+  if (t instanceof Timeout) t.clear();
+  else if (typeof t === 'number') {
     const found = byId.get(t);
     if (found) found.clear();
     else nativeClearTimeout(t);
@@ -113,6 +120,17 @@ export function timersActive(): boolean {
   return false;
 }
 
+/**
+ * The process exited (process.exit): its timers and immediates, and any it sets after, do not run.
+ * A known limit: a shell this runtime runs in-process (child_process with shell: true, see shell.ts)
+ * uses these timers too, and stops with it, where in Node it is a process of its own that goes on.
+ */
+export function stopTimers(): void {
+  stopped = true;
+  for (const t of [...byId.values()]) t.clear();
+  immediateQueue.length = 0;
+}
+
 class Immediate {
   cancelled = false;
   ref() { return this; }
@@ -123,7 +141,19 @@ const immediateChannel = new MessageChannel();
 const immediateQueue: (() => void)[] = [];
 immediateChannel.port1.onmessage = () => {
   const batch = immediateQueue.splice(0);
-  for (const run of batch) run();
+  for (let i = 0; i < batch.length; i++) {
+    try {
+      batch[i]();
+    } catch (e) {
+      // As in Node: the error is uncaught (process 'uncaughtException'), and the rest of the batch
+      // still runs, on the next turn, before immediates queued since; process.exit() ends it there.
+      if (!(e instanceof ExitError) && i + 1 < batch.length) {
+        if (!immediateQueue.length) immediateChannel.port2.postMessage(0);
+        immediateQueue.unshift(...batch.slice(i + 1));
+      }
+      throw e;
+    }
+  }
 };
 
 export const timers = {
@@ -135,7 +165,7 @@ export const timers = {
     const bound = bindContext(fn as never) as (...a: unknown[]) => void;
     const imm = new Immediate();
     immediateQueue.push(() => {
-      if (!imm.cancelled) bound(...args);
+      if (!imm.cancelled && !stopped) bound(...args);
     });
     if (immediateQueue.length === 1) immediateChannel.port2.postMessage(0);
     return imm;
@@ -170,6 +200,7 @@ export interface ProcessOptions {
 
 export function createProcess(opts: ProcessOptions) {
   let cwd = opts.cwd;
+  let exiting = false;
   const t0 = performance.now();
   const proc = new EventEmitter() as EventEmitter & Record<string, unknown>;
   const out = (name: 'stdout' | 'stderr') => {
@@ -216,7 +247,6 @@ export function createProcess(opts: ProcessOptions) {
     argv: opts.argv,
     argv0: 'node',
     env: opts.env,
-    exitCode: undefined,
     config: { variables: { napi_build_version: '10' } },
     features: { inspector: false, ipv6: true, tls: false, typescript: 'strip' },
     allowedNodeEnvironmentFlags: new Set<string>(),
@@ -263,10 +293,16 @@ export function createProcess(opts: ProcessOptions) {
       const name = typeof type === 'string' ? type : (type?.type ?? 'Warning');
       opts.write('stderr', `(node) ${name}: ${text}\n`);
     },
-    exit(code?: number) {
-      const c = code ?? (proc.exitCode as number | undefined) ?? 0;
-      proc.emit('exit', c);
-      throw new ExitError(c);
+    exit(...args: [code?: number | string | null]) {
+      // As in Node: 'exit' listeners see the code as process.exitCode (and may change it); one that
+      // calls process.exit() ends the process there, with its code, without emitting 'exit' again.
+      // process.exit(undefined) is process.exit(0), whatever exitCode was.
+      if (args.length) proc.exitCode = args[0];
+      if (!exiting) {
+        exiting = true;
+        proc.emit('exit', Number(proc.exitCode ?? 0));
+      }
+      throw new ExitError(Number(proc.exitCode ?? 0));
     },
     reallyExit(code: number) {
       throw new ExitError(code);
@@ -291,6 +327,16 @@ export function createProcess(opts: ProcessOptions) {
     setUncaughtExceptionCaptureCallback() {},
     hasUncaughtExceptionCaptureCallback: () => false,
     loadEnvFile() {},
+  });
+  // As in Node: an integer string ('2') is the number.
+  let exitCode: number | undefined;
+  Object.defineProperty(proc, 'exitCode', {
+    get: () => exitCode,
+    set: (code: unknown) => {
+      exitCode = code === null || code === undefined ? undefined : typeof code === 'string' && code !== '' && Number.isInteger(+code) ? +code : (code as number);
+    },
+    enumerable: true,
+    configurable: true,
   });
   return proc;
 }

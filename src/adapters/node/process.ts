@@ -167,6 +167,7 @@ export class NodeProcess {
   failure: Error | null = null;
   exitCode: number | null = null;
   private worker: Worker;
+  private terminated = false;
   private crashes = new BroadcastChannel('sandburg-wasm-thread-crash');
   private ready = false;
   private waiters = new Set<() => void>();
@@ -317,8 +318,12 @@ export class NodeProcess {
 
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
   request(port: number, request: BridgedRequest, reply: BridgeReply): void {
-    if (this.failure && this.exitCode === null) {
-      reply.postMessage({ type: 'error', message: `${this.label} crashed: ${this.failure.message.split('\n')[0]}` });
+    // A program that only exited may leave child processes serving (see 'exit'); one that failed (also
+    // after it exited: the page's compiler, a WebAssembly thread) may never answer.
+    const gone = this.terminated ? `${this.label} stopped` : this.failure ? `${this.label} crashed: ${this.failure.message.split('\n')[0]}` : null;
+    if (gone) {
+      reply.postMessage({ type: 'error', message: gone });
+      reply.close();
       return;
     }
     const id = this.nextId++;
@@ -384,9 +389,12 @@ export class NodeProcess {
     });
   }
 
+  /** Stops the runtime: requests still waiting, and any sent after, are answered with an error. */
   terminate(): void {
+    this.terminated = true;
     this.crashes.close();
     this.worker.terminate();
+    this.settlePending(`${this.label} stopped`);
   }
 
   /**
@@ -465,6 +473,8 @@ export class NodeProcess {
         else this.fail(new AdapterError(m.message.startsWith('runtime asset failed to load') ? 'INTERNAL' : 'APP', m.stack ?? m.message));
         break;
       case 'exit':
+        // Not every request is gone with it: servers of child processes it started keep answering
+        // (the runtime answers those of its own servers with an error).
         this.exitCode = m.code;
         if (!this.ports.length) this.fail(new AdapterError('APP', `${this.label} exited with code ${m.code} before it started listening`));
         break;
@@ -511,6 +521,7 @@ export class NodeProcess {
         break;
       case 'response-error':
         this.pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
+        this.pending.get(m.id)?.close();
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         break;
@@ -530,7 +541,18 @@ export class NodeProcess {
   /** Ends the wait for the program (listening(), pagePort()) with an error. */
   fail(e: Error) {
     this.failure ??= e;
+    this.settlePending(`${this.label} crashed: ${e.message.split('\n')[0]}`);
     for (const w of this.waiters) w();
+  }
+
+  /** Answers the requests still waiting with an error: the runtime that would have answered them is gone. */
+  private settlePending(message: string) {
+    for (const reply of this.pending.values()) {
+      reply.postMessage({ type: 'error', message });
+      reply.close();
+    }
+    this.pending.clear();
+    this.sent.clear();
   }
 
   private until(cond: () => boolean): Promise<void> {
