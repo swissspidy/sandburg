@@ -94,8 +94,10 @@ export interface NodeRuntime {
   version: string;
   /** Origins the app page may reach besides its own (usually none). */
   egress: string[];
+  /** Phase deadlines this runtime needs instead of the defaults (RunOptions.timeouts still override them). */
+  timeouts?: Partial<Record<PhaseName, number>>;
   probe(project: Project): ProbeVerdict;
-  /** Prepares, installs and starts the app; returns the loopback port it listens on. */
+  /** Prepares, installs and starts the app; returns the loopback port it listens on. A phase's error with `infra: true` (the runtime itself could not run) classes the run infra. */
   mount(project: Project, log: (line: string) => void): Promise<void>;
   install(): Promise<InstallReport>;
   start(): Promise<{ port: number }>;
@@ -459,7 +461,7 @@ export class Session {
     await mkdir(outDir, { recursive: true });
     const node = options.nodeRuntime?.() ?? null;
     const runtimeInfo = node ?? adapter!;
-    const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
+    const timeouts = { ...DEFAULT_TIMEOUTS, ...runtimeInfo.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version(), this.browserSandbox);
     run.onPhase = options.onPhase;
@@ -650,19 +652,24 @@ export class Session {
       await run.phase('load', timeouts.load, async () => {}); // no host page
       await run.phase('mount', timeouts.mount, () => node.mount(project, (l) => logs.push(l)));
       run.install = await run.phase('install', timeouts.install, () => node.install());
-      const { port } = await run.phase('start', timeouts.start, () => node.start());
-      // *.sandburg.localhost resolves to loopback and bypasses the proxy.
-      const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
-      await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
-      run.capture(page, origin);
+      // The tab's routes and capture for the app's origin are part of starting it: an error there is the phase's.
+      const origin = await run.phase('start', timeouts.start, async () => {
+        const { port } = await node.start();
+        // *.sandburg.localhost resolves to loopback and bypasses the proxy.
+        const origin = `http://${runId.toLowerCase()}-ref.${SANDBOX_DOMAIN}:${port}`;
+        await this.egress.attach(context, origin, node.egress, run.network ?? undefined, { routeAll: true });
+        run.capture(page, origin);
+        return origin;
+      });
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });
         await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run);
         return page.mainFrame();
       });
       await runChecksPhase(run, page, app, checks, timeouts, outDir);
-    } catch {
-      // failures are recorded per phase
+    } catch (err) {
+      // failures are recorded per phase; one the runtime marks as its own is infra (see NodeRuntime)
+      if ((err as { infra?: unknown })?.infra === true) run.infraError ??= { phase: run.phases.at(-1)?.name ?? 'mount', message: (err as Error).message };
     } finally {
       if (options.hold) await closed(page);
       run.runtimeLogs = node.logs();
