@@ -95,8 +95,8 @@ sandburg open <project>                                 # load it in a visible t
   project's own `checks.spec.ts` (or `app.checks.spec.ts` next to `app.zip`) takes precedence over
   `--checks`. Directories whose name starts with `.`, and archives or JSON files whose name starts
   with `.` or `_`, are skipped.
-- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a
-  usage error.
+- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks or they
+  did not finish in time, `64` a usage error.
 - `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start
   (see [Security](#security)).
 - `sandburg --help` lists the other options (`--ready`, `--save-files`, `--headed`, `--json`, `--out`, …).
@@ -123,6 +123,16 @@ export default {
   },
 } satisfies Checks;
 ```
+
+Each check has a time limit (30 s; `timeouts.check` in the library's `RunOptions`), and all of them
+together have the checks phase's (180 s; `timeouts.checks`). A check that runs out of time is stopped, not left running beside the next one:
+the Playwright call it is waiting in fails, any call it makes after that fails at once, and its
+`expect(…).toPass()` stops retrying. The app is then loaded again at the URL it first loaded at, so
+what the check left half done does not carry over; its result (failed) says so. A check also gets
+`signal`, an `AbortSignal` that aborts when it is stopped: pass it to waits of its own (a timer, a
+`fetch`), which Sandburg cannot stop. When the checks phase runs out of time, the checks that
+finished and the artifacts already taken are kept: the check that was running fails, and those that
+had not started are reported as skipped (`not run`); the run's status is `error`.
 
 A checks file is imported by Sandburg's Node process: it can do anything a program on this machine
 can. For checks someone else wrote (a coding agent), `--checks-in page` runs the file's code in the

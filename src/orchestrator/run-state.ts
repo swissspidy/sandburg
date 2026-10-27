@@ -91,15 +91,21 @@ export class RunState {
   /** Runs one lifecycle phase under a deadline and records its outcome. Rethrows on failure. */
   onPhase?: (phase: PhaseName) => void;
 
-  async phase<T>(name: PhaseName, timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+  /** `fn`'s signal aborts at the deadline (with the PhaseTimeout), for work that can stop. */
+  async phase<T>(name: PhaseName, timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
     this.onPhase?.(name);
     const start = performance.now();
+    const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new PhaseTimeout(name, timeoutMs)), timeoutMs);
+        timer = setTimeout(() => {
+          const timeout = new PhaseTimeout(name, timeoutMs);
+          controller.abort(timeout);
+          reject(timeout);
+        }, timeoutMs);
       });
-      const value = await Promise.race([fn(), deadline]);
+      const value = await Promise.race([fn(controller.signal), deadline]);
       this.phases.push({ name, status: 'ok', durationMs: ms(start) });
       return value;
     } catch (err) {

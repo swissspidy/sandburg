@@ -20,7 +20,7 @@ import { userEvent } from '@testing-library/user-event';
 import type { PageCheckResult, PageChecksOptions, PageChecksOutput } from './types.ts';
 import { modifier, escapeKeys, keySequence } from './locator.ts';
 import { makeExpect } from './expect.ts';
-import { settings, appWindow, appDocument, sleep, message, named, isFailure, guarded } from './frame.ts';
+import { settings, running, appWindow, appDocument, sleep, message, named, isFailure, guarded } from './frame.ts';
 import { App } from './app.ts';
 
 // --- the page ----------------------------------------------------------------------------------
@@ -51,7 +51,8 @@ async function run(source: string, options: PageChecksOptions): Promise<PageChec
   if (!checks || typeof checks !== 'object' || Object.values(checks).some((fn) => typeof fn !== 'function')) {
     return { error: 'the checks file must default-export an object mapping check names to functions' };
   }
-  const app = new App(new URL('.', appWindow().location.href).href);
+  const start = appWindow().location.href;
+  const app = new App(new URL('.', start).href);
   const context = {
     app: guarded(app, 'app'),
     page: guarded({ keyboard, waitForTimeout: (ms: number) => sleep(ms), goto: app.goto.bind(app), reload: app.reload.bind(app), url: app.url.bind(app) }, 'page'),
@@ -59,22 +60,63 @@ async function run(source: string, options: PageChecksOptions): Promise<PageChec
     appUrl: app.appUrl,
   };
   const results: PageCheckResult[] = [];
-  for (const [name, fn] of Object.entries(checks as Record<string, (ctx: typeof context) => unknown>)) {
+  const entries = Object.entries(checks as Record<string, (ctx: typeof context & { signal: AbortSignal }) => unknown>);
+  progress = { results, pending: entries.map(([name]) => name), stopped: false };
+  for (const [name, fn] of entries) {
+    if (progress.stopped) break;
+    progress.pending.shift();
+    const controller = new AbortController();
     const started = performance.now();
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    progress.running = { name, started, controller };
+    running.signal = controller.signal;
+    const timer = setTimeout(() => controller.abort(named('TimeoutError', `check "${name}" timed out`)), options.checkTimeoutMs);
+    let result: PageCheckResult;
     try {
       await Promise.race([
-        Promise.resolve().then(() => fn(context)),
-        new Promise((_, reject) => (timer = setTimeout(() => reject(named('TimeoutError', `check "${name}" timed out`)), options.checkTimeoutMs))),
+        Promise.resolve().then(() => fn({ ...context, signal: controller.signal })),
+        new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true })),
       ]);
-      results.push({ name, status: 'passed', durationMs: Math.round(performance.now() - started) });
+      result = { name, status: 'passed', durationMs: Math.round(performance.now() - started) };
     } catch (e) {
-      results.push({ name, status: isFailure(e) ? 'failed' : 'error', message: message(e), durationMs: Math.round(performance.now() - started) });
+      result = { name, status: isFailure(e) ? 'failed' : 'error', message: message(e), durationMs: Math.round(performance.now() - started) };
     } finally {
       clearTimeout(timer);
+      progress.running = undefined;
+      running.signal = new AbortController().signal;
+    }
+    if (progress.stopped) break;
+    results.push(result);
+    // Stopped at its timeout: the app loads again where it first loaded, so what the check left half done does not reach the next one.
+    if (controller.signal.aborted) {
+      result.message += await app.goto(start).then(
+        () => '\nThe check was stopped, and the app loaded again before the next check.',
+        (e: unknown) => `\nThe check was stopped; loading the app again failed: ${message(e)}`,
+      );
     }
   }
   return { results };
 }
 
-window.__sandburgPageChecks = { run };
+/** The checks of the run in progress: those that finished, the one running, those still to come. */
+let progress: {
+  results: PageCheckResult[];
+  running?: { name: string; started: number; controller: AbortController };
+  pending: string[];
+  stopped: boolean;
+} | null = null;
+
+function stop(reason: string): PageChecksOutput {
+  if (!progress) return { results: [] };
+  progress.stopped = true;
+  const { results, running: current, pending } = progress;
+  current?.controller.abort(named('TimeoutError', reason));
+  return {
+    results: [
+      ...results,
+      ...(current ? [{ name: current.name, status: 'failed' as const, message: `timed out: ${reason}`, durationMs: Math.round(performance.now() - current.started) }] : []),
+      ...pending.map((name) => ({ name, status: 'skipped' as const, message: `not run: ${reason}`, durationMs: 0 })),
+    ],
+  };
+}
+
+window.__sandburgPageChecks = { run, stop };
