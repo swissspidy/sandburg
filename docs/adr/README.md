@@ -65,3 +65,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0059](0059-cold-runs-round-5.md) | Cold runs, round 5: the runtime's compiles over the file channel, whole WebSocket messages, cache writes off the host's main thread | Accepted |
 | [0060](0060-test-reliability-under-load.md) | Test reliability under load: waits for the thing, not for a time | Accepted |
 | [0061](0061-chromium-sandbox.md) | Chromium's OS sandbox on by default, and site isolation | Accepted |
+| [0062](0062-ci-setup-and-coverage.md) | CI: one Chromium setup, a browser cache, and the runs that were missing | Accepted |
