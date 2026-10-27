@@ -32,7 +32,7 @@ window.prefetch = (url) => {
 };
 window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
-  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null };
+  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null, listening: [] };
   const bodies = new Map();
   let pending = requests.length;
   const finish = () => { w.terminate(); resolve(out); };
@@ -44,7 +44,11 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
     else if (m.type === 'log') out[m.stream] += m.text;
     else if (m.type === 'fatal') { out.fatal = m.stack || m.message; finish(); }
     else if (m.type === 'exit') { out.exit = m.code; if (!requests.length) finish(); }
-    else if (m.type === 'listening') requests.forEach((r, i) => w.postMessage({ type: 'request', id: i, port: m.port, method: r.method || 'GET', url: r.url, headers: [['host', 'localhost']], body: null }));
+    else if (m.type === 'listening') {
+      // The ports the page was told of.
+      out.listening.push(m.port);
+      requests.forEach((r, i) => w.postMessage({ type: 'request', id: i, port: m.port, method: r.method || 'GET', url: r.url, headers: [['host', 'localhost']], body: null }));
+    }
     else if (m.type === 'response-start') bodies.set(m.id, { status: m.status, headers: m.headers, chunks: [] });
     else if (m.type === 'response-chunk') bodies.get(m.id).chunks.push(new TextDecoder().decode(m.chunk));
     else if (m.type === 'response-full') {
@@ -346,6 +350,7 @@ export class RuntimeHarness {
       responses: { status: number; body: string; chunks: number }[];
       /** The ids of the requests whose response came in one message (response-full). */
       whole: number[];
+      listening: (number | string)[];
     }>, until);
   }
 

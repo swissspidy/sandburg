@@ -13,7 +13,8 @@ export type FromWorker =
   | { type: 'response-end'; id: number }
   /** A whole response (see request() in worker.ts): one message instead of start, chunks and end. */
   | { type: 'response-full'; id: number; status: number; statusText: string; headers: [string, string][]; body: ArrayBuffer }
-  | { type: 'response-error'; id: number; message: string }
+  /** code: the error's code for a client in a runtime (ECONNREFUSED: no server on the port); ECONNRESET without one. */
+  | { type: 'response-error'; id: number; message: string; code?: string }
   | { type: 'exit'; code: number }
   /** trap: a WebAssembly trap ended a thread of this runtime (or the runtime itself, if it is a thread). */
   | { type: 'fatal'; message: string; stack?: string; trap?: boolean }
@@ -46,7 +47,9 @@ export type NetMessage =
   | { type: 'net-data'; id: number; data: ArrayBuffer }
   | { type: 'net-end'; id: number }
   | { type: 'net-close'; id: number }
-  | { type: 'net-listening'; key: number | string };
+  | { type: 'net-listening'; key: number | string }
+  /** A net server that net-listening announced closed: its peers stop routing to it. */
+  | { type: 'net-closed'; key: number | string };
 
 /**
  * What a runtime posts to the runtime that started it (a worker thread's or child process's parent):
@@ -57,6 +60,8 @@ export type ToParent =
   | NetMessage
   /** A request to a server this runtime does not run, for its parent to route (see loopback.route in worker.ts). */
   | { type: 'lb-request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
+  /** A server that 'listening' announced closed, here or in a nested runtime: the parent stops routing its port here. */
+  | { type: 'closed'; port: number | string }
   /** From a worker thread to its Worker object in the parent (worker.postMessage's other side). */
   | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }
   /** A thread's synchronous file system call, answered in `sab` (see RemoteVfs and serveVfsCall in threads.ts). */
