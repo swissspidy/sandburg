@@ -133,6 +133,23 @@ test('a stopped check that ignores its errors in a loop does not hold up the run
   assert.equal(byName(progress.checks).spins.message, 'timed out: checks did not finish within 2000 ms');
 });
 
+test('a check has the page itself, and its methods are its own again after the check', async () => {
+  const checks: Checks = {
+    identity: async ({ app, page: checkPage, expect }) => {
+      expect(checkPage).toBe(page);
+      expect(app.page()).toBe(checkPage);
+      expect(checkPage.mainFrame().page()).toBe(checkPage);
+      expect(checkPage.context().pages().includes(checkPage)).toBe(true);
+    },
+  };
+  const names = ['route', 'on', 'once', 'addListener', 'prependListener'];
+  const own = () => names.map((name) => Object.getOwnPropertyDescriptor(page, name)?.value as unknown);
+  const before = own();
+  const { checks: results } = await runChecks(input(checks));
+  assert.equal(byName(results).identity.status, 'passed', JSON.stringify(results));
+  assert.deepEqual(own(), before);
+});
+
 test("a stopped check's route handlers and listeners are removed before the next check", async () => {
   let heard = 0;
   const checks: Checks = {

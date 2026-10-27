@@ -247,27 +247,32 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
     const timeout = new AbortController();
     const signal = AbortSignal.any([phase, timeout.signal]);
     let work: Promise<unknown> = Promise.resolve();
-    const checkPage = tracked(page);
-    const result = await run(
-      check,
-      async () => {
-        const configured = input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect;
-        const checkExpect = stoppable(input.appIdle && input.expectTimeoutMs ? settlingExpect(expect, input.expectTimeoutMs, input.appIdle) : configured, signal);
-        const timer = setTimeout(() => timeout.abort(named('TimeoutError', `check "${name}" timed out`)), input.checkTimeoutMs);
-        try {
-          work = withSignal(signal, () => Promise.resolve().then(() => fn({ app, page: checkPage.page, expect: checkExpect, appUrl, signal })));
-          await Promise.race([work, aborted(signal)]);
-        } finally {
-          clearTimeout(timer);
-        }
-        return { status: 'passed' };
-      },
-      signal,
-    );
-    if (result && timeout.signal.aborted && !phase.aborted) {
-      await Promise.race([work.catch(() => {}), sleep(STOP_CHECK_MS, undefined, { ref: false })]);
-      await checkPage.remove();
-      result.message += await reload(app, start, input.checkTimeoutMs, input.appSettled);
+    const added = tracked(page);
+    try {
+      const result = await run(
+        check,
+        async () => {
+          const configured = input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect;
+          const checkExpect = stoppable(input.appIdle && input.expectTimeoutMs ? settlingExpect(expect, input.expectTimeoutMs, input.appIdle) : configured, signal);
+          const timer = setTimeout(() => timeout.abort(named('TimeoutError', `check "${name}" timed out`)), input.checkTimeoutMs);
+          try {
+            work = withSignal(signal, () => Promise.resolve().then(() => fn({ app, page, expect: checkExpect, appUrl, signal })));
+            await Promise.race([work, aborted(signal)]);
+          } finally {
+            clearTimeout(timer);
+          }
+          return { status: 'passed' };
+        },
+        signal,
+      );
+      if (result && timeout.signal.aborted && !phase.aborted) {
+        await Promise.race([work.catch(() => {}), sleep(STOP_CHECK_MS, undefined, { ref: false })]);
+        added.restore();
+        await added.remove();
+        result.message += await reload(app, start, input.checkTimeoutMs, input.appSettled);
+      }
+    } finally {
+      added.restore();
     }
   }
 
@@ -301,37 +306,42 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
 }
 
 /**
- * A check's page, which notes the route handlers and event listeners the check adds to it, so that
- * those of a check stopped at its timeout can be removed (remove()): they would go on answering and
- * acting beside the next check. Those it adds elsewhere (its page's context) are not noted.
+ * Notes the route handlers (route(), and so routeFromHAR()) and event listeners a check adds to its
+ * page, until restore(), so that those of a check stopped at its timeout can be removed (remove()):
+ * they would go on answering and acting beside the next check. The page's own methods are shadowed
+ * for the time, so the check has the page itself (`app.page() === page`). Not noted: what it adds to
+ * the page's context, and routeWebSocket() (Playwright cannot remove one).
  */
-function tracked(page: Page): { page: Page; remove(): Promise<void> } {
-  const added: (() => Promise<unknown> | void)[] = [];
+function tracked(page: Page): { remove(): Promise<void>; restore(): void } {
   type Fn = (...a: unknown[]) => unknown;
-  const proxy: Page = new Proxy(page, {
-    get(target, prop) {
-      const value = Reflect.get(target, prop) as unknown;
-      if (typeof value !== 'function') return value;
-      if (prop === 'route') {
-        return async (url: Parameters<Page['route']>[0], handler: Parameters<Page['route']>[1], options?: Parameters<Page['route']>[2]) => {
-          await target.route(url, handler, options);
-          added.push(() => target.unroute(url, handler));
-        };
-      }
-      if (prop === 'on' || prop === 'once' || prop === 'addListener' || prop === 'prependListener') {
-        return (event: string, listener: Fn) => {
-          (value as Fn).call(target, event, listener);
-          added.push(() => void target.off(event as 'load', listener));
-          return proxy;
-        };
-      }
-      return (value as Fn).bind(target);
-    },
+  const added: (() => Promise<unknown> | void)[] = [];
+  const target = page as unknown as Record<string, Fn>;
+  const shadowed = (['route', 'on', 'once', 'addListener', 'prependListener'] as const).map((name) => {
+    const own = Object.getOwnPropertyDescriptor(page, name);
+    const original = target[name];
+    const value =
+      name === 'route'
+        ? async (url: Parameters<Page['route']>[0], handler: Parameters<Page['route']>[1], options?: Parameters<Page['route']>[2]) => {
+            await original.call(page, url, handler, options);
+            added.push(() => page.unroute(url, handler));
+          }
+        : (event: string, listener: Fn) => {
+            original.call(page, event, listener);
+            added.push(() => void page.off(event as 'load', listener));
+            return page;
+          };
+    Object.defineProperty(page, name, { value, configurable: true, writable: true });
+    return { name, own };
   });
   return {
-    page: proxy,
     remove: async () => {
       await Promise.all(added.splice(0).map((undo) => Promise.resolve(undo()).catch(() => {})));
+    },
+    restore: () => {
+      for (const { name, own } of shadowed.splice(0)) {
+        if (own) Object.defineProperty(page, name, own);
+        else delete target[name];
+      }
     },
   };
 }
