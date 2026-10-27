@@ -53,9 +53,9 @@ test('a busy app that never gets there fails at the full timeout', async () => {
   const e = settlingExpect(expect, 1_500, async () => false, opts);
   const { ms, error } = await timed(() => e(page.locator('h1')).toHaveText('fixed'));
   assert.ok(error && !/Stopped waiting/.test(error.message));
-  // The whole 1.5 s (but the last 100 ms, too short for a slice), not the 0.5 s floor; and not on to
-  // Playwright's own 5 s default.
-  assert.ok(ms >= 1_400 && ms < 5_000, `${Math.round(ms)} ms`);
+  // The whole 1.5 s (but the last 100 ms, too short for a slice), not the 0.5 s floor; and not much
+  // past it.
+  assert.ok(ms >= 1_400 && ms < 3_000, `${Math.round(ms)} ms`);
 });
 
 test('.not, synchronous matchers, an own timeout and expect members work as in Playwright', async () => {
@@ -99,30 +99,30 @@ test('with the page-quiet script, a page that updates itself from a timer is not
 
 /**
  * expect, with an assertion's own attempts held until `attempts` resolves; its one-shot checks
- * (timeout 1 ms) run at once, as in Playwright, and each calls `onCheck` as it starts.
+ * (timeout 1 ms) run at once, as in Playwright, and each calls `onCheck` once it has ended.
  */
 function held(attempts: Promise<unknown>, onCheck: () => void): typeof expect {
-  const hold = (m: object): object =>
+  const wrap = (m: object, before: Promise<unknown>, after = () => {}): object =>
     new Proxy(m, {
       get(target, prop) {
         const value = Reflect.get(target, prop) as unknown;
-        if (typeof value === 'function') return (...args: unknown[]) => attempts.then(() => value.apply(target, args));
-        return typeof value === 'object' && value !== null ? hold(value) : value;
+        if (typeof value === 'function') return (...args: unknown[]) => before.then(() => value.apply(target, args)).finally(after);
+        return typeof value === 'object' && value !== null ? wrap(value, before, after) : value;
       },
     });
   return {
     configure: ({ timeout }: { timeout: number }) => {
       const configured = expect.configure({ timeout });
-      if (timeout === 1) onCheck();
-      return timeout === 1 ? configured : (...args: Parameters<typeof expect>) => hold(configured(...args));
+      return (...args: Parameters<typeof expect>) => (timeout === 1 ? wrap(configured(...args), Promise.resolve(), onCheck) : wrap(configured(...args), attempts));
     },
   } as unknown as typeof expect;
 }
 
 test('an assertion that waits is checked more often than Playwright polls: it passes soon after the page changes', async () => {
   // Playwright polls at ~0, 20, 70, 170, 270, 770, 1270 ms: a change at 900 ms is seen at ~1270 ms.
-  // Here the assertion's own attempts are held until the end and the page changes once it has been
-  // checked twice: only a check beside the attempts can see the change, again and again until it does.
+  // Here the assertion's own attempts are held until the end and the page changes once two checks
+  // have failed: only a check beside the attempts can see the change, the next one (PROBE_EVERY_MS,
+  // 100 ms, later), well before Playwright's next poll would have.
   const assertions: ((e: typeof expect, h1: Locator) => Promise<unknown>)[] = [
     (e, h1) => e(h1).toHaveText('posted'),
     // An own timeout too, and .not.
@@ -141,11 +141,16 @@ test('an assertion that waits is checked more often than Playwright polls: it pa
     const backstop = setTimeout(() => (start(), checked()), 5_000);
     await twice;
     await page.evaluate(() => (document.querySelector('h1')!.textContent = 'posted'));
+    const changed = performance.now();
     const first = await Promise.race([passed.then(() => 'a check'), attempts.then(() => 'its own attempt')]);
+    const ms = performance.now() - changed;
     clearTimeout(backstop);
     start();
     await passed;
     assert.equal(first, 'a check');
+    // The next check (100 ms on) and its round trip: a slower cadence passes later (the timer only
+    // waits longer on a loaded machine).
+    assert.ok(ms < 450, `passed ${Math.round(ms)} ms after the change`);
   }
 });
 
@@ -176,7 +181,7 @@ test('a failing assertion fails as it would without the checks beside it: same m
   const probed = await timed(() => e(page.locator('h1')).toHaveText('fixed', { timeout: 1_200 }));
   const plain = await timed(() => expect(page.locator('h1')).toHaveText('fixed', { timeout: 1_200 }));
   assert.ok(probed.error && plain.error);
-  const strip = (m: string) => m.replace(/\u001b\[[0-9;]*m/g, '').replace(/\d+ × /g, 'N × ');
+  const strip = (m: string) => m.replace(/\u001b\[[0-9;]*m/g, '').replace(/ *\d+ × /g, ' N × ');
   assert.equal(strip(probed.error.message), strip(plain.error.message));
   // At its own timeout (1.2 s), not the configured 10 s.
   assert.ok(probed.ms >= 1_150 && probed.ms < 5_000, `${Math.round(probed.ms)} ms`);

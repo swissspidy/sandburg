@@ -132,18 +132,20 @@ test("what is logged while a dev server's loading page shows is the server's: no
 function frame(states: ('rendered' | 'waiting' | 'error')[], { detached = (): boolean => false } = {}) {
   let url = 'http://app.test/';
   const checks: string[] = [];
+  const waits: unknown[] = [];
   const f = {
     isDetached: detached,
     page: () => ({ isClosed: () => checks.length >= 10 }),
     url: () => url,
-    waitForFunction: async () => {
+    waitForFunction: async (_fn: unknown, _arg: unknown, options: unknown) => {
+      waits.push(options);
       const state = states.shift() ?? 'waiting';
       checks.push(state);
       url = state === 'error' ? 'chrome-error://chromewebdata/' : 'http://app.test/';
       if (state !== 'rendered') throw new Error('timed out');
     },
   };
-  return { frame: f as unknown as Frame, checks };
+  return { frame: f as unknown as Frame, checks, waits };
 }
 
 test('an app is ready once its frame renders; the browser\'s error page is loaded again at once, a loading page every 5 tries', async () => {
@@ -151,8 +153,9 @@ test('an app is ready once its frame renders; the browser\'s error page is loade
   const a = frame(['error', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting', 'rendered']);
   await waitForRender(a.frame, undefined, async () => reloads.push(a.checks.length));
   assert.equal(a.checks.length, 7);
-  // After the error page (try 1), and after try 5.
+  // After the error page (try 1), and after try 5: each try a second long, checked every 100 ms.
   assert.deepEqual(reloads, [1, 5]);
+  assert.deepEqual(new Set(a.waits.map((w) => JSON.stringify(w))), new Set([JSON.stringify({ polling: 100, timeout: 1_000 })]));
   // A render while the dev server's loading page shows is not the app.
   let loading = 2;
   const b = frame(['rendered', 'rendered', 'rendered']);

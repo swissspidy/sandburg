@@ -422,7 +422,10 @@ test('a channel whose answers do not drain within the timeout is closed', { time
   t.mock.timers.tick(50);
   ok.read();
   await until(() => !ok.socket.writableNeedDrain);
-  t.mock.timers.tick(400);
+  // In two steps, for a timer that its own expiry arms again (one tick would pass over it).
+  t.mock.timers.tick(200);
+  await new Promise((r) => setImmediate(r));
+  t.mock.timers.tick(200);
   // A close would be told in this turn of the event loop (destroy() emits it on the next tick).
   await new Promise((r) => setImmediate(r));
   assert.equal(ok.state.closed, false);
