@@ -21,7 +21,8 @@ report of where and why the two disagree.
   host page. The gateway and the dead proxy still apply: the reference
   app's page can reach only its own origin.
 - `dockerReference()` (`src/reference/docker.ts`) runs one container per app
-  from `node:22-slim`:
+  from `node:24-slim`, the Node line of `engines` and of the browser runtime (`node:22-slim` until
+  2026-10-27; the fidelity studies in `docs/fidelity/` ran on it):
   - the project is bind-mounted,
   - `npm ci` runs when a lockfile exists, `npm install` otherwise,
   - then `npm run dev` with the framework's host and port flags,

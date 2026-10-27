@@ -28,7 +28,7 @@ function fakeDocker(handlers: Record<string, Handler>) {
   return { docker, calls, commands: () => calls.map((c) => c.slice(0, 2).join(' ')) };
 }
 
-const missingImage: Handler = () => Promise.reject(new Error('Error: No such image: node:22-slim'));
+const missingImage: Handler = () => Promise.reject(new Error('Error: No such image: node:24-slim'));
 
 /** Runs `fn` with HTTPS_PROXY set to `proxy` (or unset), restoring the environment after. */
 async function withProxy<T>(proxy: string | undefined, fn: () => Promise<T>): Promise<T> {
@@ -102,7 +102,7 @@ test('a failed pull fails mount as infra, and the next run pulls again', async (
   const err = await first.mount(project, () => {}).catch((e: Error & { infra?: boolean }) => e);
   assert.ok(err instanceof Error);
   assert.equal(err.infra, true);
-  assert.match(err.message, /^docker pull node:22-slim failed: .*\n.*pull rate limit/);
+  assert.match(err.message, /^docker pull node:24-slim failed: .*\n.*pull rate limit/);
   await first.dispose();
   await factory().mount(project, () => {}).catch(() => {});
   assert.equal(pulls, 2);
@@ -255,7 +255,7 @@ test('as a user other than root, containers run as that user, with npm\'s home a
   await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project, () => {}));
   const chown = calls.find((c) => c[0] === 'run' && c.includes('chown'));
   assert.ok(chown, 'the cache volume is given to the user');
-  assert.deepEqual(chown.slice(-5), [`sandburg-npm-cache-${uid}:/cache`, 'node:22-slim', 'chown', `${uid}:${gid}`, '/cache']);
+  assert.deepEqual(chown.slice(-5), [`sandburg-npm-cache-${uid}:/cache`, 'node:24-slim', 'chown', `${uid}:${gid}`, '/cache']);
   const args = runArgs(calls);
   assert.deepEqual(args.slice(args.indexOf('--user'), args.indexOf('--user') + 2), ['--user', `${uid}:${gid}`]);
   assert.ok(args.includes('HOME=/tmp'));

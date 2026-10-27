@@ -19,7 +19,7 @@ import type { NodeRuntime } from '../orchestrator/session.ts';
 
 /** Options of dockerReference(): the image and where the container's files and npm cache live. */
 export interface DockerReferenceOptions {
-  /** Base image (default: node:22-slim). */
+  /** Base image (default: node:24-slim). */
   image?: string;
   /** Named volume shared by all runs as npm's cache (default: sandburg-npm-cache, and sandburg-npm-cache-<uid> for a user other than root). */
   npmCacheVolume?: string;
@@ -74,7 +74,7 @@ interface HostUser {
  * if it is missing, and decides how containers reach the host's proxy; the others wait for it.
  */
 export function dockerReference(options: DockerReferenceOptions = {}): DockerReferenceFactory {
-  const image = options.image ?? 'node:22-slim';
+  const image = options.image ?? 'node:24-slim';
   const docker = options.docker ?? runDocker;
   const uid = process.getuid?.();
   const user: HostUser | null = uid === undefined || uid === 0 ? null : { uid, gid: process.getgid!() };
