@@ -5,6 +5,9 @@ import { Session, type RunOptions, type SessionOptions } from './orchestrator/se
 import { defaultParallel, discoverProjects, runBatch } from './orchestrator/batch.ts';
 import { BrowserSetupError, NO_SANDBOX } from './orchestrator/launch.ts';
 import { loadProject } from './project.ts';
+import { adapterNames } from './adapters.ts';
+import { loadChecks } from './orchestrator/checks.ts';
+import { loadPageChecks } from './page-checks/index.ts';
 import { SnapshotStore } from './store.ts';
 import type { FileTree, RunResult } from './types.ts';
 
@@ -43,9 +46,14 @@ Options:
                        start (as root, or user namespaces restricted); results record it
   --browser-sandbox    Run it sandboxed even where SANDBURG_NO_BROWSER_SANDBOX=1 is set
   --json               Print full JSON instead of a summary
+  --reference <name>   compare: the reference runtime (docker, the default and only one)
+  --report <path>      compare: write the report to <path>.md and <path>.json
+                       (default: .sandburg/reports/fidelity)
   -h, --help           Show this help
 
-Exit codes: 0 passed, 1 failed (app ran, a blocking check failed), 2 error (run did not reach checks), 64 usage error.`;
+Exit codes: 0 passed, 1 failed (app ran, a blocking check failed), 2 error (run did not reach checks,
+or its project or checks file did not load), 64 usage error. compare: 0 once it has its report, 2 when
+nothing could be compared (the reference judged no app, or one side ran none to its checks).`;
 
 const OPTIONS = {
   runtime: { type: 'string', default: 'node' },
@@ -67,7 +75,6 @@ const OPTIONS = {
   help: { type: 'boolean', short: 'h', default: false },
   // compare
   reference: { type: 'string', default: 'docker' },
-  corpus: { type: 'string' },
   report: { type: 'string' },
 } satisfies ParseArgsConfig['options'];
 
@@ -87,12 +94,26 @@ export function sessionOptions(values: ReturnType<typeof parseCommandLine>['valu
   };
 }
 
+const COMMANDS = ['run', 'batch', 'open', 'snapshot', 'compare'];
+
+/** A project, checks file or directory named on the command line that did not load (exit code 2). */
+class InputError extends Error {}
+
+/** `what` loaded, or an InputError with its first line. */
+async function input<T>(what: Promise<T>): Promise<T> {
+  try {
+    return await what;
+  } catch (err) {
+    throw new InputError((err instanceof Error ? err.message : String(err)).split('\n')[0]);
+  }
+}
+
 export async function main(argv: string[]): Promise<number> {
   try {
     return await command(argv);
   } catch (err) {
     // What to change on this host, without Playwright's launch log (the error's cause).
-    if (!(err instanceof BrowserSetupError)) throw err;
+    if (!(err instanceof BrowserSetupError) && !(err instanceof InputError)) throw err;
     console.error(`error: ${err.message}`);
     return 2;
   }
@@ -112,6 +133,10 @@ async function command(argv: string[]): Promise<number> {
     console.log(USAGE);
     return values.help ? 0 : 64;
   }
+  if (!COMMANDS.includes(command)) {
+    console.error(`unknown command: ${command}\n\n${USAGE}`);
+    return 64;
+  }
   if (!target) {
     console.error(`${command}: missing argument\n\n${USAGE}`);
     return 64;
@@ -125,24 +150,31 @@ async function command(argv: string[]): Promise<number> {
     console.error('--checks-in must be host or page');
     return 64;
   }
-  const runOptions: RunOptions = {
-    runtime: values.runtime,
-    installIn: values['install-in'],
-    checks: values.checks,
-    checksIn: values['checks-in'],
-    outDir: values.out,
-    readySelector: values.ready,
-  };
+  if (!adapterNames.includes(values.runtime)) {
+    console.error(`--runtime must be ${adapterNames.join(' or ')}`);
+    return 64;
+  }
   const parallel = Number.parseInt(values.parallel, 10);
   if (!Number.isInteger(parallel) || parallel < 1) {
     console.error('--parallel must be a positive integer');
     return 64;
   }
+  // What the command names is loaded before the browser starts: a path that is not there fails here.
+  const checksFile = values.checks;
+  const checks = checksFile === undefined || command === 'snapshot' ? undefined : await input<RunOptions['checks']>(values['checks-in'] === 'page' ? loadPageChecks(checksFile) : loadChecks(checksFile));
+  const runOptions: RunOptions = {
+    runtime: values.runtime,
+    installIn: values['install-in'],
+    checks,
+    checksIn: values['checks-in'],
+    outDir: values.out,
+    readySelector: values.ready,
+  };
+  const store = new SnapshotStore(resolve(values.store ?? '.sandburg/store'));
 
   switch (command) {
     case 'snapshot': {
-      const store = new SnapshotStore(resolve(values.store ?? '.sandburg/store'));
-      const project = await loadProject(target, store);
+      const project = await input(loadProject(target, store));
       console.log(await store.put(project.files, project.name));
       return 0;
     }
@@ -161,9 +193,10 @@ async function command(argv: string[]): Promise<number> {
           return 64;
         }
       }
+      const project = await input(loadProject(target, store));
       let saved: FileTree | null = null;
       const result = await withSession(options, (s) =>
-        s.run(target, {
+        s.run(project, {
           ...runOptions,
           hold: command === 'open',
           ...(save !== undefined && { collectFiles: save, onAppFiles: (files: FileTree) => (saved = files) }),
@@ -175,7 +208,7 @@ async function command(argv: string[]): Promise<number> {
       return exitCode(result.status);
     }
     case 'batch': {
-      const items = await discoverProjects(target);
+      const items = await input(discoverProjects(target));
       if (items.length === 0) {
         console.error(`no projects in ${target}`);
         return 64;
@@ -204,11 +237,19 @@ async function command(argv: string[]): Promise<number> {
     }
     case 'compare': {
       const { compareCommand } = await import('./compare/cli.ts');
-      return compareCommand(target, { ...values, parallel }, options, runOptions);
+      if (values.reference !== 'docker') {
+        console.error(`unknown reference "${values.reference}" (available: docker)`);
+        return 64;
+      }
+      const items = await input(discoverProjects(target));
+      if (!items.length) {
+        console.error(`no projects in ${target}`);
+        return 64;
+      }
+      return compareCommand(items, { ...values, parallel }, options, runOptions);
     }
     default:
-      console.error(`unknown command "${command}"\n\n${USAGE}`);
-      return 64;
+      throw new Error(`no case for command ${command}`);
   }
 }
 

@@ -10,7 +10,7 @@ import type { RunResult } from '../types.ts';
 
 /** Options of compare(): a batch's options, and the reference runtime the batch runs on too. */
 export interface CompareOptions extends RunOptions {
-  /** In-browser runtime under test (default: auto, chosen per project). */
+  /** In-browser runtime under test (`adapterNames`): `node`, the only one, by default. */
   runtime?: string;
   reference: { name: string; factory: () => NodeRuntime };
   parallel?: number;

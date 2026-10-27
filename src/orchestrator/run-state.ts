@@ -66,6 +66,8 @@ export class RunState {
   pageErrors: PageError[] = [];
   documents: { frame: Frame; url: string; status: number; csp?: boolean }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
+  /** The run's project or checks file did not load (failSetup). */
+  setupError: { rule: 'project-load' | 'checks-load'; message: string } | null = null;
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];
   /** The run's renderer, once it has a tab (RunResult.memory). */
@@ -111,6 +113,13 @@ export class RunState {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** The run cannot start: its project or checks file did not load. Recorded as its probe phase's failure. */
+  failSetup(rule: 'project-load' | 'checks-load', err: unknown): void {
+    const error = serialize(err);
+    this.phases.push({ name: 'probe', status: 'failed', durationMs: 0, error });
+    this.setupError = { rule, message: error.message };
   }
 
   skipRemaining(): void {
@@ -162,6 +171,7 @@ export class RunState {
       ],
       runtimeOutput: this.console.filter((c) => c.source === 'host' && /^\[runtime:std(?:out|err)\]/.test(c.text)).map((c) => c.text),
       infraError: this.infraError,
+      setupError: this.setupError,
       declaredDependencies: Object.keys({ ...this.project.packageJson?.dependencies, ...this.project.packageJson?.devDependencies }),
     });
     const reachedChecks = this.phases.some((p) => p.name === 'checks' && p.status === 'ok');

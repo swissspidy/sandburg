@@ -8,7 +8,7 @@ test("a seed run's phases and renderer go to the callbacks onSeed returns, and e
   const session = new Session();
   const renderer: RunRenderer = { used: () => 1, collectGarbage: async () => {} };
   const internals = session as unknown as {
-    runOnce(project: Project, options: RunOptions): Promise<unknown>;
+    runOnce(project: Project, options: RunOptions & { seed?: boolean }): Promise<unknown>;
     runSeed(project: Project, checks: object, parent: RunOptions): Promise<void>;
   };
   internals.runOnce = async (_project, options) => {

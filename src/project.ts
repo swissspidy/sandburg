@@ -11,7 +11,12 @@ import { readZip, stripCommonRoot } from './zip.ts';
 
 export { detectFramework };
 
-const IGNORED_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.sandburg', '.turbo', '.cache']);
+/** Never part of the app's sources, at any depth. */
+const IGNORED_DIRS = new Set(['node_modules', '.git', '.sandburg']);
+/** Build output and tool caches: left out at the project's root only (`src/build/` is source). */
+const IGNORED_ROOT_DIRS = new Set(['dist', 'build', '.next', '.turbo', '.cache']);
+/** Whether a directory, `depth` directories below the project's root (0: at the root), is left out. */
+const ignoredDir = (name: string, depth: number) => IGNORED_DIRS.has(name) || (depth === 0 && IGNORED_ROOT_DIRS.has(name));
 /** Sandburg's own check files are not part of the app. */
 const IGNORED_FILES = /\.(spec|test)\.[cm]?[jt]sx?$/;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -71,7 +76,7 @@ function filesFromZip(buf: Buffer): FileTree {
   for (const { path, data } of stripCommonRoot(entries)) {
     const clean = normalize(path);
     const parts = clean.split('/');
-    if (parts.slice(0, -1).some((d) => IGNORED_DIRS.has(d) || d === '__MACOSX')) continue;
+    if (parts.slice(0, -1).some((d, depth) => ignoredDir(d, depth) || d === '__MACOSX')) continue;
     const file = parts.at(-1)!;
     if (IGNORED_FILES.test(file) || file === '.DS_Store') continue;
     if (data.length > MAX_FILE_BYTES) throw new Error(`file too large: ${clean}`);
@@ -95,11 +100,11 @@ function parseFileTree(value: unknown): FileTree {
 
 async function readDirectory(root: string): Promise<FileTree> {
   const files: FileTree = {};
-  async function walk(dir: string): Promise<void> {
+  async function walk(dir: string, depth: number): Promise<void> {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) await walk(full);
+        if (!ignoredDir(entry.name, depth)) await walk(full, depth + 1);
       } else if (entry.isFile() && !IGNORED_FILES.test(entry.name)) {
         const buf = await readFile(full);
         if (buf.length > MAX_FILE_BYTES) throw new Error(`file too large: ${relative(root, full)}`);
@@ -107,7 +112,7 @@ async function readDirectory(root: string): Promise<FileTree> {
       }
     }
   }
-  await walk(root);
+  await walk(root, 0);
   return files;
 }
 
