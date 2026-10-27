@@ -7,8 +7,9 @@ export { loadProject, projectFromFiles } from './project.ts';
 export { classify } from './classify.ts';
 export type { ClassifyInput } from './classify.ts';
 export { adapterNames, getAdapter } from './adapters.ts';
-// The adapter contract (AdapterDescriptor, HostRequest, HostResponse, HostInstallOptions) is Sandburg's own, not the package's.
+// The adapter contract (HostRequest, HostResponse, HostInstallOptions) is Sandburg's own; AdapterDescriptor is what getAdapter returns.
 export type {
+  AdapterDescriptor,
   CheckKind,
   CheckResult,
   CheckStatus,

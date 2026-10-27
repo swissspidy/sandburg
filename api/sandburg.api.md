@@ -27,6 +27,7 @@ interface ClassifyInput {
     } | null;
     setupError?: {
         rule: 'project-load' | 'checks-load';
+        class: 'app-bug' | 'unknown';
         message: string;
     } | null;
 }
@@ -321,6 +322,24 @@ class SnapshotStore {
 }
 
 // types.ts
+interface AdapterDescriptor {
+    name: string;
+    version: string;
+    browserEntry: string;
+    assets: Record<string, string>;
+    egress: string[];
+    crossOriginIsolation: boolean | 'credentialless';
+    timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
+    bundleDefines?: Record<string, string>;
+    bundleAliases?: Record<string, string>;
+    probe(project: Project): ProbeVerdict;
+    hostInstall?(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<unknown>;
+    serve?(request: HostRequest): Promise<HostResponse | null>;
+    warmups?(): Project[];
+    isWarm?(project: Project): Promise<boolean>;
+    prepare?(): void;
+}
+
 type CheckKind = 'functional' | 'document' | 'console' | 'network' | 'axe' | 'a11y-snapshot' | 'screenshot';
 
 interface CheckResult {
@@ -489,24 +508,6 @@ interface SerializedError {
 // --- referenced, not exported by the package ---
 
 // types.ts
-interface AdapterDescriptor {
-    name: string;
-    version: string;
-    browserEntry: string;
-    assets: Record<string, string>;
-    egress: string[];
-    crossOriginIsolation: boolean | 'credentialless';
-    timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
-    bundleDefines?: Record<string, string>;
-    bundleAliases?: Record<string, string>;
-    probe(project: Project): ProbeVerdict;
-    hostInstall?(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<unknown>;
-    serve?(request: HostRequest): Promise<HostResponse | null>;
-    warmups?(): Project[];
-    isWarm?(project: Project): Promise<boolean>;
-    prepare?(): void;
-}
-
 interface HostInstallOptions {
     seed?: boolean;
     runSeed?(project: Project, checks: unknown): Promise<void>;

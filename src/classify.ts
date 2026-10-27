@@ -60,8 +60,11 @@ export interface ClassifyInput {
   declaredDependencies: string[];
   /** Set when the orchestrator or browser itself failed (crash, offline cache miss). */
   infraError: { phase: PhaseName; message: string } | null;
-  /** Set when the run's project ('project-load') or checks file ('checks-load') did not load: the run never started. */
-  setupError?: { rule: 'project-load' | 'checks-load'; message: string } | null;
+  /**
+   * Set when the run's project ('project-load') or checks file ('checks-load') did not load: the run
+   * never started. Its class: app-bug for a project that is there but broken, else unknown.
+   */
+  setupError?: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null;
 }
 
 /** Why a run failed (the first rule that fires, with its evidence), or null when it did not fail. */
@@ -70,8 +73,7 @@ export function classify(input: ClassifyInput): Failure | null {
   const failedPhase = input.phases.find((p) => p.name !== 'dispose' && (p.status === 'failed' || p.status === 'timeout'));
   const failedChecks = input.checks.filter((c) => c.blocking && (c.status === 'failed' || c.status === 'error'));
   if (!failedPhase && failedChecks.length === 0 && input.probe?.verdict !== 'unsupported') return null;
-  // A project that cannot be read, or a checks file that cannot be imported, fails the same way anywhere.
-  if (input.setupError) return failure('app-bug', 'probe', input.setupError.rule, input.setupError.message, []);
+  if (input.setupError) return failure(input.setupError.class, 'probe', input.setupError.rule, input.setupError.message, []);
 
   const appErrors = input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message);
   // Importing a package the project never declared fails in any environment: that is the app's bug.

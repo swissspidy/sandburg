@@ -159,9 +159,11 @@ async function command(argv: string[]): Promise<number> {
     console.error('--parallel must be a positive integer');
     return 64;
   }
-  // What the command names is loaded before the browser starts: a path that is not there fails here.
+  // What run and open name is loaded before the browser starts: a path that is not there fails here.
+  // A batch's --checks loads in each run that has no checks of its own (a checks-load error there).
   const checksFile = values.checks;
-  const checks = checksFile === undefined || command === 'snapshot' ? undefined : await input<RunOptions['checks']>(values['checks-in'] === 'page' ? loadPageChecks(checksFile) : loadChecks(checksFile));
+  const checks =
+    checksFile === undefined || (command !== 'run' && command !== 'open') ? checksFile : await input<RunOptions['checks']>(values['checks-in'] === 'page' ? loadPageChecks(checksFile) : loadChecks(checksFile));
   const runOptions: RunOptions = {
     runtime: values.runtime,
     installIn: values['install-in'],

@@ -11,10 +11,10 @@ import { readZip, stripCommonRoot } from './zip.ts';
 
 export { detectFramework };
 
-/** Never part of the app's sources, at any depth. */
-const IGNORED_DIRS = new Set(['node_modules', '.git', '.sandburg']);
-/** Build output and tool caches: left out at the project's root only (`src/build/` is source). */
-const IGNORED_ROOT_DIRS = new Set(['dist', 'build', '.next', '.turbo', '.cache']);
+/** Never part of the app's sources, at any depth (installs, history, tools' caches and output). */
+const IGNORED_DIRS = new Set(['node_modules', '.git', '.sandburg', '.next', '.turbo', '.cache']);
+/** Build output: left out at the project's root only (`src/build/` and `packages/ui/dist/` may be source). */
+const IGNORED_ROOT_DIRS = new Set(['dist', 'build']);
 /** Whether a directory, `depth` directories below the project's root (0: at the root), is left out. */
 const ignoredDir = (name: string, depth: number) => IGNORED_DIRS.has(name) || (depth === 0 && IGNORED_ROOT_DIRS.has(name));
 /** Sandburg's own check files are not part of the app. */

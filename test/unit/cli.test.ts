@@ -71,6 +71,10 @@ test("a project, checks file or directory that is not there is an error (2) on o
     assert.match(stderr, /^error: [^\n]+$/, argv.join(' '));
   }
   assert.equal(existsSync(out), false);
+  // A snapshot id that is not stored says so.
+  assert.equal((await cli('snapshot', `snapshot:${'0'.repeat(64)}`, '--store', join(dir, 'store'))).stderr, `error: snapshot ${'0'.repeat(64)}: not found`);
+  // A batch's --checks is not loaded up front (its projects may all have their own): what fails is the directory.
+  assert.match((await cli('batch', missing, '--checks', join(dir, 'nope.spec.ts'), '--out', out)).stderr, /^error: ENOENT[^\n]*missing'$/);
 });
 
 test('compare exits 2 when nothing could be compared, else 0 whatever the apps did', () => {

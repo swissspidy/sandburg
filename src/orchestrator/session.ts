@@ -17,7 +17,7 @@ import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from '
 import { EgressProxy } from './egress-proxy.ts';
 import { AXE_CLASSIC_PATH, AXE_SCRIPT, HostServer, SANDBOX_DOMAIN } from './host-server.ts';
 import { CodeCache, type PageCode } from './code-cache.ts';
-import { SnapshotStore } from '../store.ts';
+import { NO_SNAPSHOT, SnapshotStore } from '../store.ts';
 import { pageRendererMemory, type RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
@@ -415,9 +415,9 @@ export class Session {
     const outDir = resolve(options.outDir ?? '.sandburg/runs', runId);
     const adapter = options.nodeRuntime ? null : getAdapter(options.runtime ?? DEFAULT_RUNTIME);
     // A project or checks file that does not load ends this run as an error, not its batch.
-    const failedSetup = async (project: Project, rule: 'project-load' | 'checks-load', err: unknown) => {
+    const failedSetup = async (project: Project, rule: 'project-load' | 'checks-load', err: unknown, appBug = false) => {
       const failed = new RunState(runId, project, adapter ?? options.nodeRuntime!(), this.options.offline ?? false, this.browser!.version(), this.browserSandbox);
-      failed.failSetup(rule, err);
+      failed.failSetup(rule, err, appBug);
       failed.skipRemaining();
       await mkdir(outDir, { recursive: true });
       return failed.finish(outDir);
@@ -427,9 +427,14 @@ export class Session {
       project = typeof projectInput === 'string' ? await loadProject(projectInput, this.store) : projectInput;
     } catch (err) {
       const path = projectInput as string;
-      const name = path.startsWith('snapshot:') ? path : basename(path);
-      return failedSetup(projectFromFiles({}, { name, path: path.startsWith('snapshot:') ? path : resolve(path) }), 'project-load', err);
+      const snapshot = path.startsWith('snapshot:');
+      const project = { ...projectFromFiles({}, { name: snapshot ? path : basename(path), path: snapshot ? path : resolve(path) }), snapshotId: NO_SNAPSHOT };
+      // A path or snapshot that is not there is not the app's bug; a file that is no project is.
+      const missing = snapshot || (err as NodeJS.ErrnoException).code === 'ENOENT';
+      return failedSetup(project, 'project-load', err, !missing);
     }
+    // Stored before its checks load, so that a run whose checks file is broken can be reopened.
+    await this.store.put(project.files, project.name);
     let checks: Checks | PageChecks | null;
     try {
       checks =
@@ -442,7 +447,6 @@ export class Session {
     await mkdir(outDir, { recursive: true });
     const node = options.nodeRuntime?.() ?? null;
     const runtimeInfo = node ?? adapter!;
-    await this.store.put(project.files, project.name);
     const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version(), this.browserSandbox);
