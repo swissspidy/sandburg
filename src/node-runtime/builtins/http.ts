@@ -170,6 +170,10 @@ export class IncomingMessage extends Readable {
   }
   _read() {}
   setTimeout() { return this; }
+  _destroy(err: Error | null, cb: (e?: Error | null) => void) {
+    // As Node: an error is emitted only to listeners ('aborted' and 'close' tell the others).
+    cb(this.listenerCount('error') ? err : null);
+  }
 }
 
 export class ServerResponse extends Writable {
@@ -306,8 +310,9 @@ export class Server extends EventEmitter {
     servers.set(this.port, this);
     this.listening = true;
     queueMicrotask(() => {
-      // The runtime learns of the server first, so it is reachable when the program is told.
-      serverEvents.emit('listening', this.port, this.ephemeral);
+      // The runtime learns of the server first, so it is reachable when the program is told; not of
+      // one closed in the meantime (listen() then close() in one tick): its 'closed' has gone up already.
+      if (this.listening) serverEvents.emit('listening', this.port, this.ephemeral);
       this.emit('listening');
       cb?.();
     });
@@ -462,7 +467,14 @@ class ClientRequest extends Writable {
           res.push(null);
         }
       },
-      error: (message: string, code = 'ECONNRESET') => this.emit('error', Object.assign(new Error(message), { code })),
+      error: (message: string, code = 'ECONNRESET') => {
+        if (!res) return this.emit('error', Object.assign(new Error(message), { code }));
+        // The server went away mid-response (its process crashed): the response is cut short, as in Node.
+        if (res.complete || res.destroyed) return;
+        res.aborted = true;
+        res.emit('aborted');
+        res.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
+      },
     };
     const headers: [string, string][] = Object.entries(this.headers);
     if (!('host' in this.headers)) headers.push(['host', this.host || 'localhost']);
