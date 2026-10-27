@@ -229,7 +229,7 @@ interface RunOptions {
     seed?: boolean;
     installIn?: 'host' | 'browser';
     collectFiles?: string;
-    onAppFiles?: (files: FileTree) => void;
+    onAppFiles?: (files: FileTree, refused?: string) => void;
     onPhase?: (phase: PhaseName) => void;
     onRenderer?: (renderer: RunRenderer) => void;
     onSeed?: () => Pick<RunOptions, 'onPhase' | 'onRenderer'> & {
