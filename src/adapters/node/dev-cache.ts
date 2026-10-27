@@ -3,7 +3,7 @@
  * store one (a token for one key, from one sandbox, once) or record the host's compiles.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Project } from '../../types.ts';
 import { CompileCache } from './compile-cache.ts';
@@ -149,7 +149,12 @@ export async function cacheBundle(key: string): Promise<Buffer | null> {
   const bundle = Buffer.concat([bundleHead(header), ...bodies]);
   const tmp = `${bin}.${tmpSuffix()}.tmp`;
   await writeFile(tmp, bundle);
-  await rename(tmp, bin);
+  // Kept only if the cache is still the one stat saw before the read: one written since (while this
+  // one was read) would be older than this bundle, which would then be served for it. One written
+  // after this check is newer than the bundle, which is made again.
+  const now = await stat(json).catch(() => null);
+  if (now?.mtimeMs === jsonStat.mtimeMs && now.ino === jsonStat.ino) await rename(tmp, bin);
+  else await rm(tmp, { force: true });
   return bundle;
 }
 

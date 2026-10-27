@@ -52,8 +52,9 @@ export class Socket extends Duplex {
   /** Where writes go, once connected. */
   peer: Peer | null = null;
   private key: number | string | null = null;
-  constructor(_opts?: unknown) {
-    super({ allowHalfOpen: true });
+  /** allowHalfOpen: false (the default, as in Node) ends this side once the peer has ended its side. */
+  constructor(opts?: { allowHalfOpen?: boolean } | null) {
+    super({ allowHalfOpen: !!opts?.allowHalfOpen });
   }
   connect(...args: unknown[]) {
     const cb = typeof args.at(-1) === 'function' ? (args.pop() as () => void) : undefined;
@@ -103,8 +104,11 @@ export class Socket extends Duplex {
   }
   /** Data from the peer. */
   receive(chunk: Uint8Array | null) {
-    if (chunk === null) this.push(null);
-    else {
+    // As Node's sockets: 'end' comes when nothing is left unread, even without a reader ('data').
+    if (chunk === null) {
+      this.push(null);
+      this.read(0);
+    } else {
       this.bytesRead += chunk.length;
       this.push(Buffer.from(chunk));
     }
@@ -163,12 +167,15 @@ export const netServers = new Map<number | string, NetServer>();
 
 export class NetServer extends EventEmitter {
   listening = false;
+  /** For the sockets it accepts (see Socket). */
+  allowHalfOpen = false;
   private key: number | string = 0;
   private connections = new Set<Socket>();
   constructor(opts?: unknown, listener?: (s: Socket) => void) {
     super();
     const l = typeof opts === 'function' ? opts : listener;
     if (l) this.on('connection', l as never);
+    if (typeof opts === 'object' && opts) this.allowHalfOpen = !!(opts as { allowHalfOpen?: boolean }).allowHalfOpen;
   }
   listen(...args: unknown[]) {
     const cb = typeof args.at(-1) === 'function' ? (args.pop() as () => void) : undefined;
@@ -195,6 +202,7 @@ export class NetServer extends EventEmitter {
   /** A new connection (its other end is connecting). */
   accept(socket: Socket) {
     if (!this.listening) return socket.destroy();
+    socket.allowHalfOpen = this.allowHalfOpen;
     this.connections.add(socket);
     socket.once('close', () => this.connections.delete(socket));
     this.emit('connection', socket);
@@ -223,7 +231,7 @@ export class NetServer extends EventEmitter {
 }
 export const netEvents = new EventEmitter();
 
-const createConnection = (...args: unknown[]) => new Socket().connect(...args);
+const createConnection = (...args: unknown[]) => new Socket(typeof args[0] === 'object' ? args[0] : null).connect(...args);
 
 export const net = {
   isIP: (s: string) => (isIPv4(s) ? 4 : isIPv6(s) ? 6 : 0),
