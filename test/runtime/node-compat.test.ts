@@ -260,6 +260,77 @@ test("http: a child process that exits with a request in flight answers it itsel
   assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[0, 'the process exited with code 0']]);
 });
 
+/** How many messages ended each request, from a run's `ends`. */
+const endsPerRequest = (ends: [string, number][]) => {
+  const count = new Map<number, number>();
+  for (const [type, id] of ends) if (type !== 'exit') count.set(id, (count.get(id) ?? 0) + 1);
+  return Object.fromEntries(count);
+};
+
+test('http: requests in flight to a child process that exits are answered once each', { timeout: 30_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `require('child_process').fork(require('path').join(__dirname, 'child.js'));`,
+      'child.js': `let n = 0; require('http').createServer(() => ++n === 2 && setTimeout(() => process.exit(0), 20)).listen(3001);`,
+    },
+    '/app/main.js',
+    [{ url: '/a' }, { url: '/b' }],
+    undefined,
+    // Long after the child's runtime has ended (forgetNested), which answers what is still open.
+    { linger: 500 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(endsPerRequest(out.ends), { 0: 1, 1: 1 }, JSON.stringify(out.ends));
+  assert.deepEqual(out.responses.map((r) => r.body), ['the process exited with code 0', 'the process exited with code 0']);
+});
+
+test("http: what a handler writes after its process exited is not sent", { timeout: 30_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        require('http').createServer((req, res) => setTimeout(() => {
+          // Runs once process.exit() has ended the process (after the timer's task).
+          Promise.resolve().then(() => res.end('late'));
+          process.exit(0);
+        }, 10)).listen(3000);`,
+    },
+    '/app/main.js',
+    [{ url: '/' }],
+    undefined,
+    { linger: 300 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.ends, [['response-error', 0], ['exit', 0]]);
+});
+
+test('http: process.exit() in a request handler ends the process with its code', { timeout: 30_000 }, async () => {
+  const out = await h.run({ 'main.js': `require('http').createServer(() => process.exit(7)).listen(3000);` }, '/app/main.js', [{ url: '/' }], undefined, { linger: 300 });
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.ends, [['response-error', 0], ['exit', 7]]);
+  assert.equal(out.responses[0].body, 'the process exited with code 7');
+});
+
+test('process.exit() ends the process once: nothing it scheduled runs after, and it exits once', async () => {
+  // Not again as a callback queued before it runs, or once its event loop is found idle.
+  const once = await h.run({ 'main.js': `Promise.resolve().then(() => process.exit(4)); process.exit(3);` }, '/app/main.js', [], undefined, { linger: 500 });
+  assert.deepEqual(once.ends, [['exit', 3]]);
+  const ticks = await h.run(
+    {
+      'main.js': `
+        setInterval(() => console.log('tick'), 5);
+        setImmediate(() => setTimeout(() => process.exit(0), 30));
+        process.on('exit', () => console.log('exit'));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { linger: 300 },
+  );
+  assert.equal(ticks.fatal, null, ticks.fatal ?? ticks.stderr);
+  assert.equal(ticks.stdout.trim().split('\n').at(-1), 'exit', ticks.stdout);
+  assert.deepEqual(ticks.ends, [['exit', 0]]);
+});
+
 test('net: a socket ends its side once the peer ends, unless allowHalfOpen; then both close and the process ends', async () => {
   const out = await h.run(
     {

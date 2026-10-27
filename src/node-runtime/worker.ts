@@ -20,8 +20,8 @@ import { installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
-import { ExitError, NODE_VERSION, createProcess, pendingWork, timers, timersActive } from './builtins/process.ts';
-import { netServers } from './builtins/net.ts';
+import { ExitError, NODE_VERSION, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
+import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
@@ -594,6 +594,7 @@ function exitWhenIdle() {
   const busy = () => timersActive() || servers.size > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
   let idle = 0;
   const timer = nativeSetInterval(() => {
+    if (hasExited) return nativeClearInterval(timer);
     idle = busy() ? 0 : idle + 1;
     if (idle < 8) return;
     idle = 0;
@@ -681,18 +682,30 @@ function releaseHeld(depth: number) {
 /** Requests to this runtime's own servers not yet answered (those to nested runtimes' are theirs). */
 const inflight = new Set<number>();
 
+/** Whether the program exited (see exited). */
+let hasExited = false;
+
 /**
- * The program exited (process.exit, or its event loop drained). Its servers are gone, and what they
- * had not answered is answered with an error; servers of its child processes, which keep running,
- * still answer theirs.
+ * The program exited (process.exit, or its event loop drained), once: what it scheduled no longer
+ * runs, its servers are gone, and what they had not answered is answered with an error (its
+ * WebSockets close); servers of its child processes, which keep running, still answer theirs.
  */
 function exited(code: number) {
+  if (hasExited) return;
+  hasExited = true;
+  stopTimers();
   for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
   inflight.clear();
   for (const port of [...servers.keys()]) {
     servers.delete(port);
     serverEvents.emit('closed', port);
   }
+  for (const key of [...netServers.keys()]) {
+    netServers.delete(key);
+    netEvents.emit('closed', key);
+  }
+  for (const id of sockets.keys()) post({ type: 'ws-closed', id, code: 1006, reason: '', wasClean: false });
+  sockets.clear();
   post({ type: 'exit', code });
 }
 
@@ -748,6 +761,8 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
       },
     });
   } catch (e) {
+    // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
+    if (e instanceof ExitError) return exited(e.code);
     release();
     answer({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
     inflight.delete(id);
@@ -859,10 +874,13 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
       post({ type: 'ws-reject', id, status, message });
     },
     message: (data) => {
+      if (hasExited) return;
       if (typeof data === 'string') post({ type: 'ws-message', id, data });
       else post({ type: 'ws-message', id, data: data.buffer as ArrayBuffer }, [data.buffer as ArrayBuffer]);
     },
     closed: (code, reason, wasClean) => {
+      // Closed already, as the program exited.
+      if (hasExited) return;
       sockets.get(id)?.socket.hangUp();
       sockets.delete(id);
       post({ type: 'ws-closed', id, code, reason, wasClean });

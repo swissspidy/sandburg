@@ -85,12 +85,15 @@ class Timeout {
 }
 
 const byId = new Map<number, Timeout>();
+/** The process exited: nothing it scheduled runs any more (see stopTimers). */
+let stopped = false;
 function make(repeat: boolean) {
   return (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
     if (typeof fn !== 'function') throw new TypeError('The "callback" argument must be of type function');
     const bound = bindContext(fn as never) as (...a: unknown[]) => void;
     const t: Timeout = new Timeout(() => {
       if (!repeat) t.fired();
+      if (stopped) return t.clear();
       bound(...args);
     }, Math.max(1, Number(ms) || 1), repeat);
     return t;
@@ -115,6 +118,13 @@ export function timersActive(): boolean {
   if (immediateQueue.length || pendingWork.count > 0) return true;
   for (const t of byId.values()) if (t.alive) return true;
   return false;
+}
+
+/** The process exited (process.exit): its timers and immediates, and any it sets after, do not run. */
+export function stopTimers(): void {
+  stopped = true;
+  for (const t of [...byId.values()]) t.clear();
+  immediateQueue.length = 0;
 }
 
 class Immediate {
@@ -151,7 +161,7 @@ export const timers = {
     const bound = bindContext(fn as never) as (...a: unknown[]) => void;
     const imm = new Immediate();
     immediateQueue.push(() => {
-      if (!imm.cancelled) bound(...args);
+      if (!imm.cancelled && !stopped) bound(...args);
     });
     if (immediateQueue.length === 1) immediateChannel.port2.postMessage(0);
     return imm;
