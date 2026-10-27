@@ -204,6 +204,7 @@ interface NodeRuntime {
     name: string;
     version: string;
     egress: string[];
+    timeouts?: Partial<Record<PhaseName, number>>;
     probe(project: Project): ProbeVerdict;
     mount(project: Project, log: (line: string) => void): Promise<void>;
     install(): Promise<InstallReport>;
@@ -287,12 +288,13 @@ function projectFromFiles(files: FileTree, meta: {
 }): Project;
 
 // reference/docker.ts
-function dockerReference(options?: DockerReferenceOptions): () => NodeRuntime;
+function dockerReference(options?: DockerReferenceOptions): DockerReferenceFactory;
 
 interface DockerReferenceOptions {
     image?: string;
     npmCacheVolume?: string;
     workDir?: string;
+    docker?: DockerExec;
 }
 
 // store.ts
@@ -525,6 +527,19 @@ interface SerializedError {
     code?: string;
     stack?: string;
 }
+
+// --- referenced, not exported by the package ---
+
+// reference/docker.ts
+type DockerExec = (args: string[], options: {
+    timeoutMs: number;
+    signal?: AbortSignal;
+    onData?: (text: string) => void;
+}) => Promise<string>;
+
+type DockerReferenceFactory = (() => NodeRuntime) & {
+    disposeAll(): Promise<void>;
+};
 
 // --- from other packages ---
 // @playwright/test: expect

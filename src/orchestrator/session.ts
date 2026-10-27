@@ -92,8 +92,10 @@ export interface NodeRuntime {
   version: string;
   /** Origins the app page may reach besides its own (usually none). */
   egress: string[];
+  /** Phase deadlines this runtime needs instead of the defaults (RunOptions.timeouts still override them). */
+  timeouts?: Partial<Record<PhaseName, number>>;
   probe(project: Project): ProbeVerdict;
-  /** Prepares, installs and starts the app; returns the loopback port it listens on. */
+  /** Prepares, installs and starts the app; returns the loopback port it listens on. A phase's error with `infra: true` (the runtime itself could not run) classes the run infra. */
   mount(project: Project, log: (line: string) => void): Promise<void>;
   install(): Promise<InstallReport>;
   start(): Promise<{ port: number }>;
@@ -416,7 +418,7 @@ export class Session {
       typeof options.checks === 'string'
         ? await (options.checksIn === 'page' ? loadPageChecks(options.checks) : loadChecks(options.checks))
         : (options.checks ?? null);
-    const timeouts = { ...DEFAULT_TIMEOUTS, ...adapter?.timeouts, ...options.timeouts };
+    const timeouts = { ...DEFAULT_TIMEOUTS, ...runtimeInfo.timeouts, ...options.timeouts };
 
     const run = new RunState(runId, project, runtimeInfo, this.options.offline ?? false, this.browser.version(), this.browserSandbox);
     run.onPhase = options.onPhase;
@@ -611,8 +613,9 @@ export class Session {
         return page.mainFrame();
       });
       await runChecksPhase(run, page, app, checks, timeouts, outDir, options);
-    } catch {
-      // failures are recorded per phase
+    } catch (err) {
+      // failures are recorded per phase; one the runtime marks as its own is infra (see NodeRuntime)
+      if ((err as { infra?: unknown })?.infra === true) run.infraError ??= { phase: run.phases.at(-1)?.name ?? 'mount', message: (err as Error).message };
     } finally {
       run.runtimeLogs = node.logs();
       await run.phase('dispose', timeouts.dispose, () => node.dispose()).catch(() => {});

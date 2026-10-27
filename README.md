@@ -95,6 +95,13 @@ sandburg open <project>                                 # load it in a visible t
   project's own `checks.spec.ts` (or `app.checks.spec.ts` next to `app.zip`) takes precedence over
   `--checks`. Directories whose name starts with `.`, and archives or JSON files whose name starts
   with `.` or `_`, are skipped.
+- `compare --reference docker` installs and starts each project with real npm in a Docker
+  container: `npm install` runs the dependencies' lifecycle scripts and `npm run dev` the project's
+  own code, with the project directory mounted. **The Docker reference is not a security boundary**:
+  use it only on projects you trust. When the host's proxy listens on its loopback only, the
+  container shares the host's network and can reach every service on it
+  ([ADR 0004](docs/adr/0004-docker-reference-and-fidelity-study.md)). Its containers are labelled
+  `sandburg.ref` and removed when the run ends, on Ctrl-C, and by the next `compare` after a crash.
 - Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a
   usage error.
 - `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start

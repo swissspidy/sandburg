@@ -29,10 +29,31 @@ report of where and why the two disagree.
     for the reference.
 
   Install and server output become the `runtime.log` artifact and
-  classification evidence. When the host reaches the internet through a
-  loopback proxy, the container shares the host network and gets the proxy
-  and CA bundle. Otherwise it uses bridge networking with the port
-  published on 127.0.0.1.
+  classification evidence. Containers use bridge networking with the port
+  published on 127.0.0.1, and get the host's proxy and CA bundle. A proxy on
+  the host's loopback is reached through the bridge's gateway
+  (`--add-host=host.docker.internal:host-gateway`) when it listens there;
+  when it listens on 127.0.0.1 only, as most local proxies do, the container
+  shares the host network instead (`--network host`), the only way it can
+  reach the proxy.
+- Containers are cleaned up whatever ends the run. Each is started with
+  `--rm` and labelled `sandburg.ref=<container name>`, with the host and the
+  process that started it; dispose stops a `docker run` still in flight and
+  removes the run's containers by label, and the first run of a process
+  removes the containers and project copies left by processes on the host
+  that are gone. The image is pulled before the first container starts,
+  under a mount deadline that allows for the pull; a failed pull is an
+  `infra` result (the reference could not judge the app), not a `timeout`.
+  Ctrl-C or SIGTERM during `compare` removes the containers and project
+  copies, closes the browser and exits 130 without writing a report.
+- **The Docker reference is not a security boundary.** It runs real
+  `npm install`, with the dependencies' lifecycle scripts, and the project's
+  own dev script, as root in the container, with the project directory
+  mounted read-write and the npm cache volume shared by all runs. With
+  `--network host` the container can reach every service on the host's
+  loopback, and the host's proxy settings, with any credentials in them, are
+  in its environment. Use it only on projects you trust; the in-browser
+  runtimes are the ones meant for untrusted code.
 - Running dev servers, not production builds, matches what the in-browser
   runtimes do and what eval harnesses typically serve.
 
