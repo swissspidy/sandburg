@@ -120,7 +120,11 @@ export function timersActive(): boolean {
   return false;
 }
 
-/** The process exited (process.exit): its timers and immediates, and any it sets after, do not run. */
+/**
+ * The process exited (process.exit): its timers and immediates, and any it sets after, do not run.
+ * A known limit: a shell this runtime runs in-process (child_process with shell: true, see shell.ts)
+ * uses these timers too, and stops with it, where in Node it is a process of its own that goes on.
+ */
 export function stopTimers(): void {
   stopped = true;
   for (const t of [...byId.values()]) t.clear();

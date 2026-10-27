@@ -108,6 +108,7 @@ window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => 
     } else if (m.type === 'ws-reject') { out.events.push(['reject', m.status, m.message]); finish(); }
     else if (m.type === 'ws-message') out.events.push(['message', typeof m.data === 'string' ? m.data : Array.from(new Uint8Array(m.data))]);
     else if (m.type === 'ws-closed') { out.events.push(['closed', m.code, m.reason, m.wasClean]); setTimeout(finish, 50); }
+    else if (m.type === 'exit') out.events.push(['exit', m.code]);
   };
   w.postMessage({ type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg' });
   setTimeout(finish, 3000);

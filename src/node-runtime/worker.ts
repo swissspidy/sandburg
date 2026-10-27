@@ -33,7 +33,7 @@ import { COMPILE_POST_MAX } from '../file-channel.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
-import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce } from './peers.ts';
+import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone } from './peers.ts';
 
 patchBase64Url();
 
@@ -690,12 +690,13 @@ let hasExited = false;
  * runs, its servers are gone, and what they had not answered is answered with an error (its
  * WebSockets close); servers of its child processes, which keep running, still answer theirs.
  */
-function exited(code: number) {
+export function exited(code: number) {
   if (hasExited) return;
   hasExited = true;
   stopTimers();
   for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
   inflight.clear();
+  loopbackServersGone();
   for (const port of [...servers.keys()]) {
     servers.delete(port);
     serverEvents.emit('closed', port);
@@ -868,8 +869,9 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   // The server may write (and so the client reply, e.g. pong) inside its 'upgrade' handler, before upgrade() returns.
   let early: Uint8Array[] | null = [];
   const codec = new WsClientCodec({
-    accept: (protocol, extensions) => post({ type: 'ws-accept', id, protocol, extensions }),
+    accept: (protocol, extensions) => !hasExited && post({ type: 'ws-accept', id, protocol, extensions }),
     reject: (status, message) => {
+      if (hasExited) return;
       sockets.delete(id);
       post({ type: 'ws-reject', id, status, message });
     },

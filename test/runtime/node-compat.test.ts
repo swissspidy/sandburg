@@ -284,7 +284,7 @@ test('http: requests in flight to a child process that exits are answered once e
   assert.deepEqual(out.responses.map((r) => r.body), ['the process exited with code 0', 'the process exited with code 0']);
 });
 
-test("http: what a handler writes after its process exited is not sent", { timeout: 30_000 }, async () => {
+test("http: a response a handler writes after its process exited is not sent", { timeout: 30_000 }, async () => {
   const out = await h.run(
     {
       'main.js': `
@@ -300,7 +300,9 @@ test("http: what a handler writes after its process exited is not sent", { timeo
     { linger: 300 },
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
-  assert.deepEqual(out.ends, [['response-error', 0], ['exit', 0]]);
+  // The late write ('late', a response-full) is not sent: the request's only answer is the error.
+  assert.deepEqual(out.ends.filter(([type]) => type !== 'exit'), [['response-error', 0]]);
+  assert.deepEqual(out.ends.filter(([type]) => type === 'exit'), [['exit', 0]]);
 });
 
 test('http: process.exit() in a request handler ends the process with its code', { timeout: 30_000 }, async () => {
@@ -329,6 +331,64 @@ test('process.exit() ends the process once: nothing it scheduled runs after, and
   assert.equal(ticks.fatal, null, ticks.fatal ?? ticks.stderr);
   assert.equal(ticks.stdout.trim().split('\n').at(-1), 'exit', ticks.stdout);
   assert.deepEqual(ticks.ends, [['exit', 0]]);
+});
+
+test("http: process.exit() in a handler of a child process's request ends the process; the child's request fails", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        process.on('exit', (code) => console.log('parent exit', code));
+        require('http').createServer(() => process.exit(5)).listen(3000, () => require('child_process').fork(require('path').join(__dirname, 'child.js'), { stdio: 'inherit' }));`,
+      'child.js': `require('http').get('http://localhost:3000/', () => console.log('answered')).on('error', (e) => console.log('child got', e.code, e.message));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    // The child, a process of its own, reports after its parent exited: the run is kept until it has.
+    { linger: 10_000, until: ({ stdout }) => stdout.includes('child got') },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.ends, [['exit', 5]]);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['parent exit 5', 'child got ECONNRESET socket hang up']);
+});
+
+test('timers: nothing set after process.exit(), or in an exit listener, runs', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        process.on('exit', () => setTimeout(() => console.log('timer in exit listener'), 0));
+        setTimeout(() => {
+          Promise.resolve().then(() => {
+            setTimeout(() => console.log('timeout'), 0);
+            setImmediate(() => console.log('immediate'));
+            setInterval(() => console.log('interval'), 5);
+          });
+          process.exit(0);
+        }, 10);`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { linger: 300 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, '');
+  assert.deepEqual(out.ends, [['exit', 0]]);
+});
+
+test('WebSockets: an open connection closes (1006) when its process exits', async () => {
+  const server = `
+    const crypto = require('crypto');
+    const server = require('http').createServer();
+    server.on('upgrade', (req, socket) => {
+      const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+      socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: ' + accept + '\\r\\n\\r\\n');
+      setTimeout(() => process.exit(0), 20);
+    });
+    server.listen(3000);`;
+  const out = await h.runWebSocket({ 'main.js': server }, '/app/main.js', '/', [], []);
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.events, [['open', ''], ['closed', 1006, '', false], ['exit', 0]]);
 });
 
 test('net: a socket ends its side once the peer ends, unless allowHalfOpen; then both close and the process ends', async () => {
