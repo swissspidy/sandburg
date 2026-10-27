@@ -4,6 +4,7 @@
  */
 import { createRequire } from 'node:module';
 import { readFile, writeFile } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect } from '@playwright/test';
@@ -12,7 +13,8 @@ import type { CheckKind, CheckResult, CheckStatus, ConsoleEntry, NetworkEntry, P
 import { AXE_PATH } from './host-server.ts';
 import type { PageCode } from './code-cache.ts';
 import { functionalCheckIds } from '../check-ids.ts';
-import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, type PageChecks } from '../page-checks/index.ts';
+import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, stopPageChecks, type PageChecks } from '../page-checks/index.ts';
+import { signalCalls, withSignal } from './check-signal.ts';
 
 /** What a check function is given: the app, its tab, Playwright's expect and a URL helper. */
 export interface CheckContext {
@@ -27,6 +29,12 @@ export interface CheckContext {
    * appUrl('/about') and appUrl('about') are the same.
    */
   appUrl(path: string): string;
+  /**
+   * Aborts when the check's time is up (its timeout, or the checks phase's). The check is stopped
+   * then: the Playwright call it waits in fails, and so does any it makes after. Pass it to waits of
+   * your own (a timer, a fetch) so they stop too.
+   */
+  signal: AbortSignal;
 }
 
 /** A check: it passes unless it throws (a failed expect() throws). */
@@ -73,6 +81,10 @@ export interface ChecksInput {
   hostOrigin?: string;
   /** The page's copy of axe-core's compiled code (code-cache.ts), for axe-core from the host's origin. */
   axeCode?: PageCode;
+  /** Where the results go as they come: what the run keeps if the phase runs out of time. */
+  progress?: ChecksProgress;
+  /** Aborts when the checks phase is out of time: what is running stops, and nothing more starts. */
+  signal?: AbortSignal;
 }
 
 export interface ChecksOutput {
@@ -80,12 +92,110 @@ export interface ChecksOutput {
   artifacts: { screenshot?: string; a11ySnapshot?: string };
 }
 
+/** A check to run, in its place among the run's checks. */
+interface Planned {
+  id: string;
+  kind: CheckKind;
+  name: string;
+  blocking: boolean;
+  /** When it started (performance.now()). */
+  started?: number;
+  /** What it gave, once it finished: one result, or a checks file's (--checks-in page). */
+  results?: CheckResult[];
+}
+
+/**
+ * A run's checks as they finish, in the order they are reported, and those still to come: a checks
+ * phase that runs out of time keeps what finished, and the artifacts already written (close()).
+ */
+export class ChecksProgress implements ChecksOutput {
+  checks: CheckResult[] = [];
+  artifacts: ChecksOutput['artifacts'] = {};
+  private planned: Planned[] = [];
+  private closed = false;
+
+  plan(id: string, kind: CheckKind, name: string, blocking: boolean): Planned {
+    const check: Planned = { id, kind, name, blocking };
+    this.planned.push(check);
+    return check;
+  }
+
+  start(check: Planned): void {
+    check.started ??= performance.now();
+  }
+
+  finish(check: Planned, results: CheckResult[]): void {
+    if (this.closed) return;
+    check.results = results;
+    this.checks = this.planned.flatMap((c) => c.results ?? []);
+  }
+
+  /** The phase is over (`reason`): a check still running timed out, and one not started did not run. */
+  close(reason: string): void {
+    for (const c of this.planned) {
+      if (c.results) continue;
+      const { id, kind, name, blocking } = c;
+      this.finish(c, [
+        c.started === undefined
+          ? { id, kind, name, blocking, durationMs: 0, status: 'skipped', message: `not run: ${reason}` }
+          : { id, kind, name, blocking, durationMs: ms(c.started), status: 'failed', message: `timed out: ${reason}` },
+      ]);
+    }
+    this.closed = true;
+  }
+}
+
+/** Whether the run warned that checks cannot be stopped in their Playwright calls (once a process). */
+let warned = false;
+
+/** How long the checks file running in the page has to say how far it got, once the phase is out of time. */
+const STOP_PAGE_CHECKS_MS = 1_000;
+/** How long a check that timed out has to stop (its Playwright calls aborted) before the app is loaded again. */
+const STOP_CHECK_MS = 1_000;
+
+/**
+ * Runs the checks, each recorded in `input.progress` as it finishes. When `input.signal` aborts (the
+ * phase's deadline), what is running stops and nothing more starts. A functional check gets
+ * `checkTimeoutMs`: then it is stopped (its signal aborts, which aborts the Playwright call it waits
+ * in, and refuses any it makes after), and the app is loaded again at the URL it first loaded at, so
+ * what the check left half done does not reach the next one.
+ */
 export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
-  const results: CheckResult[] = [];
-  const artifacts: ChecksOutput['artifacts'] = {};
+  const progress = input.progress ?? new ChecksProgress();
+  const phase = input.signal ?? new AbortController().signal;
+  if (!signalCalls(input.page) && !warned) {
+    warned = true;
+    console.warn("warning: this Playwright's client is not the one Sandburg knows: a check that runs out of time is not stopped while it waits in a Playwright call");
+  }
+  await withSignal(phase, () => checksIn(input, progress, phase));
+  return progress;
+}
+
+async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: AbortSignal): Promise<void> {
   const { page, app } = input;
-  const base = new URL('.', app.url()).href;
+  const start = app.url();
+  const base = new URL('.', start).href;
   const appUrl = (path: string) => new URL(path.replace(/^\/+/, ''), base).href;
+  const run = async (check: Planned, fn: () => Promise<{ status: CheckStatus; message?: string; details?: unknown }>, signal = phase) => {
+    if (phase.aborted) return null;
+    progress.start(check);
+    const result = await timed(check, fn, signal);
+    progress.finish(check, [result]);
+    return result;
+  };
+
+  // Every check, in the order they are reported.
+  const screenshot = progress.plan('screenshot', 'screenshot', 'Screenshot', false);
+  const a11y = progress.plan('a11y-snapshot', 'a11y-snapshot', 'Accessibility tree snapshot', false);
+  const axe = progress.plan('axe', 'axe', 'axe-core accessibility scan', false);
+  const pageChecks = isPageChecks(input.checks) ? input.checks : null;
+  const checksFile = pageChecks && progress.plan('functional:checks-file', 'functional', 'checks file', true);
+  const entries = Object.entries(pageChecks ? {} : (input.checks ?? {}));
+  const ids = functionalCheckIds(entries.map(([name]) => name));
+  const functional = entries.map(([name, fn], i) => ({ name, fn, check: progress.plan(ids[i], 'functional', name, true) }));
+  const documentCheck = progress.plan('document', 'document', 'The page is not a server error', true);
+  const consoleCheck = progress.plan('console', 'console', 'No uncaught errors in the app', true);
+  const networkCheck = progress.plan('network', 'network', 'No failed or blocked requests', false);
 
   // Artifacts first, so they show the app as it first rendered. They only read the page, and so does
   // loading axe-core, which goes on meanwhile (its scan runs after them).
@@ -93,93 +203,183 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
   const axeLoaded = loadAxe(app, axeOrigin, input.axeCode);
   axeLoaded.catch(() => {}); // the axe check reports it
   // Checks that run in the page: their runtime loads meanwhile too.
-  const pageChecksLoaded = isPageChecks(input.checks) ? loadPageChecksRuntime(page, input.hostOrigin && input.hostOrigin + PAGE_CHECKS_PATH) : undefined;
+  const pageChecksLoaded = pageChecks ? loadPageChecksRuntime(page, input.hostOrigin && input.hostOrigin + PAGE_CHECKS_PATH) : undefined;
   pageChecksLoaded?.catch(() => {}); // the checks report it
   // An app that hydrates is waited for meanwhile: a click before it hydrates is lost, and a check
   // that retries it (toPass) waits out its inner assertion's timeout first.
   const settled = input.appSettled?.().catch(() => {});
-  results.push(
-    ...(await Promise.all([
-      timed('screenshot', 'screenshot', 'Screenshot', false, async () => {
-        artifacts.screenshot = join(input.artifactsDir, 'screenshot.png');
-        await page.screenshot({ path: artifacts.screenshot });
-        return { status: 'passed' };
-      }),
-      timed('a11y-snapshot', 'a11y-snapshot', 'Accessibility tree snapshot', false, async () => {
-        const snapshot = await app.locator('body').ariaSnapshot();
-        artifacts.a11ySnapshot = join(input.artifactsDir, 'a11y.yaml');
-        await writeFile(artifacts.a11ySnapshot, snapshot + '\n');
-        return { status: 'passed', details: { lines: snapshot.split('\n').length } };
-      }),
-    ])),
-  );
-  results.push(await timed('axe', 'axe', 'axe-core accessibility scan', false, () => runAxe(app, axeLoaded)));
+  await Promise.all([
+    run(screenshot, async () => {
+      const path = join(input.artifactsDir, 'screenshot.png');
+      await page.screenshot({ path });
+      progress.artifacts.screenshot = path;
+      return { status: 'passed' };
+    }),
+    run(a11y, async () => {
+      const snapshot = await app.locator('body').ariaSnapshot();
+      const path = join(input.artifactsDir, 'a11y.yaml');
+      await writeFile(path, snapshot + '\n');
+      progress.artifacts.a11ySnapshot = path;
+      return { status: 'passed', details: { lines: snapshot.split('\n').length } };
+    }),
+  ]);
+  await run(axe, () => runAxe(app, axeLoaded));
 
   await settled;
 
-  if (isPageChecks(input.checks)) {
+  if (checksFile && !phase.aborted) {
+    progress.start(checksFile);
     const started = performance.now();
+    let results: CheckResult[] | null;
     try {
-      results.push(...(await runPageChecks(page, input.checks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 }, pageChecksLoaded)));
+      results = await runPageChecks(page, pageChecks, { checkTimeoutMs: input.checkTimeoutMs, expectTimeoutMs: input.expectTimeoutMs ?? 5_000 }, pageChecksLoaded);
     } catch (err) {
-      results.push({
-        id: 'functional:checks-file',
-        kind: 'functional',
-        name: 'checks file',
-        blocking: true,
-        durationMs: ms(started),
-        status: 'error',
-        message: stripAnsi(err instanceof Error ? err.message : String(err)),
-      });
+      // Out of time: the page says which of its checks finished (outside the phase's signal, which has
+      // aborted). None, when the file had not loaded yet: then the checks file timed out (close()).
+      results = phase.aborted
+        ? await withSignal(AbortSignal.timeout(STOP_PAGE_CHECKS_MS), () => stopPageChecks(page, reasonOf(phase))).then((r) => (r.length ? r : null), () => null)
+        : [{ ...checkOf(checksFile), durationMs: ms(started), status: 'error', message: stripAnsi(err instanceof Error ? err.message : String(err)) }];
+    }
+    if (results) progress.finish(checksFile, results);
+  }
+  for (const { name, fn, check } of functional) {
+    const timeout = new AbortController();
+    const signal = AbortSignal.any([phase, timeout.signal]);
+    let work: Promise<unknown> = Promise.resolve();
+    const added = tracked(page);
+    try {
+      const result = await run(
+        check,
+        async () => {
+          const configured = input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect;
+          const checkExpect = stoppable(input.appIdle && input.expectTimeoutMs ? settlingExpect(expect, input.expectTimeoutMs, input.appIdle) : configured, signal);
+          const timer = setTimeout(() => timeout.abort(named('TimeoutError', `check "${name}" timed out`)), input.checkTimeoutMs);
+          try {
+            work = withSignal(signal, () => Promise.resolve().then(() => fn({ app, page, expect: checkExpect, appUrl, signal })));
+            await Promise.race([work, aborted(signal)]);
+          } finally {
+            clearTimeout(timer);
+          }
+          return { status: 'passed' };
+        },
+        signal,
+      );
+      if (result && timeout.signal.aborted && !phase.aborted) {
+        await Promise.race([work.catch(() => {}), sleep(STOP_CHECK_MS, undefined, { ref: false })]);
+        added.restore();
+        await added.remove();
+        result.message += await reload(app, start, input.checkTimeoutMs, input.appSettled);
+      }
+    } finally {
+      added.restore();
     }
   }
-  const functional = Object.entries(isPageChecks(input.checks) ? {} : (input.checks ?? {}));
-  const ids = functionalCheckIds(functional.map(([name]) => name));
-  for (const [i, [name, fn]] of functional.entries()) {
-    results.push(
-      await timed(ids[i], 'functional', name, true, async () => {
-        const configured = input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect;
-        const checkExpect = input.appIdle && input.expectTimeoutMs ? settlingExpect(expect, input.expectTimeoutMs, input.appIdle) : configured;
-        await withTimeout(Promise.resolve(fn({ app, page, expect: checkExpect, appUrl })), input.checkTimeoutMs, `check "${name}" timed out`);
-        return { status: 'passed' };
-      }),
-    );
-  }
 
-  results.push(
-    await timed('document', 'document', 'The page is not a server error', true, async () => {
-      const doc = input.appDocument?.() ?? null;
-      const bad = doc !== null && doc.status >= 500;
-      return {
-        status: bad ? 'failed' : 'passed',
-        message: bad ? `${doc.url} responded with ${doc.status}` : undefined,
-        details: doc ? { status: doc.status } : undefined,
-      };
-    }),
-  );
-  results.push(
-    await timed('console', 'console', 'No uncaught errors in the app', true, async () => {
-      const errors = input.appErrors();
-      const consoleErrors = input.appConsole().filter((c) => c.type === 'error');
-      return {
-        status: errors.length ? 'failed' : 'passed',
-        message: errors.length ? errors.map((e) => e.message).slice(0, 5).join('\n') : undefined,
-        details: { uncaught: errors.length, consoleErrors: consoleErrors.length },
-      };
-    }),
-  );
-  results.push(
-    await timed('network', 'network', 'No failed or blocked requests', false, async () => {
-      const { failed, blocked } = input.network();
-      const bad = failed.length + blocked.length;
-      return {
-        status: bad ? 'failed' : 'passed',
-        message: bad ? [...failed, ...blocked].map((r) => `${r.method} ${r.url}: ${r.reason}`).slice(0, 5).join('\n') : undefined,
-        details: { failed: failed.length, blocked: blocked.length },
-      };
-    }),
-  );
-  return { checks: results, artifacts };
+  await run(documentCheck, async () => {
+    const doc = input.appDocument?.() ?? null;
+    const bad = doc !== null && doc.status >= 500;
+    return {
+      status: bad ? 'failed' : 'passed',
+      message: bad ? `${doc.url} responded with ${doc.status}` : undefined,
+      details: doc ? { status: doc.status } : undefined,
+    };
+  });
+  await run(consoleCheck, async () => {
+    const errors = input.appErrors();
+    const consoleErrors = input.appConsole().filter((c) => c.type === 'error');
+    return {
+      status: errors.length ? 'failed' : 'passed',
+      message: errors.length ? errors.map((e) => e.message).slice(0, 5).join('\n') : undefined,
+      details: { uncaught: errors.length, consoleErrors: consoleErrors.length },
+    };
+  });
+  await run(networkCheck, async () => {
+    const { failed, blocked } = input.network();
+    const bad = failed.length + blocked.length;
+    return {
+      status: bad ? 'failed' : 'passed',
+      message: bad ? [...failed, ...blocked].map((r) => `${r.method} ${r.url}: ${r.reason}`).slice(0, 5).join('\n') : undefined,
+      details: { failed: failed.length, blocked: blocked.length },
+    };
+  });
+}
+
+/**
+ * Notes the route handlers (route(), and so routeFromHAR()) and event listeners a check adds to its
+ * page, until restore(), so that those of a check stopped at its timeout can be removed (remove()):
+ * they would go on answering and acting beside the next check. The page's own methods are shadowed
+ * for the time, so the check has the page itself (`app.page() === page`). Not noted: what it adds to
+ * the page's context, and routeWebSocket() (Playwright cannot remove one).
+ */
+function tracked(page: Page): { remove(): Promise<void>; restore(): void } {
+  type Fn = (...a: unknown[]) => unknown;
+  const added: (() => Promise<unknown> | void)[] = [];
+  const target = page as unknown as Record<string, Fn>;
+  const shadowed = (['route', 'on', 'once', 'addListener', 'prependListener'] as const).map((name) => {
+    const own = Object.getOwnPropertyDescriptor(page, name);
+    const original = target[name];
+    const value =
+      name === 'route'
+        ? async (url: Parameters<Page['route']>[0], handler: Parameters<Page['route']>[1], options?: Parameters<Page['route']>[2]) => {
+            await original.call(page, url, handler, options);
+            added.push(() => page.unroute(url, handler));
+          }
+        : (event: string, listener: Fn) => {
+            original.call(page, event, listener);
+            added.push(() => void page.off(event as 'load', listener));
+            return page;
+          };
+    Object.defineProperty(page, name, { value, configurable: true, writable: true });
+    return { name, own };
+  });
+  return {
+    remove: async () => {
+      await Promise.all(added.splice(0).map((undo) => Promise.resolve(undo()).catch(() => {})));
+    },
+    restore: () => {
+      for (const { name, own } of shadowed.splice(0)) {
+        if (own) Object.defineProperty(page, name, own);
+        else delete target[name];
+      }
+    },
+  };
+}
+
+/**
+ * After a check that timed out: the app loaded again at `url` (where it first loaded), and settled.
+ * What the result's message says of it.
+ */
+async function reload(app: Frame, url: string, timeoutMs: number, settled?: () => Promise<unknown>): Promise<string> {
+  try {
+    await app.goto(url, { waitUntil: 'load', timeout: timeoutMs });
+    await settled?.().catch(() => {});
+    return '\nThe check was stopped, and the app loaded again before the next check.';
+  } catch (err) {
+    return `\nThe check was stopped; loading the app again failed: ${stripAnsi(err instanceof Error ? err.message : String(err)).split('\n')[0]}`;
+  }
+}
+
+/**
+ * expect(), where a function given to it is no longer called once `signal` aborts (it returns
+ * undefined instead), however it is reached: expect(fn), expect.soft(fn), expect.poll(fn), and those
+ * of expect.configure(…). toPass retries its function with no deadline of its own: a check stopped in
+ * one would otherwise go on retrying for as long as Sandburg runs.
+ */
+function stoppable(base: typeof expect, signal: AbortSignal): typeof expect {
+  type Fn = (...a: unknown[]) => unknown;
+  const guard = (value: unknown) => (typeof value === 'function' ? (...a: unknown[]) => (signal.aborted ? undefined : (value as Fn)(...a)) : value);
+  const wrap = <T extends object>(fn: T, self: unknown): T =>
+    new Proxy(fn, {
+      apply: (target, _this, args: unknown[]) => Reflect.apply(target as Fn, self, [guard(args[0]), ...args.slice(1)]),
+      get(target, prop) {
+        const value = Reflect.get(target, prop) as unknown;
+        if (typeof value !== 'function') return value;
+        if (prop === 'soft' || prop === 'poll') return wrap(value, target);
+        if (prop === 'configure') return (...a: unknown[]) => wrap((value as Fn).apply(target, a) as object, undefined);
+        return value;
+      },
+    });
+  return wrap(base, undefined);
 }
 
 /** A web-first assertion not passed after this long is also checked once every PROBE_EVERY_MS (see settlingExpect). */
@@ -375,28 +575,30 @@ async function runAxe(app: Frame, loaded: Promise<void>): Promise<{ status: Chec
   };
 }
 
-async function timed(
-  id: string,
-  kind: CheckKind,
-  name: string,
-  blocking: boolean,
-  fn: () => Promise<{ status: CheckStatus; message?: string; details?: unknown }>,
-): Promise<CheckResult> {
+/** A planned check's id, kind, name and blocking. */
+function checkOf({ id, kind, name, blocking }: Planned): Pick<CheckResult, 'id' | 'kind' | 'name' | 'blocking'> {
+  return { id, kind, name, blocking };
+}
+
+/** Runs a check: its result, and how long it took. When `signal` aborted, the check was stopped (it failed). */
+async function timed(check: Planned, fn: () => Promise<{ status: CheckStatus; message?: string; details?: unknown }>, signal?: AbortSignal): Promise<CheckResult> {
   const start = performance.now();
   try {
     const out = await fn();
-    return { id, kind, name, blocking, durationMs: ms(start), ...out };
+    return { ...checkOf(check), durationMs: ms(start), ...out };
   } catch (err) {
+    if (signal?.aborted) {
+      // Its own timeout says so; the phase's deadline ("checks did not finish within …") is said to be one.
+      const reason = stripAnsi(reasonOf(signal));
+      return { ...checkOf(check), durationMs: ms(start), status: 'failed', message: /timed out/.test(reason) ? reason : `timed out: ${reason}` };
+    }
     // Assertions and locator timeouts mean the app misbehaved: the check failed.
     // Anything else (a TypeError in the check, a bad import) is an error in the check itself.
     const isAssertion =
       err instanceof Error &&
       ('matcherResult' in err || ['AssertionError', 'TimeoutError'].includes(err.name) || /timed out/i.test(err.message));
     return {
-      id,
-      kind,
-      name,
-      blocking,
+      ...checkOf(check),
       durationMs: ms(start),
       status: isAssertion ? 'failed' : 'error',
       message: stripAnsi(err instanceof Error ? err.message : String(err)),
@@ -404,12 +606,22 @@ async function timed(
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
+/** Rejects with the signal's reason once it aborts. */
+function aborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    if (signal.aborted) reject(signal.reason);
+    else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function reasonOf(signal: AbortSignal): string {
+  return signal.reason instanceof Error ? signal.reason.message : String(signal.reason);
+}
+
+function named(name: string, message: string): Error {
+  const error = new Error(message);
+  error.name = name;
+  return error;
 }
 
 function ms(start: number): number {

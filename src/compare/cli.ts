@@ -69,7 +69,7 @@ export async function compareCommand(
     console.log(values.json ? JSON.stringify(report, null, 2) : renderReport(report));
     console.error(`report: ${base}.md, ${base}.json`);
     const code = compareExitCode(report);
-    if (code) console.error('error: nothing to compare (the reference judged no app, or one side ran none to its checks)');
+    if (code) console.error('error: nothing to compare (the reference judged no app, or every run of one side ended in error: before its checks, or with checks that did not finish in time)');
     return code;
   } finally {
     release();
@@ -79,8 +79,8 @@ export async function compareCommand(
 
 /**
  * 0 once a comparison has its report, whatever the apps did; 2 when nothing could be compared: no
- * pair was comparable (the reference judged no app), or one side ran no app to its checks (a broken
- * environment, not a finding).
+ * pair was comparable (the reference judged no app), or every run of one side ended in error, before
+ * its checks or with checks that did not finish in time (a broken environment, not a finding).
  */
 export function compareExitCode(report: Pick<CompareReport, 'overall' | 'pairs'>): number {
   const ranAny = (side: 'browser' | 'reference') => report.pairs.some((p) => p[side].status !== 'error');

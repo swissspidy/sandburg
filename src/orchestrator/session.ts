@@ -5,13 +5,14 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Frame, type Page } from 'playwright-core';
 import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
 import type { AdapterDescriptor } from '../types.ts';
 import { loadProject, projectFromFiles } from '../project.ts';
 import type { FileTree, InstallReport, PhaseName, ProbeVerdict, Project, RunResult } from '../types.ts';
 import type { HostApi, RpcResult } from '../host/types.ts';
-import { loadChecks, runChecks, type Checks } from './checks.ts';
+import { ChecksProgress, loadChecks, runChecks, type Checks } from './checks.ts';
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
 import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
 import { EgressProxy } from './egress-proxy.ts';
@@ -689,30 +690,46 @@ async function runChecksPhase(
   appSettled?: () => Promise<unknown>,
   axeCode?: PageCode,
 ): Promise<void> {
-  run.checksOutput = await run.phase('checks', timeouts.checks, () =>
-    runChecks({
-      page,
-      app,
-      checks,
-      checkTimeoutMs: timeouts.check,
-      expectTimeoutMs: timeouts.expect,
-      appIdle,
-      artifactsDir: outDir,
-      appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
-      appConsole: () => run.console.filter((c) => c.source === 'app'),
-      network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
-      appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
-      hostOrigin,
-      appSettled,
-      axeCode,
-    }),
-  );
+  const progress = new ChecksProgress();
+  run.checksOutput = progress;
+  let checking: Promise<unknown> = Promise.resolve();
+  try {
+    await run.phase('checks', timeouts.checks, (signal) =>
+      (checking = runChecks({
+        page,
+        app,
+        checks,
+        checkTimeoutMs: timeouts.check,
+        expectTimeoutMs: timeouts.expect,
+        appIdle,
+        artifactsDir: outDir,
+        appErrors: () => run.pageErrors.filter((e) => e.source === 'app'),
+        appConsole: () => run.console.filter((c) => c.source === 'app'),
+        network: () => ({ failed: run.network?.failed ?? [], blocked: run.network?.blocked ?? [] }),
+        appDocument: () => run.documents.filter((d) => d.frame === app).at(-1) ?? null,
+        hostOrigin,
+        appSettled,
+        axeCode,
+        progress,
+        signal,
+      })),
+    );
+  } catch (err) {
+    // Out of time (or broken): the checks were stopped. What they report as they stop is kept, for a
+    // moment; then a check still running timed out, and one not started did not run.
+    await Promise.race([checking.catch(() => {}), sleep(STOP_CHECKS_MS, undefined, { ref: false })]);
+    progress.close(err instanceof Error ? err.message : String(err));
+    throw err;
+  }
 }
 
 /** Resolves once the page's window is closed (RunOptions.hold). */
 async function closed(page: Page): Promise<void> {
   if (!page.isClosed()) await page.waitForEvent('close', { timeout: 0 }).catch(() => {});
 }
+
+/** How long checks stopped at the phase's deadline have to report how far they got (the checks file in the page, the check that was running). */
+const STOP_CHECKS_MS = 2_000;
 
 /**
  * Runs first in every document of a run: tracks the page's pending timeouts and when it last changed,

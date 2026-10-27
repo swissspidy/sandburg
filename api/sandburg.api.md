@@ -196,6 +196,7 @@ interface CheckContext {
     page: Page;
     expect: typeof expect;
     appUrl(path: string): string;
+    signal: AbortSignal;
 }
 
 type CheckFn = (ctx: CheckContext) => Promise<void> | void;

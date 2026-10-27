@@ -77,7 +77,16 @@ export async function loadPageChecksRuntime(page: Page, url?: string): Promise<v
 export async function runPageChecks(page: Page, checks: PageChecks, options: PageChecksOptions, loaded?: Promise<void>): Promise<CheckResult[]> {
   const main = page.mainFrame();
   await (loaded ?? loadPageChecksRuntime(page));
-  const out = (await main.evaluate(([code, opts]) => window.__sandburgPageChecks!.run(code, opts), [checks.code, options] as const)) as unknown;
+  return fromPage(await main.evaluate(([code, opts]) => window.__sandburgPageChecks!.run(code, opts), [checks.code, options] as const));
+}
+
+/** Stops the checks running in the page (the phase is out of time, `reason`): those that finished, the one running as failed, the rest skipped. */
+export async function stopPageChecks(page: Page, reason: string): Promise<CheckResult[]> {
+  return fromPage(await page.mainFrame().evaluate((r) => window.__sandburgPageChecks?.stop(r) ?? null, reason));
+}
+
+/** The page's answer, checked as data. */
+function fromPage(out: unknown): CheckResult[] {
   if (!out || typeof out !== 'object') throw new Error('page checks: no result from the page');
   if ('error' in out) {
     return [{ id: 'functional:checks-file', kind: 'functional', name: 'checks file', blocking: true, durationMs: 0, status: 'error', message: String(out.error).slice(0, MAX_MESSAGE) }];
@@ -88,7 +97,7 @@ export async function runPageChecks(page: Page, checks: PageChecks, options: Pag
   const ids = functionalCheckIds(names);
   return results.map((r: Record<string, unknown>, i) => {
     const name = names[i];
-    const status = r.status === 'passed' || r.status === 'failed' ? r.status : 'error';
+    const status = r.status === 'passed' || r.status === 'failed' || r.status === 'skipped' ? r.status : 'error';
     return {
       id: ids[i],
       kind: 'functional',
