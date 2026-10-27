@@ -1,9 +1,10 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
 import { Session, type RunOptions, type SessionOptions } from './orchestrator/session.ts';
 import { defaultParallel, discoverProjects, runBatch } from './orchestrator/batch.ts';
 import { BrowserSetupError, NO_SANDBOX } from './orchestrator/launch.ts';
+import { writeAppFiles } from './orchestrator/app-files.ts';
 import { loadProject } from './project.ts';
 import { SnapshotStore } from './store.ts';
 import type { FileTree, RunResult } from './types.ts';
@@ -169,7 +170,10 @@ async function command(argv: string[]): Promise<number> {
           ...(save !== undefined && { collectFiles: save, onAppFiles: (files: FileTree) => (saved = files) }),
         }),
       );
-      if (saved) await writeFiles(resolve(target), saved);
+      if (saved) {
+        const skipped = await writeAppFiles(resolve(target), saved);
+        if (skipped.length) console.error(`--save-files: not written, a symlink or not a regular file on the path: ${skipped.join(', ')}`);
+      }
       const dir = relative(process.cwd(), join(values.out ?? '.sandburg/runs', result.runId));
       console.log(values.json ? JSON.stringify(result, null, 2) : summarize(result, dir));
       return exitCode(result.status);
@@ -220,15 +224,6 @@ async function withSession<T>(options: SessionOptions, fn: (s: Session) => Promi
     return await fn(session);
   } finally {
     await session.close();
-  }
-}
-
-async function writeFiles(root: string, files: FileTree): Promise<void> {
-  for (const [path, content] of Object.entries(files)) {
-    const file = resolve(root, path);
-    if (relative(root, file).startsWith('..')) continue;
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, typeof content === 'string' ? content : Buffer.from(content.base64, 'base64'));
   }
 }
 

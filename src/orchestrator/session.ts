@@ -24,6 +24,7 @@ import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
 import { recordRequestFailures, recordDocuments, RunState, unwrap } from './run-state.ts';
 import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError } from './app-ready.ts';
+import { appFilesFrom } from './app-files.ts';
 
 /** Options of a Session: the browser, the caches and stores it keeps on disk. */
 export interface SessionOptions {
@@ -143,7 +144,9 @@ export interface RunOptions {
   /**
    * After the checks, the app's files whose path matches this pattern (a RegExp source), as they
    * are in the runtime then, go to onAppFiles: for example its SQLite databases, to mount them into
-   * the next run as the generator page does. In-browser runtimes only.
+   * the next run as the generator page does. In-browser runtimes only. They come from the page: the
+   * host keeps only matching relative paths outside node_modules, dot directories and .git, and at
+   * most 1000 files and 256 MB (see orchestrator/app-files.ts).
    */
   collectFiles?: string;
   onAppFiles?: (files: FileTree) => void;
@@ -564,7 +567,7 @@ export class Session {
           const files = await page
             .evaluate((match) => window.__sandburgReadFiles?.(match) ?? null, options.collectFiles)
             .catch(() => null);
-          if (files) options.onAppFiles(files);
+          if (files) options.onAppFiles(appFilesFrom(files, options.collectFiles));
         }
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
       }
