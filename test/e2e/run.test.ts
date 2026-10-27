@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Session, type RunRenderer } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
 import type { Project } from '../../src/types.ts';
+import type { CheckContext, Checks } from '../../src/orchestrator/checks.ts';
 import type { Browser } from 'playwright-core';
 
 const fixtureDir = fileURLToPath(new URL('../../fixtures/vite-react-counter', import.meta.url));
@@ -177,6 +178,41 @@ test('a ready deadline produces a timeout', async () => {
   assert.equal(result.status, 'error');
   assert.equal(result.failure?.class, 'timeout');
   assert.equal(result.phases.find((p) => p.name === 'ready')?.status, 'timeout');
+});
+
+test('a check that hangs is stopped and the next one runs on the app loaded again; a checks deadline keeps what finished', async () => {
+  const hang = async ({ app }: CheckContext) => {
+    await app.getByRole('button', { name: /count is/ }).click();
+    await app.getByRole('button', { name: 'Never' }).click();
+  };
+  const checks: Checks = {
+    'hangs after a click': hang,
+    // One click from 0: the click the check before it made did not carry over.
+    'counts from zero': async ({ app, expect }) => {
+      const button = app.getByRole('button', { name: /count is/ });
+      await button.click();
+      await expect(button).toHaveText('count is 1');
+    },
+    'hangs again': hang,
+    'and again': hang,
+  };
+  // 3 s per check, 8 s for them all: the deadline comes in the second or third hanging check.
+  const result = await session.run(counter, { checks, outDir, timeouts: { check: 3_000, checks: 8_000 } });
+  assert.equal(result.status, 'error');
+  assert.deepEqual([result.failure?.class, result.failure?.phase], ['timeout', 'checks']);
+  const by = Object.fromEntries(result.checks.map((c) => [c.name, c]));
+  for (const name of ['Screenshot', 'Accessibility tree snapshot', 'axe-core accessibility scan']) assert.equal(by[name]?.status, 'passed', name);
+  await access(result.artifacts.screenshot!);
+  await access(result.artifacts.a11ySnapshot!);
+  assert.equal(by['hangs after a click'].status, 'failed');
+  assert.match(by['hangs after a click'].message!, /timed out\nThe check was stopped, and the app loaded again before the next check\./);
+  assert.equal(by['counts from zero'].status, 'passed', JSON.stringify(by['counts from zero']));
+  // The check running at the deadline failed; those after it did not run.
+  const rest = ['hangs again', 'and again', 'The page is not a server error', 'No uncaught errors in the app', 'No failed or blocked requests'].map((n) => by[n]);
+  const cut = rest.findIndex((c) => c.message === 'timed out: checks did not finish within 8000 ms');
+  assert.ok(cut === 0 || cut === 1, JSON.stringify(rest, null, 2));
+  assert.equal(rest[cut].status, 'failed');
+  assert.ok(rest.slice(cut + 1).every((c) => c.status === 'skipped' && c.message === 'not run: checks did not finish within 8000 ms'), JSON.stringify(rest, null, 2));
 });
 
 test('a held run (sandburg open) keeps its tab open when a phase before the checks fails, until it is closed', async () => {

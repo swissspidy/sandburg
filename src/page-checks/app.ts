@@ -3,23 +3,34 @@
  * the shortcuts that take a selector).
  */
 import { type Text, Locatable, Locator } from './locator.ts';
-import { settings, appIframe, appWindow, appDocument, sleep, poll, named, matchesUrl } from './frame.ts';
+import { settings, running, appIframe, appWindow, appDocument, sleep, poll, named, matchesUrl } from './frame.ts';
 
 async function navigate(go: () => void, timeout: number, waitUntil?: string): Promise<void> {
   const frame = appIframe();
+  const { signal } = running;
+  signal.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(named('TimeoutError', `navigation: Timeout ${timeout}ms exceeded`)), timeout);
+    const stop = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', stop);
+      reject(named('TimeoutError', `navigation: Timeout ${timeout}ms exceeded`));
+    }, timeout);
     frame.addEventListener(
       'load',
       () => {
         clearTimeout(timer);
+        signal.removeEventListener('abort', stop);
         resolve();
       },
       { once: true },
     );
+    signal.addEventListener('abort', stop, { once: true });
     go();
   });
-  if (waitUntil === 'networkidle') await sleep(500);
+  if (waitUntil === 'networkidle') await sleep(500, signal);
 }
 
 export class App extends Locatable {

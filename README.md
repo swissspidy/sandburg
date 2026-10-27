@@ -95,10 +95,10 @@ sandburg open <project>                                 # load it in a visible t
   project's own `checks.spec.ts` (or `app.checks.spec.ts` next to `app.zip`) takes precedence over
   `--checks`. Directories whose name starts with `.`, and archives or JSON files whose name starts
   with `.` or `_`, are skipped.
-- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks (or its
-  project or checks file did not load), `64` a usage error. `compare` exits `0` once it has its
-  report, and `2` when nothing could be compared (the reference judged no app, or one side ran none
-  to its checks).
+- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, or they
+  did not finish in time (or its project or checks file did not load), `64` a usage error. `compare`
+  exits `0` once it has its report, and `2` when nothing could be compared (the reference judged no
+  app, or every run of one side ended in error).
 - `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start
   (see [Security](#security)).
 - `--save-files <regex>` (run, with a project directory) writes the app's files whose path matches
@@ -128,6 +128,21 @@ export default {
   },
 } satisfies Checks;
 ```
+
+Each check has a time limit (30 s; `timeouts.check` in the library's `RunOptions`), and all of them
+together have the checks phase's (180 s; `timeouts.checks`). A check that runs out of time is
+stopped, not left running beside the next one: the Playwright call it is waiting in fails, any call
+it makes after that fails (after a moment, so a loop that ignores the error does not stall the run),
+its `expect(…).toPass()` stops retrying, and the route handlers and event listeners it added to
+`page` are removed (not those it added to `page.context()`, nor `routeWebSocket()` handlers). The app is then loaded again at the
+URL it first loaded at; its result (failed) says so. Loading it again resets only what lives in the
+page: cookies, `localStorage`, IndexedDB, service workers, the context's routes, the viewport and a
+fake clock carry over to the next check. A check also gets `signal`, an `AbortSignal` that aborts
+when it is stopped: pass it to waits of its own (a timer, a `fetch`), which Sandburg cannot stop.
+With `--checks-in page`, waits and actions stop the same way, but code of a check that catches the
+error and goes on cannot be stopped. When the checks phase runs out of time, the checks that
+finished and the artifacts already taken are kept: the check that was running fails, and those that
+had not started are reported as skipped (`not run`); the run's status is `error`.
 
 A checks file is imported by Sandburg's Node process: it can do anything a program on this machine
 can. For checks someone else wrote (a coding agent), `--checks-in page` runs the file's code in the
