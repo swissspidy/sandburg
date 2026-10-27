@@ -102,8 +102,10 @@ sandburg open <project>                                 # load it in a visible t
   container shares the host's network and can reach every service on it
   ([ADR 0004](docs/adr/0004-docker-reference-and-fidelity-study.md)). Its containers are labelled
   `sandburg.ref` and removed when the run ends, on Ctrl-C, and by the next `compare` after a crash.
-- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a
-  usage error.
+- Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks (or its
+  project or checks file did not load), `64` a usage error. `compare` exits `0` once it has its
+  report, `2` when nothing could be compared (the reference judged no app, or one side ran none
+  to its checks), and `130` (`143` for SIGTERM) when interrupted, after removing its containers.
 - `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start
   (see [Security](#security)).
 - `--save-files <regex>` (run, with a project directory) writes the app's files whose path matches

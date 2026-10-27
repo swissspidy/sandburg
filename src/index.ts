@@ -7,7 +7,30 @@ export { loadProject, projectFromFiles } from './project.ts';
 export { classify } from './classify.ts';
 export type { ClassifyInput } from './classify.ts';
 export { adapterNames, getAdapter } from './adapters.ts';
-export type * from './types.ts';
+// The adapter contract (HostRequest, HostResponse, HostInstallOptions) is Sandburg's own; AdapterDescriptor is what getAdapter returns.
+export type {
+  AdapterDescriptor,
+  CheckKind,
+  CheckResult,
+  CheckStatus,
+  ConsoleEntry,
+  Failure,
+  FailureClass,
+  FileContent,
+  FileTree,
+  Framework,
+  InstallReport,
+  NetworkEntry,
+  PackageJson,
+  PageError,
+  PhaseName,
+  PhaseRecord,
+  PhaseStatus,
+  ProbeVerdict,
+  Project,
+  RunResult,
+  SerializedError,
+} from './types.ts';
 export { runBatch, discoverProjects } from './orchestrator/batch.ts';
 export type { BatchItem, BatchSummary, BatchRunSummary, BatchOptions } from './orchestrator/batch.ts';
 export type { NodeRuntime } from './orchestrator/session.ts';

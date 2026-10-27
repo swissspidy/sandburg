@@ -25,6 +25,11 @@ interface ClassifyInput {
         phase: PhaseName;
         message: string;
     } | null;
+    setupError?: {
+        rule: 'project-load' | 'checks-load';
+        class: 'app-bug' | 'unknown';
+        message: string;
+    } | null;
 }
 
 // compare/compare.ts
@@ -226,7 +231,6 @@ interface RunOptions {
     timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
     infraRetries?: number;
     hold?: boolean;
-    seed?: boolean;
     installIn?: 'host' | 'browser';
     collectFiles?: string;
     onAppFiles?: (files: FileTree, refused?: string) => void;
@@ -338,8 +342,6 @@ interface AdapterDescriptor {
     prepare?(): void;
 }
 
-type AdapterErrorCode = 'UNSUPPORTED' | 'APP' | 'INTERNAL';
-
 type CheckKind = 'functional' | 'document' | 'console' | 'network' | 'axe' | 'a11y-snapshot' | 'screenshot';
 
 interface CheckResult {
@@ -379,29 +381,6 @@ type FileContent = string | {
 type FileTree = Record<string, FileContent>;
 
 type Framework = 'vite' | 'next' | 'angular' | 'astro' | 'sveltekit' | 'nuxt' | 'solid-start' | 'react-router' | 'static' | 'unknown';
-
-interface HostInstallOptions {
-    seed?: boolean;
-    runSeed?(project: Project, checks: unknown): Promise<void>;
-    installIn?: 'host' | 'browser';
-    sandbox?: Promise<string>;
-}
-
-interface HostRequest {
-    method: string;
-    path: string;
-    query: URLSearchParams;
-    sandbox?: string;
-    headers?: Record<string, string | undefined>;
-    body(max?: number): Promise<Buffer>;
-    channel?: object;
-}
-
-interface HostResponse {
-    status: number;
-    headers?: Record<string, string>;
-    body: string | Uint8Array;
-}
 
 interface InstallReport {
     resolution: 'lockfile' | 'range' | 'none';
@@ -540,6 +519,30 @@ type DockerExec = (args: string[], options: {
 type DockerReferenceFactory = (() => NodeRuntime) & {
     disposeAll(): Promise<void>;
 };
+
+// types.ts
+interface HostInstallOptions {
+    seed?: boolean;
+    runSeed?(project: Project, checks: unknown): Promise<void>;
+    installIn?: 'host' | 'browser';
+    sandbox?: Promise<string>;
+}
+
+interface HostRequest {
+    method: string;
+    path: string;
+    query: URLSearchParams;
+    sandbox?: string;
+    headers?: Record<string, string | undefined>;
+    body(max?: number): Promise<Buffer>;
+    channel?: object;
+}
+
+interface HostResponse {
+    status: number;
+    headers?: Record<string, string>;
+    body: string | Uint8Array;
+}
 
 // --- from other packages ---
 // @playwright/test: expect
