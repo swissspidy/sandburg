@@ -133,7 +133,7 @@ export const TEMPLATES: Template[] = [
         private: true,
         version: '0.0.1',
         type: 'module',
-        imports: { '#lib': './src/lib/index.js', '#lib/*': './src/lib/*' },
+        imports: { '#lib/*': './src/lib/*' },
         scripts: { dev: 'vite dev', build: 'vite build' },
         devDependencies: { '@sveltejs/adapter-auto': '^8.0.0', '@sveltejs/kit': '^3.1.0', '@sveltejs/vite-plugin-svelte': '^7.1.2', svelte: '^5.56.1', vite: '^8.0.16' },
       }),
