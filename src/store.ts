@@ -29,6 +29,9 @@ export interface SnapshotRecord extends SnapshotManifest {
 
 const SNAPSHOT_ID = /^[0-9a-f]{64}$/;
 
+/** The snapshot id of a run whose project did not load (RunResult.project.snapshotId): no tree has it. */
+export const NO_SNAPSHOT = '0'.repeat(64);
+
 export function contentBytes(content: FileContent): Buffer {
   return typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content.base64, 'base64');
 }
@@ -86,7 +89,10 @@ export class SnapshotStore {
   /** A stored snapshot and its files, by id or unique prefix; throws on a blob whose bytes do not match its hash. */
   async get(ref: string): Promise<{ record: SnapshotRecord; files: FileTree }> {
     const id = await this.resolve(ref);
-    const record = JSON.parse(await readFile(join(this.root, 'snapshots', `${id}.json`), 'utf8')) as SnapshotRecord;
+    const text = await readFile(join(this.root, 'snapshots', `${id}.json`), 'utf8').catch((err: NodeJS.ErrnoException) => {
+      throw err.code === 'ENOENT' ? new Error(`snapshot ${ref}: not found`) : err;
+    });
+    const record = JSON.parse(text) as SnapshotRecord;
     const files: FileTree = {};
     for (const [path, hash] of Object.entries(record.files)) {
       const buf = await readFile(this.blobPath(hash));

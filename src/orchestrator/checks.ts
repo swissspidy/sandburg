@@ -11,6 +11,7 @@ import type { Frame, Page } from 'playwright-core';
 import type { CheckKind, CheckResult, CheckStatus, ConsoleEntry, NetworkEntry, PageError } from '../types.ts';
 import { AXE_PATH } from './host-server.ts';
 import type { PageCode } from './code-cache.ts';
+import { functionalCheckIds } from '../check-ids.ts';
 import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, type PageChecks } from '../page-checks/index.ts';
 
 /** What a check function is given: the app, its tab, Playwright's expect and a URL helper. */
@@ -132,9 +133,11 @@ export async function runChecks(input: ChecksInput): Promise<ChecksOutput> {
       });
     }
   }
-  for (const [name, fn] of Object.entries(isPageChecks(input.checks) ? {} : (input.checks ?? {}))) {
+  const functional = Object.entries(isPageChecks(input.checks) ? {} : (input.checks ?? {}));
+  const ids = functionalCheckIds(functional.map(([name]) => name));
+  for (const [i, [name, fn]] of functional.entries()) {
     results.push(
-      await timed(`functional:${slug(name)}`, 'functional', name, true, async () => {
+      await timed(ids[i], 'functional', name, true, async () => {
         const configured = input.expectTimeoutMs ? expect.configure({ timeout: input.expectTimeoutMs }) : expect;
         const checkExpect = input.appIdle && input.expectTimeoutMs ? settlingExpect(expect, input.expectTimeoutMs, input.appIdle) : configured;
         await withTimeout(Promise.resolve(fn({ app, page, expect: checkExpect, appUrl })), input.checkTimeoutMs, `check "${name}" timed out`);
@@ -411,10 +414,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 
 function ms(start: number): number {
   return Math.round(performance.now() - start);
-}
-
-function slug(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
 function stripAnsi(s: string): string {
