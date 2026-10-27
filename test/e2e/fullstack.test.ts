@@ -11,7 +11,8 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../../src/cli.ts';
@@ -38,16 +39,44 @@ test('Vue + Vite + Express + better-sqlite3 (concurrently, /api proxy) runs and 
   assert.ok(result.console.some((c) => c.text.includes('[server] API listening on http://localhost:3001')));
 });
 
-test('sandburg run --save-files writes the database the checks left behind into the project', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'sandburg-save-'));
+test('sandburg run --save-files writes the database the checks left behind into the project, and only what matches', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'sandburg-save-'));
+  const dir = join(tmp, 'app');
   try {
     await cp(fixture('vue-express-sqlite'), dir, { recursive: true, filter: (src) => !src.includes('node_modules') });
-    const code = await main(['run', dir, '--checks', `${dir}/checks.spec.ts`, '--out', outDir, '--save-files', String.raw`\.db$`]);
+    // The fixture's checks, then one that has the page return more than was asked for: the host
+    // writes only the files whose path matches, under the project, outside .git.
+    const checks = join(tmp, 'checks.mjs');
+    await writeFile(
+      checks,
+      `import checks from ${JSON.stringify(join(dir, 'checks.spec.ts'))};
+      export default {
+        ...checks,
+        'the page returns extra files': async ({ app }) => {
+          await app.evaluate(() => {
+            const read = parent.__sandburgReadFiles;
+            parent.__sandburgReadFiles = async (match) => ({
+              ...(await read(match)),
+              'server/db.js': 'replaced',
+              'extra.txt': 'extra',
+              '../outside.db': 'outside',
+              '.git/config.db': 'git',
+            });
+          });
+        },
+      };`,
+    );
+    const serverDb = await readFile(join(dir, 'server/db.js'), 'utf8');
+    const code = await main(['run', dir, '--checks', checks, '--out', outDir, '--save-files', String.raw`\.db$`]);
     assert.equal(code, 0);
     const db = await readFile(join(dir, 'notes.db'));
     assert.equal(db.subarray(0, 15).toString(), 'SQLite format 3');
+    assert.equal(await readFile(join(dir, 'server/db.js'), 'utf8'), serverDb);
+    assert.ok(!existsSync(join(dir, 'extra.txt')));
+    assert.ok(!existsSync(join(tmp, 'outside.db')));
+    assert.ok(!existsSync(join(dir, '.git')));
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(tmp, { recursive: true, force: true });
   }
 });
 
