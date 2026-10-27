@@ -222,13 +222,14 @@ async function removeLeftovers(docker: DockerExec, workRoot: string): Promise<vo
   }
 }
 
+/** Whether `pid` may still run: only "no such process" (ESRCH) is gone. A pid it cannot check (malformed, too large) may be alive, so nothing of its is removed. */
 function alive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isInteger(pid) || pid <= 0) return true;
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }
 

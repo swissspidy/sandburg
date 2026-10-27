@@ -231,6 +231,35 @@ test("startup removes the containers and project copies of this host's, PID name
   assert.ok(existsSync(join(workDir, elsewhere)), 'another owner\'s copy stays');
 });
 
+test('leftovers whose pid cannot be checked are kept: only a pid with no such process (ESRCH) is gone', async (t) => {
+  const workDir = tempDir('sandburg-ref-');
+  const first = fakeDocker({});
+  await withProxy(undefined, () => dockerReference({ workDir, docker: first.docker })().mount(project, () => {}));
+  const args = runArgs(first.calls);
+  const owner = label(args, 'sandburg.ref.owner');
+  const tag = /^sandburg-ref-([0-9a-f]{8})-/.exec(args[args.indexOf('--name') + 1])![1];
+  /** Too large for process.kill (ERR_INVALID_ARG_TYPE). */
+  const HUGE = '99999999999999';
+  /** process.kill fails for it with an error other than ESRCH. */
+  const ODD = 4_000_001;
+  const kill = process.kill.bind(process);
+  t.mock.method(process, 'kill', (pid: number, signal?: string | number) => {
+    if (pid === ODD) throw Object.assign(new Error('kill EINVAL'), { code: 'EINVAL' });
+    return kill(pid, signal);
+  });
+  const dirs = { gone: `sandburg-ref-${tag}-${GONE}-x-1`, huge: `sandburg-ref-${tag}-${HUGE}-x-2`, odd: `sandburg-ref-${tag}-${ODD}-x-3` };
+  for (const dir of Object.values(dirs)) await mkdir(join(workDir, dir));
+  const { docker, calls } = fakeDocker({
+    // A container per case: no pid label, not a number, zero, negative, too large, an unexpected error, gone.
+    ps: async (a) => (a[1] === '-a' && a[3] === `label=sandburg.ref.owner=${owner}` ? ['none ', 'nan x', 'zero 0', 'neg -5', `huge ${HUGE}`, `odd ${ODD}`, `gone ${GONE}`].join('\n') + '\n' : ''),
+  });
+  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project, () => {}));
+  assert.deepEqual(calls.filter((c) => c[0] === 'rm'), [['rm', '-f', 'gone']]);
+  assert.ok(!existsSync(join(workDir, dirs.gone)), 'the copy of a gone process is removed');
+  assert.ok(existsSync(join(workDir, dirs.huge)), 'a pid too large to check keeps its copy');
+  assert.ok(existsSync(join(workDir, dirs.odd)), 'a pid kill() fails for otherwise keeps its copy');
+});
+
 test('the directory of project copies must be a directory of this user\'s, not a symlink', async () => {
   const target = tempDir('sandburg-ref-target-');
   const leftover = `sandburg-ref-00000000-${GONE}-x-1`;
