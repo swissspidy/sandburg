@@ -35,6 +35,7 @@ export interface SideOutcome {
   passed: boolean;
   failureClass: string | null;
   rule: string | null;
+  /** Blocking checks that failed or broke; not those skipped (a checks phase out of time did not run them). */
   failedChecks: string[];
   totalMs: number;
   message: string | null;
@@ -193,7 +194,7 @@ function outcome(r: RunResult): SideOutcome {
     passed: r.status === 'passed',
     failureClass: r.failure?.class ?? null,
     rule: r.failure?.rule ?? null,
-    failedChecks: r.checks.filter((c) => c.blocking && c.status !== 'passed').map((c) => c.name),
+    failedChecks: r.checks.filter((c) => c.blocking && (c.status === 'failed' || c.status === 'error')).map((c) => c.name),
     totalMs: r.timings.totalMs,
     message: r.failure?.message.split('\n')[0].slice(0, 300) ?? null,
   };

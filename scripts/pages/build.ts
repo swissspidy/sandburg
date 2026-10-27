@@ -266,7 +266,7 @@ async function demoChecks(page: import('playwright-core').Page, fixture: string)
   const failures: string[] = [];
   for (const [name, fn] of Object.entries(await loadChecks(join(ROOT, fixture, 'checks.spec.ts')))) {
     try {
-      await fn({ app, page, expect: expect.configure({ timeout: 30_000 }), appUrl });
+      await fn({ app, page, expect: expect.configure({ timeout: 30_000 }), appUrl, signal: new AbortController().signal });
     } catch (e) {
       failures.push(`${name}: ${String((e as Error).message ?? e).split('\n')[0]}`);
     }

@@ -25,7 +25,25 @@ export function appDocument(): Document {
   return doc;
 }
 
-export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/**
+ * The running check's signal (run() sets it): aborted when the check's time is up. A wait or an
+ * action started while it runs stops then, with the signal's reason.
+ */
+export const running = { signal: new AbortController().signal };
+
+export const sleep = (ms: number, signal = running.signal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const stop = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', stop);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', stop, { once: true });
+  });
 
 /** How long to wait between tries, as Playwright does. */
 const POLL_MS = [0, 20, 50, 100, 100, 250];
@@ -33,11 +51,13 @@ const POLL_MS = [0, 20, 50, 100, 100, 250];
 /** Polls until `attempt` returns a value (not undefined), or the time is up (then undefined). */
 export async function poll<T>(timeoutMs: number, attempt: () => T | undefined | Promise<T | undefined>): Promise<T | undefined> {
   const deadline = performance.now() + timeoutMs;
+  const { signal } = running;
   for (let i = 0; ; i++) {
+    signal.throwIfAborted();
     const value = await attempt();
     if (value !== undefined) return value;
     if (performance.now() >= deadline) return undefined;
-    await sleep(Math.min(POLL_MS[Math.min(i, POLL_MS.length - 1)], Math.max(0, deadline - performance.now())));
+    await sleep(Math.min(POLL_MS[Math.min(i, POLL_MS.length - 1)], Math.max(0, deadline - performance.now())), signal);
   }
 }
 
