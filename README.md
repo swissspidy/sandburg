@@ -98,7 +98,7 @@ sandburg open <project>                                 # load it in a visible t
 - Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, or they
   did not finish in time (or its project or checks file did not load), `64` a usage error. `compare`
   exits `0` once it has its report, and `2` when nothing could be compared (the reference judged no
-  app, or one side ran none to its checks).
+  app, or every run of one side ended in error).
 - `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start
   (see [Security](#security)).
 - `--save-files <regex>` (run, with a project directory) writes the app's files whose path matches

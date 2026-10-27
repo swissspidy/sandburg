@@ -55,8 +55,8 @@ Options:
 
 Exit codes: 0 passed, 1 failed (app ran, a blocking check failed), 2 error (run did not reach checks,
 or they did not finish in time, or its project or checks file did not load), 64 usage error. compare: 0
-once it has its report, 2 when nothing could be compared (the reference judged no app, or one side ran
-none to its checks).`;
+once it has its report, 2 when nothing could be compared (the reference judged no app, or every run of
+one side ended in error).`;
 
 const OPTIONS = {
   runtime: { type: 'string', default: 'node' },
