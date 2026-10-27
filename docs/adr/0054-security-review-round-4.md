@@ -1,6 +1,6 @@
 # ADR 0054: Security review (round 4): registry-only installs, parser fuzzing, the boundary map
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0061](0061-chromium-sandbox.md) (the boundary its map leaves out, between the app and the machine: Chromium's OS sandbox, now on by default, and site isolation)
 - Date: 2026-10-25
 
 ## Context
