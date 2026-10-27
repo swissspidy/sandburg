@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, link, mkdir, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { appFilePathProblem, appFilesFrom, writeAppFiles } from '../../src/orchestrator/app-files.ts';
+import { appFilePathProblem, appFilesFrom, renameRetrying, writeAppFiles } from '../../src/orchestrator/app-files.ts';
 import { tempDir } from './temp-dir.ts';
 
 test('only paths that match the pattern are kept, whatever else the page returned', () => {
@@ -145,4 +145,25 @@ test("a file that is replaced keeps its mode; one that fails to be written is sk
 test('an invalid collectFiles pattern fails run() before the run starts', async () => {
   const { Session } = await import('../../src/orchestrator/session.ts');
   await assert.rejects(new Session().run('no-such-project', { collectFiles: '(' }), /^Error: collectFiles: Invalid regular expression/);
+});
+
+test('a rename that fails while the file is busy is tried again, three times; other errors are not', async () => {
+  const failing = (codes: string[]) => {
+    const calls: string[] = [];
+    const rename = async (from: string, to: string) => {
+      calls.push(`${from}->${to}`);
+      const code = codes.shift();
+      if (code) throw Object.assign(new Error(code), { code });
+    };
+    return { calls, rename };
+  };
+  const twice = failing(['EPERM', 'EBUSY']);
+  await renameRetrying('t', 'f', twice.rename);
+  assert.equal(twice.calls.length, 3);
+  const always = failing(['EACCES', 'EACCES', 'EACCES', 'EACCES', 'EACCES']);
+  await assert.rejects(renameRetrying('t', 'f', always.rename), { code: 'EACCES' });
+  assert.equal(always.calls.length, 4);
+  const other = failing(['ENOENT']);
+  await assert.rejects(renameRetrying('t', 'f', other.rename), { code: 'ENOENT' });
+  assert.equal(other.calls.length, 1);
 });

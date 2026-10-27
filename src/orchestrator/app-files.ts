@@ -8,6 +8,7 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, rename, rm } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { join } from 'node:path';
 import type { FileContent, FileTree } from '../types.ts';
 
@@ -110,11 +111,26 @@ async function writeAppFile(root: string, path: string, content: FileContent): P
     await handle.writeFile(typeof content === 'string' ? content : Buffer.from(content.base64, 'base64'));
     await handle.close();
     if (st) await chmod(temp, st.mode & 0o7777);
-    await rename(temp, file);
+    await renameRetrying(temp, file);
   } catch (err) {
     await handle.close().catch(() => {});
     await rm(temp, { force: true });
     throw err;
   }
   return null;
+}
+
+/** Errors a rename gets on Windows while another program (a virus scanner, an indexer) has the file open. */
+const BUSY = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+/** Renames `from` to `to`, again after 50, 100 and 200 ms while the error is one of BUSY; never removes `to` first. */
+export async function renameRetrying(from: string, to: string, renameFile: (from: string, to: string) => Promise<void> = rename): Promise<void> {
+  for (const wait of [50, 100, 200, null]) {
+    try {
+      return await renameFile(from, to);
+    } catch (err) {
+      if (wait === null || !BUSY.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
+      await sleep(wait);
+    }
+  }
 }
