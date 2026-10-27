@@ -40,11 +40,12 @@ jobs:
       - run: git fetch --no-tags --depth=1 origin "${BASE_REF}"
         env:
           BASE_REF: ${{ github.base_ref }}
-      - run: node scripts/bench.ts --base FETCH_HEAD --head . --fixtures vite-react-counter,next-app-router --modes warm,cold --rounds 3 --summary "$GITHUB_STEP_SUMMARY" --fail-above 0.3
+      - id: bench
+        run: node scripts/bench.ts --base FETCH_HEAD --head . --fixtures vite-react-counter,next-app-router --modes warm,cold --rounds 3 --summary "$GITHUB_STEP_SUMMARY" --fail-above 0.3
       # The unit tests' timing assertions (SANDBURG_PERF_TESTS), which CI's unit job leaves out: one
       # file at a time, so that no other test shares the runner's cores. After the benchmark, whatever
-      # it found, so that neither hides the other's result.
-      - if: ${{ !cancelled() }}
+      # it found, so that neither hides the other's result; not when setup failed before it.
+      - if: ${{ !cancelled() && steps.bench.outcome != 'skipped' }}
         run: node --test --test-reporter=spec --test-concurrency=1 test/unit/await-context.test.ts test/unit/host-socket.test.ts
         env:
           SANDBURG_PERF_TESTS: "1"
