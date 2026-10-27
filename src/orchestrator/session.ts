@@ -145,11 +145,12 @@ export interface RunOptions {
    * After the checks, the app's files whose path matches this pattern (a RegExp source), as they
    * are in the runtime then, go to onAppFiles: for example its SQLite databases, to mount them into
    * the next run as the generator page does. In-browser runtimes only. They come from the page: the
-   * host keeps only matching relative paths outside node_modules, dot directories and .git, and at
-   * most 1000 files and 256 MB (see orchestrator/app-files.ts).
+   * host keeps only matching relative paths outside node_modules, dot directories and .git; over
+   * 1000 files or 256 MB, none, and `refused` says why (see orchestrator/app-files.ts). An invalid
+   * pattern fails run() before the run starts.
    */
   collectFiles?: string;
-  onAppFiles?: (files: FileTree) => void;
+  onAppFiles?: (files: FileTree, refused?: string) => void;
   /** Called as each lifecycle phase of the run starts (a batch starts its next app when one reaches its checks). */
   onPhase?: (phase: PhaseName) => void;
   /**
@@ -349,6 +350,13 @@ export class Session {
    * retried (RunOptions.infraRetries).
    */
   async run(projectInput: string | Project, options: RunOptions = {}): Promise<RunResult> {
+    if (options.collectFiles !== undefined) {
+      try {
+        new RegExp(options.collectFiles);
+      } catch (err) {
+        throw new Error(`collectFiles: ${(err as Error).message}`);
+      }
+    }
     const previous: string[] = [];
     for (let attempt = 0; ; attempt++) {
       const result = await this.runOnce(projectInput, options);
@@ -567,7 +575,10 @@ export class Session {
           const files = await page
             .evaluate((match) => window.__sandburgReadFiles?.(match) ?? null, options.collectFiles)
             .catch(() => null);
-          if (files) options.onAppFiles(appFilesFrom(files, options.collectFiles));
+          if (files) {
+            const collected = appFilesFrom(files, options.collectFiles);
+            options.onAppFiles(collected.files, collected.refused);
+          }
         }
         await run.phase('dispose', timeouts.dispose, () => host('dispose')).catch(() => {});
       }

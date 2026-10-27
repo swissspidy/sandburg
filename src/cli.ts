@@ -37,7 +37,8 @@ Options:
   --offline            Serve only from the cache; never fetch upstream
   --ready <selector>   Wait for this selector before running checks
   --save-files <regex> run: after the checks, write the app's files whose path matches <regex>
-                       (its SQLite database, say) back into the project directory
+                       (its SQLite database, say) back into the project directory. The pattern
+                       decides what is written: anchor it, e.g. '\\.db$'
   --headed             Show the browser window
   --no-browser-sandbox Run Chromium without its OS sandbox (default: sandboxed; also
                        SANDBURG_NO_BROWSER_SANDBOX=1). Only for hosts where the sandbox cannot
@@ -163,16 +164,18 @@ async function command(argv: string[]): Promise<number> {
         }
       }
       let saved: FileTree | null = null;
+      let refused: string | undefined;
       const result = await withSession(options, (s) =>
         s.run(target, {
           ...runOptions,
           hold: command === 'open',
-          ...(save !== undefined && { collectFiles: save, onAppFiles: (files: FileTree) => (saved = files) }),
+          ...(save !== undefined && { collectFiles: save, onAppFiles: (files: FileTree, why?: string) => ((saved = files), (refused = why)) }),
         }),
       );
-      if (saved) {
+      if (refused) console.error(`--save-files: nothing written: ${refused}`);
+      else if (saved) {
         const skipped = await writeAppFiles(resolve(target), saved);
-        if (skipped.length) console.error(`--save-files: not written, a symlink or not a regular file on the path: ${skipped.join(', ')}`);
+        if (skipped.length) console.error(`--save-files: not written: ${skipped.map((s) => `${s.path} (${s.reason})`).join(', ')}`);
       }
       const dir = relative(process.cwd(), join(values.out ?? '.sandburg/runs', result.runId));
       console.log(values.json ? JSON.stringify(result, null, 2) : summarize(result, dir));

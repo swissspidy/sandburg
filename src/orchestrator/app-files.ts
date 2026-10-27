@@ -1,13 +1,13 @@
 /**
  * The app's files a run collects (RunOptions.collectFiles) and `sandburg run --save-files` writes
  * into the project. They come from the page, so the host keeps only what it asked for: paths that
- * match the pattern, relative and normalized, outside node_modules, dot directories and .git, and at
- * most APP_FILES_MAX files and APP_FILES_MAX_BYTES in all. The writer writes no file through a
- * symlink.
+ * match the pattern, relative and normalized, outside node_modules, dot directories and .git, and,
+ * all or nothing, at most APP_FILES_MAX files and APP_FILES_MAX_BYTES in all (a database is never
+ * written without its journal). The writer writes no file through a symlink.
  */
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FileContent, FileTree } from '../types.ts';
 
@@ -15,34 +15,48 @@ import type { FileContent, FileTree } from '../types.ts';
 const APP_FILES_MAX = 1000;
 /** The most bytes a run collects, in all (a dev-server cache's limit, ADR 0040). */
 const APP_FILES_MAX_BYTES = 256 * 1024 * 1024;
+/** The longest path looked at; longer ones are not matched against the pattern. */
+const PATH_MAX = 4096;
 
 /** Why `path` is not one to collect or write (see the module's comment), or null. */
 export function appFilePathProblem(path: string): string | null {
   if (path === '') return 'empty';
-  if (path.includes('\\') || path.includes('\0') || /^[a-z]:/i.test(path)) return 'not a POSIX path';
+  if (path.length > PATH_MAX) return 'too long';
+  if (path.includes('\\') || path.includes('\0') || path.includes(':')) return 'not a POSIX path';
   if (path.startsWith('/')) return 'absolute';
   const segments = path.split('/');
   if (segments.some((s) => s === '' || s === '.' || s === '..')) return 'not normalized';
-  if (segments.some((s) => s.toLowerCase() === '.git')) return 'in .git';
+  // Names some file systems read as another (trailing dots and spaces, 8.3 short names), as git refuses them.
+  if (segments.some((s) => s.endsWith('.') || s.endsWith(' ') || /~\d/.test(s))) return 'not a portable name';
+  const lower = segments.map((s) => s.toLowerCase());
+  if (lower.includes('.git')) return 'in .git';
   // As the runtime looks (node-runtime/worker.ts' read-tree): outside node_modules and dot directories.
-  if (segments.slice(0, -1).some((s) => s === 'node_modules' || s.startsWith('.'))) return 'in node_modules or a dot directory';
+  if (lower.slice(0, -1).some((s) => s === 'node_modules' || s.startsWith('.'))) return 'in node_modules or a dot directory';
   return null;
 }
 
-/** The files of `value` (what the page returned) whose path matches `match` and is one to collect, within the limits. */
-export function appFilesFrom(value: unknown, match: string, limits = { files: APP_FILES_MAX, bytes: APP_FILES_MAX_BYTES }): FileTree {
-  if (typeof value !== 'object' || value === null) return {};
+/**
+ * The files of `value` (what the page returned) whose path matches `match` and is one to collect;
+ * none, and why, if they are over the limits.
+ */
+export function appFilesFrom(value: unknown, match: string, limits = { files: APP_FILES_MAX, bytes: APP_FILES_MAX_BYTES }): { files: FileTree; refused?: string } {
+  if (typeof value !== 'object' || value === null) return { files: {} };
   const pattern = new RegExp(match);
   const kept: [string, FileContent][] = [];
   let bytes = 0;
-  for (const [path, content] of Object.entries(value)) {
+  let seen = 0;
+  for (const path in value) {
+    if (!Object.hasOwn(value, path)) continue;
+    if (++seen > limits.files * 10) return { files: {}, refused: `more than ${limits.files * 10} entries` };
+    const content = (value as Record<string, unknown>)[path];
     const size = contentSize(content);
-    if (size === null || !pattern.test(path) || appFilePathProblem(path) !== null) continue;
-    if (kept.length === limits.files || bytes + size > limits.bytes) break;
-    bytes += size;
+    if (size === null || path.length > PATH_MAX || !pattern.test(path) || appFilePathProblem(path) !== null) continue;
     kept.push([path, content as FileContent]);
+    bytes += size;
   }
-  return Object.fromEntries(kept);
+  if (kept.length > limits.files) return { files: {}, refused: `${kept.length} files match, more than ${limits.files}` };
+  if (bytes > limits.bytes) return { files: {}, refused: `${bytes} bytes match, more than ${limits.bytes}` };
+  return { files: Object.fromEntries(kept) };
 }
 
 function contentSize(content: unknown): number | null {
@@ -54,36 +68,26 @@ function contentSize(content: unknown): number | null {
 }
 
 /**
- * Writes `files` under `root`, each to a new file renamed into place. A file whose path is not one
- * to write, or goes through a symlink or something else that is not a directory, or is there and is
- * not a regular file, is not written: its path is in the list returned.
+ * Writes `files` under `root`, each to a new file in its directory renamed into place, with the
+ * mode of the file it replaces. A file whose path is not one to write, goes through a symlink or
+ * something else that is not a directory, is there and is not a regular file, or fails to be
+ * written, is not written: it is in the list returned, with why.
  */
-export async function writeAppFiles(root: string, files: FileTree): Promise<string[]> {
-  const skipped: string[] = [];
+export async function writeAppFiles(root: string, files: FileTree): Promise<{ path: string; reason: string }[]> {
+  const skipped: { path: string; reason: string }[] = [];
   for (const [path, content] of Object.entries(files)) {
-    const file = appFilePathProblem(path) === null ? await target(root, path) : null;
-    if (!file) {
-      skipped.push(path);
-      continue;
-    }
-    const temp = `${file}.sandburg-${randomBytes(6).toString('hex')}`;
-    // O_EXCL and O_NOFOLLOW: a new file of this write's own, never one a symlink points at.
-    const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0));
     try {
-      await handle.writeFile(typeof content === 'string' ? content : Buffer.from(content.base64, 'base64'));
-      await handle.close();
-      await rename(temp, file);
+      const reason = appFilePathProblem(path) === null ? await writeAppFile(root, path, content) : 'invalid path';
+      if (reason) skipped.push({ path, reason });
     } catch (err) {
-      await handle.close().catch(() => {});
-      await rm(temp, { force: true });
-      throw err;
+      skipped.push({ path, reason: (err as NodeJS.ErrnoException).code ?? (err as Error).message });
     }
   }
   return skipped;
 }
 
-/** Where `path` goes under `root`, its directories made: null if one of them, or the file, is not what it should be. */
-async function target(root: string, path: string): Promise<string | null> {
+/** Writes one file (see writeAppFiles): null, or why it was not written. */
+async function writeAppFile(root: string, path: string, content: FileContent): Promise<string | null> {
   const segments = path.split('/');
   let dir = root;
   for (const segment of segments.slice(0, -1)) {
@@ -91,9 +95,26 @@ async function target(root: string, path: string): Promise<string | null> {
     await mkdir(dir).catch((err: NodeJS.ErrnoException) => {
       if (err.code !== 'EEXIST') throw err;
     });
-    if (!(await lstat(dir)).isDirectory()) return null;
+    const st = await lstat(dir);
+    if (st.isSymbolicLink()) return 'symlink';
+    if (!st.isDirectory()) return 'not a directory';
   }
   const file = join(dir, segments.at(-1)!);
   const st = await lstat(file).catch(() => null);
-  return st && !st.isFile() ? null : file;
+  if (st?.isSymbolicLink()) return 'symlink';
+  if (st && !st.isFile()) return 'not a regular file';
+  const temp = join(dir, `.sb-${randomBytes(4).toString('hex')}`);
+  // O_EXCL and O_NOFOLLOW: a new file of this write's own, never one a symlink points at.
+  const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0));
+  try {
+    await handle.writeFile(typeof content === 'string' ? content : Buffer.from(content.base64, 'base64'));
+    await handle.close();
+    if (st) await chmod(temp, st.mode & 0o7777);
+    await rename(temp, file);
+  } catch (err) {
+    await handle.close().catch(() => {});
+    await rm(temp, { force: true });
+    throw err;
+  }
+  return null;
 }

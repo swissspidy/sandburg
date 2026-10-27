@@ -99,6 +99,9 @@ sandburg open <project>                                 # load it in a visible t
   usage error.
 - `--no-browser-sandbox` runs Chromium without its OS sandbox, for hosts where it cannot start
   (see [Security](#security)).
+- `--save-files <regex>` (run, with a project directory) writes the app's files whose path matches
+  `<regex>`, as they are after the checks (its SQLite database, say), back into the project. The
+  pattern decides what is written: anchor it, e.g. `--save-files '\.db$'`.
 - `sandburg --help` lists the other options (`--ready`, `--save-files`, `--headed`, `--json`, `--out`, …).
 
 Every run also has built-in checks, without a checks file ([`src/orchestrator/checks.ts`](src/orchestrator/checks.ts)).
