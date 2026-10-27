@@ -12,6 +12,7 @@ on:
       - 'pages/**'
       - 'src/**'
       - 'scripts/pages/**'
+      - 'fixtures/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/pages.yml'

@@ -5,9 +5,12 @@
 #    changesets. Merging it bumps package.json and CHANGELOG.md, and package.json then names a
 #    version with no tag yet: that is a release.
 #    A push made with the workflow's GITHUB_TOKEN starts no workflow, so that pull request got no
-#    CI. version-ci then starts CI on its branch with workflow_dispatch, which that token can (its
-#    only permission is actions: write); the run's checks are on the branch's head commit, so they
-#    show on the pull request.
+#    CI. version-ci starts ci.yml on its branch with workflow_dispatch, which that token can (its
+#    only permission is actions: write). That runs the full suite on the release branch: the
+#    results are in Actions and on the branch's head commit, but GitHub does not show a
+#    workflow_dispatch run's checks in the pull request's checks section, and they do not satisfy
+#    required status checks. Creating the pull request with a GitHub App's or a fine-grained PAT's
+#    token instead (changesets/action's github-token) would start the usual pull_request CI.
 # 2. pack (a release only): installs, tests and packs the package. It cannot request an OIDC token.
 # 3. publish (a release only): stages that tarball on npm with the job's OIDC token (npm adds
 #    provenance), then tags the version and creates its GitHub release. It installs nothing, so no

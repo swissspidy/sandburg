@@ -242,8 +242,9 @@ with a cached browser ([ADR 0062](docs/adr/0062-ci-setup-and-coverage.md)).
 
 A pull request that changes what the package does adds a changeset (`npx changeset`): the bump and a line
 for the changelog ([`.changeset/`](.changeset)). The Release workflow gathers them on `main` into a
-"Version packages" pull request, and starts CI on it (its pushes, made with the workflow's token, start
-none themselves); merging it tests and stages that version on npm with npm's trusted
+"Version packages" pull request, and starts CI on its branch with a dispatch (its pushes, made with the
+workflow's token, start none themselves; the results are in Actions, not in the pull request's checks);
+merging it tests and stages that version on npm with npm's trusted
 publishing (no npm token in the repository) and provenance, tags it and creates its GitHub release. The
 version goes public once a maintainer approves the staged publish on npmjs.com.
 
