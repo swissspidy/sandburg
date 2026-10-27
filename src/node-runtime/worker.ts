@@ -33,7 +33,7 @@ import { COMPILE_POST_MAX } from '../file-channel.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
-import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested } from './peers.ts';
+import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce } from './peers.ts';
 
 patchBase64Url();
 
@@ -326,6 +326,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     self: child ? null : thread,
     postToParent: (m, transfer) => realPostMessage(m, transfer ?? []),
     relay: relayFromNested,
+    ended: forgetNested,
     // Up to this process's main thread, and from there to the page (or the parent process).
     crash: (message, stack) => post({ type: 'fatal', message, stack, trap: true }),
   };
@@ -557,7 +558,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     announce(port, ephemeral);
     serversChanged();
   });
-  serverEvents.on('closed', serversChanged);
+  serverEvents.on('closed', (port: number | string) => {
+    unannounce(port);
+    serversChanged();
+  });
   // A server on a TCP port the program chose (not a probe on one the system picked) is up.
   initProcessTree({ process: !thread || !!thread.process, serving: () => [...servers].some(([port, s]) => typeof port === 'number' && !s.ephemeral), post: (m) => post(m) });
   installNodeMessagePorts();
@@ -694,7 +698,8 @@ function exited(code: number) {
 
 function request(msg: Extract<ToWorker, { type: 'request' }>) {
   const server = servers.get(msg.port);
-  if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}` });
+  // A server that closed before its parent learnt of it (see unannounce): refused, as by a real port.
+  if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}`, code: 'ECONNREFUSED' });
   const id = msg.id;
   inflight.add(id);
   /** To the page, while the request is this runtime's to answer (not once its process exited). */
@@ -772,7 +777,7 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   else if (msg.type === 'spares') {
     if (!proc) warmRuntimes(location.pathname.replace(/\/node-worker\.js$/, ''), WARM_RUNTIMES);
   }
-  else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) nestedPorts.get(msg.port)!.postMessage(msg, msg.body ? [msg.body] : []);
+  else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) forwardRequest(msg);
   else if (msg.type === 'request') request(msg);
   else if (msg.type === 'ws-open' && !servers.has(msg.port) && nestedPorts.has(msg.port)) {
     nestedSockets.set(msg.id, nestedPorts.get(msg.port)!);

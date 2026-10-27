@@ -208,7 +208,10 @@ export class NetServer extends EventEmitter {
     this.emit('connection', socket);
   }
   close(cb?: (e?: Error) => void) {
-    if (this.listening && netServers.get(this.key) === this) netServers.delete(this.key);
+    if (this.listening && netServers.get(this.key) === this) {
+      netServers.delete(this.key);
+      netEvents.emit('closed', this.key);
+    }
     this.listening = false;
     timers.setTimeout(() => {
       this.emit('close');
