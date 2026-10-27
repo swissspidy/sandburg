@@ -11,6 +11,7 @@ import { Session, type RunRenderer } from '../../src/orchestrator/session.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
 import type { Project } from '../../src/types.ts';
 import type { CheckContext, Checks } from '../../src/orchestrator/checks.ts';
+import type { Browser } from 'playwright-core';
 
 const fixtureDir = fileURLToPath(new URL('../../fixtures/vite-react-counter', import.meta.url));
 const outDir = fileURLToPath(new URL('../../.sandburg/test-runs', import.meta.url));
@@ -212,6 +213,25 @@ test('a check that hangs is stopped and the next one runs on the app loaded agai
   assert.ok(cut === 0 || cut === 1, JSON.stringify(rest, null, 2));
   assert.equal(rest[cut].status, 'failed');
   assert.ok(rest.slice(cut + 1).every((c) => c.status === 'skipped' && c.message === 'not run: checks did not finish within 8000 ms'), JSON.stringify(rest, null, 2));
+});
+
+test('a held run (sandburg open) keeps its tab open when a phase before the checks fails, until it is closed', async () => {
+  let readyStarted!: () => void;
+  const ready = new Promise<void>((r) => (readyStarted = r));
+  let settled = false;
+  const run = session.run(counter, { outDir, hold: true, readySelector: '#never', timeouts: { ready: 1000 }, onPhase: (p) => p === 'ready' && readyStarted() });
+  void run.finally(() => (settled = true));
+  await ready;
+  // Past the ready deadline (1 s), the run waits for its window, open, instead of ending.
+  await new Promise((r) => setTimeout(r, 3000));
+  assert.equal(settled, false);
+  const browser = (session as unknown as { browser: Browser }).browser;
+  const pages = browser.contexts().flatMap((c) => c.pages());
+  assert.ok(pages.length && pages.every((p) => !p.isClosed()));
+  await Promise.all(pages.map((p) => p.close()));
+  const result = await run;
+  assert.equal(result.failure?.class, 'timeout');
+  assert.equal(result.phases.find((p) => p.name === 'ready')?.status, 'timeout');
 });
 
 test('projects the runtime cannot start are rejected before a tab opens', async () => {

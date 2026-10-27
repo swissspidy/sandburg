@@ -9,6 +9,7 @@ import { extname } from 'node:path';
 import * as esbuild from 'esbuild';
 import type { Page } from 'playwright-core';
 import { source } from '../sources.ts';
+import { functionalCheckIds } from '../check-ids.ts';
 import type { CheckResult } from '../types.ts';
 import type { PageChecksOptions, PageChecksOutput } from './types.ts';
 
@@ -92,11 +93,13 @@ function fromPage(out: unknown): CheckResult[] {
   }
   const results = (out as PageChecksOutput & { results: unknown }).results;
   if (!Array.isArray(results)) throw new Error('page checks: malformed result from the page');
+  const names = results.map((r: Record<string, unknown>, i) => (typeof r.name === 'string' ? r.name.slice(0, 500) : `check ${i + 1}`));
+  const ids = functionalCheckIds(names);
   return results.map((r: Record<string, unknown>, i) => {
-    const name = typeof r.name === 'string' ? r.name.slice(0, 500) : `check ${i + 1}`;
+    const name = names[i];
     const status = r.status === 'passed' || r.status === 'failed' || r.status === 'skipped' ? r.status : 'error';
     return {
-      id: `functional:${slug(name)}`,
+      id: ids[i],
       kind: 'functional',
       name,
       blocking: true,
@@ -105,8 +108,4 @@ function fromPage(out: unknown): CheckResult[] {
       message: typeof r.message === 'string' ? r.message.slice(0, MAX_MESSAGE) : undefined,
     };
   });
-}
-
-function slug(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }

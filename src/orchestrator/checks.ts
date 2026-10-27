@@ -12,6 +12,7 @@ import type { Frame, Page } from 'playwright-core';
 import type { CheckKind, CheckResult, CheckStatus, ConsoleEntry, NetworkEntry, PageError } from '../types.ts';
 import { AXE_PATH } from './host-server.ts';
 import type { PageCode } from './code-cache.ts';
+import { functionalCheckIds } from '../check-ids.ts';
 import { PAGE_CHECKS_PATH, isPageChecks, loadPageChecksRuntime, runPageChecks, stopPageChecks, type PageChecks } from '../page-checks/index.ts';
 import { signalCalls, withSignal } from './check-signal.ts';
 
@@ -189,11 +190,9 @@ async function checksIn(input: ChecksInput, progress: ChecksProgress, phase: Abo
   const axe = progress.plan('axe', 'axe', 'axe-core accessibility scan', false);
   const pageChecks = isPageChecks(input.checks) ? input.checks : null;
   const checksFile = pageChecks && progress.plan('functional:checks-file', 'functional', 'checks file', true);
-  const functional = Object.entries(pageChecks ? {} : (input.checks ?? {})).map(([name, fn]) => ({
-    name,
-    fn,
-    check: progress.plan(`functional:${slug(name)}`, 'functional', name, true),
-  }));
+  const entries = Object.entries(pageChecks ? {} : (input.checks ?? {}));
+  const ids = functionalCheckIds(entries.map(([name]) => name));
+  const functional = entries.map(([name, fn], i) => ({ name, fn, check: progress.plan(ids[i], 'functional', name, true) }));
   const documentCheck = progress.plan('document', 'document', 'The page is not a server error', true);
   const consoleCheck = progress.plan('console', 'console', 'No uncaught errors in the app', true);
   const networkCheck = progress.plan('network', 'network', 'No failed or blocked requests', false);
@@ -627,10 +626,6 @@ function named(name: string, message: string): Error {
 
 function ms(start: number): number {
   return Math.round(performance.now() - start);
-}
-
-function slug(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
 function stripAnsi(s: string): string {
