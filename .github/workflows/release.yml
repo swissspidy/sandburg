@@ -4,6 +4,10 @@
 # 1. version: Changesets keeps a "Version packages" pull request up to date with the pending
 #    changesets. Merging it bumps package.json and CHANGELOG.md, and package.json then names a
 #    version with no tag yet: that is a release.
+#    A push made with the workflow's GITHUB_TOKEN starts no workflow, so that pull request got no
+#    CI. version-ci then starts CI on its branch with workflow_dispatch, which that token can (its
+#    only permission is actions: write); the run's checks are on the branch's head commit, so they
+#    show on the pull request.
 # 2. pack (a release only): installs, tests and packs the package. It cannot request an OIDC token.
 # 3. publish (a release only): stages that tarball on npm with the job's OIDC token (npm adds
 #    provenance), then tags the version and creates its GitHub release. It installs nothing, so no
@@ -34,6 +38,7 @@ jobs:
     outputs:
       release: ${{ steps.release.outputs.release }}
       version: ${{ steps.release.outputs.version }}
+      pr-number: ${{ steps.changesets.outputs.pr-number }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,12 +63,28 @@ jobs:
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Create or update the "Version packages" pull request
+        id: changesets
         uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           # No publish-script: publishing is the publish job's, below.
           version-script: npm run version-packages
           commit-message: "Version packages"
           pr-title: "Version packages"
+
+  version-ci:
+    name: CI for the "Version packages" pull request
+    needs: version
+    if: needs.version.outputs.pr-number != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # start ci.yml with workflow_dispatch
+    steps:
+      # changesets/action's branch for main (changeset-release/<base branch>).
+      - name: Start CI on changeset-release/main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref changeset-release/main
 
   pack:
     name: Test and pack
@@ -83,13 +104,10 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: npm ci
-      # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
-      # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
-      # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
-      - run: |
-          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
-          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
-      - run: npx playwright install --with-deps chromium
+      # No browser cache either: a release uses nothing another run saved.
+      - uses: $/.github/actions/setup-chromium
+        with:
+          cache: "false"
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:pack

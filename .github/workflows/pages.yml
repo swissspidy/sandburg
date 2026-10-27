@@ -1,17 +1,29 @@
 # Builds the demo site (scripts/pages/build.ts) and deploys it to GitHub Pages.
 # Repository settings → Pages → Source: "GitHub Actions".
+# A pull request that touches the demos or what they run on builds and verifies them, and deploys
+# nothing: the build is CI's slowest job, and without this it first ran once the change was merged.
 name: Pages
 
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - 'pages/**'
+      - 'src/**'
+      - 'scripts/pages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/pages.yml'
+      - '.github/actions/setup-chromium/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# One deployment at a time; a pull request's run only cancels that pull request's older runs.
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
   cancel-in-progress: true
 
 jobs:
@@ -28,13 +40,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
-      # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
-      # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
-      - run: |
-          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
-          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
-      - run: npx playwright install --with-deps chromium
+      - uses: $/.github/actions/setup-chromium
       # Runs every demo in Sandburg (recording the host's answers), then loads the built site
       # in Chromium and fails if a demo does not come up from static files alone.
       - run: node scripts/pages/build.ts --verify
@@ -44,12 +50,14 @@ jobs:
           name: screenshots
           path: dist-pages/demos/*/screenshot.png
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: github.event_name != 'pull_request'
         with:
           path: dist-pages
 
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Only the deploy job publishes; the build runs npm and the repository's code.
     permissions:
