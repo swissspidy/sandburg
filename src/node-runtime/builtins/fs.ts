@@ -23,6 +23,24 @@ const constants = {
   COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, UV_FS_O_FILEMAP: 0,
 };
 
+/** open(2)'s flags for each flag string, as Node maps them (the synchronous ones, 'rs+' and 'as', as the others). */
+const OPEN_FLAGS: Record<string, number> = (() => {
+  const { O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND } = constants;
+  const w = O_TRUNC | O_CREAT;
+  const a = O_APPEND | O_CREAT;
+  return {
+    r: O_RDONLY, rs: O_RDONLY, sr: O_RDONLY, 'r+': O_RDWR, 'rs+': O_RDWR, 'sr+': O_RDWR,
+    w: w | O_WRONLY, wx: w | O_WRONLY | O_EXCL, xw: w | O_WRONLY | O_EXCL, 'w+': w | O_RDWR, 'wx+': w | O_RDWR | O_EXCL, 'xw+': w | O_RDWR | O_EXCL,
+    a: a | O_WRONLY, ax: a | O_WRONLY | O_EXCL, xa: a | O_WRONLY | O_EXCL, as: a | O_WRONLY, sa: a | O_WRONLY,
+    'a+': a | O_RDWR, 'ax+': a | O_RDWR | O_EXCL, 'xa+': a | O_RDWR | O_EXCL, 'as+': a | O_RDWR, 'sa+': a | O_RDWR,
+  };
+})();
+function openFlags(flags: string | number | null | undefined): number {
+  if (typeof flags === 'number') return flags;
+  if (!Object.hasOwn(OPEN_FLAGS, flags ?? 'r')) throw Object.assign(new TypeError(`The argument 'flags' is invalid. Received '${flags}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+  return OPEN_FLAGS[flags ?? 'r'];
+}
+
 export class Stats {
   dev = 1; ino: number; mode: number; nlink = 1; uid = 0; gid = 0; rdev = 0; size: number; blksize = 4096; blocks: number;
   atimeMs: number; mtimeMs: number; ctimeMs: number; birthtimeMs: number;
@@ -169,8 +187,16 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   }
   function writeFileSync(p: PathLike | number, data: unknown, o?: EncOpt): void {
     const flag = typeof o === 'object' && o ? o.flag : undefined;
-    const path = typeof p === 'number' ? fdPath(p) : abs(p);
-    vfs.write(path, toBytes(data, enc(o)), flag?.startsWith('a'));
+    const f = openFlags(flag ?? 'w');
+    const bytes = toBytes(data, enc(o));
+    if (typeof p === 'number') return vfs.write(fdPath(p), bytes, !!(f & constants.O_APPEND));
+    // As open(2) with the flag, then a write from the start: 'wx' fails on a file that exists, 'r+' on one that does not, and keeps what is past the new bytes.
+    const path = abs(p);
+    if (f & constants.O_CREAT && f & constants.O_EXCL && vfs.exists(path)) throw new FsError('EEXIST', 'open', path);
+    if (!(f & constants.O_CREAT)) vfs.stat(path, 'open');
+    if (f & constants.O_APPEND) vfs.write(path, bytes, true);
+    else if (f & constants.O_TRUNC || !vfs.exists(path)) vfs.write(path, bytes);
+    else vfs.writeAt(path, bytes, 0);
   }
   function readdirSync(p: PathLike, o?: EncOpt): (string | Dirent)[] {
     const dir = abs(p);
@@ -242,26 +268,46 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   }
   function openSync(p: PathLike, flags: string | number = 'r'): number {
     const path = abs(p);
-    const f = typeof flags === 'number' ? (flags & constants.O_WRONLY || flags & constants.O_RDWR ? (flags & constants.O_APPEND ? 'a' : 'w') : 'r') : flags;
-    if (f.startsWith('r')) vfs.stat(path, 'open');
-    else if (f.includes('x') && vfs.exists(path)) throw new FsError('EEXIST', 'open', path);
-    else if (f.startsWith('w') || !vfs.exists(path)) vfs.write(path, new Uint8Array());
+    const f = openFlags(flags);
+    if (!vfs.exists(path)) {
+      if (!(f & constants.O_CREAT)) vfs.stat(path, 'open');
+      vfs.write(path, new Uint8Array());
+    } else if (f & constants.O_CREAT && f & constants.O_EXCL) throw new FsError('EEXIST', 'open', path);
+    else if (vfs.stat(path).kind === 'dir') {
+      if (f & (constants.O_WRONLY | constants.O_RDWR)) throw new FsError('EISDIR', 'open', path);
+    } else if (f & constants.O_TRUNC) vfs.write(path, new Uint8Array());
     const fd = nextFd++;
-    fds.set(fd, { path, pos: 0, append: f.startsWith('a') });
+    fds.set(fd, { path, pos: 0, append: !!(f & constants.O_APPEND) });
     return fd;
   }
   function closeSync(fd: number): void {
     fds.delete(fd);
   }
-  function readSync(fd: number, buffer: Uint8Array, offset = 0, length = buffer.length - offset, position: number | null = null): number {
+  type ReadOptions = { offset?: number; length?: number; position?: number | bigint | null };
+  /** readSync(fd, buffer, offset, length, position) or readSync(fd, buffer, { offset, length, position }). */
+  function readSync(fd: number, buffer: Uint8Array, offset?: number | ReadOptions | null, length?: number, position?: number | bigint | null): number {
+    if (typeof offset === 'object' && offset) ({ offset, length, position } = offset);
+    const from = offset ?? 0;
     const f = fds.get(fd);
     if (!f) throw new FsError('EBADF', 'read', String(fd));
     const data = vfs.read(f.path);
-    const pos = position ?? f.pos;
-    const n = Math.max(0, Math.min(length, data.length - pos));
-    buffer.set(data.subarray(pos, pos + n), offset);
-    if (position === null) f.pos += n;
+    // A position of null (or -1) reads from the file position and moves it.
+    const at = typeof position === 'bigint' ? Number(position) : typeof position === 'number' && position >= 0 ? position : null;
+    const pos = at ?? f.pos;
+    const n = Math.max(0, Math.min(length ?? buffer.byteLength - from, data.length - pos));
+    buffer.set(data.subarray(pos, pos + n), from);
+    if (at === null) f.pos += n;
     return n;
+  }
+  /** fs.read's and filehandle.read's arguments: (buffer, offset, length, position), (buffer, options), ({ buffer, … }) or none. */
+  function readCall(fd: number, args: unknown[]): [number, Uint8Array] {
+    const first = args[0];
+    if (first && typeof first === 'object' && !ArrayBuffer.isView(first)) {
+      const buffer = (first as { buffer?: Uint8Array }).buffer ?? Buffer.alloc(16384);
+      return [readSync(fd, buffer, first), buffer];
+    }
+    const buffer = (first as Uint8Array | undefined) ?? Buffer.alloc(16384);
+    return [readSync(fd, buffer, ...(args.slice(1) as [number, number, number | null])), buffer];
   }
   function writeSync(fd: number, data: unknown, ...rest: unknown[]): number {
     const f = fds.get(fd);
@@ -401,12 +447,21 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     };
     promisified[base] = async (...args: unknown[]) => withoutStack(() => (fn as (...a: unknown[]) => unknown)(...args));
   }
-  // fs.read/fs.write callbacks take (err, bytes, buffer)
-  callbackified.read = (fd, buffer, offset, length, position, cb) => {
-    const done = bindContext(cb as never) as (e: unknown, n?: number, b?: unknown) => void;
+  // fs.read/fs.write callbacks take (err, bytes, buffer): the buffer read into, or the data written
+  callbackified.read = (fd, ...args) => {
+    const done = (typeof args.at(-1) === 'function' ? bindContext(args.pop() as never) : () => {}) as (e: unknown, n?: number, b?: unknown) => void;
     try {
-      const n = withoutStack(() => readSync(fd as number, buffer as Uint8Array, offset as number, length as number, position as number | null));
+      const [n, buffer] = withoutStack(() => readCall(fd as number, args));
       later(() => done(null, n, buffer));
+    } catch (e) {
+      later(() => done(e));
+    }
+  };
+  callbackified.write = (fd, data, ...args) => {
+    const done = (typeof args.at(-1) === 'function' ? bindContext(args.pop() as never) : () => {}) as (e: unknown, n?: number, b?: unknown) => void;
+    try {
+      const n = withoutStack(() => writeSync(fd as number, data, ...args));
+      later(() => done(null, n, data));
     } catch (e) {
       later(() => done(e));
     }
@@ -420,8 +475,9 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     }
     readFile(o?: EncOpt) { return Promise.resolve(readFileSync(this.fd, o)); }
     writeFile(d: unknown, o?: EncOpt) { return Promise.resolve(writeFileSync(this.fd, d, o)); }
-    async read(buffer: Uint8Array, offset?: number, length?: number, position?: number | null) {
-      return { bytesRead: readSync(this.fd, buffer, offset, length, position ?? null), buffer };
+    async read(...args: unknown[]) {
+      const [bytesRead, buffer] = readCall(this.fd, args);
+      return { bytesRead, buffer };
     }
     async write(data: unknown, ...rest: unknown[]) { return { bytesWritten: writeSync(this.fd, data, ...rest), buffer: data }; }
     async stat() { return fstatSync(this.fd); }
@@ -441,9 +497,11 @@ export function createFs(vfs: Vfs, cwd: () => string) {
    * code (graceful-fs, webpack's cache) calls them without `new` or via
    * `.apply(this)`, so these are function constructors, as in Node.
    */
-  type ReadOpts = EncOpt & { start?: number; end?: number; highWaterMark?: number };
+  type ReadOpts = EncOpt & { flags?: string; start?: number; end?: number; highWaterMark?: number };
+  type WriteOpts = EncOpt & { flags?: string };
   interface ReadStream extends InstanceType<typeof Readable> {
     path: string;
+    fd: number | null;
     bytesRead: number;
     pending: boolean;
     _data: Uint8Array | null;
@@ -453,20 +511,50 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   }
   interface WriteStream extends InstanceType<typeof Writable> {
     path: string;
+    fd: number | null;
     bytesWritten: number;
     pending: boolean;
     close(cb?: () => void): void;
   }
+  /**
+   * A stream's file is opened as it is made, and read or written at once (webpack renames a pack it
+   * wrote as its gzip stream finishes, before the file stream has; this runtime's descriptors are by
+   * path), and it says so as Node's do: 'open' with its fd, then 'ready', before any 'data' or
+   * 'finish'. A file that cannot be opened ends the stream with that error.
+   */
+  const openErrors = new WeakMap<object, Error>();
+  function opened(stream: ReadStream | WriteStream, open: () => number) {
+    stream.fd = null;
+    stream.pending = true;
+    try {
+      stream.fd = open();
+    } catch (e) {
+      openErrors.set(stream, e as Error);
+    }
+    queueMicrotask(() => {
+      const error = openErrors.get(stream);
+      if (error) return void stream.destroy(error);
+      if (stream.destroyed) return;
+      stream.pending = false;
+      stream.emit('open', stream.fd);
+      stream.emit('ready');
+    });
+  }
+  function closeFd(this: ReadStream | WriteStream, err: Error | null, cb: (e: Error | null) => void) {
+    if (this.fd !== null) closeSync(this.fd);
+    this.fd = null;
+    cb(err);
+  }
   const ReadStream = function (this: ReadStream | undefined, p: PathLike, o?: ReadOpts): ReadStream {
     if (!(this instanceof ReadStream)) return new (ReadStream as unknown as new (p: PathLike, o?: ReadOpts) => ReadStream)(p, o);
-    const opts = (typeof o === 'object' && o ? o : {}) as { start?: number; end?: number; highWaterMark?: number };
+    const opts = (typeof o === 'object' && o ? o : {}) as { flags?: string; start?: number; end?: number; highWaterMark?: number };
     (Readable as unknown as Function).call(this, { encoding: enc(o) ?? undefined, highWaterMark: opts.highWaterMark });
     this.path = typeof p === 'string' ? p : abs(p);
     this.bytesRead = 0;
-    this.pending = false;
     this._data = null;
     this._pos = opts.start ?? 0;
     this._end = opts.end;
+    opened(this, () => openSync(this.path, opts.flags ?? 'r'));
     return this;
   } as unknown as { new (p: PathLike, o?: ReadOpts): ReadStream; (p: PathLike, o?: ReadOpts): ReadStream; prototype: ReadStream };
   Object.setPrototypeOf(ReadStream.prototype, Readable.prototype);
@@ -484,39 +572,40 @@ export function createFs(vfs: Vfs, cwd: () => string) {
       this.destroy(e as Error);
     }
   };
+  ReadStream.prototype._destroy = closeFd;
   ReadStream.prototype.close = function (this: ReadStream, cb?: () => void) {
     this.destroy();
     cb?.();
   };
 
-  const WriteStream = function (this: WriteStream | undefined, p: PathLike, o?: EncOpt): WriteStream {
-    if (!(this instanceof WriteStream)) return new (WriteStream as unknown as new (p: PathLike, o?: EncOpt) => WriteStream)(p, o);
+  const WriteStream = function (this: WriteStream | undefined, p: PathLike, o?: WriteOpts): WriteStream {
+    if (!(this instanceof WriteStream)) return new (WriteStream as unknown as new (p: PathLike, o?: WriteOpts) => WriteStream)(p, o);
     (Writable as unknown as Function).call(this);
     this.path = abs(p);
     this.bytesWritten = 0;
-    this.pending = false;
-    const flag = typeof o === 'object' && o ? o.flag : undefined;
-    if (!flag?.startsWith('a')) vfs.write(this.path, new Uint8Array());
+    opened(this, () => openSync(this.path, (typeof o === 'object' && o?.flags) || 'w'));
     return this;
-  } as unknown as { new (p: PathLike, o?: EncOpt): WriteStream; (p: PathLike, o?: EncOpt): WriteStream; prototype: WriteStream };
+  } as unknown as { new (p: PathLike, o?: WriteOpts): WriteStream; (p: PathLike, o?: WriteOpts): WriteStream; prototype: WriteStream };
   Object.setPrototypeOf(WriteStream.prototype, Writable.prototype);
   Object.setPrototypeOf(WriteStream, Writable);
   WriteStream.prototype._write = function (this: WriteStream, chunk: unknown, encoding: BufferEncoding, cb: (e?: Error | null) => void) {
     try {
       const bytes = toBytes(chunk, encoding);
-      vfs.write(this.path, bytes, true);
+      if (this.fd === null) throw openErrors.get(this) ?? new FsError('EBADF', 'write', this.path);
+      writeSync(this.fd, bytes);
       this.bytesWritten += bytes.length;
       cb();
     } catch (e) {
       cb(e as Error);
     }
   };
+  WriteStream.prototype._destroy = closeFd;
   WriteStream.prototype.close = function (this: WriteStream, cb?: () => void) {
     this.end(cb);
   };
 
   const createReadStream = (p: PathLike, o?: ReadOpts) => new ReadStream(p, o);
-  const createWriteStream = (p: PathLike, o?: EncOpt) => new WriteStream(p, o);
+  const createWriteStream = (p: PathLike, o?: WriteOpts) => new WriteStream(p, o);
   function watch(p: PathLike, o?: unknown, listener?: (event: string, filename: string) => void) {
     const cb = typeof o === 'function' ? (o as typeof listener) : listener;
     const root = abs(p);
@@ -535,7 +624,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     w.ref = w.unref = () => w;
     return w;
   }
-  const fileWatchers = new Map<string, () => void>();
+  /** watchFile's listeners by path, each with what stops it (unwatchFile stops one, or all of a path's). */
+  const fileWatchers = new Map<string, { cb: (curr: Stats, prev: Stats) => void; off: () => void }[]>();
   function watchFile(p: PathLike, o: unknown, listener?: (curr: Stats, prev: Stats) => void) {
     const cb = (typeof o === 'function' ? o : listener) as (curr: Stats, prev: Stats) => void;
     const path = abs(p);
@@ -546,7 +636,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
       cb(curr, prev);
       prev = curr;
     });
-    fileWatchers.set(path, off);
+    fileWatchers.set(path, [...(fileWatchers.get(path) ?? []), { cb, off }]);
     return { ref() { return this; }, unref() { return this; } };
   }
 
@@ -616,9 +706,14 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     WriteStream,
     watch,
     watchFile,
-    unwatchFile: (p: PathLike) => {
-      fileWatchers.get(abs(p))?.();
-      fileWatchers.delete(abs(p));
+    unwatchFile: (p: PathLike, listener?: (curr: Stats, prev: Stats) => void) => {
+      const path = abs(p);
+      const list = fileWatchers.get(path) ?? [];
+      const stopped = list.filter((w) => !listener || w.cb === listener);
+      for (const w of stopped) w.off();
+      const left = list.filter((w) => !stopped.includes(w));
+      if (left.length) fileWatchers.set(path, left);
+      else fileWatchers.delete(path);
     },
     promises,
     constants,

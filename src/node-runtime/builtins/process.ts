@@ -39,11 +39,18 @@ class Timeout {
     this.repeat = repeat;
     this.start();
   }
+  /** Scheduled, and pending (in byId) until it fires or is cleared; a refresh() after it fired schedules it again. */
   private start() {
     this.id = this.repeat ? nativeSetInterval(this.fn, this.ms) : nativeSetTimeout(this.fn, this.ms);
+    byId.set(Number(this.id), this);
+  }
+  /** It fired (a timeout: no longer pending). */
+  fired() {
+    if (this.id !== null) byId.delete(Number(this.id));
   }
   clear() {
     if (this.id === null) return;
+    byId.delete(Number(this.id));
     (this.repeat ? nativeClearInterval : nativeClearTimeout)(this.id);
     this.id = null;
   }
@@ -83,18 +90,15 @@ function make(repeat: boolean) {
     if (typeof fn !== 'function') throw new TypeError('The "callback" argument must be of type function');
     const bound = bindContext(fn as never) as (...a: unknown[]) => void;
     const t: Timeout = new Timeout(() => {
-      if (!repeat) byId.delete(Number(t));
+      if (!repeat) t.fired();
       bound(...args);
     }, Math.max(1, Number(ms) || 1), repeat);
-    byId.set(Number(t), t);
     return t;
   };
 }
 function clear(t: unknown) {
-  if (t instanceof Timeout) {
-    byId.delete(Number(t));
-    t.clear();
-  } else if (typeof t === 'number') {
+  if (t instanceof Timeout) t.clear();
+  else if (typeof t === 'number') {
     const found = byId.get(t);
     if (found) found.clear();
     else nativeClearTimeout(t);
@@ -123,7 +127,19 @@ const immediateChannel = new MessageChannel();
 const immediateQueue: (() => void)[] = [];
 immediateChannel.port1.onmessage = () => {
   const batch = immediateQueue.splice(0);
-  for (const run of batch) run();
+  for (let i = 0; i < batch.length; i++) {
+    try {
+      batch[i]();
+    } catch (e) {
+      // As in Node: the error is uncaught (process 'uncaughtException'), and the rest of the batch
+      // still runs, on the next turn, before immediates queued since; process.exit() ends it there.
+      if (!(e instanceof ExitError) && i + 1 < batch.length) {
+        if (!immediateQueue.length) immediateChannel.port2.postMessage(0);
+        immediateQueue.unshift(...batch.slice(i + 1));
+      }
+      throw e;
+    }
+  }
 };
 
 export const timers = {
@@ -170,6 +186,7 @@ export interface ProcessOptions {
 
 export function createProcess(opts: ProcessOptions) {
   let cwd = opts.cwd;
+  let exiting = false;
   const t0 = performance.now();
   const proc = new EventEmitter() as EventEmitter & Record<string, unknown>;
   const out = (name: 'stdout' | 'stderr') => {
@@ -264,9 +281,14 @@ export function createProcess(opts: ProcessOptions) {
       opts.write('stderr', `(node) ${name}: ${text}\n`);
     },
     exit(code?: number) {
-      const c = code ?? (proc.exitCode as number | undefined) ?? 0;
-      proc.emit('exit', c);
-      throw new ExitError(c);
+      // As in Node: 'exit' listeners see the code as process.exitCode (and may change it); one that
+      // calls process.exit() ends the process there, with its code, without emitting 'exit' again.
+      if (code !== undefined) proc.exitCode = code;
+      if (!exiting) {
+        exiting = true;
+        proc.emit('exit', Number(proc.exitCode ?? 0));
+      }
+      throw new ExitError(Number(proc.exitCode ?? 0));
     },
     reallyExit(code: number) {
       throw new ExitError(code);
