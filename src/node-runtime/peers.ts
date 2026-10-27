@@ -257,7 +257,7 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
       else {
         loopbackRequests.delete(m.id);
         if (m.type === 'response-end') own.end();
-        else own.error(String(m.message));
+        else own.error(String(m.message), m.code);
       }
       return true;
     }

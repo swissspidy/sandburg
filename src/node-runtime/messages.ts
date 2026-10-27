@@ -13,7 +13,8 @@ export type FromWorker =
   | { type: 'response-end'; id: number }
   /** A whole response (see request() in worker.ts): one message instead of start, chunks and end. */
   | { type: 'response-full'; id: number; status: number; statusText: string; headers: [string, string][]; body: ArrayBuffer }
-  | { type: 'response-error'; id: number; message: string }
+  /** code: the error's code for a client in a runtime (ECONNREFUSED: no server on the port); ECONNRESET without one. */
+  | { type: 'response-error'; id: number; message: string; code?: string }
   | { type: 'exit'; code: number }
   /** trap: a WebAssembly trap ended a thread of this runtime (or the runtime itself, if it is a thread). */
   | { type: 'fatal'; message: string; stack?: string; trap?: boolean }

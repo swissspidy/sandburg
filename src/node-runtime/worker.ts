@@ -680,7 +680,8 @@ function releaseHeld(depth: number) {
 
 function request(msg: Extract<ToWorker, { type: 'request' }>) {
   const server = servers.get(msg.port);
-  if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}` });
+  // A server that closed before its parent learnt of it (see unannounce): refused, as by a real port.
+  if (!server) return post({ type: 'response-error', id: msg.id, message: `nothing listening on port ${msg.port}`, code: 'ECONNREFUSED' });
   const id = msg.id;
   /** The start and chunks held until the end of the task; null once the response streams. */
   let held: { start: [number, string, [string, string][]] | null; chunks: Uint8Array[]; size: number } | null = { start: null, chunks: [], size: 0 };
