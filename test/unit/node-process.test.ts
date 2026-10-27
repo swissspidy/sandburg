@@ -58,3 +58,13 @@ test('a request that failed in the runtime closes its port', (t) => {
   assert.deepEqual(got, ['error: socket hang up', 'closed']);
   assert.equal(proc.activity().inflight, 0);
 });
+
+test('a runtime that fails after its program exited answers new requests with an error at once', (t) => {
+  const { proc, from, ask } = start(t);
+  from({ type: 'listening', port: 3000 });
+  from({ type: 'exit', code: 0 });
+  // The page's compiler fails (browser.ts), after the program exited while a child process serves.
+  proc.fail(new Error("the page's compiler failed: worker error"));
+  assert.deepEqual(ask(), ["error: the app crashed: the page's compiler failed: worker error", 'closed']);
+  assert.equal(proc.activity().inflight, 0);
+});

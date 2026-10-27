@@ -318,7 +318,9 @@ export class NodeProcess {
 
   /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
   request(port: number, request: BridgedRequest, reply: BridgeReply): void {
-    const gone = this.terminated ? `${this.label} stopped` : this.failure && this.exitCode === null ? `${this.label} crashed: ${this.failure.message.split('\n')[0]}` : null;
+    // A program that only exited may leave child processes serving (see 'exit'); one that failed (also
+    // after it exited: the page's compiler, a WebAssembly thread) may never answer.
+    const gone = this.terminated ? `${this.label} stopped` : this.failure ? `${this.label} crashed: ${this.failure.message.split('\n')[0]}` : null;
     if (gone) {
       reply.postMessage({ type: 'error', message: gone });
       reply.close();
