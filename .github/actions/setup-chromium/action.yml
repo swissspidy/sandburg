@@ -1,0 +1,35 @@
+# Chromium for the jobs that launch it, after `npm ci`: the browser Playwright pins, its OS sandbox
+# allowed to start, and apt only if the browser does not start without it.
+name: Set up Chromium
+description: Lift the user-namespace restriction, then install (or restore) Playwright's Chromium.
+
+inputs:
+  cache:
+    description: Restore and save ~/.cache/ms-playwright, keyed on playwright-core's version in package-lock.json.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later can restrict
+    # them with AppArmor (Chromium for Testing has no AppArmor profile). Lifting the restriction keeps
+    # the sandbox on (no --no-browser-sandbox in CI; test/runtime/browser-sandbox.test.ts checks it).
+    - shell: bash
+      run: |
+        echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo unset)"
+        if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
+    # The browser builds a Playwright version downloads are fixed by that version (playwright-core's
+    # browsers.json), so the version that npm ci installed is the whole cache key.
+    - id: playwright
+      shell: bash
+      run: echo "version=$(node -p 'require("./package-lock.json").packages["node_modules/playwright-core"].version')" >> "$GITHUB_OUTPUT"
+    - if: inputs.cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
+    # On a cache hit, `playwright install` finds the browsers in place and downloads nothing. The
+    # runner image has Chromium's libraries; apt (install-deps) only if it does not start. With
+    # --with-deps, apt fetched fonts in every job, once for 7 minutes from a slow mirror (ADR 0043).
+    - shell: bash
+      run: npx playwright install chromium && (node -e "require('playwright-core').chromium.launch().then((b) => b.close())" || npx playwright install-deps chromium)
