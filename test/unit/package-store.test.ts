@@ -14,6 +14,9 @@ process.env.npm_config_cache = cache;
 process.env.npm_config_registry = 'https://registry.npmjs.org/';
 const { installFromLockfile, installedPackages, isInstallLocation, normalizeBin, sweepStore, unpackAhead, unpackHint } = await import('../../src/adapters/node/package-store.ts');
 
+/** Windows keeps no executable bits (NTFS has no such mode): those are checked elsewhere only. */
+const hasModes = process.platform !== 'win32';
+
 /** A ustar archive with npm pack's top directory. */
 function tar(entries: Record<string, string>): Buffer {
   const blocks: Buffer[] = [];
@@ -66,15 +69,19 @@ test('a lockfile installs from the store as npm installs it', async () => {
   assert.equal(await installFromLockfile(dir, store, () => {}), true);
   const nm = join(dir, 'node_modules');
   assert.equal(readFileSync(join(nm, 'tool/bin/tool.js'), 'utf8'), '#!/usr/bin/env node\nconsole.log(1);\r\n');
-  assert.equal(statSync(join(nm, 'tool/bin/tool.js')).mode & 0o111, 0o111);
-  assert.equal(statSync(join(nm, 'tool/lib/index.js')).mode & 0o111, 0);
+  if (hasModes) {
+    assert.equal(statSync(join(nm, 'tool/bin/tool.js')).mode & 0o111, 0o111);
+    assert.equal(statSync(join(nm, 'tool/lib/index.js')).mode & 0o111, 0);
+  }
   assert.equal(readFileSync(join(nm, 'tool/.npmignore'), 'utf8'), 'dist');
   assert.equal(existsSync(join(nm, 'tool/.gitignore')), false);
   assert.equal(readlinkSync(join(nm, '.bin/tool')), '../tool/bin/tool.js');
   assert.equal(readlinkSync(join(nm, '.bin/x')), '../alpha/x.js');
   // A binary is made executable only where it is linked (bin-links), as the tarball has it elsewhere.
-  assert.equal(statSync(join(nm, 'alpha/x.js')).mode & 0o111, 0o111);
-  assert.equal(statSync(join(nm, 'beta/x.js')).mode & 0o111, 0);
+  if (hasModes) {
+    assert.equal(statSync(join(nm, 'alpha/x.js')).mode & 0o111, 0o111);
+    assert.equal(statSync(join(nm, 'beta/x.js')).mode & 0o111, 0);
+  }
   assert.equal(readlinkSync(join(nm, 'beta/node_modules/.bin/tool')), '../tool/cli.js');
   assert.equal(readlinkSync(join(nm, 'gamma/node_modules/.bin/inner')), '../inner/i.js');
   assert.deepEqual(readdirSync(join(nm, '@native')), []);
