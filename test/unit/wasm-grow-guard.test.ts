@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { guardSharedMemoryGrowth } from '../../src/node-runtime/wasm-grow-guard.ts';
-import { FILL_ZEROS, leb, moduleWith } from './wasm-modules.ts';
+import { FILL_ZEROS, leb, moduleWith, repeated } from './wasm-modules.ts';
 
 /**
  * A thread grows a shared memory a page at a time (`writer`) and publishes each new page's address
@@ -201,11 +201,27 @@ test('bytes that end inside a count or a number are left as they are, at once', 
 
 test('a module the guard would grow by more than half is left as it is', async () => {
   // 100,000 atomic loads in a row (i32.const 0, i32.atomic.load, drop): 7 bytes each, about 30 guarded
-  const dense = moduleWith(Array.from({ length: 100_000 }, () => [0x41, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x1a]).flat());
+  const dense = moduleWith(repeated([0x41, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x1a], 100_000));
   assert.ok(WebAssembly.validate(dense));
   const started = performance.now();
-  assert.equal(guardSharedMemoryGrowth(dense), null);
+  assert.equal(guardSharedMemoryGrowth(dense)?.length, undefined);
   assert.ok(performance.now() - started < 2000);
   // A few of them are guarded.
   assert.equal(checks(guardSharedMemoryGrowth(moduleWith([0x41, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x1a]))!), 1);
+});
+
+test('a function body over the limit V8 compiles, or one that alone would grow too much, is left as it is at once', () => {
+  const load = [0x41, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x1a];
+  // over 7,654,321 bytes, V8 does not compile it: nops and one fill, which the budget alone would let through
+  const nops = moduleWith(new Uint8Array([...FILL_ZEROS, ...repeated([0x01], 7_700_000)]));
+  assert.equal(guardSharedMemoryGrowth(nops)?.length, undefined, 'its length when it was guarded');
+  const huge = moduleWith(repeated(load, 1_100_000));
+  let started = performance.now();
+  assert.equal(guardSharedMemoryGrowth(huge)?.length, undefined);
+  assert.ok(performance.now() - started < 1000, `${performance.now() - started} ms`);
+  // under it, but growing past the budget well before its end: given up there
+  const dense = moduleWith(repeated(load, 1_000_000));
+  started = performance.now();
+  assert.equal(guardSharedMemoryGrowth(dense)?.length, undefined);
+  assert.ok(performance.now() - started < 1000, `${performance.now() - started} ms`);
 });

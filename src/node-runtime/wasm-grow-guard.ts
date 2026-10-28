@@ -29,6 +29,8 @@ const MAX_INPUT = 128 << 20;
  */
 const MAX_GROWTH = 0.5;
 const GROWTH_ALLOWANCE = 64 << 10;
+/** V8's limit on a function body's size: a module with a bigger one does not compile, and is left as it is. */
+const MAX_BODY = 7_654_321;
 
 /** The value types `(ref null ht)` and `(ref ht)` (typed function references, GC): the rewrite leaves modules with them as they are. */
 const typedReference = (x: number) => x === 0x63 || x === 0x64;
@@ -374,9 +376,9 @@ const MAX_LOCALS = 50_000;
 /**
  * One function body, guarded (written to `w`, from its start); null when it has no operation to
  * guard. `params`: how many parameters the function has (its temporaries come after them and its
- * locals).
+ * locals). `budget`: the most bytes the guarded body may take (MAX_GROWTH), checked as it is written.
  */
-function guardBody(body: Uint8Array, params: number, w: Writer): Uint8Array<ArrayBuffer> | null {
+function guardBody(body: Uint8Array, params: number, w: Writer, budget: number): Uint8Array<ArrayBuffer> | null {
   // Without a 0xFC or 0xFE byte anywhere (most bodies) there is nothing to guard.
   if (body.indexOf(0xfc) < 0 && body.indexOf(0xfe) < 0) return null;
   const r = new Reader(body);
@@ -427,6 +429,7 @@ function guardBody(body: Uint8Array, params: number, w: Writer): Uint8Array<Arra
       get(o, base + C);
       o.bytes(body.subarray(at, r.p));
       copied = r.p;
+      if (o.length > budget) throw new Unknown('grows too much');
       continue;
     }
     if (op === 0xfe) {
@@ -448,6 +451,7 @@ function guardBody(body: Uint8Array, params: number, w: Writer): Uint8Array<Arra
       for (const slot of slots) get(o, base + slot);
       o.bytes(body.subarray(at, r.p));
       copied = r.p;
+      if (o.length > budget) throw new Unknown('grows too much');
       continue;
     }
     skipPrefixed(r, op, sub);
@@ -520,10 +524,10 @@ export function guardSharedMemoryGrowth(input: Uint8Array): Uint8Array<ArrayBuff
       code.u32(count);
       for (let i = 0; i < count; i++) {
         const length = r.u32();
-        if (r.p + length > end) return null;
+        if (r.p + length > end || length > MAX_BODY) return null;
         const original = input.subarray(r.p, r.p + length);
         r.p += length;
-        const guarded = guardBody(original, params[funcTypes[i]], body);
+        const guarded = guardBody(original, params[funcTypes[i]], body, most - w.length - code.length);
         const chosen = guarded ?? original;
         if (guarded) changed = true;
         code.u32(chosen.length);
