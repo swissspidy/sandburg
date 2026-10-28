@@ -707,7 +707,7 @@ test("child_process: the shell's sleep takes units, fractions and several number
           const r = cp.spawnSync(\`sleep \${a}\`, { shell: true, encoding: 'utf8' });
           return [r.status, r.stderr];
         });
-        out.hex = cp.execSync('sleep 0x0 && echo slept', { encoding: 'utf8' });
+        out.hex = cp.execSync('sleep 0x0 0x0.1 0x1p-3 && echo slept', { encoding: 'utf8' });
         try {
           cp.execSync('sleep INF', { timeout: 300 });
         } catch (e) {
@@ -823,7 +823,17 @@ test('child_process: a numeric killSignal is reported by name, and node without 
           inputScript: cp.spawnSync(n, [], { input: 'console.log(6 * 7)', encoding: 'utf8' }).stdout,
           noScript: [cp.spawnSync(n, [], { encoding: 'utf8' }).status, cp.spawnSync(n, [], { encoding: 'utf8' }).stdout],
           execInput: cp.execSync('node', { input: 'console.log(5)', encoding: 'utf8' }),
-          dash: cp.spawnSync(n, ['-', 'a'], { input: 'console.log(process.argv.slice(2).join())', encoding: 'utf8' }).stdout,
+          dash: cp.spawnSync(n, ['-', 'a'], { input: 'console.log(JSON.stringify(process.argv.slice(1)))', encoding: 'utf8' }).stdout,
+          stdinArgv: cp.spawnSync(n, [], { input: 'console.log(JSON.stringify(process.argv.slice(1)))', encoding: 'utf8' }).stdout,
+          nullSignal: cp.spawnSync(n, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: null }).signal,
+          badSignal: [{}, true].map((killSignal) => {
+            try {
+              cp.spawnSync(n, ['-e', '1'], { killSignal });
+              return 'ran';
+            } catch (e) {
+              return [e.name, e.code, e.message];
+            }
+          }),
           aliasSignal: cp.spawnSync(n, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: 'sigiot' }).signal,
           unknownSignal: [99, 0, 'SIGFOO', '15'].map((killSignal) => {
             try {
@@ -844,7 +854,13 @@ test('child_process: a numeric killSignal is reported by name, and node without 
     inputScript: '42\n',
     noScript: [0, ''],
     execInput: '5\n',
-    dash: 'a\n',
+    dash: '["-","a"]\n',
+    stdinArgv: '[]\n',
+    nullSignal: 'SIGTERM',
+    badSignal: [
+      ['TypeError', 'ERR_INVALID_ARG_TYPE', 'The "options.killSignal" property must be one of type string or number. Received an instance of Object'],
+      ['TypeError', 'ERR_INVALID_ARG_TYPE', 'The "options.killSignal" property must be one of type string or number. Received type boolean (true)'],
+    ],
     aliasSignal: 'SIGABRT',
     unknownSignal: [unknown('99'), unknown('0'), unknown('SIGFOO'), unknown('15')],
   });

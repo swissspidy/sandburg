@@ -108,10 +108,18 @@ const spawnerMessage = (data, from) => {
     return true;
   }
   if (data.spawnerPort) {
-    if (typeof data.owner !== 'string') return true;
+    // A tag with '/' would make keys ambiguous: not taken, as a duplicate is not.
+    const refuse = (e) => {
+      const sync = channelOf(e.data || {});
+      if (sync) markDead(sync);
+    };
+    if (typeof data.owner !== 'string' || data.owner.includes('/')) return (data.spawnerPort.onmessage = refuse), true;
     const key = from + '/' + data.owner;
-    if (nodes.has(key)) nodes.get(key).duplicate = true;
-    else {
+    if (nodes.has(key)) {
+      // What the runtime given this port asks for fails at once, rather than wait for an answer.
+      nodes.get(key).duplicate = true;
+      data.spawnerPort.onmessage = refuse;
+    } else {
       nodes.set(key, { parent: from, worker: null, duplicate: false });
       data.spawnerPort.onmessage = (e) => spawnerMessage(e.data, key);
     }

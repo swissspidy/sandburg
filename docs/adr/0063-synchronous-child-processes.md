@@ -50,8 +50,9 @@ it and waits in `Atomics.wait` for it to answer in shared memory, 3 s at most):
     gave the port: a runtime names only its own children, and only a node's parent may start or end
     it. A runtime that was ended starts nothing (its messages arrive on a port of their own and may
     come after its end: the child they would start is refused, and its parent stops waiting). A tag
-    a runtime registers twice is not used: its spawn fails the same way, rather than give the child a
-    port no one answers. Tags are random (`crypto.randomUUID`). Ending a node terminates its worker and every node under it:
+    a runtime registers twice, or one with `/` (keys would be ambiguous), is not used: its spawn
+    fails the same way, and the port registered with it refuses what it is asked at once, rather
+    than leave a child waiting on a port no one answers. Tags are random (`crypto.randomUUID`). Ending a node terminates its worker and every node under it:
     a synchronous grandchild's worker is the helper's, not its parent's, and outlived it (a ticker
     started by `execSync` in a child killed by its timeout, or in an asynchronous child killed while it
     waited, kept ticking). A runtime that ends its asynchronous child or thread (`ThreadHost.ended`)
@@ -81,7 +82,7 @@ it and waits in `Atomics.wait` for it to answer in shared memory, 3 s at most):
   and a command that is not a Node program exits with 127, synchronously, with the shell's message on
   stderr (`git` starts no runtime): status 127 from the shell, also for `spawnSync('git', …)` without
   a shell, where Node reports `ENOENT` (or runs git). `sleep` reads its arguments as GNU sleep does
-  (`0.5`, `2s`, `1m`, `0x10`, several summed; units in lower case, `inf` in any; an invalid one exits
+  (`0.5`, `2s`, `1m`, `0x10`, `0x1p-3`, several summed; units in lower case, `inf` in any; an invalid one exits
   1 with GNU's message), in both modes;
   `sleep inf` without a timeout fails the call (`EINVAL`) rather than block the thread for good.
 - **Node's semantics** (Node 24's own output for each test program): `status`, `signal`, `stdout`,
@@ -97,7 +98,8 @@ it and waits in `Atomics.wait` for it to answer in shared memory, 3 s at most):
   command that did not start (`output` null, `stdout` and `stderr` undefined), unless a shell script
   wrote something before one of its commands could not start: then it has that output. An unknown
   `killSignal` (99, 0, `'SIGFOO'`) throws `ERR_UNKNOWN_SIGNAL` before anything runs, and an alias is
-  reported by its name (`SIGIOT` as `SIGABRT`). `node -` runs its `input` as `node` does.
+  reported by its name (`SIGIOT` as `SIGABRT`); `null` is the default, and another type throws `ERR_INVALID_ARG_TYPE`.
+  `node -` runs its `input` as `node` does (`process.argv[1]` is `-`; without `-`, there is none).
 
 ## Consequences
 

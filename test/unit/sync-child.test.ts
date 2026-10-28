@@ -201,3 +201,25 @@ test('a tag registered twice by the same runtime is refused loudly: its spawn ma
   assert.equal(workers.length, 1);
   assert.ok(!dead(ok));
 });
+
+test("a duplicate tag's port fails what it asks for at once, and a tag with '/' is not taken", () => {
+  const { message, port, workers } = helper();
+  message({ runtime: RUNTIME }, 'root');
+  const first = port('a');
+  const second = port('a');
+  // The second registration's runtime (a child given that port) starts a child: refused, not left waiting.
+  second({ spawnerPort: { onmessage: null }, owner: 'g' });
+  const sync = syncChannel();
+  second({ spawn: 'g', init: {}, sync });
+  assert.ok(dead(sync));
+  void first;
+  // A tag with '/' would make keys ambiguous ('a' + '/' + 'b/c' and 'a/b' + '/' + 'c').
+  const slashed = port('x/y');
+  const fromSlashed = syncChannel();
+  slashed({ spawn: 'z', init: {}, sync: fromSlashed });
+  assert.ok(dead(fromSlashed), "the slashed tag's port refuses at once");
+  const refused = syncChannel();
+  message({ spawn: 'x/y', init: {}, sync: refused }, 'root');
+  assert.ok(dead(refused));
+  assert.equal(workers.length, 0);
+});

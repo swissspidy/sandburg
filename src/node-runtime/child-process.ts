@@ -170,8 +170,10 @@ export function createChildProcess(host: ChildProcessHost) {
       return { ...common, kind: 'shell', script: options.shell ? argv.join(' ') : argv.map(shellQuote).join(' ') };
     }
     const cmd = parseNodeArgs(argv.slice(1));
-    // `node` or `node -` runs what its stdin reads.
+    // `node` or `node -` runs what its stdin reads (process.argv[1]: `-`, or none).
+    let script: string | null | undefined;
     if ((!cmd.script || cmd.script === '-') && cmd.evalCode === null && stdin !== undefined) {
+      script = cmd.script;
       cmd.evalCode = stdin;
       cmd.script = null;
     }
@@ -191,6 +193,7 @@ export function createChildProcess(host: ChildProcessHost) {
       env,
       argv: cmd.args,
       main,
+      ...(script !== undefined ? { script } : {}),
       process: { cwd, execArgv, conditions, preload: preload.map((p) => (p.startsWith('.') ? `${cwd}/${p}` : p)), ipc: stdio.includes('ipc') },
     };
     return { ...common, kind: 'node', init };
@@ -602,8 +605,12 @@ export function createChildProcess(host: ChildProcessHost) {
 const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31 };
 
 /** A kill signal's name, as the child's result reports it (SIGTERM by default; SIGIOT is SIGABRT): Node's ERR_UNKNOWN_SIGNAL for one it does not know. */
-function signalName(signal: string | number | undefined): string {
-  if (signal === undefined) return 'SIGTERM';
+function signalName(signal: unknown): string {
+  if (signal == null) return 'SIGTERM';
+  if (typeof signal !== 'string' && typeof signal !== 'number') {
+    const received = typeof signal === 'object' ? `an instance of ${signal?.constructor?.name ?? 'Object'}` : `type ${typeof signal} (${String(signal)})`;
+    throw Object.assign(new TypeError(`The "options.killSignal" property must be one of type string or number. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
+  }
   const number = typeof signal === 'number' ? signal : SIGNALS[String(signal).toUpperCase()];
   const name = Object.keys(SIGNALS).find((n) => SIGNALS[n] === number);
   if (!name) throw Object.assign(new TypeError(`Unknown signal: ${signal}`), { code: 'ERR_UNKNOWN_SIGNAL' });

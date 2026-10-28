@@ -586,7 +586,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   hideWorkerGlobals();
   post({ type: 'ready' });
   // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
-  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv, preload: thread.process?.preload });
+  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv, preload: thread.process?.preload, script: thread.script });
   if (thread?.process) exitWhenIdle();
 }
 
@@ -655,7 +655,7 @@ function run(msg: Extract<ToWorker, { type: 'run' }>, since = performance.now())
 }
 
 function start(msg: Extract<ToWorker, { type: 'run' }>) {
-  proc.argv = ['/usr/local/bin/node', msg.main, ...(msg.argv ?? [])];
+  proc.argv = ['/usr/local/bin/node', ...(msg.script === undefined ? [msg.main] : msg.script === null ? [] : [msg.script]), ...(msg.argv ?? [])];
   // The main program ends like a child process does: when nothing is left to do (a CLI that exits).
   if (!thread) exitWhenIdle();
   try {
