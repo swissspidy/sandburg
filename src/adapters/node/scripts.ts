@@ -13,6 +13,8 @@
  * Pure: it reads only the project files.
  */
 import { FRAMEWORKS } from '../../framework.ts';
+import { workspaceDirs } from '../../workspaces.ts';
+import type { FileTree, PackageJson } from '../../types.ts';
 
 type Files = Record<string, string | Uint8Array | { base64: string }>;
 
@@ -63,12 +65,12 @@ const text = (files: Files, path: string) => {
   return typeof v === 'string' ? v : null;
 };
 
-function readPackage(files: Files, dir: string): { scripts: Record<string, string>; main?: string } | null {
+function readPackage(files: Files, dir: string): { scripts: Record<string, string>; main?: string; name?: string } | null {
   const raw = text(files, dir ? `${dir}/package.json` : 'package.json');
   if (!raw) return null;
   try {
-    const pkg = JSON.parse(raw) as { scripts?: Record<string, string>; main?: string };
-    return { scripts: pkg.scripts ?? {}, main: pkg.main };
+    const pkg = JSON.parse(raw) as { scripts?: Record<string, string>; main?: string; name?: string };
+    return { scripts: pkg.scripts ?? {}, main: pkg.main, name: pkg.name };
   } catch {
     return null;
   }
@@ -115,9 +117,9 @@ export function expandScript(files: Files, dir: string, command: string, depth =
     }
     const run = npmRun(cmd, args);
     if (run) {
-      const target = run.prefix ? joinDir(cwd, run.prefix) : cwd;
-      const script = readPackage(files, target)?.scripts[run.script];
-      if (script) leaves.push(...expandScript(files, target, script, depth + 1));
+      const target = run.workspace !== undefined ? workspaceDir(files, cwd, run.workspace) : run.prefix ? joinDir(cwd, run.prefix) : cwd;
+      const script = target === null ? undefined : readPackage(files, target)?.scripts[run.script];
+      if (script && target !== null) leaves.push(...expandScript(files, target, script, depth + 1));
       continue;
     }
     if (cmd === 'concurrently') {
@@ -155,22 +157,48 @@ function quote(word: string): string {
   return /\s/.test(word) ? JSON.stringify(word) : word;
 }
 
-/** `npm run x`, `npm start`, `npm --prefix server run dev`, `yarn x`, `pnpm x`, `pnpm --dir server x`. */
-function npmRun(cmd: string, args: string[]): { script: string; prefix?: string } | null {
+/**
+ * `npm run x`, `npm start`, `npm --prefix server run dev`, `yarn x`, `pnpm x`, `pnpm --dir server x`,
+ * and in a workspace package: `npm run x -w web`, `pnpm --filter web x`, `yarn workspace web x`.
+ */
+function npmRun(cmd: string, args: string[]): { script: string; prefix?: string; workspace?: string } | null {
   if (cmd !== 'npm' && cmd !== 'yarn' && cmd !== 'pnpm' && cmd !== 'bun') return null;
   let prefix: string | undefined;
+  let workspace: string | undefined;
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--prefix' || a === '-C' || a === '--dir' || a === '--cwd') prefix = args[++i];
     else if (a.startsWith('--prefix=') || a.startsWith('--dir=') || a.startsWith('--cwd=')) prefix = a.slice(a.indexOf('=') + 1);
+    else if (((cmd === 'npm' && (a === '-w' || a === '--workspace')) || (cmd === 'pnpm' && (a === '-F' || a === '--filter'))) && i + 1 < args.length) workspace = args[++i];
+    else if ((cmd === 'npm' && a.startsWith('--workspace=')) || (cmd === 'pnpm' && a.startsWith('--filter='))) workspace = a.slice(a.indexOf('=') + 1);
+    // Every workspace's script is not one script (shell.ts does not run it either).
+    else if (/^(--workspaces|-ws|-r|--recursive)$/.test(a)) return null;
     else if (a === '--') break;
+    else if (cmd === 'yarn' && a === 'workspace' && !rest.length && i + 1 < args.length) workspace = args[++i];
     else if (!a.startsWith('-')) rest.push(a);
   }
   if (!rest.length) return null;
-  if (rest[0] === 'run' || rest[0] === 'run-script') return rest[1] ? { script: rest[1], prefix } : null;
-  if (rest[0] === 'start' || rest[0] === 'dev' || cmd !== 'npm') return { script: rest[0], prefix };
+  if (rest[0] === 'run' || rest[0] === 'run-script') return rest[1] ? { script: rest[1], prefix, workspace } : null;
+  if (rest[0] === 'start' || rest[0] === 'dev' || cmd !== 'npm') return { script: rest[0], prefix, workspace };
   return null;
+}
+
+/** A workspace package's directory, by name or by path (from `cwd`), or null if the project has none such. */
+function workspaceDir(files: Files, cwd: string, value: string): string | null {
+  for (const dir of workspaceDirs(files as FileTree, rootPackage(files))) {
+    if (readPackage(files, dir)?.name === value) return dir;
+  }
+  const path = joinDir(cwd, value.replace(/^\{(.*)\}$/, '$1'));
+  return readPackage(files, path) ? path : null;
+}
+
+function rootPackage(files: Files): PackageJson | null {
+  try {
+    return JSON.parse(text(files, 'package.json') ?? 'null') as PackageJson | null;
+  } catch {
+    return null;
+  }
 }
 
 function joinDir(base: string, rel: string): string {

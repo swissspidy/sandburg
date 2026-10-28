@@ -451,6 +451,7 @@ interface Project {
     packageJson: PackageJson | null;
     framework: Framework;
     snapshotId: string;
+    app?: string;
 }
 
 interface RunResult {

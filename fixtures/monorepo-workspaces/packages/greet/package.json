@@ -1,0 +1,9 @@
+{
+  "name": "@acme/greet",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./index.js",
+  "dependencies": {
+    "ms": "^2.1.0"
+  }
+}

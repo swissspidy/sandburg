@@ -86,3 +86,18 @@ test('Vite proxy: rewrite strips the prefix', () => {
   assert.equal(matchProxy(rules, '/api/users')?.path, '/users');
   assert.equal(matchProxy(rules, '/api')?.path, '/');
 });
+
+test('a workspace package\'s script, by name or path: npm -w, pnpm --filter, yarn workspace', () => {
+  const files = {
+    'package.json': JSON.stringify({ workspaces: ['apps/*'], scripts: { dev: 'concurrently "npm run dev -w api" "pnpm --filter=./apps/web dev" "yarn workspace web start"' } }),
+    'apps/api/package.json': pkg({ dev: 'node server.js' }, { name: 'api' }),
+    'apps/web/package.json': pkg({ dev: 'vite', start: 'vite --port 4000' }, { name: 'web' }),
+  };
+  assert.deepEqual(
+    expandScript(files, '', JSON.parse(files['package.json']).scripts.dev).map((l) => [l.dir, l.command]),
+    [['apps/api', 'node server.js'], ['apps/web', 'vite'], ['apps/web', 'vite --port 4000']],
+  );
+  // Every workspace's script is not one script: left as a command (not the root's own script, again).
+  assert.deepEqual(expandScript(files, '', 'npm run dev --workspaces').map((l) => [l.dir, l.command]), [['', 'npm run dev --workspaces']]);
+  assert.deepEqual(expandScript(files, '', 'npm run dev -w missing'), []);
+});
