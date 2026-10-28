@@ -582,7 +582,7 @@ export class Session {
             return watch(host('install', hostData));
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
-          run.appPath = URL.canParse(url) ? new URL(url).pathname : null;
+          run.appStarted(url);
           const app = await run.phase('ready', timeouts.ready, async () => {
             // The host page's frame for the app, there before the app loads into it.
             const frame = await appFrame(page);

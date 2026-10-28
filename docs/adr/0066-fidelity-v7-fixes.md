@@ -51,10 +51,10 @@ apps right cold and 226 warm. All 93 seeded faults were caught. Its 8 false alar
   (`checkVisibility({ visibilityProperty: true })` of its element, or of the shadow root's host for
   text right in the root, as Lit renders): not under `display: none`, `hidden` or
   `visibility: hidden`, nor inside a style. An element with no shadow root, an empty one, or one
-  with only styles and slots does not count. Neither do a dev server's overlays and tools (element
-  names matching `/^vite-|overlay|devtools|toolbar|^nextjs-portal$/`: Vite's and
-  vite-plugin-checker's error overlays, Astro's toolbar): without that exclusion, Astro's error
-  overlay made a crashed page "rendered". At most 2,000 elements are looked at, across the document
+  with only styles and slots does not count. Neither do a dev server's overlays, by their exact
+  names (`vite-error-overlay`, `vite-plugin-checker-error-overlay`, `astro-dev-toolbar`,
+  `astro-dev-overlay`, `nextjs-portal`; an app's own `<vite-app>` or `<app-toolbar>` is looked in):
+  without that exclusion, Astro's error overlay made a crashed page "rendered". At most 2,000 elements are looked at, across the document
   and its shadow roots, with tree walkers that stop there (a blank page of 100,000 elements is not
   listed whole). Closed shadow roots cannot be read; such an app can pass `--ready`.
 - **Solid is hydrated when every server-rendered element (`[data-hk]`, the first 500 in the body) is
@@ -77,19 +77,23 @@ apps right cold and 226 warm. All 93 seeded faults were caught. Its 8 false alar
   app's page answering a 5xx other than 503 fails the phase after 8 s, the console-error grace
   period, unless the app renders first, and only if the page still answers one then (a cold
   start's 500 followed by a 200 does not). The page is the app frame's latest document, not the
-  host page's nor one of a frame the app embeds. That holds even when the frame shows the browser's
+  host page's nor one of a frame the app embeds. The browser's own console error for that page's
+  failed load ("Failed to load resource: … status of 500") is left to this rule, so its recheck
+  applies. That holds even when the frame shows the browser's
   error page instead of an error page that refuses to be framed. The ready deadlines are unchanged.
 - **Classification.** Rules still run in order, and the first match wins:
   - `app-error-before-ready` also counts a console error from the app that reports a thrown error
-    (its first line `TypeError: …`, Angular's `ERROR TypeError: …`; not a warning such as React's
-    `Warning: Each child in a list …`) and carries a stack through the project's files (Angular's
+    (its first line names one, `<Name>Error:` or `<Name>Exception:`: `TypeError: …`, Angular's
+    `ERROR TypeError: …`, `Uncaught (in promise) TypeError: …`, Nuxt's `[nuxt] error caught during
+    app initialization TypeError: …`, `DOMException: …`; not a line starting `Warning:`, nor
+    React's key warning without it) and carries a stack through the project's files (Angular's
     ErrorHandler, SolidStart). A bare `(/app/<path>)` stack frame now counts as the project's too.
     A frame is the project's only outside `node_modules` at any depth and outside generated code
     (`.next`, `.nuxt`, `.output`, `.svelte-kit`, `.angular`, `.astro`).
   - New rule `server-render-error` (`app-bug`), checked after `app-error-before-ready` for a ready
     phase that failed. It covers the dev server reporting the app's page could not be rendered on
     the server, in what it logged since the ready phase began: Nuxt's `[request error] [GET] <the
-    app's page>` followed by `✖ <Error> (500): <message>`, or an error line followed by a stack
+    app's page>` (the path the dev server's start gave, `/app` and `/app/` alike) followed by `✖ <Error> (500): <message>`, or an error line followed by a stack
     through the project's files (Astro). Nuxt's `SyntaxError` / `[VITE_ERROR]` there is a
     `compile-error`.
   - `signature:wasm-trap` (`runtime-unsupported`) also matches the failed phase's own message

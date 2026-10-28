@@ -293,6 +293,18 @@ test('a warning the app logged with a stack (React\'s missing key) is not an err
   assert.deepEqual([f?.class, f?.rule], ['unknown', 'unmatched']);
 });
 
+test('a console error that names a thrown error counts, however it is introduced; a warning with a component stack does not', () => {
+  const ready = failedAt('ready', 'app did not render after a console error: x');
+  const stack = '\n    at load (http://s-1.sandburg.localhost:39303/src/App.tsx:8:3)';
+  const rule = (message: string) => classify(input({ phases: ready, pageErrors: [{ source: 'app', message: message + stack }] }))?.rule;
+  for (const thrown of ['Uncaught (in promise) TypeError: x is not a function', '[nuxt] error caught during app initialization TypeError: x is undefined', "DOMException: Failed to execute 'querySelector'", 'ERROR TypeError: x', 'RangeError: Invalid time value']) {
+    assert.equal(rule(thrown), 'app-error-before-ready', thrown);
+  }
+  for (const warning of ['Warning: Each child in a list should have a unique "key" prop.', 'Each child in a list should have a unique "key" prop.', 'Warning: a TypeError: in a warning is still a warning']) {
+    assert.equal(rule(warning), 'unmatched', warning);
+  }
+});
+
 test("dependencies and generated code are not the project's: node_modules at any depth, .nuxt, .svelte-kit and the like", () => {
   const ready = failedAt('ready', 'app did not render after a console error: x');
   for (const frame of ['/app/packages/web/node_modules/some-lib/dist/index.js:10:5', '/app/.nuxt/dist/server/server.mjs:120:11', '/app/.svelte-kit/generated/root.js:3:1', '/app/.angular/cache/vite/deps/chunk.js:1:1']) {

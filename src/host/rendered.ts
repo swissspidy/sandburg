@@ -28,7 +28,7 @@ export function appRendered(doc: Document, selector: string | null): boolean {
       if (budget-- <= 0) return false;
       const shadow = el.shadowRoot;
       // A dev server's own overlays and tools (Vite's error overlay, vite-plugin-checker's, Astro's toolbar) are not the app.
-      if (!shadow || /^vite-|overlay|devtools|toolbar|^nextjs-portal$/.test(el.localName)) continue;
+      if (!shadow || /^(vite-error-overlay|vite-plugin-checker-error-overlay|astro-dev-toolbar|astro-dev-overlay|nextjs-portal)$/.test(el.localName)) continue;
       const texts = doc.createTreeWalker(shadow, NodeFilter.SHOW_TEXT);
       for (let text = texts.nextNode(); text; text = texts.nextNode()) {
         // Shown, as innerText would count it: not hidden (display: none, `hidden`, visibility: hidden),

@@ -231,10 +231,18 @@ const PROJECT_FRAME = /(?:https?:\/\/[^/\s]+\/|webpack-internal:\/\/\/(?:\([^)]*
  * what the app threw, "ERROR TypeError: …\n    at …", instead of throwing it; so does SolidStart for its
  * server render's error).
  */
-const stackOf = (e: PageError) => e.stack ?? (CONSOLE_THROWN.test(e.message) && /\n\s+at /.test(e.message) ? e.message : '');
+const stackOf = (e: PageError) => e.stack ?? (thrown(e.message) && /\n\s+at /.test(e.message) ? e.message : '');
 
-/** A console error that reports a thrown error ("TypeError: …", Angular's "ERROR TypeError: …"), not a warning that carries a stack (React's "Warning: Each child in a list …"). */
-const CONSOLE_THROWN = /^(?:ERROR )?(?:Uncaught )?\w*Error\b/;
+/**
+ * Whether a console error reports a thrown error: its first line names one ("TypeError: …", Angular's
+ * "ERROR TypeError: …", "Uncaught (in promise) TypeError: …", Nuxt's "[nuxt] error caught during app
+ * initialization TypeError: …", "DOMException: …"). Not a warning that carries a component stack
+ * (React's "Warning: Each child in a list …", or the same without "Warning:" in React 19).
+ */
+function thrown(text: string): boolean {
+  const first = text.split('\n', 1)[0];
+  return !/^Warning:/.test(first) && /\b\w*(?:Error|Exception)\b:/.test(first);
+}
 
 function hasProjectStack(errors: PageError[]): boolean {
   return errors.some((e) => e.source === 'app' && PROJECT_FRAME.test(stackOf(e)));
@@ -248,12 +256,15 @@ function hasProjectStack(errors: PageError[]): boolean {
  * - Astro and others: an error line followed by a stack through the project's own files
  *   ("at eval (/app/src/pages/index.astro:30:28)").
  */
+/** '/app/' and '/app' are one page; '/' stays '/'. */
+const withoutTrailingSlash = (path: string) => path.replace(/(.)\/+$/, '$1');
+
 function serverRenderError(lines: string[], appPath: string | null): { rule: 'server-render-error' | 'compile-error'; message: string } | null {
   const clean = lines.map((l) => l.replace(/^\[runtime:std(?:err|out)\]\s?/, '').replace(/^\[[\w@:./-]{1,40}\]\s(?!\[)/, ''));
   for (let i = 0; i < clean.length; i++) {
     // The request for the app's page, not one of its API's.
     const request = /\[request error\] \[GET\] (\S+)/.exec(clean[i]);
-    if (!request || (appPath !== null && request[1].split('?')[0] !== appPath)) continue;
+    if (!request || (appPath !== null && withoutTrailingSlash(request[1].split('?')[0]) !== withoutTrailingSlash(appPath))) continue;
     for (let j = i + 1; j < Math.min(clean.length, i + 4); j++) {
       const m = /✖ (\w*Error)(?: \[(\w+)\])? \((5\d\d)\): (.+)$/.exec(clean[j]);
       if (!m) continue;

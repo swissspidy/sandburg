@@ -136,7 +136,8 @@ test("a later error for the page that answered 503 is the app failing: Nuxt's 50
   run.documents.push({ url: 'http://app.test/', status: 500 });
   run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Vite Error)', url: 'http://app.test/' });
   await advance(t, 8_200);
-  assert.equal(phase.error?.message, 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Vite Error) (http://app.test/)');
+  // The browser's console error for the page's own load is the server-error rule's (which checks again at its deadline).
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });
 
 test("the app's page answering a server error fails the phase after 8 s, even when its frame shows the browser's error page (a 500 that refuses to be framed)", async (t) => {
@@ -165,14 +166,18 @@ test("only the app's frame's page counts: not a frame the app embeds, nor the ho
   run.documents.push({ url: 'http://app.test/', status: 200, frame: app }, { url: 'http://widget.test/', status: 502, frame: embedded }, { url: 'http://app.test/__sandburg/', status: 500, frame: host });
   await advance(t, 10_000);
   assert.equal(phase.settled, 'pending');
+  // What Chromium logs for the page's own failed load, beside its document.
+  const failedLoad = () => run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)', url: 'http://app.test/' });
   // A cold start's 500, then the page loads again and answers 200 before the grace period is up.
   run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  failedLoad();
   await advance(t, 4_000);
   run.documents.push({ url: 'http://app.test/', status: 200, frame: app });
   await advance(t, 6_000);
   assert.equal(phase.settled, 'pending');
   // One that stays: the app failing.
   run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  failedLoad();
   await advance(t, 8_200);
   assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });

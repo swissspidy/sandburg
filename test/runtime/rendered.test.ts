@@ -68,6 +68,12 @@ test("a dev server's overlays and tools are not the app: Vite's and vite-plugin-
   assert.equal(await rendered('<astro-dev-toolbar></astro-dev-toolbar>', element('astro-dev-toolbar', '<button>Menu</button>')), false);
 });
 
+test("an app's own elements are looked in, whatever their names: <vite-app>, <photo-overlay-app>, an <app-toolbar> inside <my-app>", async () => {
+  assert.equal(await rendered('<vite-app></vite-app>', element('vite-app', '<h1>Title</h1>')), true);
+  assert.equal(await rendered('<photo-overlay-app></photo-overlay-app>', element('photo-overlay-app', '<h1>Title</h1>')), true);
+  assert.equal(await rendered('<my-app></my-app>', element('my-app', '<app-toolbar><h1>Title</h1></app-toolbar>')), true);
+});
+
 test('the search is bounded: the first 2,000 elements are looked at, not one more', async () => {
   // <late-text> is element n + 1 of the body.
   const after = (n: number) => `${element('late-text', '<p>Late</p>')} for (let i = 0; i < ${n}; i++) document.body.prepend(document.createElement('span'));`;

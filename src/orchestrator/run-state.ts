@@ -70,8 +70,13 @@ export class RunState {
   setupError: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null = null;
   /** Where the console stood when the ready phase began (what the dev server logged while it served the app's page follows). */
   private readyConsoleFrom: number | null = null;
-  /** The path of the app's page, once its dev server has started (classification evidence). */
+  /** The path of the app's page, once its dev server has started (classification evidence; appStarted). */
   appPath: string | null = null;
+
+  /** The app's dev server started: `url` is where the app's page loads, a path ('/', as the node runtime answers) or a whole URL. */
+  appStarted(url: string): void {
+    this.appPath = URL.canParse(url, 'http://app.invalid') ? new URL(url, 'http://app.invalid').pathname : null;
+  }
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];
   /** The run's renderer, once it has a tab (RunResult.memory). */

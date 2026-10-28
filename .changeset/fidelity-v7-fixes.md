@@ -1,5 +1,5 @@
 ---
-"sandburg": patch
+"sandburg": minor
 ---
 
 Fixes for the false alarms and slow diagnoses of fidelity study v7 ([ADR 0066](https://github.com/swissspidy/sandburg/blob/main/docs/adr/0066-fidelity-v7-fixes.md)):

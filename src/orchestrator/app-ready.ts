@@ -109,7 +109,8 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
     /** For a deadline set on the page's answer: whether the page still answers a server error (it may have recovered). */
     let still: (() => boolean) | null = null;
     // The app's page: its frame's documents (not the host page's, nor those of frames the app embeds).
-    const pageDocument = () => (frame ? run.documents.filter((d) => d.frame === frame) : run.documents.filter((d) => !d.url.includes('/__sandburg/'))).at(-1);
+    const pageDocuments = () => (frame ? run.documents.filter((d) => d.frame === frame) : run.documents.filter((d) => !d.url.includes('/__sandburg/')));
+    const pageDocument = () => pageDocuments().at(-1);
     const serverError = () => {
       const page = pageDocument();
       return page && page.status >= 500 && page.status !== 503 ? page : null;
@@ -123,7 +124,10 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
         // later error for the same page is not: Nuxt answers 503 while it builds, then 500 for a page
         // it cannot render (and that error page refuses to be framed, so the frame shows the browser's).
         const loading503 = (c: ConsoleEntry) => !!c.url && /\b503\b/.test(c.text) && run.documents.some((d) => d.status === 503 && d.url === c.url);
-        const logged = run.console.slice(seenConsole).find((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`) && !loading503(c));
+        // The browser's report of one of the page's own server errors ("Failed to load resource: … status
+        // of 500") is the server-error rule's below, which checks again whether the page has recovered.
+        const pageLoad = (c: ConsoleEntry) => /Failed to load resource: the server responded with a status of 5\d\d\b/.test(c.text) && pageDocuments().some((d) => d.url === c.url && d.status >= 500);
+        const logged = run.console.slice(seenConsole).find((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`) && !loading503(c) && !pageLoad(c));
         // The app's page itself answered a server error (not a dev server's 503 loading page).
         const page = serverError();
         if (err) [deadline, reason] = [Date.now() + RENDER_GRACE_MS, `app threw before rendering: ${err.message}`];
