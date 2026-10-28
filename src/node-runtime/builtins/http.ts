@@ -480,10 +480,16 @@ export class Server extends EventEmitter {
     const h = typeof opts === 'function' ? opts : handler;
     if (h) this.on('request', h as never);
     const o = (typeof opts === 'object' && opts) || {};
+    // As Node's validateInteger(value, name, 0).
     const int = (name: string) => {
       const v = (o as Record<string, unknown>)[name];
       if (v === undefined) return undefined;
-      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) throw Object.assign(new RangeError(`The value of "options.${name}" is out of range. It must be >= 0 && <= 9007199254740991. Received ${String(v)}`), { code: typeof v === 'number' ? 'ERR_OUT_OF_RANGE' : 'ERR_INVALID_ARG_TYPE' });
+      if (typeof v !== 'number') {
+        const received = v === null ? 'null' : typeof v === 'object' ? `an instance of ${v.constructor?.name ?? 'Object'}` : `type ${typeof v} (${typeof v === 'string' ? `'${v}'` : String(v)})`;
+        throw Object.assign(new TypeError(`The "${name}" argument must be of type number. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      }
+      if (!Number.isInteger(v)) throw Object.assign(new RangeError(`The value of "${name}" is out of range. It must be an integer. Received ${v}`), { code: 'ERR_OUT_OF_RANGE' });
+      if (v < 0 || v > Number.MAX_SAFE_INTEGER) throw Object.assign(new RangeError(`The value of "${name}" is out of range. It must be >= 0 && <= ${Number.MAX_SAFE_INTEGER}. Received ${v}`), { code: 'ERR_OUT_OF_RANGE' });
       return v;
     };
     this.requestTimeout = int('requestTimeout') ?? 300000;
