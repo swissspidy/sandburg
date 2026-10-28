@@ -3,6 +3,9 @@
  * (SIGBREAK). Each ends the process with 128 + its number, as a shell reports a process the signal
  * ended (SIGBREAK is 21 on Windows: 149).
  */
+/** What `work` throws to go no further once a signal came (the process exits meanwhile). */
+export class Stopped extends Error {}
+
 export const STOP_SIGNALS = { SIGINT: 130, SIGTERM: 143, SIGBREAK: 149 } as const;
 export type StopSignal = keyof typeof STOP_SIGNALS;
 
@@ -39,6 +42,7 @@ export async function untilStopped<T>(signals: readonly StopSignal[], stop: (sig
   }
   try {
     const result = await work(() => state.exiting !== null).catch((err: unknown) => {
+      // A Stopped from `work` (or what failed as the signal cut it short): the exit is the outcome.
       if (state.exiting) return state.exiting;
       throw err;
     });

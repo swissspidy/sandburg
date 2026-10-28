@@ -362,9 +362,11 @@ export function createChildProcess(host: ChildProcessHost) {
     }
 
     kill(signal: string | number = 'SIGTERM') {
-      const name = signalName(signal, 'signal');
+      // Signal 0 (as in Node) only tells whether the child can be signalled: it goes on running.
+      const name = signal === 0 ? null : signalName(signal, 'signal');
       if (this.done || (!this.worker && !this.shell)) return false;
       this.killed = true;
+      if (name === null) return true;
       this.shell?.kill();
       this.finish(null, name);
       return true;

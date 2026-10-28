@@ -78,7 +78,7 @@ test('process.exitCode set in the listener is the exit code; a throw in a requir
   ]);
 });
 
-test("an ES module's throw and its top-level await's rejection are uncaught with origin unhandledRejection", async () => {
+test("an ES module's throw and its top-level await's rejection are uncaught with origin unhandledRejection; its process.exit() is at once", async () => {
   const outs = [];
   for (const files of [
     {
@@ -105,6 +105,14 @@ test("an ES module's throw and its top-level await's rejection are uncaught with
         throw new Error('tla');`,
     },
     {
+      // process.exit() at an ES module's top level ends the process at once: what it queued does not run.
+      'main.mjs': `
+        process.on('exit', (c) => console.log('exit', c));
+        Promise.resolve().then(() => console.log('micro'));
+        process.nextTick(() => console.log('tick'));
+        process.exit(2);`,
+    },
+    {
       'main.mjs': `import './dep.cjs'; console.log('not reached');`,
       'dep.cjs': `process.on('uncaughtException', (e, origin) => console.log('caught', e.message, origin)); throw new Error('cjs dep');`,
     },
@@ -113,6 +121,7 @@ test("an ES module's throw and its top-level await's rejection are uncaught with
     { stdout: 'caught esm top unhandledRejection\ntimer fired\nexit 0\n', exit: 0 },
     { stdout: 'caught esm top unhandledRejection\nexit 3\n', exit: 3 },
     { stdout: 'caught tla unhandledRejection\ntimer fired\nexit 0\n', exit: 0 },
+    { stdout: 'exit 2\n', exit: 2 },
     { stdout: 'caught cjs dep unhandledRejection\n', exit: 0 },
   ]);
 });
@@ -331,9 +340,11 @@ test("signals: SIGBREAK (Windows' Ctrl-Break) is unknown on Linux; one a process
   assert.equal(out.exit, 0);
   const outs = [];
   for (const program of [
+    // Signal 0 only probes the child (true while it runs), as in Node.
     `const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)']);
      try { c.kill('SIGBREAK'); } catch (e) { console.log(e.code, e.message); }
-     c.on('exit', (code, signal) => console.log('child exit', code, signal));
+     console.log('probe', c.kill(0), c.killed, c.signalCode);
+     c.on('exit', (code, signal) => console.log('child exit', code, signal, c.kill(0)));
      c.kill(15);`,
     // Node ends by the signal: a shell sees 143 (128 + 15), and 'exit' is not emitted.
     `process.on('exit', () => console.log('not emitted')); process.kill(process.pid, 'SIGTERM'); setTimeout(() => console.log('not reached'), 50);`,
@@ -343,7 +354,7 @@ test("signals: SIGBREAK (Windows' Ctrl-Break) is unknown on Linux; one a process
     outs.push([end.stdout, end.exit, end.fatal]);
   }
   assert.deepEqual(outs, [
-    ['ERR_UNKNOWN_SIGNAL Unknown signal: SIGBREAK\nchild exit null SIGTERM\n', 0, null],
+    ['ERR_UNKNOWN_SIGNAL Unknown signal: SIGBREAK\nprobe true true null\nchild exit null SIGTERM false\n', 0, null],
     ['', 143, null],
     ['still here\n', 0, null],
   ]);

@@ -102,7 +102,7 @@ const HANGING_COMPARE = `
   import { compareCommand } from ${JSON.stringify(new URL('../../src/compare/cli.ts', import.meta.url).href)};
   import { dockerReference } from ${JSON.stringify(new URL('../../src/reference/docker.ts', import.meta.url).href)};
   import { loadProject } from ${JSON.stringify(new URL('../../src/project.ts', import.meta.url).href)};
-  const { app, report, work, hang, raise } = JSON.parse(process.env.COMPARE_TEST);
+  const { app, report, work, hang, raise, slowOpen } = JSON.parse(process.env.COMPARE_TEST);
   if (raise) process.stdin.on('data', (d) => { const signal = String(d).trim(); process.emit(signal, signal); });
   /** The run's container (docker run -d), found by its label (ps -aq) until it is removed (rm -f). */
   let container = false;
@@ -126,13 +126,20 @@ const HANGING_COMPARE = `
   };
   const session = {
     browserSandbox: true,
-    async open() {},
+    // With slowOpen, as a browser's launch: the test signals while it is under way.
+    async open() {
+      if (!slowOpen) return;
+      console.error('opening');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      console.error('opened');
+    },
     // As a browser's, it takes a while: what the batch does meanwhile (a report it would write) shows.
     async close() {
       await new Promise((resolve) => setTimeout(resolve, 500));
       console.error('session closed');
     },
     async run(path, options) {
+      console.error('session run');
       const project = await loadProject(path);
       // A mount or install the signal's disposeAll cut short ends its run as an error result, as Session.run's does.
       const runtime = options.nodeRuntime?.();
@@ -195,6 +202,35 @@ for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, '
   });
 }
 
+test('compare cut short while its browser launches closes the session once it has opened, writes no report and exits 130', { timeout: 60_000 }, async (t) => {
+  const dir = tempDir('sandburg-compare-signal-');
+  const app = join(dir, 'app');
+  await mkdir(app);
+  await writeFile(join(app, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+  const report = join(dir, 'reports', 'fidelity');
+  const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_COMPARE], {
+    cwd: dir,
+    env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, work: join(dir, 'work'), hang: 'image', raise: windows, slowOpen: true }) },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  t.after(() => child.kill('SIGKILL'));
+  let stderr = '';
+  child.stderr.on('data', (d: Buffer) => {
+    const was = stderr;
+    stderr += d.toString();
+    if (!was.includes('opening\n') && stderr.includes('opening\n')) {
+      if (windows) child.stdin.write('SIGINT\n');
+      else child.kill('SIGINT');
+    }
+  });
+  const [exit] = (await once(child, 'exit')) as [number | null];
+  assert.equal(exit, 130, stderr);
+  assert.match(stderr, /^opening\nSIGINT: removing the reference's containers\n/);
+  // The session closed after its open finished, once, and compare started no run.
+  assert.equal(stderr, "opening\nSIGINT: removing the reference's containers\ndisposeAll\ndisposed\nopened\nsession closed\n");
+  assert.equal(existsSync(join(dir, 'reports')), false);
+});
+
 /**
  * A command's session (withSession) in a process of its own, without a browser: its session opens at
  * once, its run hangs (says "hanging"), and it takes a while to close. The test raises the signal
@@ -206,7 +242,13 @@ const HANGING_RUN = `
   let closes = 0;
   const session = {
     browserSandbox: true,
-    async open() {},
+    // With SLOW_OPEN, as a browser's launch: the test signals while it is under way.
+    async open() {
+      if (!process.env.SLOW_OPEN) return;
+      console.error('opening');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      console.error('opened');
+    },
     async close() {
       closes++;
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -233,4 +275,18 @@ test("Ctrl-Break (SIGBREAK) during a run stops it and closes the session's brows
   assert.equal(exit, 149, stderr);
   // The run it cut short failed: not the outcome, nor a second close.
   assert.equal(stderr, 'hanging\nSIGBREAK: closing the browser\nsession closed 1\n');
+});
+
+test('Ctrl-Break while the browser launches closes it once it has opened, then exits 149; the run does not start', { timeout: 60_000 }, async (t) => {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_RUN], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, SLOW_OPEN: '1' } });
+  t.after(() => child.kill('SIGKILL'));
+  let stderr = '';
+  child.stderr.on('data', (d: Buffer) => {
+    const was = stderr;
+    stderr += d.toString();
+    if (!was.includes('opening\n') && stderr.includes('opening\n')) child.stdin.write('SIGBREAK\n');
+  });
+  const [exit] = (await once(child, 'exit')) as [number | null];
+  assert.equal(exit, 149, stderr);
+  assert.equal(stderr, 'opening\nSIGBREAK: closing the browser\nopened\nsession closed 1\n');
 });

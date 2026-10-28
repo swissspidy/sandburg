@@ -6,7 +6,7 @@ import { NO_SANDBOX } from '../orchestrator/launch.ts';
 import { dockerReference, type DockerReferenceFactory } from '../reference/docker.ts';
 import { compare, type CompareReport } from './compare.ts';
 import { renderReport } from './report.ts';
-import { STOP_SIGNALS, untilStopped, type StopSignal } from '../stop-signals.ts';
+import { STOP_SIGNALS, Stopped, untilStopped, type StopSignal } from '../stop-signals.ts';
 
 /**
  * `sandburg compare`: runs `items` in the browser and in the Docker reference and writes the report
@@ -21,18 +21,27 @@ export async function compareCommand(
   testing: { reference?: DockerReferenceFactory; session?: (options: SessionOptions) => Session } = {},
 ): Promise<number> {
   const session = testing.session?.(sessionOptions) ?? new Session(sessionOptions);
-  await session.open();
-  if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
   const reference = testing.reference ?? dockerReference();
+  /** The session's open, once started; whether it opened (then it is closed at the end). */
+  let opening: Promise<void> | null = null;
+  let opened = false;
   // Ctrl-C (Ctrl-Break on Windows, or a kill) removes the reference's containers and project copies
   // and closes the browser, then exits 130 (149, 143: see STOP_SIGNALS). Runs it cut short are not
-  // reported.
+  // reported. One while the browser launches closes it once it has.
   const stop = (signal: StopSignal) => {
     console.error(`${signal}: removing the reference's containers`);
-    return reference.disposeAll().then(() => session.close());
+    return reference
+      .disposeAll()
+      .then(() => opening?.catch(() => {}))
+      .then(() => session.close());
   };
   try {
     return await untilStopped(Object.keys(STOP_SIGNALS) as StopSignal[], stop, async (stopping) => {
+      opening = session.open();
+      await opening;
+      opened = true;
+      if (stopping()) throw new Stopped();
+      if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
       const report = await compare(session, items, {
         ...runOptions,
         reference: { name: 'docker', factory: reference },
@@ -56,7 +65,8 @@ export async function compareCommand(
       return code;
     });
   } finally {
-    await session.close();
+    // A session that did not open has nothing to close (its open's error is the outcome).
+    if (opened) await session.close();
   }
 }
 

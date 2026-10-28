@@ -70,4 +70,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0064](0064-monorepos-and-local-packages.md) | Monorepos and local packages; pnpm and yarn lockfiles | Accepted |
 | [0065](0065-ci-on-macos-and-windows.md) | CI on macOS and Windows, and what it found: npm on Windows, lockfiles through a symlink, macOS's free memory | Accepted |
 | [0066](0066-fidelity-v7-fixes.md) | What fidelity study v7 found: shadow roots, Solid's hydration, fail-fast and classification | Accepted |
-| [0067](0067-uncaught-exceptions-and-signals.md) | Uncaught exceptions, unhandled rejections and signals as in Node; Ctrl-Break stops a command | Accepted |
+| [0068](0068-uncaught-exceptions-and-signals.md) | Uncaught exceptions, unhandled rejections and signals as in Node; Ctrl-Break stops a command | Accepted |

@@ -1,4 +1,4 @@
-# ADR 0067: Uncaught exceptions, unhandled rejections and signals as in Node; Ctrl-Break stops a command
+# ADR 0068: Uncaught exceptions, unhandled rejections and signals as in Node; Ctrl-Break stops a command
 
 - Status: Accepted
 - Date: 2026-10-28
@@ -63,7 +63,8 @@ A worker thread (not a process) keeps ending with its `'error'`, as before.
 
 The entry's origin follows its module system. A CommonJS entry's throw is `uncaughtException`, taken
 at once (before ticks and microtasks, as in Node). An ES module entry's throw, and its top-level
-await's rejection, are `unhandledRejection` and come a microtask later.
+await's rejection, are `unhandledRejection` and come a microtask later. `process.exit()` at an ES
+module's top level is not deferred: the process ends at once, and what it queued does not run.
 
 **`--unhandled-rejections`** is read from the process's options or `NODE_OPTIONS`. `throw` is the
 default, and `strict`, `warn`, `none` and `warn-with-error-code` behave as in Node, including the two
@@ -85,7 +86,9 @@ it and before immediates. With no listener, a signal that would end a process en
 `'exit'`, with exit code 128 + its number. That is what a shell reports for it: the runtime has no
 exit by signal, so its parent sees `code 143` where Node's sees `signal 'SIGTERM'`. Ignored and
 stopping signals (SIGCHLD, SIGWINCH, SIGSTOP, …) change nothing. A pid that is not the process's own
-is not looked up (true, as before). `child.kill()` validates its signal the same way.
+is not looked up (true, as before). `child.kill()` validates its signal the same way, except that
+signal 0, as in Node, only probes the child: true (and `killed`) while it runs, false once it has
+ended, and the child goes on.
 
 **Ctrl-Break stops a command** (`src/stop-signals.ts`). `untilStopped` holds the listeners a
 command's signals already have, stops the command's work on the first signal, then exits with
@@ -95,6 +98,8 @@ command's signals already have, stops the command's work on the first signal, th
   reference's containers, closes the session, and writes no report.
 - `run`, `batch` and `open` use it for SIGBREAK only: it closes the session (and its browser).
   SIGINT stays with Playwright's listener, so Ctrl-C behaves as before.
+- The listeners go in before the session opens. A signal that comes while the browser launches
+  waits for the launch to finish, then closes the session. The command starts no run after it.
 - A second signal goes to the listeners held meanwhile. For SIGBREAK there are none, so its default
   action ends the process at once.
 
@@ -107,7 +112,10 @@ on Windows.
 - A program Node ends with an unhandled rejection now ends in the runtime too. One that ran on with
   only a stderr line before now fails its run. Node does the same, so it is a fidelity fix. A runtime
   module's own stray rejection would show up the same way, as an APP failure. None did in the
-  runtime and e2e suites.
+  runtime and e2e suites, or in the fidelity corpus. Apps 100–231 (132 apps, all 14 stacks) ran
+  cold on this change and on main: 132/132 right here, 131/132 on main. The difference is an
+  intermittent WebAssembly trap in Angular's dependency optimizer on main (178), as v7 saw for
+  134. No run on either side logged an unhandled rejection.
 - A throw from a timer or I/O that nothing catches is reported as the app's error (APP, with its
   stack), not as "runtime worker error" (INTERNAL).
 - Known limits:
