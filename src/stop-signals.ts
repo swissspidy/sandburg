@@ -11,10 +11,11 @@ export type StopSignal = keyof typeof STOP_SIGNALS;
 
 /**
  * Runs `work`; one of `signals` meanwhile calls `stop` (stops the runs, closes the browser), then
- * exits with the signal's code. The listeners those signals had (Playwright's: close the browser,
- * exit at once) wait meanwhile: a second signal gets them, or the signal's default action. Once a
- * signal came, `work`'s error is not the outcome (the runs it cut short fail), the exit is; `work`
- * may ask `stopping()` to leave out what it would do after.
+ * exits with the signal's code. The listeners those signals had when it started wait meanwhile: a
+ * second signal gets them, or the signal's default action. Listeners added since (Playwright's, at
+ * a browser's launch: close the browser, then exit) run beside it. Once a signal came, `work`'s
+ * error is not the outcome (the runs it cut short fail), the exit is; `work` may ask `stopping()`
+ * to leave out what it would do after.
  */
 export async function untilStopped<T>(signals: readonly StopSignal[], stop: (signal: StopSignal) => Promise<unknown>, work: (stopping: () => boolean) => Promise<T>): Promise<T> {
   const held = signals.map((signal) => [signal, process.listeners(signal)] as const);

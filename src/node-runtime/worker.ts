@@ -21,7 +21,7 @@ import { installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
-import { ExitError, NODE_VERSION, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
+import { ExitError, NODE_VERSION, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
 import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { createUncaught } from './uncaught.ts';
@@ -567,6 +567,14 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   if (!pageCompiler && !pack) Object.defineProperty(g, NATIVE_TRANSFORM, { value: createNativeTransform({ base, hostVersion: __SANDBURG_ESBUILD__, fetch: globalThis.fetch.bind(globalThis), post: postViaChannel, pending: pendingWork }) });
 
   // Uncaught errors and rejections go through process events, as in Node (uncaught.ts).
+  // Node's options that set the process up (--unhandled-rejections, warnings), and NODE_NO_WARNINGS.
+  const options = nodeOptions((proc.execArgv as string[] | undefined) ?? [], proc.env as Record<string, string>);
+  const flag = (name: string) => options.flags.includes(name);
+  if (flag('--no-warnings') || (proc.env as Record<string, string>).NODE_NO_WARNINGS === '1') proc.off('warning', proc[WARNING_PRINTER] as () => void);
+  if (flag('--no-deprecation')) proc.noDeprecation = true;
+  if (flag('--throw-deprecation')) proc.throwDeprecation = true;
+  if (flag('--trace-deprecation')) proc.traceDeprecation = true;
+  if (flag('--trace-warnings')) proc.traceProcessWarnings = true;
   uncaught = createUncaught({
     proc,
     write,
@@ -574,7 +582,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     fatal: postFatal,
     over: () => hasExited,
     workerThread: !!thread && !thread.process,
-    mode: nodeOptions((proc.execArgv as string[] | undefined) ?? [], proc.env as Record<string, string>).unhandledRejections,
+    mode: options.unhandledRejections,
   });
   self.addEventListener('error', (e) => {
     e.preventDefault();

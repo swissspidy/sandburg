@@ -23,8 +23,22 @@ export class ExitError extends Error {
 /** Linux's signals (Node's os.constants.signals on Linux, the platform the runtime reports: no SIGBREAK, Windows' Ctrl-Break). */
 export const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31 };
 
-/** Signals whose default action leaves a process running (ignored, or it stops: nothing ends it here either). */
-const NOT_ENDING = new Set(['SIGCHLD', 'SIGCONT', 'SIGURG', 'SIGWINCH', 'SIGSTOP', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU']);
+/**
+ * Signals that leave a Node process running: ignored (Node ignores SIGPIPE), stopping (nothing ends
+ * it here either), or SIGUSR1 (Node starts its inspector; the runtime has none).
+ */
+const NOT_ENDING = new Set(['SIGCHLD', 'SIGCONT', 'SIGURG', 'SIGWINCH', 'SIGSTOP', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU', 'SIGPIPE', 'SIGUSR1']);
+
+/** The process's own 'warning' listener, which prints warnings (removed for --no-warnings: see worker.ts). */
+export const WARNING_PRINTER = Symbol('sandburg.warningPrinter');
+
+/** How Node's ERR_INVALID_ARG_TYPE describes the value it received. */
+function received(v: unknown): string {
+  if (v == null) return String(v);
+  if (typeof v === 'object') return `an instance of ${v.constructor?.name ?? 'Object'}`;
+  if (typeof v === 'function') return `function ${v.name}`;
+  return `type ${typeof v} (${typeof v === 'string' ? `'${v}'` : String(v)})`;
+}
 
 /** Where a process keeps its process.setUncaughtExceptionCaptureCallback() function (see uncaught.ts). */
 export const CAPTURE_CALLBACK = Symbol('sandburg.uncaughtExceptionCapture');
@@ -312,12 +326,24 @@ export function createProcess(opts: ProcessOptions) {
       : {}),
     // As in Node: a 'warning' event on the next tick, which the process's own listener prints (a
     // program that removes the listeners prints none).
-    emitWarning(warning: string | Error, type?: string | { type?: string; code?: string; detail?: string }, code?: string) {
+    // As Node's: a DeprecationWarning is dropped with process.noDeprecation, thrown (on the next
+    // tick) with process.throwDeprecation.
+    emitWarning(warning: unknown, type?: string | { type?: string; code?: string; detail?: string }, code?: string) {
       const options = typeof type === 'object' && type !== null ? type : { type, code };
-      const w = typeof warning === 'string' ? Object.assign(new Error(warning), { name: options.type ?? 'Warning' }) : warning;
+      if (typeof warning !== 'string' && !(warning instanceof Error)) {
+        throw Object.assign(new TypeError(`The "warning" argument must be of type string or an instance of Error. Received ${received(warning)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      }
+      const w = typeof warning === 'string' ? Object.assign(new Error(warning), { name: options.type || 'Warning' }) : warning;
       if (options.code !== undefined && typeof warning === 'string') Object.assign(w, { code: options.code });
-      if (options.detail !== undefined && typeof warning === 'string') Object.assign(w, { detail: options.detail });
-      (proc.nextTick as (fn: () => void) => void)(() => proc.emit('warning', w));
+      if (typeof options.detail === 'string' && typeof warning === 'string') Object.assign(w, { detail: options.detail });
+      const nextTick = proc.nextTick as (fn: () => void) => void;
+      if (w.name === 'DeprecationWarning') {
+        if (proc.noDeprecation) return;
+        if (proc.throwDeprecation) return nextTick(() => {
+          throw w;
+        });
+      }
+      nextTick(() => proc.emit('warning', w));
     },
     exit(...args: [code?: number | string | null]) {
       // As in Node: 'exit' listeners see the code as process.exitCode (and may change it); one that
@@ -357,13 +383,13 @@ export function createProcess(opts: ProcessOptions) {
       const name = Object.keys(SIGNALS).find((n) => SIGNALS[n] === number);
       if (number !== 0 && !name) throw Object.assign(new Error('kill EINVAL'), { errno: -22, code: 'EINVAL', syscall: 'kill' });
       if (Number(pid) !== proc.pid || !name) return true;
+      // Without a listener, the end comes at once: nothing after process.kill() runs.
+      if (!proc.listenerCount(name)) {
+        if (NOT_ENDING.has(name)) return true;
+        throw new ExitError(128 + number);
+      }
       // After the nextTick callbacks queued with it (microtasks here, see nextTick).
-      queueMicrotask(() =>
-        queueMicrotask(() => {
-          if (proc.listenerCount(name)) proc.emit(name, name, number);
-          else if (!NOT_ENDING.has(name)) throw new ExitError(128 + number);
-        }),
-      );
+      queueMicrotask(() => queueMicrotask(() => proc.emit(name, name, number)));
       return true;
     },
     binding(name: string) {
@@ -412,16 +438,23 @@ export function createProcess(opts: ProcessOptions) {
     configurable: true,
   });
   Object.defineProperty(proc, CAPTURE_CALLBACK, { value: null, writable: true, enumerable: false });
-  // Node's own 'warning' listener: what it prints (a program may remove it).
+  // Node's own 'warning' listener: what it prints (a program may remove it). With --trace-warnings
+  // (process.traceProcessWarnings), or --trace-deprecation for a deprecation, the stack.
   let traceHint = false;
-  proc.on('warning', (w: Error & { code?: string; detail?: string }) => {
-    let text = `(node:${proc.pid as number}) ${w.code ? `[${w.code}] ` : ''}${typeof w.toString === 'function' ? w.toString() : `${w.name}: ${w.message}`}`;
+  const printer = (w: Error & { code?: string; detail?: string }) => {
+    if (!(w instanceof Error)) return;
+    const deprecation = w.name === 'DeprecationWarning';
+    if (deprecation && proc.noDeprecation) return;
+    const trace = !!proc.traceProcessWarnings || (deprecation && !!proc.traceDeprecation);
+    let text = `(node:${proc.pid as number}) ${w.code ? `[${w.code}] ` : ''}${trace && w.stack ? w.stack : typeof w.toString === 'function' ? w.toString() : `${w.name}: ${w.message}`}`;
     if (typeof w.detail === 'string') text += `\n${w.detail}`;
-    if (!traceHint) {
+    if (!trace && !traceHint) {
       traceHint = true;
-      text += '\n(Use `node --trace-warnings ...` to show where the warning was created)';
+      text += `\n(Use \`node ${deprecation ? '--trace-deprecation' : '--trace-warnings'} ...\` to show where the warning was created)`;
     }
     opts.write('stderr', `${text}\n`);
-  });
+  };
+  proc.on('warning', printer);
+  Object.defineProperty(proc, WARNING_PRINTER, { value: printer });
   return proc;
 }

@@ -40,7 +40,11 @@ function describe(v: unknown): string {
   return `#<${(v as { constructor?: { name?: string } }).constructor?.name || 'Object'}>`;
 }
 
-const errorLike = (v: unknown) => typeof v === 'object' && v !== null && Object.prototype.hasOwnProperty.call(v, 'stack');
+/**
+ * Node's test (an own `stack`), and a DOMException: Node's have their own stack, the browser's
+ * inherit it, and an AbortError rejection is passed on as is in Node.
+ */
+const errorLike = (v: unknown) => typeof v === 'object' && v !== null && (Object.prototype.hasOwnProperty.call(v, 'stack') || v instanceof DOMException);
 
 const REJECTION_WARNING =
   'Unhandled promise rejection. This error originated either by throwing inside of an async function without a catch block, or by rejecting a promise which was not handled with .catch(). To terminate the node process on unhandled promise rejection, use the CLI flag `--unhandled-rejections=strict` (see https://nodejs.org/api/cli.html#cli_unhandled_rejections_mode).';

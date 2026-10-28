@@ -13,6 +13,7 @@
  * runtime that this thread serves through shared memory until it exits (sync-child.ts).
  */
 import { EventEmitter } from 'events';
+import util from 'util';
 import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
 import { SIGNALS, timers } from './builtins/process.ts';
@@ -118,6 +119,8 @@ export function nodeOptions(execArgv: string[], env: Record<string, string>) {
   const conditions: string[] = [];
   const preload: string[] = [];
   let unhandledRejections: UnhandledRejections = 'throw';
+  /** The options without a value it was given (--no-warnings, --trace-deprecation, …). */
+  const flags: string[] = [];
   for (let i = 0; i < all.length; i++) {
     const a = all[i];
     const eq = a.indexOf('=');
@@ -129,8 +132,9 @@ export function nodeOptions(execArgv: string[], env: Record<string, string>) {
       const mode = value() as UnhandledRejections;
       if (UNHANDLED_REJECTIONS.includes(mode)) unhandledRejections = mode;
     } else if (VALUE_FLAGS.has(flag) && inline === undefined) i++;
+    else if (flag.startsWith('--') && inline === undefined) flags.push(flag);
   }
-  return { conditions, preload, unhandledRejections };
+  return { conditions, preload, unhandledRejections, flags };
 }
 
 export interface ChildProcessHost extends ThreadHost {
@@ -361,8 +365,10 @@ export function createChildProcess(host: ChildProcessHost) {
       timers.setTimeout(() => this.emit('close', code, signal), 0);
     }
 
-    kill(signal: string | number = 'SIGTERM') {
+    kill(signal: unknown = 'SIGTERM') {
       // Signal 0 (as in Node) only tells whether the child can be signalled: it goes on running.
+      // What is neither a signal's name nor its number is ERR_UNKNOWN_SIGNAL, whatever its type.
+      if (typeof signal !== 'string' && typeof signal !== 'number') throw Object.assign(new TypeError(`Unknown signal: ${util.inspect(signal)}`), { code: 'ERR_UNKNOWN_SIGNAL' });
       const name = signal === 0 ? null : signalName(signal, 'signal');
       if (this.done || (!this.worker && !this.shell)) return false;
       this.killed = true;

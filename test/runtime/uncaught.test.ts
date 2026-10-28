@@ -245,6 +245,10 @@ test('an unhandled rejection is uncaught (--unhandled-rejections=throw, the defa
     // A reason that is not an error is wrapped in one.
     `process.on('exit', (c) => console.log('exit', c)); process.on('uncaughtException', (e, origin) => console.log(e.name, e.code, origin, e.message.slice(-24))); Promise.reject(42); setTimeout(() => console.log('timer'), 20);`,
     `process.on('exit', (c) => console.log('exit', c)); Promise.reject(42);`,
+    // An AbortError is passed on as it is; an object whose stack it only inherits is wrapped.
+    `process.on('uncaughtException', (e, o) => console.log(o, e === r, e.name));
+     let r = new DOMException('a', 'AbortError'); Promise.reject(r);
+     setTimeout(() => { r = Object.create(new Error('x')); Promise.reject(r); }, 10);`,
     // A throw in the listener is uncaught.
     `process.on('exit', (c) => console.log('exit', c)); process.on('unhandledRejection', (r) => { console.log('unhandled', r.message); throw new Error('again'); }); Promise.reject(new Error('r'));`,
     // Handled before the end of the task: not unhandled. Handled in a later one: too late.
@@ -257,6 +261,7 @@ test('an unhandled rejection is uncaught (--unhandled-rejections=throw, the defa
     { stdout: 'unhandled rej true\ntimer\nexit 0\n', exit: 0 },
     { stdout: 'UnhandledPromiseRejection ERR_UNHANDLED_REJECTION unhandledRejection ed with the reason "42".\ntimer\nexit 0\n', exit: 0 },
     { stdout: 'exit 1\n', fatal: 'UnhandledPromiseRejection: This error originated either by throwing inside of an async function without a catch block, or by rejecting a promise which was not handled with .catch(). The promise rejected with the reason "42".' },
+    { stdout: 'unhandledRejection true AbortError\nunhandledRejection false UnhandledPromiseRejection\n', exit: 0 },
     { stdout: 'unhandled r\nexit 1\n', fatal: 'Error: again' },
     { stdout: 'tick catch\nexit 0\n', exit: 0 },
     { stdout: 'exit 1\n', fatal: 'Error: r' },
@@ -301,21 +306,51 @@ test('--unhandled-rejections: strict, warn, none and warn-with-error-code, as an
   });
 });
 
-test("process.emitWarning emits 'warning' on the next tick; the process's own listener prints it", async () => {
-  const out = await h.run(
-    {
-      'main.js': `
-        console.log(process.listenerCount('warning'));
-        process.on('warning', (w) => console.log('warning', w.name, w.message, w.code));
-        process.emitWarning('w1', 'CustomWarning', 'CODE1');
-        process.emitWarning('w2', { type: 'T2', code: 'C2', detail: 'd' });
-        console.log('sync');`,
-    },
-    '/app/main.js',
-  );
-  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
-  assert.equal(out.stdout, '1\nsync\nwarning CustomWarning w1 CODE1\nwarning T2 w2 C2\n');
-  assert.equal(out.stderr, '(node:42) [CODE1] CustomWarning: w1\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:42) [C2] T2: w2\nd\n');
+/** Warnings under each of Node's warning options (stdout: the events; stderr: what the process printed). */
+const WARNINGS = `
+  process.on('warning', (w) => console.log('event', w.name, w.message));
+  if (process.env.PROP) process[process.env.PROP] = true;
+  process.emitWarning('w1');
+  process.emitWarning('d1', 'DeprecationWarning');
+  process.emitWarning('d2', { type: 'DeprecationWarning', code: 'DEP0' });
+  for (const x of [1, null, {}]) { try { process.emitWarning(x); } catch (e) { console.log(e.code, e.message); } }
+  console.log('listeners', process.listenerCount('warning'));`;
+
+test("process.emitWarning emits 'warning' on the next tick, printed by the process's own listener, as --no-warnings, NODE_NO_WARNINGS and the deprecation options have it", async () => {
+  const invalid = [
+    'ERR_INVALID_ARG_TYPE The "warning" argument must be of type string or an instance of Error. Received type number (1)',
+    'ERR_INVALID_ARG_TYPE The "warning" argument must be of type string or an instance of Error. Received null',
+    'ERR_INVALID_ARG_TYPE The "warning" argument must be of type string or an instance of Error. Received an instance of Object',
+  ].join('\n');
+  const events = 'event Warning w1\nevent DeprecationWarning d1\nevent DeprecationWarning d2\n';
+  const hint = '(Use `node --trace-warnings ...` to show where the warning was created)\n';
+  const runs: Record<string, { stdout: string; stderr: string; exit: number | null; fatal: string | null }> = {};
+  for (const [name, execArgv, env] of [
+    ['default', [], {}],
+    ['--no-warnings', ['--no-warnings'], {}],
+    ['NODE_NO_WARNINGS', [], { NODE_NO_WARNINGS: '1' }],
+    ['--no-deprecation', ['--no-deprecation'], {}],
+    ['process.noDeprecation', [], { PROP: 'noDeprecation' }],
+    ['--throw-deprecation', ['--throw-deprecation'], {}],
+    ['--trace-deprecation', ['--trace-deprecation'], {}],
+    ['--trace-warnings', ['--trace-warnings'], {}],
+  ] as [string, string[], Record<string, string>][]) {
+    const out = await h.run({ 'main.js': WARNINGS }, '/app/main.js', [], execArgv, { env });
+    runs[name] = { stdout: out.stdout, stderr: out.stderr, exit: out.exit, fatal: out.fatal && String(out.fatal).split('\n')[0] };
+  }
+  const plain = (stderr: string, listeners: number, ev = events) => ({ stdout: `${invalid}\nlisteners ${listeners}\n${ev}`, stderr, exit: 0, fatal: null });
+  assert.deepEqual(runs.default, plain(`(node:42) Warning: w1\n${hint}(node:42) DeprecationWarning: d1\n(node:42) [DEP0] DeprecationWarning: d2\n`, 2));
+  assert.deepEqual(runs['--no-warnings'], plain('', 1));
+  assert.deepEqual(runs.NODE_NO_WARNINGS, plain('', 1));
+  assert.deepEqual(runs['--no-deprecation'], plain(`(node:42) Warning: w1\n${hint}`, 2, 'event Warning w1\n'));
+  assert.deepEqual(runs['process.noDeprecation'], plain(`(node:42) Warning: w1\n${hint}`, 2, 'event Warning w1\n'));
+  // The first deprecation is thrown on the next tick: uncaught.
+  assert.deepEqual([runs['--throw-deprecation'].stdout, runs['--throw-deprecation'].fatal], [`${invalid}\nlisteners 2\nevent Warning w1\n`, 'DeprecationWarning: d1']);
+  // A traced warning prints its stack, and no hint.
+  assert.equal(runs['--trace-deprecation'].stdout, `${invalid}\nlisteners 2\n${events}`);
+  assert.match(runs['--trace-deprecation'].stderr, /^\(node:42\) Warning: w1\n\(Use `node --trace-warnings \.\.\.`[^\n]*\n\(node:42\) DeprecationWarning: d1\n {4}at /);
+  assert.match(runs['--trace-warnings'].stderr, /^\(node:42\) Warning: w1\n {4}at /);
+  assert.ok(!runs['--trace-warnings'].stderr.includes('(Use `node'), runs['--trace-warnings'].stderr);
 });
 
 test("signals: SIGBREAK (Windows' Ctrl-Break) is unknown on Linux; one a process sends itself goes to its listeners, or ends it", async () => {
@@ -346,9 +381,14 @@ test("signals: SIGBREAK (Windows' Ctrl-Break) is unknown on Linux; one a process
      console.log('probe', c.kill(0), c.killed, c.signalCode);
      c.on('exit', (code, signal) => console.log('child exit', code, signal, c.kill(0)));
      c.kill(15);`,
-    // Node ends by the signal: a shell sees 143 (128 + 15), and 'exit' is not emitted.
-    `process.on('exit', () => console.log('not emitted')); process.kill(process.pid, 'SIGTERM'); setTimeout(() => console.log('not reached'), 50);`,
-    `process.kill(process.pid, 'SIGWINCH'); setTimeout(() => console.log('still here'), 20);`,
+    // Node ends by the signal, at once: a shell sees 143 (128 + 15), and 'exit' is not emitted.
+    `process.on('exit', () => console.log('not emitted')); process.nextTick(() => console.log('tick')); process.kill(process.pid, 'SIGTERM'); console.log('after'); setTimeout(() => console.log('not reached'), 50);`,
+    // Ignored (SIGWINCH, SIGPIPE), or SIGUSR1, for which Node starts its inspector.
+    `process.kill(process.pid, 'SIGWINCH'); process.kill(process.pid, 'SIGPIPE'); process.kill(process.pid, 'SIGUSR1'); setTimeout(() => console.log('still here'), 20);`,
+    // Neither a signal's name nor its number.
+    `const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)']);
+     for (const s of [{}, [1], true, null, '0', 1.5]) { try { c.kill(s); } catch (e) { console.log(e.code, e.message); } }
+     c.kill();`,
   ]) {
     const end = await h.run({ 'main.js': program }, '/app/main.js');
     outs.push([end.stdout, end.exit, end.fatal]);
@@ -357,5 +397,6 @@ test("signals: SIGBREAK (Windows' Ctrl-Break) is unknown on Linux; one a process
     ['ERR_UNKNOWN_SIGNAL Unknown signal: SIGBREAK\nprobe true true null\nchild exit null SIGTERM false\n', 0, null],
     ['', 143, null],
     ['still here\n', 0, null],
+    [['{}', '[ 1 ]', 'true', 'null', '0', '1.5'].map((s) => `ERR_UNKNOWN_SIGNAL Unknown signal: ${s}\n`).join(''), 0, null],
   ]);
 });

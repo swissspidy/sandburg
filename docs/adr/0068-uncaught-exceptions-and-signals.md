@@ -1,4 +1,4 @@
-# ADR 0068: Uncaught exceptions, unhandled rejections and signals as in Node; Ctrl-Break stops a command
+# ADR 0068: Uncaught exceptions, unhandled rejections and signals as in Node; signals stop a command cleanly
 
 - Status: Accepted
 - Date: 2026-10-28
@@ -34,8 +34,9 @@ Signals:
 
 - On Windows, Ctrl-Break sends SIGBREAK. Sandburg's commands listen for SIGINT only. `compare`
   listens for SIGINT and SIGTERM itself. `run`, `batch` and `open` rely on Playwright's listener,
-  which closes the browsers and exits 130. Nothing listened for SIGBREAK, so Ctrl-Break ended the
-  process at once and left the browser and the reference's containers behind.
+  which closes the browsers and then exits 130. Meanwhile the closed browser fails the run, and that
+  error, uncaught, ended a real Ctrl-C with exit code 1 first. Nothing listened for SIGBREAK, so
+  Ctrl-Break ended the process at once and left the browser and the reference's containers behind.
 - In the runtime, `process.kill()` returned true and did nothing, whatever its arguments.
   `child.kill('SIGBREAK')` "killed" the child with that signal. `os.constants.signals` had 4 of
   Linux's 31 signals. Node on Linux, the platform the runtime reports, does not know SIGBREAK:
@@ -71,8 +72,16 @@ default, and `strict`, `warn`, `none` and `warn-with-error-code` behave as in No
 `UnhandledPromiseRejectionWarning`s. A reason that is not an error is wrapped in Node's
 `UnhandledPromiseRejection` (`ERR_UNHANDLED_REJECTION`). The browser's `rejectionhandled` event
 becomes `'rejectionHandled'`, or a `PromiseRejectionHandledWarning` when nothing listens.
-`process.emitWarning` emits `'warning'` on the next tick. A listener the process installs prints it
-in Node's format, so a program that removes the `'warning'` listeners prints nothing.
+A DOMException reason (an AbortError) is passed on as it is, as in Node, although the browser's
+DOMException inherits its `stack`. Any other object whose stack is inherited is wrapped, as in Node.
+
+`process.emitWarning` emits `'warning'` on the next tick, and rejects a warning that is neither a
+string nor an Error (`ERR_INVALID_ARG_TYPE`). A listener the process installs prints it in Node's
+format, so a program that removes the `'warning'` listeners prints nothing. As in Node:
+- `--no-warnings` or `NODE_NO_WARNINGS=1` leave that listener out;
+- `--no-deprecation` (`process.noDeprecation`) drops DeprecationWarnings;
+- `--throw-deprecation` (`process.throwDeprecation`) throws them on the next tick;
+- `--trace-deprecation` and `--trace-warnings` print the stack, and no hint.
 
 **Signals in the runtime follow Linux.** `os.constants.signals` is Linux's full table.
 `process.kill` validates as Node's does:
@@ -82,26 +91,31 @@ in Node's format, so a program that removes the `'warning'` listeners prints not
 - an unknown signal number: `EINVAL`.
 
 A signal a process sends itself reaches its listeners as `(name, number)`, after the ticks queued with
-it and before immediates. With no listener, a signal that would end a process ends it, without
-`'exit'`, with exit code 128 + its number. That is what a shell reports for it: the runtime has no
-exit by signal, so its parent sees `code 143` where Node's sees `signal 'SIGTERM'`. Ignored and
-stopping signals (SIGCHLD, SIGWINCH, SIGSTOP, …) change nothing. A pid that is not the process's own
-is not looked up (true, as before). `child.kill()` validates its signal the same way, except that
-signal 0, as in Node, only probes the child: true (and `killed`) while it runs, false once it has
+it and before immediates. With no listener, a signal that would end a process ends it at once, in
+`process.kill()` (nothing after it runs), without `'exit'`, with exit code 128 + its number. That is what a shell reports for it: the runtime has no
+exit by signal, so its parent sees `code 143` where Node's sees `signal 'SIGTERM'`. Signals Node ignores (SIGPIPE), that are
+ignored or stop a process (SIGCHLD, SIGWINCH, SIGSTOP, …), and SIGUSR1 (Node starts its inspector;
+the runtime has none) change nothing. A pid that is not the process's own
+is not looked up (true, as before). `child.kill()` validates its signal the same way: what is not a
+signal's name or number is `ERR_UNKNOWN_SIGNAL`, whatever its type. Signal 0, as in Node, only
+probes the child: true (and `killed`) while it runs, false once it has
 ended, and the child goes on.
 
-**Ctrl-Break stops a command** (`src/stop-signals.ts`). `untilStopped` holds the listeners a
+**Ctrl-C, a kill and Ctrl-Break stop a command** (`src/stop-signals.ts`). `untilStopped` holds the listeners a
 command's signals already have, stops the command's work on the first signal, then exits with
 128 + the signal's number: SIGINT 130, SIGTERM 143, SIGBREAK 149 (SIGBREAK is 21 on Windows).
 
 - `compare` uses it for all three, as it already did for SIGINT and SIGTERM: it removes the
   reference's containers, closes the session, and writes no report.
-- `run`, `batch` and `open` use it for SIGBREAK only: it closes the session (and its browser).
-  SIGINT stays with Playwright's listener, so Ctrl-C behaves as before.
+- `run`, `batch` and `open` use it for all three too: it closes the session (and its browser).
+  Playwright's own listeners, which the launch adds, close the browser too. What the closed browser
+  fails in the runs meanwhile is not the outcome, so a real Ctrl-C exits 130 (not 1) and a kill
+  exits 143. The session closes once, also when a signal comes while it closes after its run.
 - The listeners go in before the session opens. A signal that comes while the browser launches
   waits for the launch to finish, then closes the session. The command starts no run after it.
-- A second signal goes to the listeners held meanwhile. For SIGBREAK there are none, so its default
-  action ends the process at once.
+- A second signal goes to the listeners the command's signals had before it started, or to the
+  signal's default action, which ends the process at once. Playwright's SIGINT listener, added at
+  the launch, runs beside Sandburg's: a second Ctrl-C through it kills the browser and exits 130.
 
 Listening for SIGBREAK is harmless off Windows: nothing sends it there. The tests raise it with
 `process.emit` (on every platform) through the child's stdin, as the compare signal tests already do

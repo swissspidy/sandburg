@@ -65,7 +65,8 @@ export async function compareCommand(
       return code;
     });
   } finally {
-    // A session that did not open has nothing to close (its open's error is the outcome).
+    // A session that did not open has nothing to close (its open's error is the outcome). A signal
+    // can no longer come meanwhile: untilStopped has given the signals back.
     if (opened) await session.close();
   }
 }
