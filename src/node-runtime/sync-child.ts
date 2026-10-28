@@ -75,60 +75,71 @@ export const MARK_DEAD = `(sab) => { const h = new Int32Array(sab, 0, ${HEADER /
 /**
  * The helper's side (host-files.ts puts it in the helper's script): `spawnerMessage(data, from)`
  * handles a message about synchronous children, from the main runtime ('root') or the runtime that
- * owns a spawner port, and says whether it was one.
+ * owns a spawner port (its key), and says whether it was one.
  *
- * Each runtime that may start synchronous children is a node of a tree, named by the tag of its
- * port, under the runtime that registered the port (`spawnerPort`). A runtime starts its child
- * (`spawn`, the tag of the port it gave the child) and ends it (`end`): the child's worker, and every
- * runtime under it, is terminated (a synchronous grandchild's worker is the helper's, not the
- * child's, and would outlive it). Only a node's parent may start or end it. Workers start the
- * runtime's script, which the main runtime names once (`runtime`), and nothing else.
+ * Each runtime that may start synchronous children is a node of a tree under the runtime that
+ * registered its port (`spawnerPort`), keyed by that runtime's key and the tag it gave the port, so
+ * a runtime names only its own children. A runtime starts its child (`spawn`, the child's tag) and
+ * ends it (`end`): the child's worker, and every runtime under it, is terminated (a synchronous
+ * grandchild's worker is the helper's, not the child's, and would outlive it). A runtime that was
+ * ended starts nothing: its messages arrive on a port of their own, and may come after its end. A
+ * tag registered twice is not used: its spawn fails, and the parent stops waiting. Workers start
+ * the runtime's script, which the main runtime names once (`runtime`), and nothing else.
  */
 export const SPAWN_HELPER = `
 let runtimeUrl = null;
 const nodes = new Map();
 const markDead = ${MARK_DEAD};
-const end = (tag) => {
-  for (const [t, node] of nodes) if (node.parent === tag) end(t);
-  nodes.get(tag)?.worker?.terminate();
-  nodes.delete(tag);
+const channelOf = (data) => (data.sync instanceof SharedArrayBuffer && data.sync.byteLength >= ${HEADER} ? data.sync : null);
+const end = (key) => {
+  for (const [k, node] of nodes) if (node.parent === key) end(k);
+  nodes.get(key)?.worker?.terminate();
+  nodes.delete(key);
 };
 const spawnerMessage = (data, from) => {
   if (!data || from === null) return false;
+  if (from !== 'root' && !nodes.has(from)) {
+    const sync = channelOf(data);
+    if (sync) markDead(sync);
+    return true;
+  }
   if (typeof data.runtime === 'string') {
     if (from === 'root') runtimeUrl ??= data.runtime;
     return true;
   }
   if (data.spawnerPort) {
-    const owner = data.owner;
-    if (typeof owner === 'string' && !nodes.has(owner)) {
-      nodes.set(owner, { parent: from, worker: null });
-      data.spawnerPort.onmessage = (e) => spawnerMessage(e.data, owner);
+    if (typeof data.owner !== 'string') return true;
+    const key = from + '/' + data.owner;
+    if (nodes.has(key)) nodes.get(key).duplicate = true;
+    else {
+      nodes.set(key, { parent: from, worker: null, duplicate: false });
+      data.spawnerPort.onmessage = (e) => spawnerMessage(e.data, key);
     }
     return true;
   }
   if (typeof data.spawn === 'string') {
-    const node = nodes.get(data.spawn);
-    const sync = data.sync instanceof SharedArrayBuffer && data.sync.byteLength >= ${HEADER} ? data.sync : null;
+    const key = from + '/' + data.spawn;
+    const node = nodes.get(key);
+    const sync = channelOf(data);
     if (!sync) return true;
-    if (!node || node.parent !== from || node.worker || !runtimeUrl || !data.init || typeof data.init !== 'object') return markDead(sync), true;
+    if (!node || node.duplicate || node.worker || !runtimeUrl || !data.init || typeof data.init !== 'object') return markDead(sync), true;
     try {
       const worker = new Worker(runtimeUrl);
       node.worker = worker;
       worker.onerror = (e) => {
         e.preventDefault?.();
-        end(data.spawn);
+        end(key);
         markDead(sync);
       };
       worker.postMessage(data.init, Array.isArray(data.transfer) ? data.transfer : []);
     } catch {
-      end(data.spawn);
+      end(key);
       markDead(sync);
     }
     return true;
   }
   if (typeof data.end === 'string') {
-    if (nodes.get(data.end)?.parent === from) end(data.end);
+    end(from + '/' + data.end);
     return true;
   }
   return false;

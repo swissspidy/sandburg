@@ -650,7 +650,7 @@ test('child_process: a synchronous command the runtime cannot start yet fails at
         }
         const r = cp.spawnSync(process.execPath, ['-p', '1']);
         out.spawnSync = [r.error.code, r.status, r.error.message.split(':')[0]];
-        out.result = [Object.keys(r), r.output, r.stdout, r.stderr];
+        out.result = [Object.keys(r), r.output, typeof r.stdout, typeof r.stderr];
         try {
           cp.execFileSync(process.execPath, ['-p', '1']);
         } catch (e) {
@@ -669,8 +669,8 @@ test('child_process: a synchronous command the runtime cannot start yet fails at
     execSync: ['ENOSYS', `child_process.execSync("node -p 1") ${why}`],
     spawnSync: ['ENOSYS', null, `child_process.spawnSync("/usr/local/bin/node -p 1") ${why}`],
     execFileSync: ['ENOSYS', `child_process.execFileSync("/usr/local/bin/node -p 1") ${why}`],
-    // Node's keys for a command that did not start (its output: none, as the command did not run).
-    result: [['error', 'status', 'signal', 'output', 'pid', 'stdout', 'stderr'], [null, { type: 'Buffer', data: [] }, { type: 'Buffer', data: [] }], { type: 'Buffer', data: [] }, { type: 'Buffer', data: [] }],
+    // As Node's result for a command that did not start: no output, stdout and stderr undefined.
+    result: [['error', 'status', 'signal', 'output', 'pid', 'stdout', 'stderr'], null, 'undefined', 'undefined'],
   });
 });
 
@@ -703,10 +703,16 @@ test("child_process: the shell's sleep takes units, fractions and several number
         let t = Date.now();
         out.units = cp.spawnSync('sleep 0.2s && sleep 0.1 0.1 && sleep .05 && echo slept', { shell: true, encoding: 'utf8' }).stdout;
         out.unitsWaited = Date.now() - t >= 400;
-        out.invalid = ['abc', '', '1x'].map((a) => {
+        out.invalid = ['abc', '', '1x', '1S'].map((a) => {
           const r = cp.spawnSync(\`sleep \${a}\`, { shell: true, encoding: 'utf8' });
           return [r.status, r.stderr];
         });
+        out.hex = cp.execSync('sleep 0x0 && echo slept', { encoding: 'utf8' });
+        try {
+          cp.execSync('sleep INF', { timeout: 300 });
+        } catch (e) {
+          out.inf = e.code;
+        }
         t = Date.now();
         try {
           cp.execSync('sleep 1m', { timeout: 300 });
@@ -729,7 +735,9 @@ test("child_process: the shell's sleep takes units, fractions and several number
   assert.deepEqual(JSON.parse(out.stdout), {
     units: 'slept\n',
     unitsWaited: true,
-    invalid: [invalid("invalid time interval 'abc'"), invalid('missing operand'), invalid("invalid time interval '1x'")],
+    invalid: [invalid("invalid time interval 'abc'"), invalid('missing operand'), invalid("invalid time interval '1x'"), invalid("invalid time interval '1S'")],
+    hex: 'slept\n',
+    inf: 'ETIMEDOUT',
     timeout: ['ETIMEDOUT', true],
     async: [null, 'slept\n', true],
     asyncInvalid: invalid("invalid time interval 'abc'"),
@@ -815,10 +823,29 @@ test('child_process: a numeric killSignal is reported by name, and node without 
           inputScript: cp.spawnSync(n, [], { input: 'console.log(6 * 7)', encoding: 'utf8' }).stdout,
           noScript: [cp.spawnSync(n, [], { encoding: 'utf8' }).status, cp.spawnSync(n, [], { encoding: 'utf8' }).stdout],
           execInput: cp.execSync('node', { input: 'console.log(5)', encoding: 'utf8' }),
+          dash: cp.spawnSync(n, ['-', 'a'], { input: 'console.log(process.argv.slice(2).join())', encoding: 'utf8' }).stdout,
+          aliasSignal: cp.spawnSync(n, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: 'sigiot' }).signal,
+          unknownSignal: [99, 0, 'SIGFOO', '15'].map((killSignal) => {
+            try {
+              cp.spawnSync(n, ['-e', '1'], { killSignal });
+              return 'ran';
+            } catch (e) {
+              return [e.name, e.code, e.message];
+            }
+          }),
         }));`,
     },
     '/app/main.js',
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
-  assert.deepEqual(JSON.parse(out.stdout), { numericSignal: ['ETIMEDOUT', 'SIGKILL'], inputScript: '42\n', noScript: [0, ''], execInput: '5\n' });
+  const unknown = (s: string) => ['TypeError', 'ERR_UNKNOWN_SIGNAL', `Unknown signal: ${s}`];
+  assert.deepEqual(JSON.parse(out.stdout), {
+    numericSignal: ['ETIMEDOUT', 'SIGKILL'],
+    inputScript: '42\n',
+    noScript: [0, ''],
+    execInput: '5\n',
+    dash: 'a\n',
+    aliasSignal: 'SIGABRT',
+    unknownSignal: [unknown('99'), unknown('0'), unknown('SIGFOO'), unknown('15')],
+  });
 });

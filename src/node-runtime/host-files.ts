@@ -469,7 +469,8 @@ export function startDigester(files = true): void {
 let spawner: { post(message: unknown, transfer?: Transferable[]): void; up(): boolean } | null = null;
 
 let ports = 0;
-const portPrefix = Math.random().toString(36).slice(2);
+// randomUUID needs a secure context (the host's origins are); getRandomValues does not.
+const portPrefix = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join('');
 
 /**
  * A port to the helper for a thread or child process this runtime starts, and its tag (null without

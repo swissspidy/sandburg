@@ -397,9 +397,10 @@ function sleepSeconds(args: string[]): number | string {
   if (!args.length) return 'missing operand';
   let total = 0;
   for (const a of args) {
-    const m = /^\+?(\d+\.?\d*(?:e[+-]?\d+)?|\.\d+(?:e[+-]?\d+)?|inf(?:inity)?)([smhd]?)$/i.exec(a);
+    // Units in lower case only; inf in any case; hexadecimal as strtod reads it.
+    const m = /^\+?(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?|0[xX][0-9a-fA-F]+|[iI][nN][fF](?:[iI][nN][iI][tT][yY])?)([smhd]?)$/.exec(a);
     if (!m) return `invalid time interval '${a}'`;
-    total += Number(/^inf/i.test(m[1]) ? Infinity : m[1]) * { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2].toLowerCase() as '' | 's' | 'm' | 'h' | 'd'];
+    total += Number(/^inf/i.test(m[1]) ? Infinity : m[1]) * { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2] as '' | 's' | 'm' | 'h' | 'd'];
   }
   return total;
 }

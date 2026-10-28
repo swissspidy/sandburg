@@ -170,7 +170,11 @@ export function createChildProcess(host: ChildProcessHost) {
       return { ...common, kind: 'shell', script: options.shell ? argv.join(' ') : argv.map(shellQuote).join(' ') };
     }
     const cmd = parseNodeArgs(argv.slice(1));
-    if (!cmd.script && cmd.evalCode === null && stdin !== undefined) cmd.evalCode = stdin;
+    // `node` or `node -` runs what its stdin reads.
+    if ((!cmd.script || cmd.script === '-') && cmd.evalCode === null && stdin !== undefined) {
+      cmd.evalCode = stdin;
+      cmd.script = null;
+    }
     if (!cmd.script && cmd.evalCode === null) return { ...common, kind: 'fail', command: `${argv[0]} (without a script: the REPL)` };
 
     const execArgv = [...(forkIpc ? (options.execArgv ?? []) : []), ...cmd.execArgv];
@@ -433,6 +437,8 @@ export function createChildProcess(host: ChildProcessHost) {
    * `api` names the call in the error for a command that cannot start (no helper to start it).
    */
   function runSync(api: string, file: string, args: string[], options: SyncOptions): SyncResult {
+    // Before anything runs, as Node checks it.
+    const killSignal = signalName(options.killSignal);
     const input = options.input === undefined ? undefined : typeof options.input === 'string' ? Buffer.from(options.input, (options.encoding && options.encoding !== 'buffer' ? options.encoding : 'utf8') as BufferEncoding) : new Uint8Array(options.input.buffer, options.input.byteOffset, options.input.byteLength).slice();
     const stdinText = input ? new TextDecoder().decode(input) : '';
     const p = plan(file, args, options, false, stdinText);
@@ -443,10 +449,12 @@ export function createChildProcess(host: ChildProcessHost) {
     const maxBuffer = options.maxBuffer ?? 1024 * 1024;
     const chunks: Buffer[][] = [[], [], []];
     const sizes = [0, 0, 0];
+    let wrote = false;
     /** Why the command ended early: its time or its output ran out, its runtime failed or could not start. */
     let stopped: { timedOut: true } | { overflow: true } | { error: Error } | null = null;
     const write = (fd: 1 | 2, text: string): boolean => {
       if (stopped) return false;
+      wrote = true;
       if (stdio[fd] === 'inherit') host.write(fd === 1 ? 'stdout' : 'stderr', text);
       else if (stdio[fd] === 'pipe') {
         const bytes = Buffer.from(text);
@@ -486,7 +494,7 @@ export function createChildProcess(host: ChildProcessHost) {
       }
       if ('code' in end) return end.code;
       if ('crashed' in end) {
-        write(2, 'the child process\'s runtime failed to start or crashed\n');
+        write(2, 'the child process\'s runtime failed to start, crashed, or was refused by the runtime\'s helper\n');
         return 1;
       }
       stopped = end;
@@ -545,9 +553,12 @@ export function createChildProcess(host: ChildProcessHost) {
     };
     const stdout = output(1);
     const stderr = output(2);
-    // What it wrote before it could not go on (a script whose later command could not start).
-    if (stopped && 'error' in stopped) return { error: stopped.error, status: null, signal: null, output: [null, stdout, stderr], pid: 0, stdout, stderr };
-    const signal = stopped ? signalName(options.killSignal) : null;
+    if (stopped && 'error' in stopped) {
+      // As Node's result for a command that did not start; with what a script wrote before one of its commands could not.
+      if (!wrote) return { error: stopped.error, status: null, signal: null, output: null, pid: 0, stdout: undefined, stderr: undefined };
+      return { error: stopped.error, status: null, signal: null, output: [null, stdout, stderr], pid: 0, stdout, stderr };
+    }
+    const signal = stopped ? killSignal : null;
     const result: SyncResult = { status: stopped ? null : status, signal, output: [null, stdout, stderr], pid, stdout, stderr };
     return stopped ? { error: spawnError('timedOut' in stopped ? 'ETIMEDOUT' : 'ENOBUFS', errFile, errArgs), ...result } : result;
   }
@@ -587,13 +598,16 @@ export function createChildProcess(host: ChildProcessHost) {
   };
 }
 
-/** Linux's signals by number (os.constants.signals), for a numeric killSignal. */
-const SIGNALS = ['', 'SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT', 'SIGBUS', 'SIGFPE', 'SIGKILL', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGPIPE', 'SIGALRM', 'SIGTERM', 'SIGSTKFLT', 'SIGCHLD', 'SIGCONT', 'SIGSTOP', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU', 'SIGURG', 'SIGXCPU', 'SIGXFSZ', 'SIGVTALRM', 'SIGPROF', 'SIGWINCH', 'SIGIO', 'SIGPWR', 'SIGSYS'];
+/** Linux's signals (Node's os.constants.signals on Linux). */
+const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31 };
 
-/** A kill signal's name (SIGTERM by default). */
+/** A kill signal's name, as the child's result reports it (SIGTERM by default; SIGIOT is SIGABRT): Node's ERR_UNKNOWN_SIGNAL for one it does not know. */
 function signalName(signal: string | number | undefined): string {
-  if (typeof signal === 'number') return SIGNALS[signal] || 'SIGTERM';
-  return signal ?? 'SIGTERM';
+  if (signal === undefined) return 'SIGTERM';
+  const number = typeof signal === 'number' ? signal : SIGNALS[String(signal).toUpperCase()];
+  const name = Object.keys(SIGNALS).find((n) => SIGNALS[n] === number);
+  if (!name) throw Object.assign(new TypeError(`Unknown signal: ${signal}`), { code: 'ERR_UNKNOWN_SIGNAL' });
+  return name;
 }
 
 function shellQuote(word: string): string {

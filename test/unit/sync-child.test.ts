@@ -52,11 +52,13 @@ function helper() {
     }
   }
   const message = new Function('Worker', `${SPAWN_HELPER}\nreturn spawnerMessage;`)(FakeWorker) as (data: unknown, from: string | null) => boolean;
-  /** A runtime's spawner port, registered by `from`: what it sends arrives as from `owner`. */
-  const port = (owner: string, from: string) => {
+  type Send = (data: unknown) => void;
+  const root: Send = (data) => message(data, 'root');
+  /** A runtime's spawner port, registered by `parent` (root by default): what is sent on it arrives as from that runtime. */
+  const port = (owner: string, parent: Send = root): Send => {
     const p: { onmessage: ((e: { data: unknown }) => void) | null } = { onmessage: null };
-    message({ spawnerPort: p, owner }, from);
-    return (data: unknown) => p.onmessage!({ data });
+    parent({ spawnerPort: p, owner });
+    return (data) => p.onmessage?.({ data });
   };
   return { message, port, workers };
 }
@@ -67,17 +69,17 @@ test("the helper starts only the runtime's script the main runtime named, for th
   const { message, port, workers } = helper();
   // No runtime named yet: refused, and the parent is told (not left waiting).
   const early = syncChannel();
-  port('a', 'root');
+  port('a');
   message({ spawn: 'a', init: {}, sync: early }, 'root');
   assert.ok(dead(early));
   // A child runtime cannot name another script; the main runtime names it once.
-  const fromChild = port('b', 'root');
+  const fromChild = port('b');
   fromChild({ runtime: 'http://localhost/evil.js' });
   message({ runtime: RUNTIME }, 'root');
   message({ runtime: 'http://localhost/other.js' }, 'root');
   // Only the runtime that registered a child's port may start it.
   const notParent = syncChannel();
-  port('c', 'root');
+  port('c');
   fromChild({ spawn: 'c', init: {}, sync: notParent });
   assert.ok(dead(notParent));
   // A spawn without a channel, or with a bad one, is dropped (no one waits on it).
@@ -94,7 +96,7 @@ test("the helper starts only the runtime's script the main runtime named, for th
 test("a child's worker that fails marks its channel dead, and its parent stops waiting (crashed)", () => {
   const { message, port, workers } = helper();
   message({ runtime: RUNTIME }, 'root');
-  port('a', 'root');
+  port('a');
   const sab = syncChannel();
   message({ spawn: 'a', init: {}, sync: sab }, 'root');
   workers[0].onerror!({ preventDefault() {} });
@@ -105,17 +107,15 @@ test("a child's worker that fails marks its channel dead, and its parent stops w
 test("ending a child ends the runtimes under it, synchronous grandchildren too, and forgets them", () => {
   const { message, port, workers } = helper();
   message({ runtime: RUNTIME }, 'root');
-  const a = port('a', 'root');
+  const a = port('a');
   message({ spawn: 'a', init: {}, sync: syncChannel() }, 'root');
   // a starts b (synchronously), b an asynchronous child c, which starts d synchronously.
-  const b = port('b', 'a');
-  void b;
+  const b = port('b', a);
   a({ spawn: 'b', init: {}, sync: syncChannel() });
-  const c = port('c', 'b');
-  port('d', 'c');
+  const c = port('c', b);
+  port('d', c);
   c({ spawn: 'd', init: {}, sync: syncChannel() });
-  const sibling = port('e', 'root');
-  void sibling;
+  port('e');
   message({ spawn: 'e', init: {}, sync: syncChannel() }, 'root');
   // Only a runtime's parent may end it.
   a({ end: 'e' });
@@ -123,7 +123,7 @@ test("ending a child ends the runtimes under it, synchronous grandchildren too, 
   message({ end: 'a' }, 'root');
   assert.deepEqual(workers.map((w) => w.terminated), [true, true, true, false]);
   // Forgotten: the tags can be registered again.
-  port('a', 'root');
+  port('a');
   message({ spawn: 'a', init: {}, sync: syncChannel() }, 'root');
   assert.equal(workers.length, 5);
 });
@@ -165,4 +165,39 @@ test('a channel takes less address space where 1 GiB cannot be reserved', () => 
   } finally {
     globalThis.SharedArrayBuffer = Native;
   }
+});
+
+test("a runtime that was ended can start no child: its late messages are refused, and the child's parent is not left waiting", () => {
+  const { message, port, workers } = helper();
+  message({ runtime: RUNTIME }, 'root');
+  // C's port and its messages arrive on their own channel: root's end can overtake C's spawn of G.
+  const c = port('C');
+  message({ spawn: 'C', init: {}, sync: syncChannel() }, 'root');
+  message({ end: 'C' }, 'root');
+  const g = { onmessage: null as ((e: { data: unknown }) => void) | null };
+  c({ spawnerPort: g, owner: 'G' });
+  const sync = syncChannel();
+  c({ spawn: 'G', init: {}, sync });
+  assert.deepEqual(workers.map((w) => w.terminated), [true], 'G started after C ended');
+  assert.ok(dead(sync));
+  assert.equal(g.onmessage, null, "an ended runtime's port registration is dropped");
+});
+
+test('a tag registered twice by the same runtime is refused loudly: its spawn marks the channel dead', () => {
+  const { message, port, workers } = helper();
+  message({ runtime: RUNTIME }, 'root');
+  port('a');
+  port('a');
+  const sync = syncChannel();
+  message({ spawn: 'a', init: {}, sync }, 'root');
+  assert.equal(workers.length, 0);
+  assert.ok(dead(sync));
+  // Another runtime's tags are its own: a child registering 'b' does not take root's 'b'.
+  const child = port('x');
+  child({ spawnerPort: { onmessage: null }, owner: 'b' });
+  port('b');
+  const ok = syncChannel();
+  message({ spawn: 'b', init: {}, sync: ok }, 'root');
+  assert.equal(workers.length, 1);
+  assert.ok(!dead(ok));
 });
