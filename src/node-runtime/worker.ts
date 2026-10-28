@@ -33,7 +33,7 @@ import { COMPILE_POST_MAX } from '../file-channel.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
-import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone } from './peers.ts';
+import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone, cancelForwarded } from './peers.ts';
 
 patchBase64Url();
 
@@ -535,7 +535,13 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if ((proc.env as Record<string, string>).SANDBURG_DEBUG_ERRORS) write('stderr', `[sandburg] uncaught: ${e.error?.stack ?? e.message}\n`);
     if (proc.listenerCount('uncaughtException')) {
       e.preventDefault();
-      proc.emit('uncaughtException', e.error, 'uncaughtException');
+      // process.exit() in a handler ends the process with its code.
+      try {
+        proc.emit('uncaughtException', e.error, 'uncaughtException');
+      } catch (err) {
+        if (err instanceof ExitError) return exited(err.code);
+        throw err;
+      }
     }
   });
   self.addEventListener('unhandledrejection', (e) => {
@@ -545,6 +551,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
     if (proc.listenerCount('unhandledRejection')) {
       e.preventDefault();
+      // process.exit() in it: the ExitError is uncaught ('error' above), which ends the process.
       proc.emit('unhandledRejection', e.reason, e.promise);
     } else if (thread && e.reason instanceof WebAssembly.RuntimeError) {
       // A trap in a promise callback ends the thread (and its process) like one in any other callback.
@@ -682,6 +689,24 @@ function releaseHeld(depth: number) {
 /** Requests to this runtime's own servers not yet answered (those to nested runtimes' are theirs). */
 const inflight = new Set<number>();
 
+/** What tells the server of each of those requests that its client went away (a parent's loopback request: see cancelRequest). */
+const requestAborts = new Map<number, () => void>();
+
+/** A request to this runtime's own servers is answered (or no longer this runtime's to answer). */
+function settle(id: number) {
+  inflight.delete(id);
+  requestAborts.delete(id);
+}
+
+/** The client of a request from the parent went away: its server learns it (or the nested runtime it went on to). */
+function cancelRequest(id: number) {
+  if (cancelForwarded(id)) return;
+  const abort = requestAborts.get(id);
+  if (!abort) return;
+  settle(id);
+  abort();
+}
+
 /** Whether the program exited (see exited). */
 let hasExited = false;
 
@@ -696,6 +721,7 @@ export function exited(code: number) {
   stopTimers();
   for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
   inflight.clear();
+  requestAborts.clear();
   loopbackServersGone();
   for (const port of [...servers.keys()]) {
     servers.delete(port);
@@ -732,7 +758,7 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
     heldResponses.push(release);
   };
   try {
-    server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
+    const abort = server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
       start: (status, statusText, headers) => {
         if (!held) return void answer({ type: 'response-start', id, status, statusText, headers });
         held.start = [status, statusText, headers];
@@ -754,25 +780,26 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
           held = null;
           const body = h.chunks.length === 1 && h.chunks[0].byteOffset === 0 && h.chunks[0].byteLength === h.chunks[0].buffer.byteLength ? h.chunks[0] : concatBytes(h.chunks, h.size);
           answer({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
-          return void inflight.delete(id);
+          return void settle(id);
         }
         release();
         answer({ type: 'response-end', id });
-        inflight.delete(id);
+        settle(id);
       },
       // Reset before it ended (res.destroy()): what was held is dropped, as a real connection's would be.
       error: (message, code) => {
         held = null;
         answer({ type: 'response-error', id, message, code });
-        inflight.delete(id);
+        settle(id);
       },
     });
+    if (inflight.has(id)) requestAborts.set(id, abort);
   } catch (e) {
     // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
     if (e instanceof ExitError) return exited(e.code);
     release();
     answer({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
-    inflight.delete(id);
+    settle(id);
   }
 }
 
@@ -801,6 +828,7 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) forwardRequest(msg);
   else if (msg.type === 'request') request(msg);
+  else if (msg.type === 'request-cancel') cancelRequest(msg.id);
   else if (msg.type === 'ws-open' && !servers.has(msg.port) && nestedPorts.has(msg.port)) {
     nestedSockets.set(msg.id, nestedPorts.get(msg.port)!);
     nestedSockets.get(msg.id)!.postMessage(msg);

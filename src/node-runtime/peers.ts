@@ -136,9 +136,26 @@ loopback.route = (target, method, url, headers, body, bridge) => {
   if (worker) {
     inflight.set(id, worker);
     worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
-  } else realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
-  return true;
+    return () => {
+      if (!loopbackRequests.delete(id)) return;
+      inflight.delete(id);
+      worker.postMessage({ type: 'request-cancel', id } satisfies ToWorker);
+    };
+  }
+  realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
+  return () => {
+    if (loopbackRequests.delete(id)) realPostMessage({ type: 'lb-cancel', id } satisfies ToParent);
+  };
 };
+
+/** A request from the parent that this runtime forwarded to a nested one: its cancel goes on there. */
+export function cancelForwarded(id: number): boolean {
+  const worker = inflight.get(id);
+  if (!worker) return false;
+  inflight.delete(id);
+  worker.postMessage({ type: 'request-cancel', id } satisfies ToWorker);
+  return true;
+}
 
 /** A request from the page or the parent for a port a nested runtime serves: down to it. */
 export function forwardRequest(msg: Extract<ToWorker, { type: 'request' }>) {
@@ -224,6 +241,9 @@ export function loopbackServersGone(): void {
 /** For tests (test/runtime): how many loopback requests this runtime's servers are answering. */
 (globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.servingLoopback')] = () => servingLoopback.size;
 
+/** What tells the server of each loopback request from a nested runtime that its client went away, by runtime and id. */
+const loopbackCancels = new WeakMap<globalThis.Worker, Map<number, () => void>>();
+
 /** A loopback request from a nested runtime: served here, or routed on (see loopback.route). */
 function loopbackRequest(m: { id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }, from: globalThis.Worker) {
   const reply = (x: ToWorker, t: Transferable[] = []) => from.postMessage(x, t);
@@ -234,8 +254,11 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
     const was = open;
     open = false;
     servingLoopback.delete(bridge);
+    cancels.delete(id);
     return was;
   };
+  const cancels = loopbackCancels.get(from) ?? new Map<number, () => void>();
+  loopbackCancels.set(from, cancels);
   const bridge = {
     start: (status: number, statusText: string, headers: [string, string][]) => open && reply({ type: 'lb-start', id, status, statusText, headers }),
     chunk: (data: Uint8Array) => {
@@ -254,9 +277,12 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
       // Until it is answered (close()): a response the handler destroys is answered later, its error async.
       const entry = { from, abort: () => {} };
       servingLoopback.set(bridge, entry);
+      cancels.set(id, () => close() && entry.abort());
       entry.abort = server.dispatch(m.method, m.url, m.headers, body, bridge);
-    } else if (nestedPorts.get(m.port) === from || !loopback.route!(m.port, m.method, m.url, m.headers, body, bridge)) {
-      bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
+    } else {
+      const cancel = nestedPorts.get(m.port) !== from && loopback.route!(m.port, m.method, m.url, m.headers, body, bridge);
+      if (!cancel) bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
+      else if (open) cancels.set(id, () => close() && cancel());
     }
   } catch (e) {
     // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
@@ -312,6 +338,9 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
       return true;
     case 'lb-request':
       loopbackRequest(m, from);
+      return true;
+    case 'lb-cancel':
+      loopbackCancels.get(from)?.get(m.id)?.();
       return true;
     case 'listening':
       nestedPorts.set(m.port, from);
