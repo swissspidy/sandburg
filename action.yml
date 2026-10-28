@@ -1,0 +1,139 @@
+# Run a project in Sandburg and check it (docs/guide/agents-and-ci.md#github-action):
+#
+#   - uses: swissspidy/sandburg@v0
+#     with:
+#       project: ./my-app
+#       checks: ./my-app/checks.spec.ts
+#
+# It installs the sandburg package from npm, not this checkout: by default the version this ref's
+# package.json names, so a tag of the action runs the package release it was tagged with.
+name: Sandburg
+description: Run and test a generated web app in the browser with Sandburg.
+author: swissspidy
+branding:
+  icon: check-circle
+  color: orange
+
+inputs:
+  project:
+    description: The project to run (a directory, a .zip, a JSON file tree or snapshot:<id>), relative to the workspace.
+    default: "."
+  checks:
+    description: A checks file (--checks). Empty runs only the built-in checks.
+    default: ""
+  args:
+    description: More options for `sandburg run`, split on whitespace (e.g. "--checks-in page --ready main").
+    default: ""
+  node-version:
+    description: The Node.js version to set up (24 or later).
+    default: "24"
+  sandburg-version:
+    description: >-
+      The sandburg package to install: a version, range or dist-tag (0.2.0, ^0.2, latest), or an npm
+      spec such as a path to a packed .tgz. Default: the version in this action ref's package.json.
+    default: ""
+  artifact-name:
+    description: The name of the uploaded artifact with .sandburg/runs. Set it per job in a matrix.
+    default: sandburg-runs
+
+outputs:
+  status:
+    description: The run's status (passed, failed or error); error also when sandburg printed no result.
+    value: ${{ steps.run.outputs.status }}
+  result-path:
+    description: The path of the run's result.json, relative to the workspace (empty when there is none).
+    value: ${{ steps.run.outputs.result-path }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
+
+    # Into the runner's temp directory, not the project: the project's own package.json and
+    # lockfile stay as they are.
+    - id: install
+      name: Install sandburg
+      shell: bash
+      env:
+        SANDBURG_SPEC: ${{ inputs.sandburg-version }}
+      # Installing the package outside a lockfile is what this step is for.
+      run: | # zizmor: ignore[adhoc-packages]
+        spec="$SANDBURG_SPEC"
+        if [ -z "$spec" ]; then
+          spec="$(node -p 'require(process.argv[1]).version' "$GITHUB_ACTION_PATH/package.json")"
+        fi
+        # A version, range or dist-tag is the sandburg package's; anything else is an npm spec.
+        version='^[-A-Za-z0-9.^~<>=*| ]+$'
+        if [[ "$spec" =~ $version ]]; then
+          spec="sandburg@$spec"
+        elif [[ "$spec" == ./* || "$spec" == ../* ]]; then
+          spec="$(realpath "$spec")"
+        fi
+        prefix="$RUNNER_TEMP/sandburg"
+        mkdir -p "$prefix"
+        echo '{"private":true}' > "$prefix/package.json"
+        npm install --prefix "$prefix" --no-audit --no-fund "$spec"
+        echo "bin=$prefix/node_modules/.bin" >> "$GITHUB_OUTPUT"
+        echo "playwright=$(node -p 'require(process.argv[1]).version' "$prefix/node_modules/playwright-core/package.json")" >> "$GITHUB_OUTPUT"
+
+    # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later restrict them
+    # with AppArmor. Lifting the restriction keeps the sandbox on (docs/guide/troubleshooting.md).
+    - name: Allow Chromium's sandbox
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] && command -v sudo >/dev/null; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+
+    # The browsers a Playwright version downloads are fixed by that version: it is the whole key.
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: sandburg-ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.install.outputs.playwright }}
+
+    # On a cache hit, `install` downloads nothing. The system libraries (apt) only if Chromium does
+    # not start without them: hosted runners have them.
+    - name: Install Chromium
+      shell: bash
+      env:
+        SANDBURG_BIN: ${{ steps.install.outputs.bin }}
+      run: |
+        "$SANDBURG_BIN/playwright-core" install chromium
+        if ! (cd "$SANDBURG_BIN/../.." && node -e "require('playwright-core').chromium.launch().then((b) => b.close())"); then
+          "$SANDBURG_BIN/playwright-core" install-deps chromium
+        fi
+
+    - id: run
+      name: sandburg run
+      shell: bash
+      env:
+        SANDBURG_BIN: ${{ steps.install.outputs.bin }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_CHECKS: ${{ inputs.checks }}
+        INPUT_ARGS: ${{ inputs.args }}
+      run: |
+        args=(run "$INPUT_PROJECT" --json --out .sandburg/runs)
+        if [ -n "$INPUT_CHECKS" ]; then args+=(--checks "$INPUT_CHECKS"); fi
+        # Split on whitespace, without globbing: no quoting inside args.
+        set -f
+        # shellcheck disable=SC2206
+        if [ -n "$INPUT_ARGS" ]; then args+=($INPUT_ARGS); fi
+        set +f
+        out="$RUNNER_TEMP/sandburg-result.json"
+        code=0
+        "$SANDBURG_BIN/sandburg" "${args[@]}" > "$out" || code=$?
+        node "$GITHUB_ACTION_PATH/scripts/action-result.ts" "$out" "$code"
+        exit "$code"
+
+    - name: Upload .sandburg/runs
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: .sandburg/runs
+        if-no-files-found: ignore
+        retention-days: 14

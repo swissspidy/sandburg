@@ -4,9 +4,9 @@ name: Workflows
 on:
   push:
     branches: [main]
-    paths: [".github/**"]
+    paths: [".github/**", "action.yml"]
   pull_request:
-    paths: [".github/**"]
+    paths: [".github/**", "action.yml"]
 
 permissions:
   contents: read

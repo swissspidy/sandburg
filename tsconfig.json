@@ -30,6 +30,8 @@
     "scripts/split-worker.ts",
     "scripts/split-page-checks.ts",
     "scripts/test-times.ts",
+    "scripts/action-result.ts",
+    "scripts/doc-links.ts",
     "pages/compile.ts",
     "pages/generate",
     "evals",
