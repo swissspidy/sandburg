@@ -281,9 +281,11 @@ export const node: AdapterDescriptor = {
   probe(project: Project) {
     // A dependency neither install can give it (git, a URL, a directory outside the project) is said
     // here, before anything is installed. A local package that is not there is the install's to report.
+    // The client/ and server/ packages installed as projects of their own too.
     if (project.framework !== 'static') {
       try {
-        planOf(project);
+        const plan = planOf(project);
+        for (const dir of packageDirs(project, plan.local)) planOf(subProject(project, dir));
       } catch (e) {
         if (e instanceof UnsupportedDependencyError) return { verdict: 'unsupported', reason: e.message };
       }

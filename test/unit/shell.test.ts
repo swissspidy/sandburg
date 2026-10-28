@@ -201,3 +201,10 @@ test("scripts and binaries an object has from its prototype are not a package's"
     assert.deepEqual(s.ran, [], script);
   }
 });
+
+test("a script's own arguments after -- may look like the package manager's (-r, --workspaces)", async () => {
+  const files = { '/app/package.json': JSON.stringify({ scripts: { test: 'node t.js' } }) };
+  const s = run('npm test -- -r dotenv/config --workspaces', { files });
+  assert.equal(await s.exit, 0);
+  assert.deepEqual(s.argv(), ['t.js -r dotenv/config --workspaces']);
+});

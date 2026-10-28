@@ -209,8 +209,15 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   for (const w of wants) {
     if (!w.dir) (w.field === 'dependencies' ? dependencies : devDependencies)[w.name] = w.spec;
   }
+  // A name the root links to a local package of its own keeps the top: a local package's registry
+  // range of it goes into that package's node_modules.
+  const rootLinked = new Set(declared.filter((d) => !d.dir).map((d) => d.name));
   for (const w of wants) {
     if (!w.dir) continue;
+    if (rootLinked.has(w.name)) {
+      nested.set(w.dir, { ...nested.get(w.dir), [w.name]: w.spec });
+      continue;
+    }
     const there = hoisted(w.name);
     // A local package's dependencies are installed with the root's: one copy, which every package
     // finds (two copies of React in one app do not work). Only a range that copy cannot serve (the

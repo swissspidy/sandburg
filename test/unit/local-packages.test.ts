@@ -368,3 +368,28 @@ test('a drive anywhere in a local path is outside the project', () => {
     assert.equal(code(() => plan({ '': { dependencies: { x: spec } }, lib: { name: 'lib' } })), 'UNSUPPORTED', spec);
   }
 });
+
+test("a name the root links locally keeps the top; a workspace's registry range of it is nested", () => {
+  const p = plan({
+    '': { workspaces: ['apps/*'], dependencies: { ms: 'file:./vendor/ms' } },
+    'apps/web': { name: 'web', dependencies: { ms: '^2.0.0' } },
+    'vendor/ms': { name: 'ms', version: '0.0.0-local' },
+  });
+  assert.equal(p.links['node_modules/ms'], 'vendor/ms');
+  assert.equal(p.root.dependencies?.ms, undefined);
+  assert.deepEqual(p.nested, [{ dir: 'apps/web', dependencies: { ms: '^2.0.0' }, lockfile: null }]);
+});
+
+test('the probe refuses what a client/ or server/ package of its own cannot install, before anything is', () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ scripts: { dev: 'concurrently "npm run dev --prefix server" "npm run dev --prefix client"' } }),
+      'client/package.json': JSON.stringify({ dependencies: { vite: '^8.0.0' } }),
+      'server/package.json': JSON.stringify({ dependencies: { api: 'github:user/api' } }),
+    },
+    { name: 'split', path: 'split' },
+  );
+  const probe = node.probe(project);
+  assert.equal(probe.verdict, 'unsupported');
+  assert.match((probe as { reason: string }).reason, /^api@github:user\/api: a git repository dependency/);
+});
