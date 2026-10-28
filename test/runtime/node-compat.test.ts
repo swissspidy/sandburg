@@ -803,6 +803,736 @@ test("http: 'clientError' comes after res.destroy(err) returns; what its listene
   assert.equal(out.stdout, 'after destroy\nclientError x\nuncaught thrown\n');
 });
 
+test('http: req.abort() destroys the request (no error) and emits \'abort\'; with a response in flight, that is aborted', async () => {
+  const out = await h.run({ 'main.js': `
+        // req.abort() before a response, and with one in flight; to a server of this program's and (REMOTE) another origin's.
+        const http = require('http');
+        const lines = [];
+        http.createServer((req, res) => {
+          if (req.url === '/hold') {
+            res.writeHead(200);
+            res.write('a');
+          } else res.end('ok');
+        }).listen(3010, async () => {
+          for (const [ok, hold] of [['http://localhost:3010/ok', 'http://localhost:3010/hold'], [process.env.REMOTE + '/__test/remote', process.env.REMOTE + '/__test/hold']]) {
+            lines.push(await new Promise((done) => {
+              const log = [];
+              const req = http.get(ok, () => log.push('response'));
+              req.on('abort', () => log.push('abort'));
+              req.on('error', (e) => log.push('error ' + e.code));
+              req.on('close', () => log.push('close destroyed=' + req.destroyed));
+              req.abort();
+              setTimeout(() => done(log.join(',')), 200);
+            }));
+            lines.push(await new Promise((done) => {
+              const log = [];
+              const req = http.get(hold, (res) => {
+                log.push('response');
+                res.on('aborted', () => log.push('res aborted'));
+                res.on('error', (e) => log.push('res error ' + e.code));
+                res.on('close', () => log.push('res close'));
+                req.abort();
+              });
+              req.on('abort', () => log.push('abort'));
+              req.on('error', (e) => log.push('error ' + e.code));
+              req.on('close', () => log.push('close'));
+              setTimeout(() => done(log.join(',')), 200);
+            }));
+          }
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        });` }, '/app/main.js', [], undefined, { env: { REMOTE: `http://fetch.localhost:${h.port}` } });
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const before = 'close destroyed=true,abort';
+  const inFlight = 'response,abort,res aborted,close,res error ECONNRESET,res close';
+  assert.deepEqual(out.stdout.trim().split('\n'), [before, inFlight, before, inFlight]);
+});
+
+test('http: a server learns its client went away: the request destroyed or aborted, or its response destroyed, before or after a response', async () => {
+  const out = await h.run({ 'main.js': `
+        // The server learns its client went away: the request destroyed or aborted, or its response destroyed; or the request destroyed before any response.
+        const http = require('http');
+        const lines = [];
+        let log;
+        http.createServer((req, res) => {
+          log.push('server request');
+          req.on('aborted', () => log.push('server aborted'));
+          req.on('close', () => log.push('server req close'));
+          res.on('close', () => log.push('server res close'));
+          if (req.url === '/silent') return;
+          res.writeHead(200);
+          res.write('a');
+        }).listen(3011, async () => {
+          for (const how of ['req.destroy', 'res.destroy', 'req.abort']) {
+            log = [];
+            await new Promise((done) => {
+              const req = http.get('http://localhost:3011/', (res) => {
+                res.on('error', () => {});
+                setTimeout(() => (how === 'res.destroy' ? res.destroy() : how === 'req.destroy' ? req.destroy() : req.abort()), 20);
+              });
+              req.on('error', () => {});
+              setTimeout(done, 200);
+            });
+            lines.push(how + ': ' + log.join(','));
+          }
+          // Destroyed before any response.
+          log = [];
+          await new Promise((done) => {
+            const req = http.get('http://localhost:3011/silent');
+            req.on('error', () => {});
+            setTimeout(() => req.destroy(), 20);
+            setTimeout(done, 200);
+          });
+          lines.push('before a response: ' + log.join(','));
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const events = 'server request,server aborted,server res close,server req close';
+  assert.deepEqual(out.stdout.trim().split('\n'), [`req.destroy: ${events}`, `res.destroy: ${events}`, `req.abort: ${events}`, `before a response: ${events}`]);
+});
+
+test("http: a server in another process (a child's, its parent's) learns its client went away", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const http = require('http');
+        const { fork } = require('child_process');
+        const lines = [];
+        const log = [];
+        http.createServer((req, res) => {
+          log.push('server request');
+          req.on('aborted', () => log.push('server aborted'));
+          req.on('close', () => log.push('server req close'));
+          res.on('close', () => log.push('server res close'));
+          res.writeHead(200);
+          res.write('a');
+        }).listen(3020, () => {
+          const child = fork(__dirname + '/child.js');
+          child.on('message', (m) => {
+            if (m === 'listening') {
+              // To the child's server, which learns this client went away.
+              const req = http.get('http://localhost:3021/', (res) => {
+                res.on('error', () => {});
+                setTimeout(() => req.destroy(), 20);
+              });
+              req.on('error', () => {});
+            } else if (m.child) {
+              lines.push('child server: ' + m.child);
+              child.send('client');
+            } else if (m === 'client done') {
+              setTimeout(() => {
+                lines.push('parent server: ' + log.join(','));
+                console.log(lines.join('\\n'));
+                process.exit(0);
+              }, 200);
+            }
+          });
+        });`,
+      'child.js': `
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => {
+          log.push('server request');
+          req.on('aborted', () => log.push('server aborted'));
+          req.on('close', () => log.push('server req close'));
+          res.on('close', () => {
+            log.push('server res close');
+            setTimeout(() => process.send({ child: log.join(',') }), 50);
+          });
+          res.writeHead(200);
+          res.write('a');
+        }).listen(3021, () => process.send('listening'));
+        process.on('message', (m) => {
+          if (m !== 'client') return;
+          // To the parent's server, which learns this client went away.
+          const req = http.get('http://localhost:3020/', (res) => {
+            res.on('error', () => {});
+            setTimeout(() => {
+              req.destroy();
+              setTimeout(() => process.send('client done'), 50);
+            }, 20);
+          });
+          req.on('error', () => {});
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const events = 'server request,server aborted,server res close,server req close';
+  assert.deepEqual(out.stdout.trim().split('\n'), [`child server: ${events}`, `parent server: ${events}`]);
+});
+
+test('http: what a response wrote in the tick it is destroyed in does not go out: its client sees only the reset', async () => {
+  const out = await h.run({ 'main.js': `
+        const http = require('http');
+        http.createServer((req, res) => {
+          res.write('a');
+          res.destroy(new Error('x'));
+        }).listen(3012, () => {
+          const log = [];
+          http.get('http://localhost:3012/', (res) => {
+            log.push('response ' + res.statusCode);
+            res.on('error', (e) => log.push('res error ' + e.code));
+            res.on('aborted', () => log.push('res aborted'));
+          }).on('error', (e) => log.push('req error ' + e.code + ' ' + e.message));
+          setTimeout(() => {
+            console.log(log.join(','));
+            process.exit(0);
+          }, 200);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'req error ECONNRESET socket hang up\n');
+});
+
+test("http: req.destroy(err) with a response in flight: the request's error, then the response is aborted", async () => {
+  const out = await h.run({ 'main.js': `
+        const http = require('http');
+        http.createServer((req, res) => {
+          res.writeHead(200);
+          res.write('a');
+        }).listen(3013, () => {
+          const log = [];
+          const req = http.get('http://localhost:3013/', (res) => {
+            log.push('response');
+            res.on('aborted', () => log.push('res aborted'));
+            res.on('error', (e) => log.push('res error ' + e.code + ' ' + e.message));
+            res.on('close', () => log.push('res close'));
+            req.destroy(new Error('mine'));
+          });
+          req.on('error', (e) => log.push('req error ' + e.message));
+          req.on('close', () => log.push('req close'));
+          setTimeout(() => {
+            console.log(log.join(','));
+            process.exit(0);
+          }, 200);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'response,req error mine,res aborted,req close,res error ECONNRESET aborted,res close\n');
+});
+
+test("http: req.setTimeout(ms, cb) and the timeout option emit 'timeout' once the request is idle that long", async () => {
+  const out = await h.run({ 'main.js': `
+        // req.setTimeout(ms, cb), and http.get's timeout option, on a request its server never answers.
+        const http = require('http');
+        const lines = [];
+        http.createServer(() => {}).listen(3014, async () => {
+          lines.push(await new Promise((done) => {
+            const log = [];
+            const req = http.get('http://localhost:3014/');
+            req.setTimeout(50, () => {
+              log.push('timeout cb');
+              req.destroy();
+            });
+            req.on('timeout', () => log.push('req timeout'));
+            req.on('error', (e) => log.push('req error ' + e.code));
+            req.on('close', () => done(log.concat('req close').join(' | ')));
+          }));
+          lines.push(await new Promise((done) => {
+            const log = [];
+            const req = http.get({ port: 3014, path: '/', timeout: 50 });
+            req.on('timeout', () => {
+              log.push('req timeout');
+              req.destroy();
+            });
+            req.on('error', (e) => log.push('req error ' + e.code));
+            req.on('close', () => done(log.concat('req close').join(' | ')));
+          }));
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['timeout cb | req timeout | req error ECONNRESET | req close', 'req timeout | req error ECONNRESET | req close']);
+});
+
+test("http: a request's timeout counts idle time: not while its response keeps coming, nor once it completed", async () => {
+  const out = await h.run({ 'main.js': `
+        // The timeout counts idle time only: a response that keeps coming (a chunk each 50 ms for 500 ms,
+        // timeout 200) is not timed out, and a request that completed is not timed out after. Each case is
+        // reported once its request closed and twice the timeout went by, whatever the machine's speed.
+        const http = require('http');
+        const lines = [];
+        http.createServer((req, res) => {
+          if (req.url === '/quick') return res.end('done');
+          let n = 0;
+          res.writeHead(200);
+          const tick = setInterval(() => {
+            res.write('x');
+            if (++n === 10) {
+              clearInterval(tick);
+              res.end();
+            }
+          }, 50);
+        }).listen(3017, async () => {
+          for (const path of ['/trickle', '/quick']) {
+            lines.push(await new Promise((done) => {
+              const log = [path];
+              const req = http.get('http://localhost:3017' + path, (res) => {
+                let body = '';
+                res.on('data', (d) => (body += d));
+                res.on('end', () => log.push('end ' + body));
+              });
+              req.setTimeout(200, () => log.push('timeout'));
+              req.on('close', () => {
+                log.push('req close');
+                setTimeout(() => done(log.join(' | ')), 400);
+              });
+            }));
+          }
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['/trickle | end xxxxxxxxxx | req close', '/quick | end done | req close']);
+});
+
+test("http: a response's start is activity for its request's timeout", async () => {
+  const out = await h.run({ 'main.js': `
+        // The response's start is activity too: headers late in the timeout (300 of 400 ms), the body 300 ms
+        // after. Reported once the request closed.
+        const http = require('http');
+        http.createServer((req, res) => {
+          setTimeout(() => res.flushHeaders(), 300);
+          setTimeout(() => res.end('late'), 600);
+        }).listen(3018, () => {
+          const log = [];
+          const req = http.get('http://localhost:3018/', (res) => {
+            log.push('response');
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('end', () => log.push('end ' + body));
+          });
+          req.setTimeout(400, () => log.push('timeout'));
+          req.on('close', () => {
+            console.log(log.concat('req close').join(' | '));
+            process.exit(0);
+          });
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'response | end late | req close\n');
+});
+
+test("http: an agent's maxSockets: its requests to a host wait for one of its sockets", async () => {
+  const out = await h.run({ 'main.js': `
+        // An agent's maxSockets: its requests to a host go one at a time (here, one socket).
+        const http = require('http');
+        const log = [];
+        let active = 0;
+        http.createServer((req, res) => {
+          active++;
+          log.push('start ' + req.url + ' active=' + active);
+          setTimeout(() => {
+            active--;
+            res.end('x');
+          }, 50);
+        }).listen(3015, () => {
+          const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+          let n = 0;
+          for (const path of ['/a', '/b', '/c']) {
+            http.get({ port: 3015, path, agent }, (res) => {
+              res.resume();
+              res.on('end', () => {
+                if (++n < 3) return;
+                console.log(log.join(' | '));
+                process.exit(0);
+              });
+            });
+          }
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'start /a active=1 | start /b active=1 | start /c active=1\n');
+});
+
+test("http: stray loopback messages after cancel: what a child's server sent for a request its parent cancelled reaches no one", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // Requests to a child's server cancelled mid-stream (its response destroyed) or as it answers with a
+        // cookie (the request destroyed): what the child had already sent for them goes nowhere.
+        const http = require('http');
+        const { fork } = require('child_process');
+        const child = fork(__dirname + '/child.js');
+        child.on('message', async () => {
+          let n = 0;
+          for (let i = 0; i < 20; i++) {
+            await new Promise((done) => {
+              const req = http.get('http://localhost:3040/stream', (res) => {
+                res.on('error', () => {});
+                res.once('data', () => {
+                  res.destroy();
+                  setTimeout(done, 10);
+                });
+              });
+              req.on('error', () => done());
+            });
+            await new Promise((done) => {
+              const req = http.get('http://localhost:3040/cookie', (res) => res.resume());
+              req.on('error', () => {});
+              setTimeout(() => {
+                req.destroy();
+                setTimeout(done, 10);
+              }, i % 4);
+            });
+            n++;
+          }
+          console.log('done ' + n);
+          child.kill();
+          process.exit(0);
+        });`,
+      'child.js': `
+        require('http').createServer((req, res) => {
+          if (req.url === '/cookie') {
+            res.setHeader('set-cookie', 'stray=1');
+            return res.end('c');
+          }
+          res.writeHead(200);
+          const tick = setInterval(() => res.write('x'.repeat(100)), 1);
+          res.on('close', () => clearInterval(tick));
+        }).listen(3040, () => process.send('ready'));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    // What the child sent last comes after: the run is kept to see it.
+    { linger: 500 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'done 20\n');
+  assert.deepEqual(out.stray, []);
+});
+
+test('http: res.flushHeaders() sends the headers at once: a destroy right after cuts the response short', async () => {
+  const out = await h.run({ 'main.js': `
+        // res.flushHeaders() sends the headers at once: a destroy right after cuts the response short, not the request.
+        const http = require('http');
+        http.createServer((req, res) => {
+          res.writeHead(200);
+          res.flushHeaders();
+          res.destroy();
+        }).listen(3030, () => {
+          const log = [];
+          http.get('http://localhost:3030/', (res) => {
+            log.push('response ' + res.statusCode);
+            res.on('aborted', () => log.push('aborted'));
+            res.on('error', (e) => log.push('res error ' + e.code));
+          }).on('error', (e) => log.push('req error ' + e.code + ' ' + e.message));
+          setTimeout(() => {
+            console.log(log.join(', '));
+            process.exit(0);
+          }, 200);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'response 200, aborted, res error ECONNRESET\n');
+});
+
+test("http: a request's timeout starts once it has a socket, not while it waits for one of its agent's", async () => {
+  const out = await h.run({ 'main.js': `
+        // A request's timeout starts once it has a socket, not while it waits in its agent's queue: /a (600 ms)
+        // times out at 300; /b (50 ms) waits for its socket meanwhile, then is answered. Reported once both
+        // closed and twice the timeout went by, whatever the machine's speed.
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => setTimeout(() => res.end('x'), req.url === '/a' ? 600 : 50)).listen(3031, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          let open = 2;
+          for (const path of ['/a', '/b']) {
+            const req = http.get({ port: 3031, path, agent, timeout: 300 }, (res) => {
+              res.resume();
+              res.on('end', () => log.push('end ' + path));
+            });
+            req.on('timeout', () => {
+              log.push('timeout ' + path);
+              req.destroy();
+            });
+            req.on('error', (e) => log.push('error ' + path + ' ' + e.code));
+            req.on('close', () => {
+              if (--open) return;
+              setTimeout(() => {
+                console.log(log.join(' | '));
+                process.exit(0);
+              }, 600);
+            });
+          }
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'timeout /a | error /a ECONNRESET | end /b\n');
+});
+
+test("http: an agent's requests get its sockets in the order they were made", async () => {
+  const out = await h.run({ 'main.js': `
+        // An agent's queue goes in the order the requests were made, not the order they were ended.
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => {
+          log.push(req.url);
+          setTimeout(() => res.end('x'), 30);
+        }).listen(3032, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const reqs = ['/a', '/b', '/c'].map((path) => http.request({ port: 3032, path, agent }, (res) => res.resume()));
+          for (const req of reqs.reverse()) req.end();
+          setTimeout(() => {
+            console.log(log.join(' '));
+            process.exit(0);
+          }, 400);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, '/a /b /c\n');
+});
+
+test("http: a request made and not ended keeps its agent's socket", async () => {
+  const out = await h.run({ 'main.js': `
+        // A request made and not ended holds its agent's socket: the next waits until it is ended (and answered).
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => {
+          log.push('start ' + req.url);
+          res.end('x');
+        }).listen(3035, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const a = http.request({ port: 3035, path: '/a', agent }, (res) => res.resume());
+          http.get({ port: 3035, path: '/b', agent }, (res) => res.resume());
+          setTimeout(() => {
+            log.push('ending /a');
+            a.end();
+          }, 150);
+          setTimeout(() => {
+            console.log(log.join(' | '));
+            process.exit(0);
+          }, 400);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'ending /a | start /a | start /b\n');
+});
+
+test("http: a request's 'timeout' comes once (setTimeout again in its handler makes no other)", async () => {
+  const out = await h.run({ 'main.js': `
+        // 'timeout' comes once: setTimeout again in its handler does not make another (it would at 500 ms, before
+        // the response at 1200). Reported once the request closed.
+        const http = require('http');
+        http.createServer((req, res) => setTimeout(() => res.end('x'), 1200)).listen(3033, () => {
+          const log = [];
+          const req = http.get('http://localhost:3033/', (res) => {
+            res.resume();
+            res.on('end', () => log.push('end'));
+          });
+          req.setTimeout(300, () => {
+            log.push('timeout');
+            req.setTimeout(200);
+          });
+          req.on('timeout', () => log.push('req timeout'));
+          req.on('close', () => {
+            log.push('close');
+            console.log(log.join(' | '));
+            process.exit(0);
+          });
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'timeout | req timeout | end | close\n');
+});
+
+test('http: req.destroy() then req.abort() in the same tick, before a response: it was aborted (no error)', async () => {
+  const out = await h.run({ 'main.js': `
+        // req.destroy() then req.abort() in the same tick, before a response.
+        const http = require('http');
+        http.createServer((req, res) => res.end('ok')).listen(3034, () => {
+          const log = [];
+          const req = http.get('http://localhost:3034/');
+          req.on('abort', () => log.push('abort'));
+          req.on('error', (e) => log.push('error ' + e.message));
+          req.on('close', () => log.push('close'));
+          req.destroy();
+          req.abort();
+          setTimeout(() => {
+            console.log(log.join(', '));
+            process.exit(0);
+          }, 200);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'close, abort\n');
+});
+
+test("http: a child that dies with a request to its sibling's server (through their parent) aborts it there", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // A child's request to its sibling's server (through their parent): the child dies, and its sibling's server learns it.
+        const { fork } = require('child_process');
+        const server = fork(__dirname + '/server.js');
+        server.on('message', (m) => {
+          if (m === 'listening') {
+            const client = fork(__dirname + '/client.js');
+            client.on('message', () => client.kill());
+          } else {
+            console.log(m);
+            server.kill();
+            process.exit(0);
+          }
+        });`,
+      'server.js': `
+        const log = [];
+        require('http').createServer((req, res) => {
+          log.push('request');
+          req.on('aborted', () => log.push('aborted'));
+          req.on('close', () => log.push('req close'));
+          res.on('close', () => {
+            log.push('res close');
+            setTimeout(() => process.send(log.join(',')), 50);
+          });
+          res.writeHead(200);
+          res.write('a');
+        }).listen(3041, () => process.send('listening'));`,
+      'client.js': `
+        require('http').get('http://localhost:3041/', (res) => res.once('data', () => process.send('got')));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'request,aborted,res close,req close\n');
+});
+
+test("http: a child's server that flushes its headers and is destroyed: its client in the parent gets the response, then its abort", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // A child's server sends its headers (flushHeaders) and is destroyed: its client here gets the response,
+        // then its abort; what the server wrote in the same tick after its headers does not come.
+        const http = require('http');
+        const { fork } = require('child_process');
+        const child = fork(__dirname + '/child.js');
+        child.on('message', async () => {
+          const lines = [];
+          for (const path of ['/flush', '/flush-write']) {
+            lines.push(await new Promise((done) => {
+              const log = [path];
+              http.get('http://localhost:3050' + path, (res) => {
+                log.push('response ' + res.statusCode);
+                res.on('data', (d) => log.push('data ' + d));
+                res.on('aborted', () => log.push('aborted'));
+                res.on('error', (e) => log.push('res error ' + e.code));
+                res.on('close', () => setTimeout(() => done(log.join(', ')), 20));
+              }).on('error', (e) => done(log.concat('req error ' + e.code + ' ' + e.message).join(', ')));
+            }));
+          }
+          console.log(lines.join('\\n'));
+          child.kill();
+          process.exit(0);
+        });`,
+      'child.js': `
+        require('http').createServer((req, res) => {
+          res.writeHead(200);
+          res.flushHeaders();
+          if (req.url === '/flush-write') res.write('a');
+          res.destroy();
+        }).listen(3050, () => process.send('ready'));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['/flush, response 200, aborted, res error ECONNRESET', '/flush-write, response 200, aborted, res error ECONNRESET']);
+});
+
+test('http: a server that flushes its headers and is destroyed: the page gets the response start, then the error, and nothing written after', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        require('http').createServer((req, res) => {
+          res.writeHead(200);
+          res.flushHeaders();
+          if (req.url === '/flush-write') res.write('a');
+          res.destroy();
+        }).listen(3000);`,
+    },
+    '/app/main.js',
+    [{ url: '/flush' }, { url: '/flush-write' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.ends, [['response-error', 0], ['response-error', 1]]);
+  assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[200, ''], [200, '']]);
+});
+
+test('http: destroy() then abort(), or abort() alone, once the request has its socket: \'abort\', the error (socket hang up), then \'close\'', async () => {
+  const out = await h.run({ 'main.js': `
+        // destroy() then abort(), and abort() alone, once the request has its socket (20 ms in), before a response.
+        const http = require('http');
+        const lines = [];
+        http.createServer(() => {}).listen(3051, async () => {
+          for (const how of ['destroy+abort', 'abort']) {
+            lines.push(await new Promise((done) => {
+              const log = [how + ':'];
+              const req = http.get('http://localhost:3051/');
+              req.on('abort', () => log.push('abort'));
+              req.on('error', (e) => log.push('error ' + e.message));
+              req.on('close', () => {
+                log.push('close');
+                setTimeout(() => done(log.join(' ')), 20);
+              });
+              setTimeout(() => {
+                if (how === 'destroy+abort') req.destroy();
+                req.abort();
+              }, 20);
+            }));
+          }
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'destroy+abort: abort error socket hang up close\nabort: abort error socket hang up close\n');
+});
+
+test("http: a response nobody listens for is read and dropped: its request closes and frees its agent's socket", async () => {
+  const out = await h.run({ 'main.js': `
+        // A response nobody listens for is read and dropped: its request closes, and frees its agent's socket.
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => res.end('x')).listen(3052, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const r1 = http.get({ port: 3052, path: '/1', agent });
+          r1.on('close', () => log.push('r1 close'));
+          http.get({ port: 3052, path: '/2', agent }, (res) => {
+            res.resume();
+            res.on('end', () => {
+              log.push('r2 end');
+              // Without an agent too.
+              const r3 = http.get('http://localhost:3052/3');
+              r3.on('close', () => {
+                log.push('r3 close');
+                console.log(log.join(', '));
+                process.exit(0);
+              });
+            });
+          });
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'r1 close, r2 end, r3 close\n');
+});
+
+test("process.exit() in an 'uncaughtException' or 'unhandledRejection' handler ends the process with its code", async () => {
+  const outs = [];
+  for (const program of [
+    `
+      process.on('uncaughtException', (e) => {
+        console.log('caught ' + e.message);
+        process.exit(4);
+      });
+      setTimeout(() => {
+        throw new Error('boom');
+      }, 10);
+      setTimeout(() => console.log('still alive'), 500);`,
+    `
+      process.on('unhandledRejection', (e) => {
+        console.log('rejected ' + e.message);
+        process.exit(5);
+      });
+      setTimeout(() => Promise.reject(new Error('nope')), 10);
+      setTimeout(() => console.log('still alive'), 500);`,
+  ]) {
+    const out = await h.run({ 'main.js': program }, '/app/main.js');
+    assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+    outs.push([out.stdout, out.exit]);
+  }
+  assert.deepEqual(outs, [['caught boom\n', 4], ['rejected nope\n', 5]]);
+});
+
 test('http: a response its handler destroys is reset, not left waiting', { timeout: 30_000 }, async () => {
   const out = await h.run(
     {
@@ -918,4 +1648,441 @@ test('child_process: a shell command killed exits with its signal, not the shell
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout, 'exit [null,"SIGTERM",true,null,"SIGTERM"]\n');
+});
+
+test('child_process: execSync, execFileSync and spawnSync run Node programs and shell commands while the caller waits', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // Called before the program has run a task: the helper that starts the child is waited for.
+        const cp = require('child_process');
+        const fs = require('fs');
+        const out = {};
+        out.top = cp.execSync('node -e "console.log(6 * 7)"', { encoding: 'utf8' });
+        fs.writeFileSync('from-parent.txt', 'shared');
+        out.execSync = cp.execSync('node child.js one "two words"');
+        out.execFileSync = cp.execFileSync(process.execPath, ['child.js', 'three'], { encoding: 'utf8', env: { GREETING: 'hello' } });
+        const r = cp.spawnSync(process.execPath, ['-e', 'require("fs").writeFileSync("from-child.txt", "written"); console.error("to stderr")']);
+        out.spawnSync = [r.status, r.signal, r.stdout, r.stderr.toString(), r.output.map((o) => o && o.toString()), Buffer.isBuffer(r.stdout), typeof r.pid, 'error' in r];
+        out.fromChild = fs.readFileSync('from-child.txt', 'utf8');
+        out.shell = cp.spawnSync('echo a && node -p "1 + 1" && echo b', { shell: true, encoding: 'utf8' }).stdout;
+        out.nested = cp.execSync(\`node -e "console.log(require('child_process').execSync('node -p 2+3', { encoding: 'utf8' }).trim())"\`, { encoding: 'utf8' });
+        console.log(JSON.stringify(out));`,
+      'child.js': `
+        console.log(JSON.stringify({ argv: process.argv.slice(2), greeting: process.env.GREETING, read: require('fs').readFileSync('from-parent.txt', 'utf8') }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const shown = JSON.stringify({ argv: ['one', 'two words'], read: 'shared' });
+  assert.deepEqual(JSON.parse(out.stdout), {
+    top: '42\n',
+    execSync: { type: 'Buffer', data: [...Buffer.from(`${shown}\n`)] },
+    execFileSync: `${JSON.stringify({ argv: ['three'], greeting: 'hello', read: 'shared' })}\n`,
+    spawnSync: [0, null, { type: 'Buffer', data: [] }, 'to stderr\n', [null, '', 'to stderr\n'], true, 'number', false],
+    fromChild: 'written',
+    shell: 'a\n2\nb\n',
+    nested: '5\n',
+  });
+});
+
+test("child_process: a synchronous command's non-zero exit: execSync and execFileSync throw Node's error, spawnSync reports the status", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const out = {};
+        const thrown = (f) => {
+          try {
+            return ['returned', f()];
+          } catch (e) {
+            return [e.message.replace(process.execPath, "node"), e.status, e.signal, String(e.stdout), String(e.stderr), Object.keys(e)];
+          }
+        };
+        out.execSync = thrown(() => cp.execSync('node -e "console.log(\\'out\\'); console.error(\\'err\\'); process.exit(3)"', { stdio: 'pipe' }));
+        out.execSyncShell = thrown(() => cp.execSync('exit 2'));
+        out.execFileSync = thrown(() => cp.execFileSync(n, ['-e', 'process.exitCode = 4'], { stdio: 'pipe' }));
+        const r = cp.spawnSync(n, ['-e', 'throw new Error("boom")'], { encoding: 'utf8' });
+        out.spawnSync = [r.status, r.signal, r.stderr.includes('Error: boom'), 'error' in r];
+        // Not a Node program: the shell cannot find it (127; natively git runs).
+        out.notNode = [cp.spawnSync("git", ["rev-parse", "HEAD"]).status, cp.spawnSync("git", ["status"], { encoding: "utf8" }).stderr];
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const keys = ['status', 'signal', 'output', 'pid', 'stdout', 'stderr'];
+  assert.deepEqual(JSON.parse(out.stdout), {
+    execSync: [`Command failed: node -e "console.log('out'); console.error('err'); process.exit(3)"\nerr\n`, 3, null, 'out\n', 'err\n', keys],
+    execSyncShell: ['Command failed: exit 2', 2, null, '', '', keys],
+    execFileSync: ['Command failed: node -e process.exitCode = 4', 4, null, '', '', keys],
+    spawnSync: [1, null, true, false],
+    notNode: [127, 'sh: git: not found (only Node programs run in the browser runtime)\n'],
+  });
+});
+
+test('child_process: a synchronous command past its timeout is killed: ETIMEDOUT, with the kill signal', { timeout: 60_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        let t = Date.now();
+        const r = cp.spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { timeout: 1000 });
+        out.spawnSync = [r.error.code, r.error.errno, r.status, r.signal, Date.now() - t >= 1000, Date.now() - t < 20000];
+        t = Date.now();
+        try {
+          cp.execSync('sleep 10', { timeout: 300 });
+        } catch (e) {
+          out.execSync = [e.message, e.code, e.status, e.signal, Date.now() - t >= 300, Date.now() - t < 5000];
+        }
+        try {
+          cp.execFileSync(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: 'SIGKILL' });
+        } catch (e) {
+          out.execFileSync = [e.code, e.status, e.signal];
+        }
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    spawnSync: ['ETIMEDOUT', -110, null, 'SIGTERM', true, true],
+    execSync: ['spawnSync /bin/sh ETIMEDOUT', 'ETIMEDOUT', null, 'SIGTERM', true, true],
+    execFileSync: ['ETIMEDOUT', null, 'SIGKILL'],
+  });
+});
+
+test("child_process: a synchronous command's input is its stdin", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const upper = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(s.toUpperCase()))';
+        console.log(JSON.stringify({
+          spawnSync: cp.spawnSync(process.execPath, ['-e', upper], { input: 'abc', encoding: 'utf8' }).stdout,
+          execSync: cp.execSync(\`node -e '\${upper}'\`, { input: Buffer.from('from a buffer') }).toString(),
+          execFileSync: cp.execFileSync(process.execPath, ['-e', upper], { input: new Uint8Array([104, 105]), encoding: 'utf8' }),
+          none: cp.execFileSync(process.execPath, ['-e', upper], { encoding: 'utf8' }),
+        }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { spawnSync: 'ABC\n', execSync: 'FROM A BUFFER\n', execFileSync: 'HI\n', none: '\n' });
+});
+
+test('child_process: a synchronous command whose output passes maxBuffer is killed: ENOBUFS', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        const t = Date.now();
+        const r = cp.spawnSync(process.execPath, ['-e', 'console.log("x".repeat(100)); setTimeout(() => {}, 60000)'], { maxBuffer: 10, encoding: 'utf8' });
+        out.spawnSync = [r.error.code, r.error.errno, r.status, r.signal, r.stdout.length, Date.now() - t < 20000];
+        try {
+          cp.execSync('node -p 1234567', { maxBuffer: 3 });
+        } catch (e) {
+          out.execSync = [e.message, e.code, e.status, e.signal, String(e.stdout)];
+        }
+        out.within = cp.execFileSync(process.execPath, ['-p', '"y".repeat(9)'], { maxBuffer: 10, encoding: 'utf8' });
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    spawnSync: ['ENOBUFS', -105, null, 'SIGTERM', 101, true],
+    execSync: ['spawnSync /bin/sh ENOBUFS', 'ENOBUFS', null, 'SIGTERM', '1234567\n'],
+    within: 'yyyyyyyyy\n',
+  });
+});
+
+test("child_process: a synchronous command's stdio: pipe, ignore, inherit, and execSync's stderr shown by default", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const both = 'console.log("o"); console.error("e")';
+        const show = (r) => [r.stdout === null ? null : String(r.stdout), r.stderr === null ? null : String(r.stderr), r.output && r.output.map((o) => (o === null ? null : String(o)))];
+        console.log(JSON.stringify({
+          pipe: show(cp.spawnSync(n, ['-e', both], { stdio: 'pipe' })),
+          ignore: show(cp.spawnSync(n, ['-e', both], { stdio: 'ignore' })),
+          inherit: show(cp.spawnSync(n, ['-e', both], { stdio: 'inherit' })),
+          mixed: show(cp.spawnSync(n, ['-e', both], { stdio: ['pipe', 'ignore', 'pipe'] })),
+          execInherit: cp.execSync(\`node -e '\${both}'\`, { stdio: 'inherit' }),
+          // execSync's stderr goes to this process's unless stdio is given.
+          execDefault: cp.execSync(\`node -e '\${both}'\`).toString(),
+        }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.deepEqual(JSON.parse(lines.pop()!), {
+    pipe: ['o\n', 'e\n', [null, 'o\n', 'e\n']],
+    ignore: [null, null, [null, null, null]],
+    inherit: [null, null, [null, null, null]],
+    mixed: [null, 'e\n', [null, null, 'e\n']],
+    execInherit: null,
+    execDefault: 'o\n',
+  });
+  // inherit (spawnSync's and execSync's) writes to this process's output; execSync shows its stderr after.
+  assert.deepEqual(lines, ['o', 'o']);
+  assert.equal(out.stderr, 'e\ne\ne\n');
+});
+
+test('child_process: a synchronous command the runtime cannot start yet fails at once, with an error that names the call', async () => {
+  // The helper that starts a synchronous child's runtime is slow to start (a loaded machine): the
+  // program runs without it after a while, and its synchronous commands fail instead of blocking forever.
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        try {
+          cp.execSync('node -p 1');
+        } catch (e) {
+          out.execSync = [e.code, e.message.split(':')[0]];
+        }
+        const r = cp.spawnSync(process.execPath, ['-p', '1']);
+        out.spawnSync = [r.error.code, r.status, r.error.message.split(':')[0]];
+        out.result = [Object.keys(r), r.output, typeof r.stdout, typeof r.stderr];
+        try {
+          cp.execFileSync(process.execPath, ['-p', '1']);
+        } catch (e) {
+          out.execFileSync = [e.code, e.message.split(':')[0]];
+        }
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { prepare: 50, helperDelay: 10_000 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const why = "cannot run yet";
+  assert.deepEqual(JSON.parse(out.stdout), {
+    execSync: ['ENOSYS', `child_process.execSync("node -p 1") ${why}`],
+    spawnSync: ['ENOSYS', null, `child_process.spawnSync("/usr/local/bin/node -p 1") ${why}`],
+    execFileSync: ['ENOSYS', `child_process.execFileSync("/usr/local/bin/node -p 1") ${why}`],
+    // As Node's result for a command that did not start: no output, stdout and stderr undefined.
+    result: [['error', 'status', 'signal', 'output', 'pid', 'stdout', 'stderr'], null, 'undefined', 'undefined'],
+  });
+});
+
+test('child_process: a child process in a project with an install runs synchronous commands as it starts', async () => {
+  // A child process with an install starts a file helper of its own; it starts synchronous children
+  // through the main runtime's, which is up (its own is not yet).
+  const out = await h.runInstalled(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const r = cp.spawnSync(process.execPath, ['child.js'], { encoding: 'utf8' });
+        console.log('sync', r.stdout.trim(), r.status);
+        const c = cp.spawn(process.execPath, ['child.js']);
+        c.stdout.on('data', (d) => console.log('async', String(d).trim()));`,
+      'child.js': `console.log(require('child_process').execFileSync(process.execPath, ['-p', '6 * 7'], { encoding: 'utf8' }).trim());`,
+    },
+    { files: {}, bundled: [] },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'sync 42 0\nasync 42\n', out.stderr);
+});
+
+test("child_process: the shell's sleep takes units, fractions and several numbers, as GNU sleep does, synchronously and not", { timeout: 60_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        let t = Date.now();
+        out.units = cp.spawnSync('sleep 0.2s && sleep 0.1 0.1 && sleep .05 && echo slept', { shell: true, encoding: 'utf8' }).stdout;
+        out.unitsWaited = Date.now() - t >= 400;
+        out.invalid = ['abc', '', '1x', '1S'].map((a) => {
+          const r = cp.spawnSync(\`sleep \${a}\`, { shell: true, encoding: 'utf8' });
+          return [r.status, r.stderr];
+        });
+        out.hex = cp.execSync('sleep 0x0 0x0.1 0x1p-3 && echo slept', { encoding: 'utf8' });
+        try {
+          cp.execSync('sleep INF', { timeout: 300 });
+        } catch (e) {
+          out.inf = e.code;
+        }
+        t = Date.now();
+        try {
+          cp.execSync('sleep 1m', { timeout: 300 });
+        } catch (e) {
+          out.timeout = [e.code, Date.now() - t < 5000];
+        }
+        t = Date.now();
+        cp.exec('sleep 0.2s && sleep 0.1 0.1 && echo slept', (err, stdout) => {
+          out.async = [err, stdout, Date.now() - t >= 400];
+          cp.exec('sleep abc', (err, stdout, stderr) => {
+            out.asyncInvalid = [err.code, stderr];
+            console.log(JSON.stringify(out));
+          });
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const invalid = (what: string) => [1, `sleep: ${what}\nTry 'sleep --help' for more information.\n`];
+  assert.deepEqual(JSON.parse(out.stdout), {
+    units: 'slept\n',
+    unitsWaited: true,
+    invalid: [invalid("invalid time interval 'abc'"), invalid('missing operand'), invalid("invalid time interval '1x'"), invalid("invalid time interval '1S'")],
+    hex: 'slept\n',
+    inf: 'ETIMEDOUT',
+    timeout: ['ETIMEDOUT', true],
+    async: [null, 'slept\n', true],
+    asyncInvalid: invalid("invalid time interval 'abc'"),
+  });
+});
+
+test('child_process: a synchronous child killed (its timeout, or its blocked parent killed) takes its own synchronous children with it', { timeout: 60_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        let ticks = 0;
+        const channel = new BroadcastChannel('ticks');
+        channel.onmessage = () => ticks++;
+        const count = (then) => setTimeout(() => {
+          ticks = 0;
+          setTimeout(() => then(ticks), 1000);
+        }, 300);
+        try {
+          cp.execSync('node mid.js', { timeout: 2000 });
+        } catch (e) {
+          out.timeout = e.code;
+        }
+        // The ticker ran while this thread waited (its ticks arrive now), and not after the timeout.
+        setTimeout(() => {
+          out.ticked = ticks > 0;
+          count((n) => {
+            out.afterTimeout = n;
+            const c = cp.spawn(process.execPath, ['mid.js']);
+            let seen = 0;
+            channel.onmessage = () => {
+              ticks++;
+              if (++seen !== 3) return;
+              c.kill();
+              count((n) => {
+                out.afterKill = n;
+                console.log(JSON.stringify(out));
+                process.exit(0);
+              });
+            };
+          });
+        }, 50);`,
+      'mid.js': `require('child_process').execSync('node ticker.js');`,
+      'ticker.js': `const b = new BroadcastChannel('ticks'); setInterval(() => b.postMessage(1), 50);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { timeout: 'ETIMEDOUT', ticked: true, afterTimeout: 0, afterKill: 0 });
+});
+
+test('child_process: execSync in a worker thread, and a synchronous child that reads, writes and prints megabytes', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const fs = require('fs');
+        const { Worker } = require('worker_threads');
+        const w = new Worker("require('worker_threads').parentPort.postMessage(require('child_process').execSync('node -p 2+3', { encoding: 'utf8' }))", { eval: true });
+        w.on('message', (m) => {
+          fs.writeFileSync('big.txt', 'x'.repeat(5 << 20));
+          const r = cp.spawnSync(process.execPath, ['-e', 'const fs = require("fs"); const s = fs.readFileSync("big.txt", "utf8"); fs.writeFileSync("copy.txt", s + "!"); process.stdout.write(s.slice(0, 3 << 20))'], { maxBuffer: 8 << 20 });
+          console.log(JSON.stringify({ thread: m, large: [r.status, r.stdout.length, fs.readFileSync('copy.txt', 'utf8').length] }));
+          process.exit(0);
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { thread: '5\n', large: [0, 3 << 20, (5 << 20) + 1] });
+});
+
+test('child_process: a numeric killSignal is reported by name, and node without a script runs its input', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const r = cp.spawnSync(n, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: 9 });
+        console.log(JSON.stringify({
+          numericSignal: [r.error.code, r.signal],
+          inputScript: cp.spawnSync(n, [], { input: 'console.log(6 * 7)', encoding: 'utf8' }).stdout,
+          noScript: [cp.spawnSync(n, [], { encoding: 'utf8' }).status, cp.spawnSync(n, [], { encoding: 'utf8' }).stdout],
+          execInput: cp.execSync('node', { input: 'console.log(5)', encoding: 'utf8' }),
+          dash: cp.spawnSync(n, ['-', 'a'], { input: 'console.log(JSON.stringify(process.argv.slice(1)))', encoding: 'utf8' }).stdout,
+          stdinArgv: cp.spawnSync(n, [], { input: 'console.log(JSON.stringify(process.argv.slice(1)))', encoding: 'utf8' }).stdout,
+          nullSignal: cp.spawnSync(n, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: null }).signal,
+          badSignal: [{}, true].map((killSignal) => {
+            try {
+              cp.spawnSync(n, ['-e', '1'], { killSignal });
+              return 'ran';
+            } catch (e) {
+              return [e.name, e.code, e.message];
+            }
+          }),
+          aliasSignal: cp.spawnSync(n, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: 'sigiot' }).signal,
+          unknownSignal: [99, 0, 'SIGFOO', '15'].map((killSignal) => {
+            try {
+              cp.spawnSync(n, ['-e', '1'], { killSignal });
+              return 'ran';
+            } catch (e) {
+              return [e.name, e.code, e.message];
+            }
+          }),
+        }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const unknown = (s: string) => ['TypeError', 'ERR_UNKNOWN_SIGNAL', `Unknown signal: ${s}`];
+  assert.deepEqual(JSON.parse(out.stdout), {
+    numericSignal: ['ETIMEDOUT', 'SIGKILL'],
+    inputScript: '42\n',
+    noScript: [0, ''],
+    execInput: '5\n',
+    dash: '["-","a"]\n',
+    stdinArgv: '[]\n',
+    nullSignal: 'SIGTERM',
+    badSignal: [
+      ['TypeError', 'ERR_INVALID_ARG_TYPE', 'The "options.killSignal" property must be one of type string or number. Received an instance of Object'],
+      ['TypeError', 'ERR_INVALID_ARG_TYPE', 'The "options.killSignal" property must be one of type string or number. Received type boolean (true)'],
+    ],
+    aliasSignal: 'SIGABRT',
+    unknownSignal: [unknown('99'), unknown('0'), unknown('SIGFOO'), unknown('15')],
+  });
+});
+
+test('child_process: node -v and --version print the version, synchronously and not, whatever else node is given', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const sync = [
+          cp.execSync('node -v', { encoding: 'utf8' }),
+          cp.spawnSync(n, ['--version'], { encoding: 'utf8' }).stdout,
+          cp.execFileSync(n, ['-v', 'missing.js'], { encoding: 'utf8' }),
+          cp.execSync('node -e "console.log(1)" -v', { encoding: 'utf8' }),
+        ];
+        cp.exec('node --version', (err, stdout) => console.log(JSON.stringify({ version: process.version, sync, async: [err, stdout] })));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const { version, sync, async } = JSON.parse(out.stdout) as { version: string; sync: string[]; async: [unknown, string] };
+  assert.deepEqual({ sync, async }, { sync: Array(4).fill(`${version}\n`), async: [null, `${version}\n`] });
 });

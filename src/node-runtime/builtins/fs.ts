@@ -7,6 +7,7 @@ import { EventEmitter } from 'events';
 import { Readable, Writable } from 'readable-stream';
 import { FsError, norm, type VStat, type Vfs } from '../vfs.ts';
 import { bindContext } from '../async-context.ts';
+import { realpath } from '../links.ts';
 import { timers } from './process.ts';
 
 type PathLike = string | Buffer | URL;
@@ -249,7 +250,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   function realpathSync(p: PathLike): string {
     const path = abs(p);
     vfs.stat(path, 'realpath');
-    return path;
+    return realpath(path);
   }
   realpathSync.native = realpathSync;
   function mkdtempSync(prefix: string): string {

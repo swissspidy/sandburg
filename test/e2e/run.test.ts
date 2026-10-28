@@ -173,6 +173,26 @@ test('importing an undeclared package is an app bug, not a runtime limitation', 
   assert.deepEqual([result.failure?.class, result.failure?.rule], ['app-bug', 'undeclared-import']);
 });
 
+test("an error the app reports while its page never finishes loading fails the ready phase, not its deadline", async () => {
+  // The dev server never answers a script the page waits for (as Angular's did once its dependency
+  // optimizer crashed): the frame's load event never comes, and the app's error is reported meanwhile.
+  const project = variant('never-loads', {
+    'vite.config.ts': `import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react(), { name: 'never-answer', configureServer: (server) => void server.middlewares.use((req, _res, next) => (req.url === '/never.js' ? undefined : next())) }],
+});
+`,
+    'index.html': (counter.files['index.html'] as string).replace('<div id="root"></div>', '<script>throw new Error("the app could not start")</script>\n    <script src="/never.js"></script>\n    <div id="root"></div>'),
+  });
+  const result = await session.run(project, { outDir, timeouts: { ready: 60_000 } });
+  const ready = result.phases.find((p) => p.name === 'ready');
+  assert.equal(ready?.status, 'failed', JSON.stringify(result.failure));
+  assert.match(result.failure?.message ?? '', /^app threw before rendering: the app could not start/);
+  assert.ok(ready.durationMs < 30_000, `ready took ${ready.durationMs} ms`);
+});
+
 test('a ready deadline produces a timeout', async () => {
   const result = await session.run(counter, { outDir, readySelector: '#never', timeouts: { ready: 3000 } });
   assert.equal(result.status, 'error');

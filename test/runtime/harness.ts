@@ -32,7 +32,7 @@ window.prefetch = (url) => {
 };
 window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
-  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null, listening: [], ends: [] };
+  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null, listening: [], ends: [], stray: [] };
   const bodies = new Map();
   let pending = requests.length;
   const finish = () => { w.terminate(); resolve(out); };
@@ -48,6 +48,8 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
   window.current = { out, finish };
   w.onmessage = (e) => {
     const m = e.data;
+    // A response for a request the page did not make (or of the runtimes': their ids are negative).
+    if (m.type.startsWith('response-') && !(m.id >= 0 && m.id < requests.length)) return void out.stray.push([m.type, m.id]);
     if (m.type === 'ready') w.postMessage({ type: 'run', main });
     else if (m.type === 'log') out[m.stream] += m.text;
     else if (m.type === 'fatal') { out.fatal = m.stack || m.message; finish(); }
@@ -365,7 +367,7 @@ export class RuntimeHarness {
     return (this.server.address() as AddressInfo).port;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string> } = {}) {
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string>; /** As runInstalled's. */ prepare?: number; helperDelay?: number } = {}) {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();
@@ -380,6 +382,8 @@ export class RuntimeHarness {
       listening: (number | string)[];
       /** Each message that ended a request ([type, id]) or the program (['exit', code]), in order. */
       ends: [string, number][];
+      /** The responses for requests the page did not make ([type, id]). */
+      stray: [string, number][];
     }>, until);
   }
 

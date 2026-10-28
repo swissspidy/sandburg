@@ -10,7 +10,8 @@ import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import { bundleCache, listCache } from './cache-tree.ts';
 import type { FromWorker, NetMessage, ToParent, ThreadInit, ToWorker, SharedPreload } from './messages.ts';
-import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, warmRuntimes, type ThreadHost } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, projectSnapshot, runtimePorts, trackNodeModulesWrites, warmRuntimes, type ThreadHost } from './threads.ts';
+import { syncParent } from './sync-child.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
@@ -25,15 +26,16 @@ import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
+import { parseWorkspace, safeLinks, setLinks, WORKSPACE_FILE } from './links.ts';
 import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
 import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
 import { COMPILE_POST_MAX } from '../file-channel.ts';
-import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
+import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, shareSpawner, useSpawner, spawnSyncRuntime, helperStarting, releaseSpawner, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
-import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone } from './peers.ts';
+import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone, cancelForwarded } from './peers.ts';
 
 patchBase64Url();
 
@@ -45,7 +47,10 @@ patchBase64();
 
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
 /** To the page, or to the runtime that started this one (a thread's or child process's parent). */
-export const realPostMessage = (self as unknown as Worker).postMessage.bind(self) as (msg: ToParent, transfer?: Transferable[]) => void;
+const nativeSelfPost = (self as unknown as Worker).postMessage.bind(self) as (msg: ToParent, transfer?: Transferable[]) => void;
+/** A synchronous child process's way to its parent, which blocks until it exits (sync-child.ts). */
+let toBlockedParent: ((msg: ToParent) => void) | null = null;
+export const realPostMessage = (msg: ToParent, transfer?: Transferable[]) => (toBlockedParent ? toBlockedParent(msg) : nativeSelfPost(msg, transfer));
 const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
 
 /**
@@ -233,6 +238,24 @@ const WASI_WORKER = /\/node_modules\/(?:@[^/]+\/)?[^/]+-wasm32-wasi\/wasi-worker
 /** Runtime workers booted ahead of time for threads (see threads.ts). */
 export const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
 
+/**
+ * Puts each local package's files where it is linked (`links`: node_modules path → its directory,
+ * project-relative), as npm's symlink shows them; module resolution and fs.realpath give the
+ * package's own directory (links.ts). The package's own node_modules stays where it is.
+ */
+function linkLocalPackages(links: Record<string, string>, files: string[], cwd: string): void {
+  for (const [at, dir] of Object.entries(links)) {
+    for (const path of files) {
+      if (!path.startsWith(`${dir}/`)) continue;
+      const rest = path.slice(dir.length + 1);
+      if (rest.startsWith('node_modules/') || rest.includes('/node_modules/')) continue;
+      const to = `${cwd}/${at}/${rest}`;
+      vfs.mkdir(to.slice(0, to.lastIndexOf('/')), true);
+      vfs.write(to, vfs.read(`${cwd}/${path}`));
+    }
+  }
+}
+
 function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
@@ -248,6 +271,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   pack = msg.pack ? { bytes: new Uint8Array(msg.pack.sab), index: msg.pack.index, message: msg.pack } : null;
   shared = msg.shared ?? null;
   if (msg.filesChannel) useChannel(msg.filesChannel);
+  if (msg.spawner) useSpawner(msg.spawner);
+  if (msg.thread?.process?.sync) toBlockedParent = syncParent(msg.thread.process.sync);
   sharedBytes = shared ? new Uint8Array(shared.sab) : null;
   if (thread) {
     const installed = new Vfs((path) => {
@@ -274,6 +299,14 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       vfs.write(abs, bytes.buffer instanceof SharedArrayBuffer ? bytes.slice() : bytes);
     }
   }
+  // Local packages (workspaces, file: and link: dependencies) appear in node_modules (links.ts).
+  const workspaceFile = `${msg.cwd}/${WORKSPACE_FILE}`;
+  const workspace = parseWorkspace(vfs.kind(workspaceFile) === 'file' ? new TextDecoder().decode(vfs.read(workspaceFile)) : null);
+  if (workspace) {
+    const links = safeLinks(workspace.links);
+    setLinks(links, msg.cwd);
+    if (!thread) linkLocalPackages(links, Object.keys(msg.files), msg.cwd);
+  }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
   if (msg.inherit) ({ usesSqlite, asyncModules } = msg.inherit);
@@ -290,7 +323,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       compileAhead(msg.compileAhead.map((d) => `${msg.cwd}/${d}`), { vfs, base, compileCache });
       vfs.watch((_event, path) => compileWhenWritten(path));
     }
-  } else dropPreparedDigester();
+  } else if (!thread) startDigester(false);
+  else dropPreparedDigester();
   if (Object.keys(sources).length && pageCompiler) {
     asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
   } else if (Object.keys(sources).length) {
@@ -304,7 +338,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   if (!wasiChildThread() && Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
 
   const child = thread?.process;
-  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
+  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined, stdin: child?.stdin });
   // A worker thread has its parent's node options (Node's default for `execArgv`); a child process has its own (below).
   if (msg.execArgv?.length) proc.execArgv = msg.execArgv;
   if (child) {
@@ -315,7 +349,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), spawner: shareSpawner(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -326,12 +360,23 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     self: child ? null : thread,
     postToParent: (m, transfer) => realPostMessage(m, transfer ?? []),
     relay: relayFromNested,
-    ended: forgetNested,
+    ended: (worker, message) => {
+      forgetNested(worker);
+      if (message.spawner) releaseSpawner(message.spawner.owner);
+    },
     // Up to this process's main thread, and from there to the page (or the parent process).
     crash: (message, stack) => post({ type: 'fatal', message, stack, trap: true }),
   };
   threads = createWorkerThreads(nested);
-  childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string, reportExit: (info) => post({ type: 'process-exit', ...info }) });
+  childProcess = createChildProcess({
+    ...nested,
+    execPath: () => proc.execPath as string,
+    reportExit: (info) => post({ type: 'process-exit', ...info }),
+    spawnSync: (init, sync) => {
+      const message = nested.childInit({ ...init, snapshot: projectSnapshot(vfs, projectRoot) });
+      return spawnSyncRuntime(message, sync, runtimePorts(message));
+    },
+  });
   const table = buildBuiltins();
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
@@ -535,7 +580,13 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if ((proc.env as Record<string, string>).SANDBURG_DEBUG_ERRORS) write('stderr', `[sandburg] uncaught: ${e.error?.stack ?? e.message}\n`);
     if (proc.listenerCount('uncaughtException')) {
       e.preventDefault();
-      proc.emit('uncaughtException', e.error, 'uncaughtException');
+      // process.exit() in a handler ends the process with its code.
+      try {
+        proc.emit('uncaughtException', e.error, 'uncaughtException');
+      } catch (err) {
+        if (err instanceof ExitError) return exited(err.code);
+        throw err;
+      }
     }
   });
   self.addEventListener('unhandledrejection', (e) => {
@@ -545,6 +596,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     }
     if (proc.listenerCount('unhandledRejection')) {
       e.preventDefault();
+      // process.exit() in it: the ExitError is uncaught ('error' above), which ends the process.
       proc.emit('unhandledRejection', e.reason, e.promise);
     } else if (thread && e.reason instanceof WebAssembly.RuntimeError) {
       // A trap in a promise callback ends the thread (and its process) like one in any other callback.
@@ -568,13 +620,14 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   hideWorkerGlobals();
   post({ type: 'ready' });
   // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
-  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv, preload: thread.process?.preload });
+  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv, preload: thread.process?.preload, script: thread.script });
   if (thread?.process) exitWhenIdle();
 }
 
 /** The browser's own (the runtime may install worker_threads' in its place). */
 const NativeBroadcastChannel = globalThis.BroadcastChannel;
 const nativeSetInterval = globalThis.setInterval.bind(globalThis);
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
 
 /**
@@ -611,7 +664,17 @@ function exitWhenIdle() {
   }, 25);
 }
 
-function run(msg: Extract<ToWorker, { type: 'run' }>) {
+/** How long a main runtime waits for its helper before it runs its program (see run). */
+const HELPER_PATIENCE_MS = 500;
+
+function run(msg: Extract<ToWorker, { type: 'run' }>, since = performance.now()) {
+  // The helper started with this runtime gets its messages only once this thread has run a task
+  // after the helper's start, and a program may block (execSync) before it runs one: it waits for the
+  // helper (one the page prepared is up long before). A thread uses its parent's.
+  if (!thread && helperStarting() && performance.now() - since < HELPER_PATIENCE_MS) {
+    nativeSetTimeout(() => run(msg, since), 1);
+    return;
+  }
   if (msg.track) vfs.track(msg.track.map((d) => `${projectRoot}/${d}`));
   if (!usesSqlite) return start(msg);
   // Work in progress: a child process that has not started its program yet is not idle (see
@@ -626,7 +689,7 @@ function run(msg: Extract<ToWorker, { type: 'run' }>) {
 }
 
 function start(msg: Extract<ToWorker, { type: 'run' }>) {
-  proc.argv = ['/usr/local/bin/node', msg.main, ...(msg.argv ?? [])];
+  proc.argv = ['/usr/local/bin/node', ...(msg.script === undefined ? [msg.main] : msg.script === null ? [] : [msg.script]), ...(msg.argv ?? [])];
   // The main program ends like a child process does: when nothing is left to do (a CLI that exits).
   if (!thread) exitWhenIdle();
   try {
@@ -682,6 +745,24 @@ function releaseHeld(depth: number) {
 /** Requests to this runtime's own servers not yet answered (those to nested runtimes' are theirs). */
 const inflight = new Set<number>();
 
+/** What tells the server of each of those requests that its client went away (a parent's loopback request: see cancelRequest). */
+const requestAborts = new Map<number, () => void>();
+
+/** A request to this runtime's own servers is answered (or no longer this runtime's to answer). */
+function settle(id: number) {
+  inflight.delete(id);
+  requestAborts.delete(id);
+}
+
+/** The client of a request from the parent went away: its server learns it (or the nested runtime it went on to). */
+function cancelRequest(id: number) {
+  if (cancelForwarded(id)) return;
+  const abort = requestAborts.get(id);
+  if (!abort) return;
+  settle(id);
+  abort();
+}
+
 /** Whether the program exited (see exited). */
 let hasExited = false;
 
@@ -696,6 +777,7 @@ export function exited(code: number) {
   stopTimers();
   for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
   inflight.clear();
+  requestAborts.clear();
   loopbackServersGone();
   for (const port of [...servers.keys()]) {
     servers.delete(port);
@@ -732,7 +814,7 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
     heldResponses.push(release);
   };
   try {
-    server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
+    const abort = server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
       start: (status, statusText, headers) => {
         if (!held) return void answer({ type: 'response-start', id, status, statusText, headers });
         held.start = [status, statusText, headers];
@@ -754,25 +836,28 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
           held = null;
           const body = h.chunks.length === 1 && h.chunks[0].byteOffset === 0 && h.chunks[0].byteLength === h.chunks[0].buffer.byteLength ? h.chunks[0] : concatBytes(h.chunks, h.size);
           answer({ type: 'response-full', id, status: start[0], statusText: start[1], headers: start[2], body: body.buffer as ArrayBuffer }, [body.buffer as ArrayBuffer]);
-          return void inflight.delete(id);
+          return void settle(id);
         }
         release();
         answer({ type: 'response-end', id });
-        inflight.delete(id);
+        settle(id);
       },
+      // Its headers were flushed: they (and what came before) go out now, and survive a reset after.
+      flush: release,
       // Reset before it ended (res.destroy()): what was held is dropped, as a real connection's would be.
       error: (message, code) => {
         held = null;
         answer({ type: 'response-error', id, message, code });
-        inflight.delete(id);
+        settle(id);
       },
     });
+    if (inflight.has(id)) requestAborts.set(id, abort);
   } catch (e) {
     // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
     if (e instanceof ExitError) return exited(e.code);
     release();
     answer({ type: 'response-error', id, message: String((e as Error)?.stack ?? e) });
-    inflight.delete(id);
+    settle(id);
   }
 }
 
@@ -801,6 +886,7 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   }
   else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) forwardRequest(msg);
   else if (msg.type === 'request') request(msg);
+  else if (msg.type === 'request-cancel') cancelRequest(msg.id);
   else if (msg.type === 'ws-open' && !servers.has(msg.port) && nestedPorts.has(msg.port)) {
     nestedSockets.set(msg.id, nestedPorts.get(msg.port)!);
     nestedSockets.get(msg.id)!.postMessage(msg);

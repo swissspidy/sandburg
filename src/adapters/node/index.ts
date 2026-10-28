@@ -13,7 +13,9 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findFullStack } from './scripts.ts';
-import { browserInstall, devScript, isSimple, packageDirs, startCommand, staticInstall, subProject } from './plan.ts';
+import { browserInstall, devScript, isSimple, packageDirs, nestedInstall, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
+import { planOf } from './local-packages.ts';
+import { UnsupportedDependencyError } from './spec-guard.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
 import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
@@ -277,6 +279,17 @@ export const node: AdapterDescriptor = {
   // dispose: a seed run waits for webpack to store its cache (see nextSeedCache).
   timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000, dispose: 60_000 },
   probe(project: Project) {
+    // A dependency neither install can give it (git, a URL, a directory outside the project) is said
+    // here, before anything is installed. A local package that is not there is the install's to report.
+    // The client/ and server/ packages installed as projects of their own too.
+    if (project.framework !== 'static') {
+      try {
+        const plan = planOf(project);
+        for (const dir of packageDirs(project, plan.local)) planOf(subProject(project, dir));
+      } catch (e) {
+        if (e instanceof UnsupportedDependencyError) return { verdict: 'unsupported', reason: e.message };
+      }
+    }
     if (project.framework === 'next' || project.framework === 'static') return { verdict: 'supported' };
     if (startCommand(project) || devScript(project)) return { verdict: 'supported' };
     const scripts = project.packageJson?.scripts ?? {};
@@ -285,14 +298,22 @@ export const node: AdapterDescriptor = {
   async hostInstall(project, log, options): Promise<HostInstall> {
     // A static site: no packages, a file server (see browser.ts).
     if (project.framework === 'static') return staticInstall();
+    // Workspaces and file:/link: packages are linked, their registry dependencies installed with the
+    // root's; a pnpm-lock.yaml or yarn.lock pins versions (local-packages.ts, ADR 0064).
+    const plan = planOf(project);
+    const pinned = pinnedNote(plan);
+    if (pinned) log(pinned);
     if (options?.installIn === 'browser') return browserInstall(project);
     // The runtime's bundle, which the page asks for as soon as the install is done, is built while npm runs.
     void bundleNodeRuntime().catch(() => {});
     for (const name of Object.keys(RUNTIME_LIBS) as RuntimeLib[]) void bundleRuntimeLib(name).catch(() => {});
-    const info = await installer.install(project, extraDependencies(project), log);
-    // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
+    const root = rootInstall(project, plan);
+    const info = await installer.install(root, extraDependencies(root), log);
     const parts = [{ dir: '', key: info.key }];
-    for (const dir of packageDirs(project)) {
+    // A local package's dependencies in other versions than the root's, in its own node_modules.
+    for (const { dir, dependencies, lockfile } of plan.nested) parts.push({ dir, key: (await installer.install({ ...project, ...nestedInstall(dependencies, lockfile) }, {}, log)).key });
+    // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
+    for (const dir of packageDirs(project, plan.local)) {
       const sub = subProject(project, dir);
       const deps = sub.packageJson ? { ...sub.packageJson.dependencies, ...sub.packageJson.devDependencies } : {};
       if (!Object.keys(deps).length) continue;
@@ -360,11 +381,31 @@ export const node: AdapterDescriptor = {
     grantReads(key, options?.sandbox);
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
-    return { key, index: await installer.index(key), resolved: info.resolved, lockfile: info.lockfile, start, proxy, devCache, filesBundle, compileCache: compiles, preload: await preloadUrl(key, entry) };
+    return {
+      key,
+      index: await installer.index(key),
+      resolved: info.resolved,
+      lockfile: info.lockfile || plan.pinned !== null,
+      start,
+      proxy,
+      devCache,
+      filesBundle,
+      compileCache: compiles,
+      preload: await preloadUrl(key, entry),
+      ...workspaceInfo(plan),
+    };
   },
   serve,
   warmups,
-  isWarm: (project) => installer.installed(project, extraDependencies(project)),
+  isWarm: async (project) => {
+    let root: Project;
+    try {
+      root = rootInstall(project, planOf(project));
+    } catch {
+      return false; // the install reports it
+    }
+    return installer.installed(root, extraDependencies(root));
+  },
   prepare: () => {
     installer.prepare();
     warmCompiler();

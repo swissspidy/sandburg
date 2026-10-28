@@ -220,6 +220,114 @@ test('a WebAssembly trap on the dev server is the runtime, not the app', () => {
   assert.deepEqual([f?.class, f?.rule], ['runtime-unsupported', 'signature:wasm-trap']);
 });
 
+test("a WebAssembly trap the dev server reported to the page (Vite's dependency optimizer, in Angular's dev server) is the runtime's", () => {
+  const message = 'app threw before rendering: Error during dependency optimization:\n\nBuild failed with 1 error:\n\nError: memory access out of bounds';
+  const f = classify(input({ phases: failedAt('ready', message), pageErrors: [{ source: 'app', message: message.slice('app threw before rendering: '.length) }] }));
+  assert.deepEqual([f?.class, f?.rule, f?.message], ['runtime-unsupported', 'signature:wasm-trap', 'app threw before rendering: Error during dependency optimization: Build failed with 1 error: Error: memory access out of bounds']);
+});
+
+test("an error the app logged instead of throwing, from its own code, before it rendered: Angular's ErrorHandler, SolidStart", () => {
+  const angular = classify(
+    input({
+      phases: failedAt('ready', "app did not render after a console error: ERROR TypeError: Cannot read properties of undefined (reading 'theme')"),
+      pageErrors: [{ source: 'app', message: "ERROR TypeError: Cannot read properties of undefined (reading 'theme')\n    at <instance_members_initializer> (http://s-1.sandburg.localhost:39303/main.js:364:25)\n    at new _App (http://s-1.sandburg.localhost:39303/main.js:366:5)" }],
+    }),
+  );
+  assert.deepEqual([angular?.class, angular?.rule], ['app-bug', 'app-error-before-ready']);
+  const solid = classify(
+    input({
+      phases: failedAt('ready', 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Internal Server Error)'),
+      pageErrors: [{ source: 'app', message: "TypeError: Cannot read properties of undefined (reading 'theme')\n    at Promise.Home [as resolved] (/app/src/routes/index.tsx?pick=default&pick=$css&lang.tsx:36:28)" }],
+    }),
+  );
+  assert.deepEqual([solid?.class, solid?.rule], ['app-bug', 'app-error-before-ready']);
+  // A message without a stack is not one (an error page's 500).
+  const plain = classify(input({ phases: failedAt('ready', 'app did not render after a console error: x'), pageErrors: [{ source: 'app', message: 'Failed to load resource: http://s-1.sandburg.localhost/main.js' }] }));
+  assert.deepEqual([plain?.class, plain?.rule], ['unknown', 'unmatched']);
+});
+
+test("the dev server's report of a page it could not render on the server: Nuxt's request error, Astro's stack through the page", () => {
+  const ready = failedAt('ready', 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Server Error)');
+  const nuxt = classify(
+    input({
+      phases: ready,
+      runtimeOutput: ['[runtime:stdout] ● Rendering GET /', '[runtime:stdout] [request error] [GET] /', "[runtime:stdout]   ✖ TypeError (500): Cannot read properties of undefined (reading 'theme')", '[runtime:stdout]     at setup http://s-1.sandburg.localhost:39303/__sa…f461.mjs:22268:42'],
+    }),
+  );
+  assert.deepEqual([nuxt?.class, nuxt?.rule, nuxt?.message], ['app-bug', 'server-render-error', "TypeError: Cannot read properties of undefined (reading 'theme')"]);
+  const syntax = classify(input({ phases: ready, runtimeOutput: ['[runtime:stdout] [request error] [GET] /', '[runtime:stdout]   ✖ SyntaxError [VITE_ERROR] (500): Unexpected token (2:15)'] }));
+  assert.deepEqual([syntax?.class, syntax?.rule, syntax?.message], ['app-bug', 'compile-error', 'SyntaxError: Unexpected token (2:15)']);
+  const astro = classify(
+    input({
+      phases: ready,
+      runtimeOutput: [
+        "[runtime:stderr] 05:43:57 [ERROR] TypeError: Cannot read properties of undefined (reading 'theme')",
+        '[runtime:stderr]     at eval (/app/src/pages/index.astro:30:28)',
+        '[runtime:stderr]     at index (/app/node_modules/astro/dist/runtime/server/astro-component.js:27:14)',
+      ],
+    }),
+  );
+  assert.deepEqual([astro?.class, astro?.rule, astro?.message], ['app-bug', 'server-render-error', "TypeError: Cannot read properties of undefined (reading 'theme')"]);
+  // A stack through dependencies only is not the app's.
+  const deps = classify(input({ phases: ready, runtimeOutput: ['[runtime:stderr] [ERROR] TypeError: x', '[runtime:stderr]     at index (/app/node_modules/astro/dist/runtime/server/astro-component.js:27:14)'] }));
+  assert.deepEqual([deps?.class, deps?.rule], ['unknown', 'unmatched']);
+});
+
+test("a WebAssembly trap in the app's own code in the page (sql.js) is the app's", () => {
+  const f = classify(
+    input({
+      phases: failedAt('ready', 'app threw before rendering: RuntimeError: memory access out of bounds'),
+      pageErrors: [{ source: 'app', message: 'RuntimeError: memory access out of bounds', stack: 'RuntimeError: memory access out of bounds\n    at wasm://wasm/0012:wasm-function[44]:0x1f0\n    at openDb (http://s-1.sandburg.localhost:39303/src/db.ts:12:7)' }],
+    }),
+  );
+  assert.deepEqual([f?.class, f?.rule], ['app-bug', 'app-error-before-ready']);
+});
+
+test('a warning the app logged with a stack (React\'s missing key) is not an error the app threw', () => {
+  const f = classify(
+    input({
+      phases: failedAt('ready', 'app did not render after a console error: Failed to load resource: the server responded with a status of 404 (Not Found) (http://s-1.sandburg.localhost:39303/__sw__/chunk.js)'),
+      pageErrors: [{ source: 'app', message: 'Warning: Each child in a list should have a unique "key" prop.\n    at li\n    at List (http://s-1.sandburg.localhost:39303/src/List.tsx:4:3)' }],
+    }),
+  );
+  assert.deepEqual([f?.class, f?.rule], ['unknown', 'unmatched']);
+});
+
+test('a console error that names a thrown error counts, however it is introduced; a warning with a component stack does not', () => {
+  const ready = failedAt('ready', 'app did not render after a console error: x');
+  const stack = '\n    at load (http://s-1.sandburg.localhost:39303/src/App.tsx:8:3)';
+  const rule = (message: string) => classify(input({ phases: ready, pageErrors: [{ source: 'app', message: message + stack }] }))?.rule;
+  for (const thrown of ['Uncaught (in promise) TypeError: x is not a function', '[nuxt] error caught during app initialization TypeError: x is undefined', "DOMException: Failed to execute 'querySelector'", 'ERROR TypeError: x', 'RangeError: Invalid time value']) {
+    assert.equal(rule(thrown), 'app-error-before-ready', thrown);
+  }
+  for (const warning of ['Warning: Each child in a list should have a unique "key" prop.', 'Each child in a list should have a unique "key" prop.', 'Warning: a TypeError: in a warning is still a warning']) {
+    assert.equal(rule(warning), 'unmatched', warning);
+  }
+});
+
+test("dependencies and generated code are not the project's: node_modules at any depth, .nuxt, .svelte-kit and the like", () => {
+  const ready = failedAt('ready', 'app did not render after a console error: x');
+  for (const frame of ['/app/packages/web/node_modules/some-lib/dist/index.js:10:5', '/app/.nuxt/dist/server/server.mjs:120:11', '/app/.svelte-kit/generated/root.js:3:1', '/app/.angular/cache/vite/deps/chunk.js:1:1']) {
+    const f = classify(input({ phases: ready, pageErrors: [{ source: 'app', message: `TypeError: x\n    at run (${frame})` }] }));
+    assert.deepEqual([f?.class, f?.rule], ['unknown', 'unmatched'], frame);
+  }
+});
+
+test("only the dev server's report on the app's page, since the ready phase began, is a server render error", () => {
+  const ready = failedAt('ready', 'app did not render after a console error: Failed to load resource: the server responded with a status of 500');
+  // The app's API, not its page.
+  const api = classify(input({ phases: ready, appPath: '/', runtimeOutput: ['[runtime:stdout] [request error] [GET] /api/items', '[runtime:stdout]   ✖ Error (500): db down'] }));
+  assert.deepEqual([api?.class, api?.rule], ['unknown', 'unmatched']);
+  // A page request with a query is the page.
+  const page = classify(input({ phases: ready, appPath: '/', runtimeOutput: ['[runtime:stdout] [request error] [GET] /?x=1', '[runtime:stdout]   ✖ Error (500): db down'] }));
+  assert.deepEqual([page?.class, page?.rule], ['app-bug', 'server-render-error']);
+  // An error handled before the ready phase began (a seed script, a warm-up) is not the page's.
+  const earlier = classify(
+    input({ phases: ready, readyOutputFrom: 2, runtimeOutput: ['[runtime:stderr] [ERROR] TypeError: seed failed', '[runtime:stderr]     at seed (/app/server/seed.ts:4:1)', '[runtime:stdout] ready in 300 ms'] }),
+  );
+  assert.deepEqual([earlier?.class, earlier?.rule], ['unknown', 'unmatched']);
+});
+
 test('a project or checks file that did not load is the failure, even with no phase or check recorded', () => {
   const setupError = { rule: 'checks-load', class: 'unknown', message: 'SyntaxError: Unexpected end of input' } as const;
   assert.deepEqual(classify({ probe: null, phases: [], checks: [], pageErrors: [], infraError: null, declaredDependencies: [], setupError }), {

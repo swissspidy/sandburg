@@ -14,6 +14,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
+import semver from 'semver';
 import { hasTopLevelAwait, toAsyncModule } from './tla.ts';
 import { collidesWithWrapper, ESM_DEFINE, renameCommonJsNames } from './esm-names.ts';
 import { esmSourcefile, patchAsyncFunction, patchFunctionImport, patchInterop } from './interop.ts';
@@ -67,6 +68,7 @@ interface Manifest {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   overrides?: unknown;
+  sandburgPins?: unknown;
 }
 
 export class Installer {
@@ -136,6 +138,8 @@ export class Installer {
       dependencies: { ...(pkg.dependencies as Record<string, string>), ...extra },
       devDependencies: pkg.devDependencies ?? {},
       overrides: pkg.overrides,
+      // Which overrides pin a lockfile's versions (local-packages.ts): absent for every other install.
+      ...(pkg.sandburgPins !== undefined && { sandburgPins: pkg.sandburgPins }),
     };
     const key = createHash('sha256')
       .update(`layout:${LAYOUT_VERSION}\0`)
@@ -245,9 +249,9 @@ export class Installer {
       } catch {
         continue;
       }
-      if (JSON.stringify(other.overrides ?? null) !== JSON.stringify(manifest.overrides ?? null)) continue;
+      if (JSON.stringify(ownOverrides(other)) !== JSON.stringify(ownOverrides(manifest))) continue;
       const theirs = { ...other.dependencies, ...other.devDependencies };
-      const shared = names.filter((n) => theirs[n] === wanted[n]).length;
+      const shared = names.filter((n) => sameSpec(theirs[n], wanted[n])).length;
       const time = Date.parse(done.split(' ')[0]) || 0;
       if (shared * 2 >= names.length && (!best || shared > best.shared || (shared === best.shared && time > best.time))) best = { key, shared, time };
     }
@@ -893,4 +897,31 @@ function runNpm(args: string[], cwd: string, log: (line: string) => void): Promi
     child.on('error', reject);
     child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
   });
+}
+
+/**
+ * An install's own overrides: the project's, without those that pin a pnpm-lock.yaml's or yarn.lock's
+ * versions (`sandburgPins`, local-packages.ts), or null for none. A closest install with other
+ * pins can still lend its lockfile: npm applies this install's overrides to the tree it lends.
+ */
+export function ownOverrides(m: { overrides?: unknown; sandburgPins?: unknown }): Record<string, unknown> | null {
+  if (!m.overrides || typeof m.overrides !== 'object') return null;
+  const pinned = new Set(Array.isArray(m.sandburgPins) ? m.sandburgPins : []);
+  const own = Object.fromEntries(Object.entries(m.overrides as Record<string, unknown>).filter(([name]) => !pinned.has(name)));
+  return Object.keys(own).length ? own : null;
+}
+
+/**
+ * Whether two installs' specs of a dependency are the same for starting one from the other's
+ * lockfile: equal, or one a version (pinned from a pnpm-lock.yaml or yarn.lock) that the other's
+ * range accepts. npm then moves what differs to this install's specs.
+ */
+export function sameSpec(theirs: string | undefined, ours: string | undefined): boolean {
+  if (theirs === undefined || ours === undefined) return false;
+  if (theirs === ours) return true;
+  try {
+    return (!!semver.valid(ours) && semver.satisfies(ours, theirs)) || (!!semver.valid(theirs) && semver.satisfies(theirs, ours));
+  } catch {
+    return false;
+  }
 }

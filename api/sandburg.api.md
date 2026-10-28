@@ -20,6 +20,8 @@ interface ClassifyInput {
     pageErrors: PageError[];
     runtimeErrors?: string[];
     runtimeOutput?: string[];
+    readyOutputFrom?: number;
+    appPath?: string | null;
     declaredDependencies: string[];
     infraError: {
         phase: PhaseName;
@@ -449,6 +451,7 @@ interface Project {
     packageJson: PackageJson | null;
     framework: Framework;
     snapshotId: string;
+    app?: string;
 }
 
 interface RunResult {

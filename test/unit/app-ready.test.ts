@@ -11,7 +11,7 @@ const runState = () => ({
   network: { failed: [] as { url: string; reason: string }[] },
   console: [] as Partial<ConsoleEntry>[],
   pageErrors: [] as Partial<PageError>[],
-  documents: [] as { url: string; status: number }[],
+  documents: [] as { url: string; status: number; frame?: unknown }[],
 });
 const asRun = (run: ReturnType<typeof runState>) => run as unknown as RunState;
 
@@ -123,6 +123,72 @@ test("what is logged while a dev server's loading page shows is the server's: no
   await advance(t, 100);
   assert.equal(phase.settled, 'resolved');
   assert.deepEqual([run.pageErrors[0].source, run.console[0].source], ['host', 'host']);
+});
+
+test("a later error for the page that answered 503 is the app failing: Nuxt's 500 after its loading page", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  run.documents.push({ url: 'http://app.test/', status: 503 });
+  run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 503 (Service Unavailable)', url: 'http://app.test/' });
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run)));
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  run.documents.push({ url: 'http://app.test/', status: 500 });
+  run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Vite Error)', url: 'http://app.test/' });
+  await advance(t, 8_200);
+  // The browser's console error for the page's own load is the server-error rule's (which checks again at its deadline).
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
+});
+
+test("the app's page answering a server error fails the phase after 8 s, even when its frame shows the browser's error page (a 500 that refuses to be framed)", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  run.documents.push({ url: 'http://app.test/__sandburg/', status: 200 }, { url: 'http://app.test/', status: 503 });
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run)));
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  run.documents.push({ url: 'http://app.test/', status: 500 });
+  // What follows is the browser's error page's: noise.
+  run.console.push({ source: 'app', type: 'error', text: "Refused to display 'http://app.test/' in a frame because it set 'X-Frame-Options' to 'deny'.", url: 'chrome-error://chromewebdata/' });
+  await advance(t, 7_900);
+  assert.equal(phase.settled, 'pending');
+  await advance(t, 300);
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
+});
+
+test("only the app's frame's page counts: not a frame the app embeds, nor the host page; and a page that recovers is not failing", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const embedded = {} as Frame;
+  const host = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app }, { url: 'http://widget.test/', status: 502, frame: embedded }, { url: 'http://app.test/__sandburg/', status: 500, frame: host });
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  // What Chromium logs for the page's own failed load, beside its document.
+  const failedLoad = () => run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)', url: 'http://app.test/' });
+  // A cold start's 500, then the page loads again and answers 200 before the grace period is up.
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  failedLoad();
+  await advance(t, 4_000);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app });
+  await advance(t, 6_000);
+  assert.equal(phase.settled, 'pending');
+  // One that stays: the app failing.
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  failedLoad();
+  await advance(t, 8_200);
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
+});
+
+test("without the app's frame, the host page's documents are left out", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  run.documents.push({ url: 'http://app.test/', status: 500 }, { url: 'http://app.test/__sandburg/', status: 200 });
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run)));
+  await advance(t, 8_200);
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });
 
 /**

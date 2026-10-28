@@ -15,7 +15,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0009](0009-full-stack-vue-sqlite.md) | Full-stack apps (front end + Node backend), Vue, and SQLite in WebAssembly | Accepted; amended by [ADR 0014](0014-node-runtime-only.md) (the front end runs on its own dev server) |
 | [0010](0010-websockets-and-top-level-await.md) | WebSockets (and hot reloading) and top-level await in the node runtime | Accepted |
 | [0011](0011-client-frameworks.md) | Svelte, Solid, Preact and Lit in the esbuild adapter | Superseded by [ADR 0014](0014-node-runtime-only.md) |
-| [0012](0012-real-vite-and-meta-frameworks.md) | Real Vite in the node runtime (SvelteKit, Astro, React Router, Nuxt) | Accepted |
+| [0012](0012-real-vite-and-meta-frameworks.md) | Real Vite in the node runtime (SvelteKit, Astro, React Router, Nuxt) | Accepted; amended by [ADR 0063](0063-synchronous-child-processes.md) (synchronous child processes run) |
 | [0013](0013-runtime-consolidation.md) | One Node.js runtime, `--runtime auto`, almostnode, Nodebox and WordPress Playground removed | Accepted; amended by [ADR 0014](0014-node-runtime-only.md) (`--runtime auto`, the esbuild and angular adapters removed) |
 | [0014](0014-node-runtime-only.md) | The node runtime runs every project; esbuild and angular adapters removed | Accepted |
 | [0015](0015-static-demos.md) | Static demos on GitHub Pages replay the host | Accepted |
@@ -57,7 +57,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0051](0051-wasm-tools-work.md) | The WebAssembly tools' work: esbuild's transforms on the host, Vite's config bundle kept | Accepted |
 | [0052](0052-deferred-framework-imports.md) | Framework modules loaded at first use; what is left in Next.js, Angular and Nuxt runs | Accepted |
 | [0053](0053-invariants-api-and-structure.md) | Security invariants as lint rules, an API report, and the host's largest modules split | Accepted |
-| [0054](0054-security-review-round-4.md) | Security review (round 4): registry-only installs, parser fuzzing, the boundary map | Accepted; amended by [ADR 0061](0061-chromium-sandbox.md) (the boundary its map leaves out, between the app and the machine: Chromium's OS sandbox, now on by default, and site isolation) |
+| [0054](0054-security-review-round-4.md) | Security review (round 4): registry-only installs, parser fuzzing, the boundary map | Accepted; amended by [ADR 0061](0061-chromium-sandbox.md) (the boundary its map leaves out, between the app and the machine: Chromium's OS sandbox, now on by default, and site isolation) and [ADR 0064](0064-monorepos-and-local-packages.md) (packages inside the project are linked, never given to npm) |
 | [0055](0055-known-bugs-round-5.md) | Known bugs (round 5): a dev script's page port, requests no app made, late allocators | Accepted |
 | [0056](0056-architecture-rules-and-contracts.md) | The architecture as checked rules, one table per framework, contracts in one module each | Accepted |
 | [0057](0057-native-awaits-and-the-runtime-warm-path.md) | Native awaits that carry the async context; the runtime's warm path against Node's | Accepted |
@@ -66,4 +66,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0060](0060-test-reliability-under-load.md) | Test reliability under load: waits for the thing, not for a time | Accepted |
 | [0061](0061-chromium-sandbox.md) | Chromium's OS sandbox on by default, and site isolation | Accepted |
 | [0062](0062-ci-setup-and-coverage.md) | CI: one Chromium setup, a browser cache, and the runs that were missing | Accepted |
+| [0063](0063-synchronous-child-processes.md) | Synchronous child processes | Accepted |
+| [0064](0064-monorepos-and-local-packages.md) | Monorepos and local packages; pnpm and yarn lockfiles | Accepted |
 | [0065](0065-ci-on-macos-and-windows.md) | CI on macOS and Windows, and what it found: npm on Windows, lockfiles through a symlink, macOS's free memory | Accepted |
+| [0066](0066-fidelity-v7-fixes.md) | What fidelity study v7 found: shadow roots, Solid's hydration, fail-fast and classification | Accepted |

@@ -17,6 +17,11 @@
 const RANGE = /^[\w.\-+~^><=*|\sxX]*$/;
 /** A package name, optionally scoped (npm's rules, loosely): no leading dot, no path or protocol characters. */
 const NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
+/** Whether `name` is a package name (no path, protocol or other character npm refuses in one). */
+export function isPackageName(name: string): boolean {
+  return NAME.test(name);
+}
 /** A local-tarball extension: npm treats a spec ending in one as a file, whatever else it looks like. */
 const TARBALL = /\.(tgz|tar|tar\.gz)$/i;
 /** An `npm:` alias to a registry package: `npm:name` or `npm:@scope/name@range`. */
@@ -64,8 +69,28 @@ export class UnsupportedDependencyError extends Error {
   }
 }
 
+/**
+ * What a spec that is not a registry version names, for the error that refuses it: `name@spec: a git
+ * repository dependency` reads better than a list of everything that is not supported.
+ */
+function specKind(spec: string): string {
+  const s = spec.trim();
+  if (s.startsWith('workspace:')) return 'a workspace: dependency';
+  if (/^(git\+|git:)/.test(s) || /^(github|gitlab|bitbucket|gist):/.test(s) || /\.git(#.*)?$/.test(s) || /^[\w.-]+@[\w.-]+:/.test(s)) return 'a git repository dependency';
+  if (/^https?:/.test(s)) return 'a URL dependency';
+  if (TARBALL.test(s)) return 'a local tarball dependency';
+  if (/^(file|link):/.test(s) || /^(\.{1,2}|~)?[\\/]/.test(s) || s === '.' || s === '..') return 'a local directory dependency';
+  if (/^[\w.-]+\/[\w.-]+(#.*)?$/.test(s)) return 'a GitHub repository (user/repo) dependency';
+  return 'not a registry version';
+}
+
+/** The refusal of `name@spec`, worded for what it names. */
+export function unsupportedDependency(name: string, spec: string, why = 'only npm registry versions and packages inside the project can be installed'): UnsupportedDependencyError {
+  return new UnsupportedDependencyError(`${name}@${spec}: ${specKind(spec)}; ${why}`);
+}
+
 function reject(name: string, spec: string): never {
-  throw new UnsupportedDependencyError(`${name}@${spec}: only registry versions can be installed (not files, links, git or URLs)`);
+  throw unsupportedDependency(name, spec, 'only registry versions can be installed (not files, links, git or URLs)');
 }
 
 /** Validates each string leaf of an `overrides` tree (values are specs, except a nested object of more overrides). */
