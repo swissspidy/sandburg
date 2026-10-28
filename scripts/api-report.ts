@@ -18,7 +18,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 
@@ -176,7 +176,7 @@ export function apiReport(dtsRoot: string): string {
     if (decls.has(key)) continue;
     const m = load(file, cache);
     const st = m.declared.get(name)!;
-    decls.set(key, { name, file: relative(dtsRoot, file), text: text(m, st), documented: hasDoc(m, st), exported: publicNames.has(key) });
+    decls.set(key, { name, file: relative(dtsRoot, file).split(sep).join('/'), text: text(m, st), documented: hasDoc(m, st), exported: publicNames.has(key) });
     for (const ref of referenced(st)) {
       if (ref === name) continue;
       const found = resolveLocal(file, ref);

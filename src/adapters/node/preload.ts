@@ -3,12 +3,13 @@
  * an install that never ran), sent to the runtime in one response as it starts.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TRANSFORM_VERSION, tmpSuffix } from './install.ts';
 import { Prefetcher } from './prefetch.ts';
 import { installer, devCacheRoot } from './installs.ts';
 import { bundleHead } from '../../bundle-format.ts';
+import { renameRetrying } from '../../rename-retrying.ts';
 
 /**
  * Preloading: the installed files that runs load (node_modules/…, compiled or raw), recorded as the
@@ -75,11 +76,12 @@ async function flushPreloadLists(): Promise<void> {
     const list = preloadLists.get(k);
     if (!list) continue;
     // Another process on the same .sandburg/ may have written the list since: its entries are
-    // kept (after this process's), not overwritten.
+    // kept (after this process's), not overwritten. On Windows the rename waits out a reader of
+    // the list (another process's) rather than losing this process's entries.
     if ((await stat(file).catch(() => null))?.mtimeMs !== preloadSeen.get(k)) for (const e of await savedPreloadList(k)) list.set(e, true);
     const tmp = `${file}.${tmpSuffix()}.tmp`;
     await writeFile(tmp, JSON.stringify([...list.keys()]))
-      .then(() => rename(tmp, file))
+      .then(() => renameRetrying(tmp, file))
       .then(() => stat(file))
       .then((st) => preloadSeen.set(k, st.mtimeMs))
       .catch(() => {});
@@ -304,6 +306,6 @@ async function buildPreloadBundle(key: string, hash: string): Promise<Buffer | n
   }
   const tmp = `${file}.${tmpSuffix()}.tmp`;
   await writeFile(tmp, bundle);
-  await rename(tmp, file);
+  await renameRetrying(tmp, file);
   return bundle;
 }
