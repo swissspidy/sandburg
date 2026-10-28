@@ -24,6 +24,7 @@
  *
  * Set SANDBURG_CHROMIUM to use a Chromium other than Playwright's.
  */
+import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -39,6 +40,8 @@ const { values: args, positionals } = parseArgs({
     rounds: { type: 'string', default: '1' },
     only: { type: 'string' },
     out: { type: 'string' },
+    // Internal: run one pass in this process and print it (each pass is a process of its own).
+    pass: { type: 'string' },
   },
 });
 const corpus = resolve(positionals[0] ?? 'corpus');
@@ -80,8 +83,33 @@ for (const item of await discoverProjects(corpus)) {
 }
 if (!items.length) throw new Error(`no apps in ${corpus}${args.only ? ` matching ${args.only}` : ''}`);
 
-/** One pass: a batch in a fresh session, in the corpus's order, its summaries in a directory of its own. */
-async function pass(mode: 'cold' | 'warm'): Promise<{ wallMs: number; runs: Run[] }> {
+interface Pass {
+  wallMs: number;
+  runs: Run[];
+}
+
+/**
+ * One pass, in a process of its own, as `sandburg batch` runs: what a process keeps in memory of the
+ * stores (the installs it knows, the seeds it ran) would otherwise outlive a cold pass's removal of
+ * .sandburg/, and make a warm pass warmer than a batch of its own would be.
+ */
+function pass(mode: 'cold' | 'warm'): Promise<Pass> {
+  const argv = [import.meta.filename, corpus, '--pass', mode, '--parallel', String(parallel), ...(args.only ? ['--only', args.only] : [])];
+  const child = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  child.stdout.on('data', (d: Buffer) => (out += d));
+  return new Promise((done, fail) => {
+    child.on('error', fail);
+    child.on('exit', (code) => {
+      const line = out.split('\n').find((l) => l.startsWith('PASS '));
+      if (line) done(JSON.parse(line.slice(5)) as Pass);
+      else fail(new Error(`${mode} pass ended (exit ${code}) without a result`));
+    });
+  });
+}
+
+/** One pass in this process: a batch in a fresh session, in the corpus's order, its summaries in a directory of its own. */
+async function runPass(mode: 'cold' | 'warm'): Promise<Pass> {
   if (mode === 'cold') await rm('.sandburg', { recursive: true, force: true });
   const batchDir = await mkdtemp(join(tmpdir(), `sandburg-study-${mode}-`));
   const session = new Session();
@@ -126,7 +154,12 @@ async function pass(mode: 'cold' | 'warm'): Promise<{ wallMs: number; runs: Run[
   return { wallMs: summary.wallMs, runs };
 }
 
-const passes = { cold: [] as Awaited<ReturnType<typeof pass>>[], warm: [] as Awaited<ReturnType<typeof pass>>[] };
+if (args.pass) {
+  console.log('PASS ' + JSON.stringify(await runPass(args.pass === 'cold' ? 'cold' : 'warm')));
+  process.exit(0);
+}
+
+const passes = { cold: [] as Pass[], warm: [] as Pass[] };
 for (let round = 1; round <= rounds; round++) {
   for (const mode of ['cold', 'warm'] as const) {
     const p = await pass(mode);
