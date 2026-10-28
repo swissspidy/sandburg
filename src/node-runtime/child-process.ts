@@ -262,7 +262,7 @@ export function createChildProcess(host: ChildProcessHost) {
       };
       if (options.sandburgCommand) {
         this.once('exit', (code: number | null) => {
-          if (code && !this.killed) host.reportExit?.({ command: argv.join(' '), code, stderr: stderrTail });
+          if (code) host.reportExit?.({ command: argv.join(' '), code, stderr: stderrTail });
         });
       }
       this.connected = ipc;
@@ -332,9 +332,10 @@ export function createChildProcess(host: ChildProcessHost) {
         },
         exists: (path) => vfs.exists(path),
         write,
-        // Once killed, the script's end (its commands killed: 143) is not its exit: kill() reports the signal.
+        // kill() with a signal finishes it at once: the script's end after (its commands killed: 143)
+        // is then not its exit. kill(0) only probes: the script's end is.
         onExit: (code) => {
-          if (!this.killed) this.finish(code, null);
+          this.finish(code, null);
         },
         stepsAhead: shellStepsAhead,
       });

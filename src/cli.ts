@@ -95,6 +95,8 @@ export function sessionOptions(values: ReturnType<typeof parseCommandLine>['valu
     offline: values.offline,
     headless: !values.headed && command !== 'open',
     browserSandbox: values['browser-sandbox'],
+    // The CLI stops on signals itself (untilStopped): Playwright's listeners would exit meanwhile.
+    handleSignals: false,
   };
 }
 

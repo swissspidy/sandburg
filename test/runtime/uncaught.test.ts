@@ -385,6 +385,16 @@ test("signals: SIGBREAK (Windows' Ctrl-Break) is unknown on Linux; one a process
     `process.on('exit', () => console.log('not emitted')); process.nextTick(() => console.log('tick')); process.kill(process.pid, 'SIGTERM'); console.log('after'); setTimeout(() => console.log('not reached'), 50);`,
     // Ignored (SIGWINCH, SIGPIPE), or SIGUSR1, for which Node starts its inspector.
     `process.kill(process.pid, 'SIGWINCH'); process.kill(process.pid, 'SIGPIPE'); process.kill(process.pid, 'SIGUSR1'); setTimeout(() => console.log('still here'), 20);`,
+    // kill(0) (killed is then true, as in Node) leaves the child's own end as it is: a shell-run one
+    // and a node one exit, close and call back as if it had not been probed.
+    `const cp = require('child_process');
+     const c = cp.exec('sleep 0.2; echo hi', (err, out) => console.log('cb', err, JSON.stringify(out)));
+     console.log('probe', c.kill(0), c.killed);
+     c.on('exit', (code, s) => console.log('exit', code, s));
+     c.on('close', (code, s) => console.log('close', code, s));
+     const n = cp.spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(3), 600)']);
+     console.log('node probe', n.kill(0), n.killed);
+     n.on('exit', (code, s) => console.log('node exit', code, s));`,
     // Neither a signal's name nor its number.
     `const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)']);
      for (const s of [{}, [1], true, null, '0', 1.5]) { try { c.kill(s); } catch (e) { console.log(e.code, e.message); } }
@@ -397,6 +407,7 @@ test("signals: SIGBREAK (Windows' Ctrl-Break) is unknown on Linux; one a process
     ['ERR_UNKNOWN_SIGNAL Unknown signal: SIGBREAK\nprobe true true null\nchild exit null SIGTERM false\n', 0, null],
     ['', 143, null],
     ['still here\n', 0, null],
+    ['probe true true\nnode probe true true\nexit 0 null\ncb null "hi\\n"\nclose 0 null\nnode exit 3 null\n', 0, null],
     [['{}', '[ 1 ]', 'true', 'null', '0', '1.5'].map((s) => `ERR_UNKNOWN_SIGNAL Unknown signal: ${s}\n`).join(''), 0, null],
   ]);
 });

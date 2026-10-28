@@ -61,6 +61,12 @@ export interface SessionOptions {
    * own when it starts.
    */
   spareTab?: boolean;
+  /**
+   * Playwright's own SIGINT, SIGTERM and SIGHUP listeners close the browser, and on SIGINT exit 130
+   * (default: true). False leaves them out, for a caller that handles the signals itself (the CLI:
+   * see untilStopped), so they do not exit while its cleanup runs.
+   */
+  handleSignals?: boolean;
 }
 
 /**

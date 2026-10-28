@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main, parseCommandLine, sessionOptions } from '../../src/cli.ts';
 import { compareExitCode } from '../../src/compare/cli.ts';
+import { untilStopped } from '../../src/stop-signals.ts';
 import type { ComparePair, Rates } from '../../src/compare/compare.ts';
 import { tempDir } from './temp-dir.ts';
 
@@ -18,6 +19,11 @@ const options = (...argv: string[]) => {
   const { values, positionals } = parseCommandLine(argv);
   return sessionOptions(values, positionals[0]);
 };
+
+test("the CLI's session leaves Playwright's signal listeners out: the CLI stops on signals itself", () => {
+  assert.equal(options('run', 'app').handleSignals, false);
+  assert.equal(options('compare', 'apps').handleSignals, false);
+});
 
 test("--no-browser-sandbox turns Chromium's OS sandbox off; without it, the session's default applies", () => {
   assert.equal(options('run', 'app', '--no-browser-sandbox').browserSandbox, false);
@@ -122,6 +128,8 @@ const HANGING_COMPARE = `
   reference.disposeAll = async () => {
     console.error('disposeAll');
     await disposeAll();
+    // It takes a while: the exit waits for it.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     console.error('disposed');
   };
   const session = {
@@ -156,7 +164,7 @@ const HANGING_COMPARE = `
 `;
 
 const windows = process.platform === 'win32';
-for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, 'image'], ['SIGINT', 130, 'exec'], ['SIGBREAK', 149, 'exec']] as const) {
+for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, 'image'], ['SIGHUP', 129, 'image'], ['SIGINT', 130, 'exec'], ['SIGBREAK', 149, 'exec']] as const) {
   test(`compare cut short by ${signal} (at docker ${hang}) removes the reference's runs, writes no report and exits ${code}`, { timeout: 120_000 }, async (t) => {
     const dir = tempDir('sandburg-compare-signal-');
     const app = join(dir, 'app');
@@ -261,7 +269,7 @@ const HANGING_RUN = `
     console.error('hanging');
     if (process.env.QUICK_RUN) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(signal, () => setTimeout(() => reject(new Error('the browser closed')), 50));
+      for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) process.on(signal, () => setTimeout(() => reject(new Error('the browser closed')), 50));
     });
   }, session);
   console.error('withSession returned');
@@ -281,7 +289,7 @@ async function stopRun(t: { after(fn: () => void): void }, signal: string, at: s
   return [exit, stderr];
 }
 
-for (const [signal, code] of [['SIGBREAK', 149], ['SIGINT', 130], ['SIGTERM', 143]] as const) {
+for (const [signal, code] of [['SIGBREAK', 149], ['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const) {
   test(`${signal} during a run stops it and closes the session's browser, once, then exits ${code}`, { timeout: 60_000 }, async (t) => {
     // The run it cut short failed: not the outcome, nor a second close.
     assert.deepEqual(await stopRun(t, signal, 'hanging\n'), [code, `hanging\n${signal}: closing the browser\nclosing 1\nsession closed 1\n`]);
@@ -294,4 +302,21 @@ test('Ctrl-Break while the browser launches closes it once it has opened, then e
 
 test('Ctrl-Break while the session closes after its run waits for that close, without a second one, then exits 149', { timeout: 60_000 }, async (t) => {
   assert.deepEqual(await stopRun(t, 'SIGBREAK', 'closing 1\n', { QUICK_RUN: '1' }), [149, 'hanging\nclosing 1\nSIGBREAK: closing the browser\nsession closed 1\n']);
+});
+
+test("untilStopped gives the listeners it held back as they were: a once listener stays one", async () => {
+  const fired: string[] = [];
+  const once = () => fired.push('once');
+  process.once('SIGBREAK', once);
+  const before = process.rawListeners('SIGBREAK');
+  try {
+    assert.equal(await untilStopped(['SIGBREAK'], async () => {}, async () => 'done'), 'done');
+    assert.deepEqual(process.rawListeners('SIGBREAK'), before);
+    process.emit('SIGBREAK', 'SIGBREAK');
+    process.emit('SIGBREAK', 'SIGBREAK');
+    assert.deepEqual(fired, ['once']);
+    assert.equal(process.listenerCount('SIGBREAK'), 0);
+  } finally {
+    process.off('SIGBREAK', once);
+  }
 });

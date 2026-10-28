@@ -99,23 +99,26 @@ the runtime has none) change nothing. A pid that is not the process's own
 is not looked up (true, as before). `child.kill()` validates its signal the same way: what is not a
 signal's name or number is `ERR_UNKNOWN_SIGNAL`, whatever its type. Signal 0, as in Node, only
 probes the child: true (and `killed`) while it runs, false once it has
-ended, and the child goes on.
+ended, and the child goes on, to its own exit and close (a shell-run one too).
 
-**Ctrl-C, a kill and Ctrl-Break stop a command** (`src/stop-signals.ts`). `untilStopped` holds the listeners a
-command's signals already have, stops the command's work on the first signal, then exits with
-128 + the signal's number: SIGINT 130, SIGTERM 143, SIGBREAK 149 (SIGBREAK is 21 on Windows).
+**Ctrl-C, a kill, a closed terminal and Ctrl-Break stop a command** (`src/stop-signals.ts`).
+`untilStopped` holds the listeners a command's signals already have, as they are (`rawListeners`: a
+`once` listener stays one), stops the command's work on the first signal, then exits with 128 + the
+signal's number: SIGINT 130, SIGTERM 143, SIGHUP 129, SIGBREAK 149 (SIGBREAK is 21 on Windows).
 
-- `compare` uses it for all three, as it already did for SIGINT and SIGTERM: it removes the
+- The CLI's session leaves Playwright's own SIGINT, SIGTERM and SIGHUP listeners out
+  (`SessionOptions.handleSignals: false`). They would close the browser and, on SIGINT, exit 130
+  while Sandburg's cleanup (the reference's containers) still runs. A library caller's session keeps
+  them.
+- `compare` uses it for all four, as it already did for SIGINT and SIGTERM: it removes the
   reference's containers, closes the session, and writes no report.
-- `run`, `batch` and `open` use it for all three too: it closes the session (and its browser).
-  Playwright's own listeners, which the launch adds, close the browser too. What the closed browser
-  fails in the runs meanwhile is not the outcome, so a real Ctrl-C exits 130 (not 1) and a kill
-  exits 143. The session closes once, also when a signal comes while it closes after its run.
+- `run`, `batch` and `open` use it for all four too: it closes the session (and its browser). What
+  the closed browser fails in the runs meanwhile is not the outcome, so a real Ctrl-C exits 130 (not
+  1, as when Playwright's listener closed the browser under the run) and a kill exits 143. The session closes once, also when a signal comes while it closes after its run.
 - The listeners go in before the session opens. A signal that comes while the browser launches
   waits for the launch to finish, then closes the session. The command starts no run after it.
 - A second signal goes to the listeners the command's signals had before it started, or to the
-  signal's default action, which ends the process at once. Playwright's SIGINT listener, added at
-  the launch, runs beside Sandburg's: a second Ctrl-C through it kills the browser and exits 130.
+  signal's default action, which ends the process at once.
 
 Listening for SIGBREAK is harmless off Windows: nothing sends it there. The tests raise it with
 `process.emit` (on every platform) through the child's stdin, as the compare signal tests already do
