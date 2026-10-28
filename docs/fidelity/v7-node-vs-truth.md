@@ -40,8 +40,9 @@ of v1–v6 were all right in both passes.
 
 **Lit's number is not a measure of Lit support.** Every Lit app that renders timed out (below). Its
 6 right answers are the 6 faulty apps, and two of those (the logic bugs, 174 and 196) were "caught"
-only by the same timeout. With the fix in ADR 0066, the six pass and 174 and 196 fail on their
-logic bugs.
+only by the same timeout. With the fix in ADR 0066 (text shown in an open shadow root counts; a dev
+server's overlays, by their exact names, do not), the six pass and 174 and 196 fail on their logic
+bugs.
 
 On v6's 100 apps the answer is now 100/100: the three apps v6 missed (054, 078, 084) were
 mislabelled, and their labels are fixed (below). Under v6's labels, v7 gets the same 97/100 as
@@ -55,7 +56,7 @@ Not fixed in this study; each is fixed separately, in [ADR 0066](../adr/0066-fid
 |---|---|---|---|---|
 | 130, 141, 152, 185, 218, 229 (Lit) | pass | fail (`failureClass` `timeout`, rule `phase-deadline`): 240 s in `ready` | cold and warm | The ready check (`waitForRender`, `src/orchestrator/app-ready.ts`) looks for content in `#root`, `#app` or `#__next`, else `document.body.innerText`. A Lit app whose root element (`<app-root>`) renders only into its shadow root has no light-DOM text, so it is never "rendered". `fixtures/lit-vite` passes only because its `<h1>` is slotted light DOM. Real npm with the same checks passes all six. |
 | 134 (Angular) | pass | fail (`failureClass` `timeout`, rule `phase-deadline`): 240 s in `ready` | cold only | Angular's dev server pre-bundles dependencies with Vite, and rolldown's WebAssembly build trapped (`Error during dependency optimization: … memory access out of bounds`). The dev server logged the error, and Vite's client reported it to the page (the run's page errors). The page's load event never came, and the ready phase waited for it before it watched for errors, so the run waited out the deadline. The same app passed in the warm pass and in an earlier smoke run, so the crash is intermittent. |
-| 214 (SolidStart) | pass | fail (`failureClass` `app-bug`, rule `blocking-check-failed`): converter showed "32.0 °F", expected "212.0 °F" | cold only | The first check typed into the server-rendered input before Solid had hydrated it. `src/host/settle.ts` took `_$HY`, which the server-rendered page sets before hydration starts, to mean the page had hydrated. Solid records events before hydration, but its replay of a recorded event walks `composedPath()`, which is empty once the event has finished dispatching, so the typed value never reached the handler. `_$HY.done` alone is no signal either: Solid sets it when it handles its first event after hydrating, not when hydration ends. |
+| 214 (SolidStart) | pass | fail (`failureClass` `app-bug`, rule `blocking-check-failed`): converter showed "32.0 °F", expected "212.0 °F" | cold only | The first check typed into the server-rendered input before Solid had hydrated it. `src/host/settle.ts` took `_$HY`, which the server-rendered page sets before hydration starts, to mean the page had hydrated. Solid records events before hydration, but its replay of a recorded event walks `composedPath()`, which is empty once the event has finished dispatching, so the typed value never reached the handler. `_$HY.done` alone is no signal either: Solid sets it when it handles its first event once hydration has begun, while a lazy route's elements can still be unclaimed. With the fix in ADR 0066, the checks wait until every server-rendered element (`[data-hk]`) is claimed, and `done` alone does not count. |
 
 ## Misses
 
