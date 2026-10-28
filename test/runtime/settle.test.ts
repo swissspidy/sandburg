@@ -33,8 +33,18 @@ test('a page without a framework that says: undefined (the servers decide)', asy
   assert.equal(await safe(), undefined);
 });
 
-test("Solid's server-rendered page records and replays events: safe at once", async () => {
-  await load('<script>window._$HY = { events: [], completed: new WeakSet(), r: {} }</script><button>Clicked 0 times</button>');
+test('Solid: not until it has claimed every server-rendered element (its replay of earlier events reaches no handler)', async () => {
+  await load('<script>window._$HY = { events: [], completed: new WeakSet(), r: {} }</script><main data-hk="0"><input data-hk="00"></main>');
+  assert.equal(await safe(), false);
+  // The page's own elements are claimed as it hydrates; a lazy route's later.
+  await page.evaluate(() => (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY.completed.add(document.querySelector('main')!));
+  assert.equal(await safe(), false);
+  await page.evaluate(() => (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY.completed.add(document.querySelector('input')!));
+  assert.equal(await safe(), true);
+  // Done: Solid clears what it recorded, or says so.
+  await load('<script>window._$HY = { events: null, completed: null, r: {} }</script><main data-hk="0"></main>');
+  assert.equal(await safe(), true);
+  await load('<script>window._$HY = { events: [], completed: new WeakSet(), r: {}, done: true }</script><main data-hk="0"></main>');
   assert.equal(await safe(), true);
 });
 

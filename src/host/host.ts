@@ -8,6 +8,7 @@ import { createAdapter, prepare } from 'sandburg:adapter';
 import type { AdapterContext, HostApi, RpcResult, RuntimeAdapter } from './types.ts';
 import type { FileTree, Framework, PackageJson, SerializedError } from '../types.ts';
 import { inputSafe, quiet } from './settle.ts';
+import { appRendered } from './rendered.ts';
 
 let adapter: RuntimeAdapter | null = null;
 let packageJson: PackageJson | null = null;
@@ -87,22 +88,20 @@ const api: HostApi = {
       } catch {
         return false;
       }
-      if (!doc || doc.location.protocol === 'chrome-error:' || doc.documentElement.outerHTML.includes('__NUXT_LOADING__')) return false;
-      if (selector) return !!doc.querySelector(selector);
-      const root = doc.querySelector('#root, #app, #__next');
-      if (root) return root.childElementCount > 0 || (root.textContent ?? '').trim().length > 0;
-      return (doc.body?.innerText ?? '').trim().length > 0;
+      return !!doc && appRendered(doc, selector);
     }),
   activity: () => call(async () => adapter?.activity?.() ?? null),
-  settled: (quietMs: number, longMs: number, maxMs: number) =>
+  settled: (quietMs: number, longMs: number, maxMs: number, hydrateMaxMs: number) =>
     call(async () => {
-      const deadline = performance.now() + maxMs;
+      const start = performance.now();
       for (;;) {
         const a = adapter?.activity?.();
         if (!a || a.sinceRequestMs === undefined) return null;
         // The framework's word where it gives it, else the app's servers being quiet.
-        if (inputSafe(appFrame().contentWindow) ?? quiet(a, quietMs, longMs)) return true;
-        const left = deadline - performance.now();
+        const safe = inputSafe(appFrame().contentWindow);
+        if (safe ?? quiet(a, quietMs, longMs)) return true;
+        // A framework that says it has not hydrated yet is waited for longer (a cold SolidStart page).
+        const left = start + (safe === false ? hydrateMaxMs : maxMs) - performance.now();
         if (left <= 0) return false;
         await new Promise((r) => setTimeout(r, Math.min(left, SETTLE_POLL_MS)));
       }

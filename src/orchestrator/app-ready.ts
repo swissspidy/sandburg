@@ -5,6 +5,7 @@
 import type { Frame, Page } from 'playwright-core';
 import type { ConsoleEntry } from '../types.ts';
 import { RunState } from './run-state.ts';
+import { appRendered } from '../host/rendered.ts';
 
 /** Grace period after a runtime asset fails before the phase gives up (the runtime may retry). */
 const RUNTIME_FETCH_GRACE_MS = 3_000;
@@ -49,7 +50,7 @@ export async function appFrame(page: Page): Promise<Frame> {
 }
 
 /**
- * Adapter-agnostic readiness: the app rendered something visible. Two pages are not the app yet:
+ * Adapter-agnostic readiness: the app rendered something visible (host/rendered.ts). Two pages are not the app yet:
  * the browser's own error page ("refused to connect"), when a dev server takes its port before it
  * can answer (Nuxt 4.6 does), and a dev server's loading page: Nuxt's, marked __NUXT_LOADING__,
  * which reloads itself once the app is built, or any 503 answer (`loading`). The app is loaded
@@ -62,19 +63,7 @@ export async function waitForRender(frame: Frame, selector?: string, reload?: ()
     // The run ended (the phase timed out and the tab closed): stop trying.
     if (frame.isDetached() || frame.page().isClosed()) throw new Error('the app frame is gone');
     const state = await frame
-      .waitForFunction(
-        (sel) => {
-          if (location.protocol === 'chrome-error:') return false;
-          if (document.documentElement.outerHTML.includes('__NUXT_LOADING__')) return false;
-          if (sel) return !!document.querySelector(sel);
-          const root = document.querySelector('#root, #app, #__next');
-          // Rendered: elements, or text (an app may set only textContent).
-          if (root) return root.childElementCount > 0 || (root.textContent ?? '').trim().length > 0;
-          return (document.body?.innerText ?? '').trim().length > 0;
-        },
-        selector ?? null,
-        { polling: 100, timeout: RELOAD_ERROR_PAGE_MS },
-      )
+      .waitForFunction(`(${appRendered.toString()})(document, ${JSON.stringify(selector ?? null)})`, undefined, { polling: 100, timeout: RELOAD_ERROR_PAGE_MS })
       .then(
         () => 'rendered' as const,
         () => (frame.url().startsWith('chrome-error:') ? ('error' as const) : ('waiting' as const)),
@@ -120,11 +109,16 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
       if (done) return;
       if (!deadline) {
         const err = run.pageErrors.slice(seenErrors).find((e) => e.source === 'app');
-        // The page's own 503 is a dev server still loading (see waitForRender), not the app failing.
-        const loading503 = (c: ConsoleEntry) => !!c.url && run.documents.some((d) => d.status === 503 && d.url === c.url);
+        // The page's own 503 is a dev server still loading (see waitForRender), not the app failing. A
+        // later error for the same page is not: Nuxt answers 503 while it builds, then 500 for a page
+        // it cannot render (and that error page refuses to be framed, so the frame shows the browser's).
+        const loading503 = (c: ConsoleEntry) => !!c.url && /\b503\b/.test(c.text) && run.documents.some((d) => d.status === 503 && d.url === c.url);
         const logged = run.console.slice(seenConsole).find((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`) && !loading503(c));
+        // The app's page itself answered a server error (not a dev server's 503 loading page).
+        const page = run.documents.filter((d) => !d.url.includes('/__sandburg/')).at(-1);
         if (err) [deadline, reason] = [Date.now() + RENDER_GRACE_MS, `app threw before rendering: ${err.message}`];
         else if (logged) [deadline, reason] = [Date.now() + CONSOLE_GRACE_MS, `app did not render after a console error: ${logged.text}${logged.url ? ` (${logged.url})` : ''}`];
+        else if (page && page.status >= 500 && page.status !== 503) [deadline, reason] = [Date.now() + CONSOLE_GRACE_MS, `app did not render: its page answered HTTP ${page.status} (${page.url})`];
       } else if (Date.now() >= deadline) {
         reject(new Error(reason));
         return;

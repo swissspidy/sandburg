@@ -67,3 +67,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0061](0061-chromium-sandbox.md) | Chromium's OS sandbox on by default, and site isolation | Accepted |
 | [0062](0062-ci-setup-and-coverage.md) | CI: one Chromium setup, a browser cache, and the runs that were missing | Accepted |
 | [0065](0065-ci-on-macos-and-windows.md) | CI on macOS and Windows, and what it found: npm on Windows, lockfiles through a symlink, macOS's free memory | Accepted |
+| [0066](0066-fidelity-v7-fixes.md) | What fidelity study v7 found: shadow roots, Solid's hydration, fail-fast and classification | Accepted |

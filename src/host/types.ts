@@ -64,17 +64,20 @@ export interface HostApi {
   ready(url: string, navigate?: boolean): Promise<RpcResult<void>>;
   /**
    * Whether the app frame shows a rendered app (its document, read from the host page, as
-   * waitForRender in session.ts reads it): `selector` matches, else #root/#app/#__next has content,
-   * else the body has text. False for the browser's error page and a dev server's loading page.
+   * waitForRender in session.ts reads it; host/rendered.ts): `selector` matches, else #root/#app/#__next
+   * has content, else the page shows text, in its shadow roots too. False for the browser's error page
+   * and a dev server's loading page.
    */
   rendered(selector: string | null): Promise<RpcResult<boolean>>;
   activity(): Promise<RpcResult<Activity | null>>;
   /**
-   * Waits until the app has settled (see Activity): no request sent for `quietMs`, and none in
-   * flight that was sent within `longMs` (a long-lived stream or long poll does not count), or
-   * `maxMs` passed. Whether it settled; null without a runtime that reports its activity.
+   * Waits until the app has settled (see Activity): its framework says input is no longer lost
+   * (host/settle.ts), else no request sent for `quietMs` and none in flight that was sent within
+   * `longMs` (a long-lived stream or long poll does not count); or `maxMs` passed, `hydrateMaxMs`
+   * while its framework says it has not hydrated yet. Whether it settled; null without a runtime
+   * that reports its activity.
    */
-  settled(quietMs: number, longMs: number, maxMs: number): Promise<RpcResult<boolean | null>>;
+  settled(quietMs: number, longMs: number, maxMs: number, hydrateMaxMs: number): Promise<RpcResult<boolean | null>>;
   dispose(): Promise<RpcResult<void>>;
 }
 

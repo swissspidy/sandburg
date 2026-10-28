@@ -125,6 +125,36 @@ test("what is logged while a dev server's loading page shows is the server's: no
   assert.deepEqual([run.pageErrors[0].source, run.console[0].source], ['host', 'host']);
 });
 
+test("a later error for the page that answered 503 is the app failing: Nuxt's 500 after its loading page", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  run.documents.push({ url: 'http://app.test/', status: 503 });
+  run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 503 (Service Unavailable)', url: 'http://app.test/' });
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run)));
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  run.documents.push({ url: 'http://app.test/', status: 500 });
+  run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Vite Error)', url: 'http://app.test/' });
+  await advance(t, 8_200);
+  assert.equal(phase.error?.message, 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Vite Error) (http://app.test/)');
+});
+
+test("the app's page answering a server error fails the phase after 8 s, even when its frame shows the browser's error page (a 500 that refuses to be framed)", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  run.documents.push({ url: 'http://app.test/__sandburg/', status: 200 }, { url: 'http://app.test/', status: 503 });
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run)));
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  run.documents.push({ url: 'http://app.test/', status: 500 });
+  // What follows is the browser's error page's: noise.
+  run.console.push({ source: 'app', type: 'error', text: "Refused to display 'http://app.test/' in a frame because it set 'X-Frame-Options' to 'deny'.", url: 'chrome-error://chromewebdata/' });
+  await advance(t, 7_900);
+  assert.equal(phase.settled, 'pending');
+  await advance(t, 300);
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
+});
+
 /**
  * A frame whose render checks answer `states` in turn ('rendered', 'waiting', 'error': the browser's
  * error page), then 'waiting'; its tab closes after 10 checks (a backstop: a wait that does not end fails).

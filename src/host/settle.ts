@@ -18,8 +18,11 @@ export function quiet(a: Activity, quietMs: number, longMs: number): boolean {
  * Whether the app's framework says that input is no longer lost, where it says so, else undefined
  * (then quiet() decides). Only reads the app's window (the host page's own origin).
  *
- * - Solid's server-rendered page records events until it has hydrated, and replays them (`_$HY`).
- *   SolidStart goes on loading its dev overlay's modules for seconds after.
+ * - Solid's server-rendered page records events until it has hydrated (`_$HY`), but replaying one
+ *   does not reach the app's handlers: an event that has finished dispatching has no composedPath().
+ *   A fill() before then was lost. Hydrated: every server-rendered element (`data-hk`) is one Solid
+ *   has claimed (`_$HY.completed`), or Solid says it is done. SolidStart goes on loading its dev
+ *   overlay's modules for seconds after.
  * - React, once its root is created (hydrateRoot), replays a click on what it has not hydrated yet
  *   (Next.js and React Router hydrate the document).
  * - Nuxt mounts its app before its page component has hydrated (`isHydrating`), and its requests
@@ -32,7 +35,11 @@ export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | un
   try {
     if (!w) return undefined;
     const doc = w.document;
-    if (w._$HY && typeof w._$HY === 'object') return true;
+    if (w._$HY && typeof w._$HY === 'object') {
+      const hy = w._$HY as { done?: boolean; completed?: WeakSet<Element> | null };
+      if (hy.done || !hy.completed) return true;
+      return [...(doc.body?.querySelectorAll('[data-hk]') ?? [])].slice(0, 500).every((e) => hy.completed!.has(e));
+    }
     const reactRoot = (node: Node | null) => !!node && Object.keys(node).some((k) => k.startsWith('__reactContainer$'));
     if ([doc, doc.body, doc.getElementById('root'), doc.getElementById('app'), doc.getElementById('__next')].some(reactRoot)) return true;
     if ('__sveltekit_dev' in w) return [...(doc.body?.querySelectorAll('*') ?? [])].slice(0, 200).some((e) => '__svelte_meta' in e);

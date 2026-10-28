@@ -123,8 +123,9 @@ export function classify(input: ClassifyInput): Failure | null {
     const evidence = [message, ...appErrors];
     const sig = matchSignature(evidence);
     if (sig) return failure('runtime-unsupported', failedPhase.name, sig, message, evidence);
-    const trap = output.find((l) => WASM_TRAP.test(l));
-    if (trap) return failure('runtime-unsupported', failedPhase.name, 'signature:wasm-trap', trap.replace(/^\[runtime:std(?:out|err)\] /, ''), [trap, ...evidence]);
+    // In the dev server's output, or in the phase's own error (Vite reports its dependency optimizer's failure to the page).
+    const trap = [...output, message].find((l) => WASM_TRAP.test(l));
+    if (trap) return failure('runtime-unsupported', failedPhase.name, 'signature:wasm-trap', (trap === message ? message.split('\n').filter((l) => l.trim()).join(' ') : trap).replace(/^\[runtime:std(?:out|err)\] /, ''), [trap, ...evidence]);
     // The project's own source does not compile (dev servers report this for syntax errors).
     const compile = [message, ...appErrors, ...(input.runtimeErrors ?? [])].find((e) => COMPILE_ERROR.test(e));
     if (compile) return failure('app-bug', failedPhase.name, 'compile-error', compile.split('\n').slice(0, 3).join('\n'), evidence);
@@ -132,6 +133,9 @@ export function classify(input: ClassifyInput): Failure | null {
     if (failedPhase.name === 'ready' && hasProjectStack(input.pageErrors)) {
       return failure('app-bug', 'ready', 'app-error-before-ready', message, appErrors);
     }
+    // The dev server could not render the app's page on the server: the error page (a 500) is all the page shows.
+    const ssr = failedPhase.name === 'ready' ? serverRenderError(output) : null;
+    if (ssr) return failure('app-bug', 'ready', ssr.rule, ssr.message, [ssr.message, ...evidence]);
     return failure('unknown', failedPhase.name, 'unmatched', message, evidence);
   }
 
@@ -213,10 +217,47 @@ function matchSignature(texts: string[]): string | null {
  * An error whose stack runs through the project's own files (not dependencies or runtime code): served
  * to the page, bundled by webpack (webpack-internal:///(…)/./pages/index.tsx), or run in the runtime.
  */
-const PROJECT_FRAME = /(?:https?:\/\/[^/\s]+\/|webpack-internal:\/\/\/(?:\([^)]*\)\/)?\.\/|file:\/\/\/app\/)(?!@|node_modules\/|__sandburg\/|\.next\/|_next\/)[^\s:?()]+\.(?:[cm]?[jt]sx?|vue|svelte|astro)\b/;
+const PROJECT_FRAME = /(?:https?:\/\/[^/\s]+\/|webpack-internal:\/\/\/(?:\([^)]*\)\/)?\.\/|file:\/\/\/app\/|\(\/app\/)(?!@|node_modules\/|__sandburg\/|\.next\/|_next\/)[^\s:?()]+\.(?:[cm]?[jt]sx?|vue|svelte|astro)\b/;
+
+/**
+ * A page error's stack, or a console error's text when it carries one (Angular's ErrorHandler logs
+ * what the app threw, "ERROR TypeError: …\n    at …", instead of throwing it; so does SolidStart for its
+ * server render's error).
+ */
+const stackOf = (e: PageError) => e.stack ?? (/\n\s+at /.test(e.message) ? e.message : '');
 
 function hasProjectStack(errors: PageError[]): boolean {
-  return errors.some((e) => e.source === 'app' && PROJECT_FRAME.test(e.stack ?? ''));
+  return errors.some((e) => e.source === 'app' && PROJECT_FRAME.test(stackOf(e)));
+}
+
+/**
+ * The dev server's report of an error while it rendered a page on the server (the page then shows its
+ * 500 error page):
+ * - Nuxt: "[request error] [GET] /", then "✖ TypeError (500): <message>". Its "SyntaxError [VITE_ERROR]"
+ *   is a file of the project that does not compile.
+ * - Astro and others: an error line followed by a stack through the project's own files
+ *   ("at eval (/app/src/pages/index.astro:30:28)").
+ */
+function serverRenderError(lines: string[]): { rule: 'server-render-error' | 'compile-error'; message: string } | null {
+  const clean = lines.map((l) => l.replace(/^\[runtime:std(?:err|out)\]\s?/, '').replace(/^\[[\w@:./-]{1,40}\]\s(?!\[)/, ''));
+  for (let i = 0; i < clean.length; i++) {
+    if (!/\[request error\]/.test(clean[i])) continue;
+    for (let j = i + 1; j < Math.min(clean.length, i + 4); j++) {
+      const m = /✖ (\w*Error)(?: \[(\w+)\])? \((5\d\d)\): (.+)$/.exec(clean[j]);
+      if (!m) continue;
+      const compile = m[1] === 'SyntaxError' || m[2] === 'VITE_ERROR';
+      return { rule: compile ? 'compile-error' : 'server-render-error', message: `${m[1]}: ${m[4].trim()}` };
+    }
+  }
+  for (let i = 1; i < clean.length; i++) {
+    if (!/^\s+at /.test(clean[i]) || !PROJECT_FRAME.test(clean[i])) continue;
+    // The error the stack belongs to: the nearest line above that is not a stack frame.
+    let k = i - 1;
+    while (k > 0 && /^\s+at /.test(clean[k])) k--;
+    const head = clean[k].replace(/^\d{2}:\d{2}:\d{2} /, '').trim();
+    if (/\b\w*Error\b|\[ERROR\]/.test(head)) return { rule: 'server-render-error', message: head.replace(/^\[ERROR\]\s*/, '') };
+  }
+  return null;
 }
 
 function failure(cls: Failure['class'], phase: PhaseName, rule: string, message: string, evidence: string[]): Failure {
