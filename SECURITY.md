@@ -18,7 +18,7 @@ Security fixes go into the latest minor release on npm (Sandburg is 0.x, so that
 Report it privately, through GitHub's private vulnerability reporting: on the repository's
 **Security** tab, choose **Report a vulnerability**
 ([direct link](https://github.com/swissspidy/sandburg/security/advisories/new)). Please do not open a
-public issue, pull request or discussion for it.
+public issue or pull request for it.
 
 Include what you can of:
 
@@ -28,8 +28,7 @@ Include what you can of:
 - a minimal project (and checks file) that shows the crossing, and what it reaches that it should not;
 - the run's `result.json`, in particular `environment.browserSandbox`.
 
-As ADR 0054 records, a boundary that can be crossed is fixed first, with a neutral commit message, and
-described once the fix is released. You will be credited in the advisory unless you ask not to be.
+A boundary that can be crossed is fixed first, with a neutral commit message.
 
 ## Response
 
@@ -38,14 +37,20 @@ guaranteed response or fix time. Replies and progress go in the private advisory
 
 ## Scope
 
-Sandburg's default configuration is what counts: Chromium's OS sandbox on, checks files run by the host
-only when you passed them yourself.
+Sandburg's default configuration is what counts: Chromium's OS sandbox on. Note that a checks file is
+imported by the host's Node.js process under the default `--checks-in host`, and that `batch` and
+`compare` use a project's own `checks.spec.ts` (or `<name>.checks.spec.ts` next to an archive) ahead of
+`--checks`: a batch over untrusted projects with the default runs code those projects supplied on the
+host. Run untrusted projects with `--checks-in page`.
 
 In scope:
 
 - **Sandbox escape.** An app, its packages or its dev script running code outside its sandbox tab:
-  on the host's Node.js process, in another sandbox's origin or tab, or outside Chromium's renderer
-  sandbox.
+  on the host's Node.js process (other than through a checks file run with `--checks-in host`, below),
+  or in another sandbox's origin or tab. Escaping Chromium's renderer sandbox is in scope when
+  Sandburg's own launch configuration makes it reachable ([ADR 0061](docs/adr/0061-chromium-sandbox.md):
+  `chromiumSandbox`, `--site-per-process`, the default arguments it drops); otherwise it is a Chromium
+  bug (below).
 - **Egress-allowlist bypass.** An app reaching the network other than through the egress gateway and
   its sandbox's egress proxy, or reaching an origin its allowlist does not name (including the host's
   own loopback services, beyond the host server's routes for that sandbox).
@@ -59,8 +64,9 @@ In scope:
 - **Checks with host privileges under `--checks-in page`.** A checks file run with `--checks-in page`
   getting anything of the host process: importing a module, running code in Node.js, or reaching what
   the host can reach.
-- Crashing or hanging the host process from an app (the host's parsers of app-controlled input), or one
-  sandbox reading or poisoning another's cached data.
+- Crashing or hanging the host process from an app through a parser bug in the host's handling of
+  app-controlled input (not by load), or one sandbox reading another sandbox's cached data without its
+  key, or poisoning it.
 
 Out of scope:
 
@@ -71,10 +77,13 @@ Out of scope:
 - **Running without the browser sandbox** (`--no-browser-sandbox`, `SANDBURG_NO_BROWSER_SANDBOX=1`,
   `browserSandbox: false`). That turns off the boundary between the app and the machine; a renderer
   exploit that only works there is not a Sandburg vulnerability.
-- **Checks files run on the host** (`--checks` without `--checks-in page`). They are imported by
-  Sandburg's Node.js process and are trusted code: they can do anything a program on the machine can.
-- Bugs in Chromium, V8 or Node.js themselves (report them upstream), unless Sandburg's configuration
-  makes them reachable where they would not be otherwise.
+- **Checks files run on the host** (the default `--checks-in host`): the `--checks` file, and in
+  `batch` and `compare` a project's own `checks.spec.ts` or `<name>.checks.spec.ts`, which takes
+  precedence over `--checks`. They are imported by Sandburg's Node.js process and are trusted code: they
+  can do anything a program on the machine can. A batch over untrusted projects needs
+  `--checks-in page`.
+- Bugs in Chromium, V8 or Node.js themselves, a renderer sandbox escape included, that Sandburg's launch
+  configuration does not make reachable: report them upstream.
 - The limits ADR 0040 ("Not fixed") and ADR 0054 ("Decisions on resource fairness") accept: reads of
   a cache by a key the reader already knows, preload lists, and one sandbox's compiles slowing its
   siblings in a batch.

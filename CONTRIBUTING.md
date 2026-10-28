@@ -42,13 +42,13 @@ removes the boundary between the app and the machine (see [SECURITY.md](SECURITY
 | `npm run typecheck` | `tsc` over the sources, tests and scripts | nothing |
 | `npm run lint` | oxlint (type-aware, with Sandburg's own rules in `lint/`) and knip | nothing |
 | `npm run test:runtime` | the runtime's loader and built-ins, in Chromium (`test/runtime`) | Chromium |
-| `npm run test:e2e` | the fixtures end to end, one file at a time (`test/e2e`) | Chromium; network on the first run; Docker for the reference tests (they skip without it) |
-| `npm run test:pack` | packs the package, installs it into an empty project, runs a project with it | Chromium, network |
+| `npm run test:e2e` | the fixtures end to end (`test/e2e`) | Chromium, network, Docker (else skipped) |
+| `npm run test:pack` | packs the package, installs and runs it in an empty project | Chromium, network |
 | `node scripts/pages/build.ts --verify` | builds the demo site and runs each demo | Chromium, network |
 
-One e2e file at a time: `node --test --test-reporter=spec test/e2e/run.test.ts`. The unit tests'
+A single e2e file: `node --test --test-reporter=spec test/e2e/run.test.ts`. The unit tests'
 timing assertions are off by default and run with `SANDBURG_PERF_TESTS=1`, one file at a time, as CI's
-perf job does. Each suite has a time budget in `test/budgets.json`; CI warns about a file over it.
+perf job does. Files listed in `test/budgets.json` have a time budget; CI warns about one over it.
 
 Two generated files are compared by the unit tests. After changing what they describe, regenerate and
 commit them:
@@ -80,7 +80,9 @@ node scripts/flakes.ts --runs 10 --cpu 4 test/unit/my-new.test.ts
 
 `npm run lint` runs [oxlint](https://oxc.rs/docs/guide/usage/linter) with the config in
 [`.oxlintrc.json`](.oxlintrc.json) and [knip](https://knip.dev) with [`knip.json`](knip.json). Both must
-pass in CI. Some rules encode the security model and the architecture ([ADR 0053](docs/adr/0053-invariants-api-and-structure.md), [ADR 0056](docs/adr/0056-architecture-rules-and-contracts.md)): `node:vm` is never a boundary,
+pass in CI. Some rules encode the security model and the architecture
+([ADR 0053](docs/adr/0053-invariants-api-and-structure.md),
+[ADR 0056](docs/adr/0056-architecture-rules-and-contracts.md)): `node:vm` is never a boundary,
 `node:child_process` is allowed only in a few reviewed files, host caches are keyed by digests
 (`sandburg/cache-key-digest`), the host has one server (`sandburg/one-host-server`), and browser modules
 import nothing of Node's. Do not add a file to an exception list to quiet a rule without saying why in
@@ -99,8 +101,10 @@ npm run changeset
 Pick the bump: patch for a fix, minor for a feature. Sandburg is 0.x, so a breaking change is a minor
 too. Then write the changelog entry for someone who uses the package: what changed for them, not how.
 Commit the file it writes in [`.changeset/`](.changeset/README.md). A change to tests, docs, CI or
-scripts only needs none. The Release workflow gathers changesets into a "Version packages" pull
-request and publishes from it ([ADR 0022](docs/adr/0022-npm-package.md)).
+scripts only needs none. The Release workflow gathers changesets on `main` into a "Version
+packages" pull request; merging it tests and stages that version on npm with npm's trusted publishing
+and provenance, tags it and creates its GitHub release. The version goes public once a maintainer
+approves the staged publish on npmjs.com ([ADR 0022](docs/adr/0022-npm-package.md)).
 
 ## Architecture decision records
 
@@ -152,6 +156,8 @@ for it. A framework that needed runtime work usually earns an ADR.
 - New behaviour comes with a test, and a fixed bug with a test that failed before the fix.
 - A changeset if the package's behaviour changes, an ADR if a decision was made, and the README or
   docs updated where they describe what changed.
-- A change to `src/`, `pages/` or the lockfile is benchmarked against `main` in CI; it fails when a
-  median is more than 30% slower. Explain a slowdown you accept.
+- A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, the unit tests with timing
+  assertions (`test/unit/await-context.test.ts`, `test/unit/host-socket.test.ts`), `package-lock.json`,
+  the perf workflow or `.github/actions/setup-chromium/` is benchmarked against its base branch in CI;
+  it fails when a median is more than 30% slower. Explain a slowdown you accept.
 - Security fixes do not start as a pull request: report them first ([SECURITY.md](SECURITY.md)).
