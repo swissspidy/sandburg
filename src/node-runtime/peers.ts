@@ -8,6 +8,7 @@ import { netEvents, netLinks, netServers, Socket as NetSocket } from './builtins
 import { thread, realPostMessage, post, announce, exited } from './worker.ts';
 import { ExitError } from './builtins/process.ts';
 import { nestedReported } from './process-tree.ts';
+import { forwardedBodies, inflight, routedTo, sentBy } from './peer-requests.ts';
 
 type Send = (m: NetMessage, transfer?: Transferable[]) => void;
 
@@ -113,12 +114,6 @@ export const nestedPorts = new Map<number | string, globalThis.Worker>();
 
 export const nestedSockets = new Map<number, globalThis.Worker>();
 
-/** Requests in flight to nested runtimes (from the page, a parent or loopback.route), by id: failed if the runtime ends first (forgetNested). */
-const inflight = new Map<number, globalThis.Worker>();
-
-/** The nested runtime each of this runtime's own loopback requests went to, while its body goes there (see loopback.route). */
-const routedTo = new Map<number, globalThis.Worker>();
-
 /** Requests this runtime's programs made to servers in nested runtimes (http.request to localhost). */
 const loopbackRequests = new Map<number, BridgeResponse & { error(message: string, code?: string): void }>();
 
@@ -180,9 +175,6 @@ export function cancelForwarded(id: number): boolean {
   worker.postMessage({ type: 'request-cancel', id } satisfies ToWorker);
   return true;
 }
-
-/** Requests from the parent this runtime forwarded to a nested runtime whose body is still coming, by id. */
-const forwardedBodies = new Map<number, globalThis.Worker>();
 
 /** A request from the page or the parent for a port a nested runtime serves: down to it (and its body after it). */
 export function forwardRequest(msg: Extract<ToWorker, { type: 'request' }>) {
@@ -382,7 +374,7 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'response-read': {
       // From the runtime the request went to: ours (loopback.route), else one this runtime forwarded
       // (from its parent), up to it.
-      if (inflight.get(m.id) !== from && forwardedBodies.get(m.id) !== from && routedTo.get(m.id) !== from) return true;
+      if (!sentBy(m.id, from)) return true;
       const own = loopbackRequests.get(m.id);
       if (!own) post(m);
       else if (m.type === 'response-info') own.info?.(m.status, m.statusText, m.headers);
@@ -394,15 +386,14 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'response-full':
     case 'response-end':
     case 'response-error': {
-      // Ours (loopback.route), or one this runtime forwarded (from the page or its parent): else one
-      // it no longer waits for (cancelled, or answered with an error as its runtime ended), dropped.
-      const forwarded = inflight.has(m.id);
+      // Ours (loopback.route), or one this runtime forwarded (from the page or its parent), from the
+      // runtime it went to: else one it no longer waits for (cancelled, or answered with an error as
+      // its runtime ended), or not that runtime's to answer, dropped.
+      if (inflight.get(m.id) !== from) return true;
       if (m.type !== 'response-start' && m.type !== 'response-chunk') inflight.delete(m.id);
       const own = loopbackRequests.get(m.id);
-      if (!own) {
-        if (forwarded) break;
-        return true;
-      }
+      // One it forwarded: on up (below).
+      if (!own) break;
       if (m.type === 'response-start') own.start(m.status, m.statusText, m.headers);
       else if (m.type === 'response-chunk') own.chunk(m.chunk);
       else if (m.type === 'response-full') {

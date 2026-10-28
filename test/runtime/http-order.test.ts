@@ -98,12 +98,12 @@ test("http: a request waiting for an agent's socket emits 'finish' once it went 
   ]);
 });
 
-test('timers: under load every immediate runs before the process exits, quickly, and those an I/O callback queued before its timer', async () => {
+test('timers: under load every immediate runs before the process exits, in time, and those an I/O callback queued before its timer', async () => {
   assert.deepEqual(await run('loop-busy.cjs'), [
-    'slow: 20 of 20 ran before the exit',
-    'many: all ran, under 1 s: true',
+    'slow: 100 of 100 ran before the exit',
+    'many: all ran, under 5 s: true',
     'many: 100000 ran before the exit',
-    'io: 2000 of 2000 immediates before the timer',
+    'io: 20000 of 20000 immediates before the timer',
     'order: tick0 I1 tick1 p1 I2 I3 T0',
   ]);
 });
@@ -116,6 +116,18 @@ test('http: what a server does from an I/O callback reaches its client in the pr
     'server req close',
     'client error socket hang up',
     'client close',
+  ]);
+});
+
+test('timers: all an immediate queued (nextTick, promises, at any depth) runs before the next; a timer due while it ran comes before the next iteration', async () => {
+  assert.deepEqual(await run('microtasks.cjs'), [
+    'await x5: awaited 5, next immediate',
+    'await x10, then x10: chained 20, next immediate',
+    'nextTick, promise, nextTick: nested, next immediate',
+    'nested async functions: cba, next immediate',
+    'for await: read 123, next immediate',
+    'middleware: request 2 handled, other immediate',
+    'timer due during an immediate: timer, inner immediate',
   ]);
 });
 

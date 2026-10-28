@@ -19,7 +19,7 @@ import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
 import pathBrowserify from 'path-browserify';
 import { installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
-import { servers, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
+import { servers, serverConnections, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
 import { ExitError, NODE_VERSION, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
 import { netEvents, netServers } from './builtins/net.ts';
@@ -644,7 +644,7 @@ function exitWhenIdle() {
   globalThis.fetch = track(globalThis.fetch.bind(globalThis));
   const wasm = WebAssembly as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
   for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) if (wasm[name]) wasm[name] = track(wasm[name].bind(WebAssembly));
-  const busy = () => timersActive() || [...servers.values()].some((s) => s.keepsAlive) || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
+  const busy = () => timersActive() || [...servers.values()].some((s) => s.keepsAlive) || serverConnections.count > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
   let idle = 0;
   const timer = nativeSetInterval(() => {
     if (hasExited) return nativeClearInterval(timer);

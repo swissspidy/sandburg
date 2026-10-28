@@ -64,6 +64,9 @@ export interface Outgoing {
  */
 const BODY_WINDOW = 64 * 1024;
 
+/** Connections servers have open, listening or not: as Node's sockets, they keep the process alive (see exitWhenIdle). */
+export const serverConnections = { count: 0 };
+
 /** Listening servers by port, or by path for servers on a local socket; the runtime's request dispatcher reads this. */
 export const servers = new Map<number | string, Server>();
 export const serverEvents = new EventEmitter();
@@ -94,6 +97,8 @@ class FakeSocket extends EventEmitter {
   written: Uint8Array[] = [];
   /** Tells the other end of the connection, as it is destroyed. */
   onDestroy: (() => void) | null = null;
+  /** Takes it from its server's connections, as it is destroyed (before its 'close', as Node's). */
+  untrack: (() => void) | null = null;
   /** setTimeout's: 'timeout' once the connection has been idle that long (0: never), and its timer. */
   #timeoutMs = 0;
   #timer: ReturnType<typeof timers.setTimeout> | undefined;
@@ -132,6 +137,8 @@ class FakeSocket extends EventEmitter {
     this.destroyed = true;
     this.readable = this.writable = false;
     timers.clearTimeout(this.#timer);
+    this.untrack?.();
+    this.untrack = null;
     this.onDestroy?.();
     // As a real socket's: once the handle closed, after what this turn queued.
     onClosePhase(() => this.emit('close'));
@@ -591,8 +598,9 @@ export class Server extends EventEmitter {
       this.#closing = null;
       queueMicrotask(() => this.emit('close'));
     };
+    // Its last connection closing (an idle one, now) emits 'close' already.
     this.closeIdleConnections();
-    this.#closing();
+    this.#closing?.();
     return this;
   }
   /** As Node's: every connection closes, those with a response in flight too. */
@@ -673,9 +681,13 @@ export class Server extends EventEmitter {
     // ('aborted' if it was not read to its end; its 'error' and 'close' later), and the response closes at once.
     // A connection of its own (as with Node's client, which does not reuse it for another request here).
     this.#connections.set(socket, () => res.finished);
-    socket.once('close', () => {
+    serverConnections.count++;
+    socket.untrack = () => {
       this.#connections.delete(socket);
+      serverConnections.count--;
       this.#closing?.();
+    };
+    socket.once('close', () => {
       this.#incoming.delete(req);
       if (res.finished) return;
       req.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
@@ -1234,7 +1246,7 @@ class ClientRequest extends Writable {
       consumed: (n: number) => this.#consumed(n),
       // As Node's: 'continue' for a 100, and 'information' for each.
       info: (status: number, statusText: string, headers: [string, string][]) => {
-        if (this.destroyed || res) return;
+        if (this.destroyed || res || status < 100 || status > 199) return;
         if (status === 100) this.emit('continue');
         const msg = new IncomingMessage(this.method, this.path, headers, 0);
         this.emit('information', { statusCode: status, statusMessage: statusText, httpVersion: '1.1', httpVersionMajor: 1, httpVersionMinor: 1, headers: msg.headers, rawHeaders: msg.rawHeaders });

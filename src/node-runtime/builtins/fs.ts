@@ -8,7 +8,7 @@ import { Readable, Writable } from 'readable-stream';
 import { FsError, norm, type VStat, type Vfs } from '../vfs.ts';
 import { bindContext } from '../async-context.ts';
 import { realpath } from '../links.ts';
-import { timers } from './process.ts';
+import { onLaterIo } from './process.ts';
 
 type PathLike = string | Buffer | URL;
 type Encoding = BufferEncoding | null | undefined;
@@ -420,10 +420,11 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   };
 
   // --- callback and promise APIs, derived from the sync ones ---------------------
-  // As in Node: the callback runs on a later turn of the event loop (setImmediate, not setTimeout, which
-  // browsers clamp to 4 ms when nested: webpack's resolver makes thousands of fs calls in a chain), and
-  // an error has no JavaScript stack frames (capturing them was a quarter second of a next dev start).
-  const later = (fn: () => void) => timers.setImmediate(fn);
+  // As in Node: the callback runs as an I/O callback of the loop's next iteration (after the
+  // immediates queued with the call; not a timer, which browsers clamp to 4 ms when nested: webpack's
+  // resolver makes thousands of fs calls in a chain), and an error has no JavaScript stack frames
+  // (capturing them was a quarter second of a next dev start).
+  const later = (fn: () => void) => onLaterIo(fn);
   const withoutStack = <T,>(op: () => T): T => {
     const limit = Error.stackTraceLimit;
     Error.stackTraceLimit = 0;

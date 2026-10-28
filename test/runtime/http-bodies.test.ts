@@ -126,6 +126,7 @@ test("http: a server's connections: 'connection', getConnections(), close() clos
     'close(): request /ok, request /held, >100 connections=2 closed=none, connections 2, >300 connections=2 closed=/ok, >1500 connections=2 closed=/ok',
     'closeIdleConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, >300 connections=2 closed=/ok, >1500 connections=2 closed=/ok',
     'closeAllConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, client error /held socket hang up, >300 connections=2 closed=/held+/ok, >1500 connections=2 closed=/held+/ok',
+    'close(), all idle: request /ok, >100 connections=1 closed=none, connections 1, closed, >300 connections=1 closed=/ok, >1500 connections=1 closed=/ok',
   ]);
 });
 
@@ -144,5 +145,20 @@ test("http: an unref'd server does not keep the process alive; one ref'd again d
   assert.deepEqual(await run('server-unref.cjs'), [
     'closing the ref\'d one',
     'exit',
+  ]);
+});
+
+test('http: server.close(cb) with a connection that outlives a response: it keeps the process alive, and cb comes once it closed', async () => {
+  assert.deepEqual(await run('close-waits.cjs'), [
+    '>50',
+    'connections 2',
+    'server socket close /idle',
+    '>200',
+    'client got slow done',
+    '>400',
+    '>3000',
+    '>6000',
+    'close cb',
+    'server socket close /slow',
   ]);
 });

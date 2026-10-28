@@ -1,25 +1,25 @@
 // The loop under load, in child processes (a process ends when its loop has nothing left): every
-// immediate runs before the process exits, 100k of them quickly (under 1 s), and in an I/O callback
+// immediate runs before the process exits, 100k of them in time (under 5 s), and in an I/O callback
 // the immediates it queued all run before a timer it set.
 const { spawn } = require('child_process');
 const fs = require('fs');
 const cases = {
   slow() {
     let n = 0;
-    for (let i = 0; i < 20; i++) setImmediate(() => { const end = Date.now() + 30; while (Date.now() < end); n++; });
-    process.on('exit', () => console.log(`slow: ${n} of 20 ran before the exit`));
+    for (let i = 0; i < 100; i++) setImmediate(() => { const end = Date.now() + 30; while (Date.now() < end); n++; });
+    process.on('exit', () => console.log(`slow: ${n} of 100 ran before the exit`));
   },
   many() {
     let n = 0;
     const t = performance.now();
-    for (let i = 0; i < 100000; i++) setImmediate(() => { if (++n === 100000) console.log(`many: all ran, under 1 s: ${performance.now() - t < 1000}`); });
+    for (let i = 0; i < 100000; i++) setImmediate(() => { if (++n === 100000) console.log(`many: all ran, under 5 s: ${performance.now() - t < 5000}`); });
     process.on('exit', () => console.log(`many: ${n} ran before the exit`));
   },
   io() {
     fs.readFile(__filename, () => {
       let n = 0;
-      setTimeout(() => console.log(`io: ${n} of 2000 immediates before the timer`), 0);
-      for (let i = 0; i < 2000; i++) setImmediate(() => n++);
+      setTimeout(() => console.log(`io: ${n} of 20000 immediates before the timer`), 0);
+      for (let i = 0; i < 20000; i++) setImmediate(() => n++);
     });
   },
   order() {

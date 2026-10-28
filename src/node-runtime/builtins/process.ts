@@ -51,8 +51,17 @@ class Timeout {
     }, this.ms) : nativeSetTimeout(fn, this.ms);
     byId.set(Number(this.id), this);
   }
-  /** When it fires next (see timerDue). */
+  /** When it fires next (see takeDueTimers). */
   due = 0;
+  /** Its callback, for the loop to run it as it comes due (see takeDueTimers). */
+  run: () => void = () => {};
+  get repeats() {
+    return this.repeat;
+  }
+  /** A timeout the loop runs itself: the browser's timer for it no longer fires. */
+  cancelNative() {
+    if (this.id !== null && !this.repeat) nativeClearTimeout(this.id);
+  }
   /** Scheduled and not cleared (a timeout: not fired yet). */
   get pending() {
     return this.id !== null;
@@ -126,7 +135,9 @@ function make(repeat: boolean) {
         queueMicrotask(toPoll);
       }
     };
-    const t: Timeout = new Timeout(() => (turnRunning ? dueTimers.push(fire) : fire()), Math.max(1, Number(ms) || 1), repeat);
+    // While a turn of immediates is posted or going, it waits for the turn's end (see takeDueTimers).
+    const t: Timeout = new Timeout(() => (turnPosted ? void dueTimers.push(t) : fire()), Math.max(1, Number(ms) || 1), repeat);
+    t.run = fire;
     return t;
   };
 }
@@ -182,29 +193,27 @@ const ioQueue: (() => void)[] = [];
 const nextIoQueue: (() => void)[] = [];
 /**
  * A turn of the loop: its I/O callbacks, then its immediates, then its close callbacks (each step's as
- * they were when it began: those queued since wait for the next turn). It is one task: a timer that
- * comes due meanwhile waits for its end, as Node's wait for the loop's next timers phase. Between two
- * callbacks, what the first queued with process.nextTick or promises runs (see settle), as in Node.
+ * they were when it began: those queued since wait for the next iteration), then the timers that came
+ * due meanwhile. Each callback is a task of its own: what it queued with process.nextTick or promises
+ * runs, all of it, before the next (a browser drains its microtasks only between tasks). A timer that
+ * comes due while a turn is posted waits for the turn's end, as Node's wait for the next timers phase.
  */
 type Step = 'io' | 'check' | 'close';
 const STEPS: Step[] = ['io', 'check', 'close'];
 const queues: Record<Step, (() => void)[]> = { io: ioQueue, check: immediateQueue, close: closeQueue };
-/** A turn is posted or going (it keeps the process alive: see timersActive). */
+/** A turn is posted or going (timers wait for it; it keeps the process alive: see timersActive). */
 let turnPosted = false;
-let turnRunning = false;
-/** Timers that came due during a turn: they run as it ends. */
-const dueTimers: (() => void)[] = [];
-/**
- * How long a turn runs before it lets the browser in (a message, a timer, then the rest of the turn):
- * a huge batch of immediates does not hold the runtime for its whole length.
- */
-const TURN_BUDGET_MS = 100;
-/** Microtask hops after a callback: what it queued (and what that queued, to this depth) runs before the next. */
-const SETTLE_HOPS = 4;
-const RESOLVED = Promise.resolve();
+/** Timers that came due while a turn was posted: they run as it ends. */
+const dueTimers: Timeout[] = [];
 const yieldChannel = new MessageChannel();
 const yielded: (() => void)[] = [];
 yieldChannel.port1.onmessage = () => yielded.shift()?.();
+/** Ends this task: what the callback before queued (microtasks) runs, and the browser's other tasks. */
+const nextTask = () =>
+  new Promise<void>((resume) => {
+    yielded.push(resume);
+    yieldChannel.port2.postMessage(0);
+  });
 function postTurn() {
   if (turnPosted) return;
   turnPosted = true;
@@ -220,55 +229,54 @@ function runOne(fn: () => void) {
     reportUncaught(e);
   }
 }
-/** Whether a timer has come due (its callback waits for the browser to run it). */
-function timerDue(): boolean {
+/**
+ * The timers due now, in the order they came due: those that fired while the turn went, and those
+ * whose browser timer has not fired yet (it would lose to the next turn's task), which the loop runs itself.
+ */
+function takeDueTimers(): Timeout[] {
+  const due = dueTimers.splice(0);
   const now = performance.now();
-  for (const t of byId.values()) if (t.due <= now) return true;
-  return false;
+  for (const t of byId.values()) {
+    if (t.repeats || t.due > now || due.includes(t)) continue;
+    t.cancelNative();
+    due.push(t);
+  }
+  return due.sort((a, b) => a.due - b.due);
 }
-/** How long a turn goes on into the loop's next iteration (no timer due), instead of a task of its own. */
-const TURN_CONTINUE_MS = 4;
 async function runTurn() {
-  turnRunning = true;
-  const start = performance.now();
-  let since = start;
   try {
     do {
       for (const step of STEPS) {
         if (!queues[step].length) continue;
-        phase = step === 'io' ? 'poll' : step;
         // As libuv's closing handles, the last closed first.
         const batch = step === 'close' ? closeQueue.splice(0).reverse() : queues[step].splice(0);
         for (let i = 0; i < batch.length; i++) {
+          phase = step === 'io' ? 'poll' : step;
           runOne(batch[i]);
-          // What it queued runs before the next (to SETTLE_HOPS deep).
-          for (let hop = 0; hop < SETTLE_HOPS; hop++) await RESOLVED;
+          await nextTask();
           if (stopped) return;
-          if (performance.now() - since > TURN_BUDGET_MS && i + 1 < batch.length) {
-            await new Promise<void>((resume) => {
-              yielded.push(resume);
-              yieldChannel.port2.postMessage(0);
-            });
-            since = performance.now();
-            phase = step === 'io' ? 'poll' : step;
-          }
         }
       }
       // What this iteration's other ends see on the next.
       ioQueue.push(...nextIoQueue.splice(0));
-    } while (performance.now() - start < TURN_CONTINUE_MS && (ioQueue.length || immediateQueue.length || closeQueue.length) && !dueTimers.length && !timerDue());
+      // The next iteration at once, unless a timer is due (its timers phase comes first).
+    } while ((ioQueue.length || immediateQueue.length || closeQueue.length) && !dueTimers.length && !byIdDue());
   } finally {
-    turnRunning = false;
     turnPosted = false;
-    phase = 'poll';
-    // The loop's next timers phase: those that came due during the turn.
-    for (const timer of dueTimers.splice(0)) {
-      runOne(timer);
-      for (let hop = 0; hop < SETTLE_HOPS; hop++) await RESOLVED;
+    // The loop's next timers phase. A timer one of them sets runs on a later one, as in Node.
+    for (const timer of takeDueTimers()) {
+      runOne(timer.run);
+      await nextTask();
     }
     phase = 'poll';
     if (ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
   }
+}
+/** Whether a timeout has come due (its browser timer has not run it yet). */
+function byIdDue(): boolean {
+  const now = performance.now();
+  for (const t of byId.values()) if (t.due <= now) return true;
+  return false;
 }
 
 /**
@@ -297,6 +305,14 @@ function onIoPhase(fn: () => void): void {
  */
 export function onPeerPhase(fn: () => void): void {
   if (phase === 'timers') return onIoPhase(fn);
+  onLaterIo(fn);
+}
+
+/**
+ * Runs `fn` as an I/O callback of the loop's next iteration (a file system call's, done in the
+ * thread pool): after the immediates and close callbacks this one queued, before the next one's.
+ */
+export function onLaterIo(fn: () => void): void {
   nextIoQueue.push(() => {
     if (!stopped) fn();
   });
