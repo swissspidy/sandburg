@@ -1,5 +1,5 @@
 /**
- * Makes WebAssembly modules with shared memory safe from V8's lazy memory growth (ADR 0067).
+ * Makes WebAssembly modules with shared memory safe from V8's lazy memory growth (ADR 0070).
  *
  * When one thread grows a shared memory, V8 updates the memory's size in the other threads'
  * instances only when each handles an interrupt, at its next stack check. Plain loads and stores

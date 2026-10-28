@@ -1,4 +1,4 @@
-/** Guarding WebAssembly modules with shared memory against lazily seen memory growth (wasm-grow-guard.ts, ADR 0067). */
+/** Guarding WebAssembly modules with shared memory against lazily seen memory growth (wasm-grow-guard.ts, ADR 0070). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';

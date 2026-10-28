@@ -1,5 +1,5 @@
 /**
- * WebAssembly threads on a shared memory that grows (ADR 0067). The expected output is what the
+ * WebAssembly threads on a shared memory that grows (ADR 0070). The expected output is what the
  * WebAssembly threads specification gives, and what Node 24 gives for a plain store (op 3): an
  * access to memory another thread grew, ordered after the growth through an atomic, is in bounds.
  * Node 24 itself (V8 13.6) traps in ops 0-2 ("RuntimeError: memory access out of bounds"), as

@@ -1,4 +1,4 @@
-# ADR 0067: The rolldown trap: V8 sees shared memory growth late; modules with shared memory are guarded
+# ADR 0070: The rolldown trap: V8 sees shared memory growth late; modules with shared memory are guarded
 
 - Status: Accepted
 - Date: 2026-10-28
