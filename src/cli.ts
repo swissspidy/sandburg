@@ -11,6 +11,7 @@ import { loadChecks } from './orchestrator/checks.ts';
 import { loadPageChecks } from './page-checks/index.ts';
 import { SnapshotStore } from './store.ts';
 import type { FileTree, RunResult } from './types.ts';
+import { STOP_SIGNALS, Stopped, untilStopped, type StopSignal } from './stop-signals.ts';
 
 const USAGE = `Usage: sandburg <command> [options]
 
@@ -94,6 +95,8 @@ export function sessionOptions(values: ReturnType<typeof parseCommandLine>['valu
     offline: values.offline,
     headless: !values.headed && command !== 'open',
     browserSandbox: values['browser-sandbox'],
+    // The CLI stops on signals itself (untilStopped): Playwright's listeners would exit meanwhile.
+    handleSignals: false,
   };
 }
 
@@ -263,15 +266,35 @@ async function command(argv: string[]): Promise<number> {
   }
 }
 
-async function withSession<T>(options: SessionOptions, fn: (s: Session) => Promise<T>): Promise<T> {
-  const session = new Session(options);
-  await session.open();
-  if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
-  try {
-    return await fn(session);
-  } finally {
-    await session.close();
-  }
+/**
+ * Runs `fn` in a session. Ctrl-C, a kill and Ctrl-Break (SIGINT, SIGTERM, SIGBREAK) stop its runs and
+ * close the browser, then exit 130, 143 or 149 (STOP_SIGNALS). Playwright's own listeners, which
+ * the launch adds, close the browser too; what the closed browser fails in the runs meanwhile is
+ * not the outcome.
+ */
+export async function withSession<T>(options: SessionOptions, fn: (s: Session) => Promise<T>, session = new Session(options)): Promise<T> {
+  let opening: Promise<void> | null = null;
+  let closing: Promise<void> | null = null;
+  /** The session closes once, whether the run ends or a signal comes (or both, one during the other). */
+  const close = () => (closing ??= session.close());
+  // One while the browser launches closes it once it has.
+  const stop = async (signal: StopSignal) => {
+    console.error(`${signal}: closing the browser`);
+    await opening?.catch(() => {});
+    await close();
+  };
+  return untilStopped(Object.keys(STOP_SIGNALS) as StopSignal[], stop, async (stopping) => {
+    opening = session.open();
+    await opening;
+    if (stopping()) throw new Stopped();
+    if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
+    try {
+      return await fn(session);
+    } finally {
+      // Not when a signal closes it (the runs it cut short end here).
+      if (!stopping()) await close();
+    }
+  });
 }
 
 function exitCode(status: RunResult['status']): number {

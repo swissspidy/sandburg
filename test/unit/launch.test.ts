@@ -64,3 +64,10 @@ test("a sandbox that cannot start fails the launch with the opt-out to use; othe
   assert.equal(sandboxUnavailable(new Error("Executable doesn't exist at /x/chrome")), null);
   assert.equal(sandboxUnavailable('Chromium sandboxing failed!'), null);
 });
+
+test("Playwright's SIGINT, SIGTERM and SIGHUP listeners are left out for a caller that handles them (the CLI)", () => {
+  const off = { handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false };
+  assert.deepEqual(Object.fromEntries(Object.entries(launchOptions({ handleSignals: false })).filter(([k]) => k.startsWith('handleSIG'))), off);
+  // A library caller's session keeps Playwright's defaults (they close the browser on a signal).
+  for (const options of [{}, { handleSignals: true }]) assert.deepEqual(Object.keys(launchOptions(options)).filter((k) => k.startsWith('handleSIG')), []);
+});

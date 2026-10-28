@@ -6,7 +6,7 @@
  */
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'readable-stream';
-import { timers } from './process.ts';
+import { SIGNALS, timers } from './process.ts';
 import { net, NetServer, Socket } from './net.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
@@ -35,7 +35,7 @@ export const os = {
   userInfo: () => ({ username: 'root', uid: 0, gid: 0, shell: '/bin/sh', homedir: '/root' }),
   getPriority: () => 0,
   setPriority: () => {},
-  constants: { signals: { SIGINT: 2, SIGTERM: 15, SIGKILL: 9, SIGHUP: 1 }, errno: {}, priority: {} },
+  constants: { signals: { ...SIGNALS }, errno: {}, priority: {} },
 };
 
 class WriteStream extends Writable {
