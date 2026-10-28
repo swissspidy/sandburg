@@ -189,7 +189,8 @@ function readable(files: FileTree): FileTree {
   let sources = 0;
   const take = (path: string, cap: number) => {
     const content = files[path];
-    if (typeof content !== 'string') return false;
+    // Over what is left of the total by its length alone (a UTF-8 byte per UTF-16 unit at least): not measured.
+    if (typeof content !== 'string' || total + content.length > MAX_TOTAL_BYTES) return false;
     const size = bytes(content, cap);
     if (size > cap || total + size > MAX_TOTAL_BYTES) return false;
     out[path] = content;

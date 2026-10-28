@@ -24,7 +24,7 @@ export interface RuntimeAdapter {
   /** Requests the app's servers are still answering, and how long the runtime has been quiet. */
   activity?(): Activity | null;
   /** The project's files the app's processes read, and whether each package is installed where its file imports it from (ProjectReads). */
-  projectReads?(packages: { name: string; from: string }[]): Promise<ProjectReads>;
+  projectReads?(packages: { name: string; from: string }[]): Promise<ProjectReads | null>;
   dispose(): Promise<void>;
 }
 

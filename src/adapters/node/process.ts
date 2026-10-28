@@ -379,14 +379,27 @@ export class NodeProcess {
 
   /**
    * The project's files the runtime's processes have read (null when they are not recorded), and
-   * whether each package is installed where its file imports it from (see Vfs.trackReads, installedFrom).
+   * whether each package is installed where its file imports it from (see Vfs.trackReads, installedFrom);
+   * null when the runtime does not answer within `timeoutMs` (it is not waited for after that).
    */
-  projectReads(packages: { name: string; from: string }[]): Promise<{ reads: string[] | null; installed: boolean[] }> {
+  projectReads(packages: { name: string; from: string }[], timeoutMs = 3_000): Promise<{ reads: string[] | null; installed: boolean[] } | null> {
     const id = this.nextId++;
     return new Promise((resolve) => {
-      this.projectReadsAnswers.set(id, resolve);
+      const timer = setTimeout(() => {
+        this.projectReadsAnswers.delete(id);
+        resolve(null);
+      }, timeoutMs);
+      this.projectReadsAnswers.set(id, (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      });
       this.send({ type: 'project-reads', id, packages });
     });
+  }
+
+  /** How many project-reads answers are still awaited (tests). */
+  get projectReadsWaiting(): number {
+    return this.projectReadsAnswers.size;
   }
 
   /**

@@ -2,6 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { checkSources, checkSourcesHere, describeFinding } from '../../src/source-check.ts';
 
@@ -301,3 +304,41 @@ test('a commented-out script is not a script; main.* is an entry at the root or 
   });
   assert.deepEqual(findings, ['imports undeclared package "dayjs" (src/pages/index.astro:7)']);
 });
+
+test('a file that does not fit what is left of the total is not measured: the host measures at most what the check can take', async (t) => {
+  // 100 files of 400 KB: the 24 MB total takes 61 of them; the other 39 are not measured.
+  const files: Record<string, string> = { 'index.html': page() };
+  for (let i = 0; i < 100; i++) files[`src/f${String(i).padStart(3, '0')}.ts`] = `// ${'a'.repeat(400 * 1024)}\n`;
+  const measure = t.mock.method(Buffer, 'byteLength');
+  await checkSources(files, {}, 1);
+  const large = measure.mock.calls.filter((c) => typeof c.arguments[0] === 'string' && c.arguments[0].length > 400 * 1024).length;
+  assert.ok(large <= 62, `${large} large files measured`);
+});
+
+test(
+  "a check's esbuild that does not end when its parent does is killed with the check's process group at the budget",
+  // A shell script stands in for esbuild here (ESBUILD_BINARY_PATH), which Windows cannot run as one; there the tree is killed (taskkill /T).
+  { skip: process.platform === 'win32' ? 'a shell script cannot stand in for esbuild on Windows' : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sandburg-fake-esbuild-'));
+    const fake = join(dir, 'esbuild');
+    // Answers nothing (the check waits on it), and ignores hangups, terminations and its input's end.
+    writeFileSync(fake, "#!/bin/sh\ntrap '' HUP TERM INT PIPE\nwhile :; do sleep 1; done\n");
+    chmodSync(fake, 0o755);
+    const running = () => execFileSync('ps', ['-A', '-o', 'pid=,args='], { encoding: 'utf8' }).split('\n').filter((l) => l.includes(fake));
+    const before = process.env.ESBUILD_BINARY_PATH;
+    process.env.ESBUILD_BINARY_PATH = fake;
+    try {
+      const started = Date.now();
+      assert.deepEqual(await checkSources({ 'index.html': page(), 'src/main.ts': 'export {};\n' }, {}, 1_500), []);
+      assert.ok(Date.now() - started < 3_000);
+      await sleep(500);
+      assert.deepEqual(running(), [], 'the stand-in esbuild is still running');
+    } finally {
+      if (before === undefined) delete process.env.ESBUILD_BINARY_PATH;
+      else process.env.ESBUILD_BINARY_PATH = before;
+      for (const line of running()) process.kill(Number(line.trim().split(/\s+/)[0]), 'SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
