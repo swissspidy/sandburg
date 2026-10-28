@@ -193,11 +193,20 @@ const active = (c: ConsoleEntry) => (c.source === 'host' && c.text.startsWith('[
  * source-check.ts): some dev servers report neither, and hang (SolidStart 2.1.0 streams the page
  * and never ends it). The sources are checked once, at 20 s, so a run whose app renders sooner
  * never pays for it; what was found is kept for classification (`run.sourceFindings`), also
- * when the phase times out instead.
+ * when the phase times out instead. `signal` stops the watch.
  */
-export async function failOnSourceStall(render: Promise<void>, run: RunState, check: () => Promise<SourceFinding[]>): Promise<void> {
+export async function failOnSourceStall(render: Promise<void>, run: RunState, check: () => Promise<SourceFinding[]>, signal?: AbortSignal): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   let done = false;
+  // The phase ended otherwise (the app-error watch failed it): stop watching.
+  signal?.addEventListener(
+    'abort',
+    () => {
+      done = true;
+      clearTimeout(timer);
+    },
+    { once: true },
+  );
   const watch = new Promise<never>((_, reject) => {
     const start = Date.now();
     let quietSince = start;

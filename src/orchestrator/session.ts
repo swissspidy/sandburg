@@ -597,7 +597,8 @@ export class Session {
               await host('ready', url, navigate ?? true);
               await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
             })();
-            await failFastOnAppError(failOnSourceStall(render, run, () => checkSources(project.files)), run, loadingPage, frame);
+            const stall = new AbortController();
+            await failFastOnAppError(failOnSourceStall(render, run, () => checkSources(project.files), stall.signal), run, loadingPage, frame).finally(() => stall.abort());
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been

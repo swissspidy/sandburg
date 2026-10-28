@@ -189,7 +189,7 @@ test("after a cold start's 500, the app's own request to its page's URL that ans
   const run = runState();
   const app = {} as Frame;
   const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
-  // What Chromium 149 logs, in this order (Playwright's response and console events): the frame's page
+  // What Chromium 153 logs, in this order (Playwright's response and console events): the frame's page
   // answers 500, then 200 when loaded again, whose script then fetches the same URL with POST and gets a 500.
   const failedLoad = () => run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)', url: 'http://app.test/' });
   run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
@@ -288,6 +288,15 @@ test('an app that renders within 20 s never has its sources checked; sources wit
   assert.equal(phase.settled, 'pending');
   await advance(t, 400);
   assert.equal(phase.error?.message, 'app did not render, and its sources have an error: imports undeclared package "dayjs" (src/a.ts:1)');
+  // The phase ended otherwise (the app-error watch failed it) at 10 s: no check, and nothing more.
+  const ended = runState();
+  const stop = new AbortController();
+  let late = 0;
+  const stopped = watched(failOnSourceStall(new Promise(() => {}), asRun(ended), async () => (late++, [undeclared]), stop.signal));
+  await advance(t, 10_000);
+  stop.abort();
+  await advance(t, 60_000);
+  assert.deepEqual([stopped.settled, late, ended.sourceFindings], ['pending', 0, null]);
 });
 
 /**

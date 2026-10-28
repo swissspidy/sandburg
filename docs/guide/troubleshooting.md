@@ -73,7 +73,8 @@ rule that decided it ([`src/classify.ts`](../../src/classify.ts)). The CLI's sum
 
 - **`app-bug`**: the app is wrong; it would fail the same way anywhere. The message points at the
   file and line where the dev server reported it (`compile-error`), names the package the project
-  imports but does not declare (`undeclared-import`) or that the registry does not have
+  imports but does not declare (`undeclared-import`; both are also found by checking the project's
+  sources when the app has not rendered after 20 s and its dev server says nothing) or that the registry does not have
   (`unresolvable-dependency`), says the server could not render the app's page (`server-render-error`), says
   a local package or workspace it names is not there (`adapter-code:APP`), or lists the failed checks
   (`blocking-check-failed`).
