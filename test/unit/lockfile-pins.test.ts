@@ -266,3 +266,13 @@ test("a pinned version and a range it is in count as the same spec for a warm st
   assert.ok(!sameSpec(undefined, '1.0.0'));
   assert.ok(!sameSpec('latest', 'next'));
 });
+
+test('a bare yarn v1 alias (npm:<name>, no range) is pinned by its real name too', () => {
+  const pins = lockPins({ 'yarn.lock': '"isnum@npm:is-number":\n  version "7.0.0"\n\n"sis@npm:@sindresorhus/is":\n  version "4.6.0"\n' })!;
+  assert.deepEqual(pins.single, { '@sindresorhus/is': '4.6.0', 'is-number': '7.0.0' });
+});
+
+test("berry's npm:<tag> is a dist-tag of the package, not an alias", () => {
+  const pins = lockPins({ 'yarn.lock': '__metadata:\n  version: 8\n\n"ms@npm:latest":\n  version: 2.1.3\n  resolution: "ms@npm:2.1.3"\n' })!;
+  assert.deepEqual(pins.single, { ms: '2.1.3' });
+});

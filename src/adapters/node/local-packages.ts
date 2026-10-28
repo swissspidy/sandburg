@@ -92,7 +92,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
     if (typeof manifest.name !== 'string') continue;
     // A workspace's name is where it is linked (node_modules/<name>): a package name, nothing else.
     if (!isPackageName(manifest.name)) throw new LocalPackageError(`npm error code EINVALIDPACKAGENAME: ${dir}/package.json: "${manifest.name}" is not a valid package name`);
-    const other = workspaces[manifest.name];
+    const other = own(workspaces, manifest.name);
     if (other !== undefined) throw new LocalPackageError(`npm error must not have multiple workspaces with the same name: package '${manifest.name}' in ${other} and ${dir}`);
     workspaces[manifest.name] = dir;
   }
@@ -126,7 +126,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
         if (!members.includes(path)) throw new LocalPackageError(`${at}: ${name}@${spec}: ${path} is not one of the project's workspaces`);
         return path;
       }
-      const found = workspaces[wanted];
+      const found = own(workspaces, wanted);
       if (found === undefined) throw new LocalPackageError(`${at}: ${name}@${spec}: no workspace package is named "${wanted}" (ERR_PNPM_WORKSPACE_PKG_NOT_FOUND)`);
       return found;
     }
@@ -140,7 +140,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
       return local;
     }
     // npm links a workspace for a plain range its version satisfies.
-    const ws = workspaces[name];
+    const ws = own(workspaces, name);
     const version = ws !== undefined ? manifests.get(ws)?.version : undefined;
     if (ws !== undefined && (s === '*' || s === '' || (typeof version === 'string' && semver.validRange(s) && semver.satisfies(version, s, { includePrerelease: true })))) return ws;
     if (parseRegistrySpec(name, s)) return null;
@@ -200,7 +200,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   const dependencies: Record<string, string> = {};
   const devDependencies: Record<string, string> = {};
   const nested = new Map<string, Record<string, string>>();
-  const hoisted = (name: string) => dependencies[name] ?? devDependencies[name];
+  const hoisted = (name: string) => own(dependencies, name) ?? own(devDependencies, name);
   for (const w of wants) {
     if (!w.dir) (w.field === 'dependencies' ? dependencies : devDependencies)[w.name] = w.spec;
   }
@@ -213,16 +213,16 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
     if (there === undefined) dependencies[w.name] = w.spec;
     else if (there === w.spec) continue;
     else {
-      const locked = tree?.packages[`node_modules/${w.name}`]?.version;
+      const locked = tree ? own(tree.packages, `node_modules/${w.name}`)?.version : undefined;
       if (typeof locked === 'string' ? semver.satisfies(locked, w.spec, { loose: true }) : compatible(there, w.spec)) {
         // Without a lockfile, npm picks one version in both ranges.
-        if (typeof locked !== 'string') (w.name in dependencies ? dependencies : devDependencies)[w.name] = `${there} ${w.spec}`;
+        if (typeof locked !== 'string') (Object.hasOwn(dependencies, w.name) ? dependencies : devDependencies)[w.name] = bothRanges(there, w.spec);
       } else nested.set(w.dir, { ...nested.get(w.dir), [w.name]: w.spec });
     }
   }
   // A local package's peers come from the top, as npm installs them; one the packages already
   // install is that one.
-  for (const { name, spec } of peers) if (hoisted(name) === undefined && workspaces[name] === undefined && !declared.some((d) => d.name === name)) dependencies[name] = spec;
+  for (const { name, spec } of peers) if (hoisted(name) === undefined && own(workspaces, name) === undefined && !declared.some((d) => d.name === name)) dependencies[name] = spec;
 
   // npm links every workspace at the top of node_modules, and a file:/link: dependency there unless
   // that place is taken (then into its dependent's node_modules). A registry package of the same
@@ -231,8 +231,8 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   for (const [name, dir] of Object.entries(workspaces)) if (hoisted(name) === undefined) links[`node_modules/${name}`] = dir;
   for (const { dir, name, to } of declared) {
     const top = `node_modules/${name}`;
-    if (links[top] === to) continue;
-    if (links[top] === undefined && hoisted(name) === undefined) links[top] = to;
+    if (own(links, top) === to) continue;
+    if (own(links, top) === undefined && hoisted(name) === undefined) links[top] = to;
     else links[dir ? `${dir}/node_modules/${name}` : top] = to;
   }
 
@@ -241,13 +241,13 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   // holds); never one the project names itself (npm refuses an override that differs from a direct
   // dependency's spec), nor one it overrides.
   const named = new Set([...wants.map((w) => w.name), ...peers.map((p) => p.name), ...declared.map((d) => d.name), ...Object.keys(workspaces)]);
-  const own = root.overrides && typeof root.overrides === 'object' ? (root.overrides as Record<string, unknown>) : null;
+  const mine = root.overrides && typeof root.overrides === 'object' ? (root.overrides as Record<string, unknown>) : null;
   let overrides: unknown = root.overrides;
   let sandburgPins: string[] | undefined;
   if (pins && pinnedAll) {
-    const singles = Object.entries(pins.single).filter(([name]) => !named.has(name) && !(own && name in own) && isPackageName(name));
+    const singles = Object.entries(pins.single).filter(([name]) => !named.has(name) && !(mine && Object.hasOwn(mine, name)) && isPackageName(name));
     if (singles.length) {
-      overrides = { ...Object.fromEntries(singles), ...own };
+      overrides = { ...Object.fromEntries(singles), ...mine };
       sandburgPins = singles.map(([name]) => name);
       pinnedAny = true;
     }
@@ -262,6 +262,24 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
     pinned: pinnedAny ? pins!.source : null,
     local,
   };
+}
+
+/** `object[key]` when the object has it itself (a name such as `constructor` is not its prototype's). */
+function own<T>(object: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(object, key) ? object[key] : undefined;
+}
+
+/**
+ * A range of the versions in both `a` and `b`: each pair of their comparator sets that has a version
+ * in common, joined by `||` (`^18.2.0` and `^18.0.0 || ^19.0.0` is `>=18.2.0 <19.0.0-0 >=18.0.0
+ * <19.0.0-0`). Writing the two ranges side by side would not do: in a range, `||` binds less tightly
+ * than a space.
+ */
+function bothRanges(a: string, b: string): string {
+  const sets = (range: string) => new semver.Range(range, { loose: true }).set.map((comparators) => comparators.map((c) => c.value).filter(Boolean).join(' '));
+  const out = new Set<string>();
+  for (const x of sets(a)) for (const y of sets(b)) if (semver.intersects(x || '*', y || '*', { loose: true })) out.add([x, y].filter(Boolean).join(' ') || '*');
+  return [...out].join(' || ');
 }
 
 /** Whether one version can be in both ranges (two ranges, not dist-tags or aliases). */

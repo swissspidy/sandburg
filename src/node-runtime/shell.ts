@@ -192,6 +192,9 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     if (args.some((a) => /^(--workspaces|-ws|-r|--recursive)$/.test(a))) return null;
     // A workspace by name or path: `npm -w web run dev`, `pnpm --filter web dev`, `yarn workspace web dev`.
     const flags = runner === 'npm' ? ['--workspace', '-w'] : runner === 'pnpm' ? ['--filter', '-F'] : [];
+    // A script in several workspaces (`--filter web --filter api`) is not one script: not run here.
+    const selectors = args.filter((a) => flags.some((f) => a === f || a.startsWith(`${f}=`)));
+    if (selectors.length > 1) return { error: `${runner} ${selectors.join(' ')}: several ${flags[0]} selectors are not supported in the browser runtime` };
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       const flag = flags.find((f) => a === f || a.startsWith(`${f}=`));
@@ -237,8 +240,9 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
   const workspace = (value: string, dir: string): string | null => {
     for (let d = dir; ; d = d.slice(0, d.lastIndexOf('/')) || '/') {
       const info = parseWorkspace(host.readFile(`${d === '/' ? '' : d}/${WORKSPACE_FILE}`));
-      const rel = info?.packages[value];
-      if (rel !== undefined) return join(d, rel);
+      // Its own entries only: `-w constructor` is not Object's.
+      const rel = info && Object.hasOwn(info.packages, value) ? info.packages[value] : undefined;
+      if (typeof rel === 'string') return join(d, rel);
       if (info) break;
       if (d === '/') break;
     }

@@ -162,3 +162,15 @@ test('a pnpm --filter selector other than a name or a directory is said to be un
   assert.equal(await missing.exit, 1);
   assert.match(missing.err.join(''), /no workspace package "nope"/);
 });
+
+test('workspace names an object has from its prototype are not workspaces; several --filter are said to be unsupported', async () => {
+  const files = { '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web' } }), '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }) };
+  for (const name of ['constructor', '__proto__', 'toString']) {
+    const s = run(`npm run dev -w ${name}`, { files });
+    assert.equal(await s.exit, 1, name);
+    assert.match(s.err.join(''), new RegExp(`no workspace package "${name}"`));
+  }
+  const two = run('pnpm --filter web --filter api dev', { files });
+  assert.equal(await two.exit, 1);
+  assert.match(two.err.join(''), /several --filter .*not supported/);
+});

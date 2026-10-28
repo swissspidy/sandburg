@@ -238,7 +238,7 @@ test('compatible ranges of a package are installed once, at the top; only ranges
     'packages/ui': { name: 'ui', version: '1.0.0', peerDependencies: { react: '>=18' } },
   });
   assert.deepEqual(p.nested, []);
-  assert.equal(p.root.dependencies?.react, '^18.2.0 ^18.3.1');
+  assert.equal(p.root.dependencies?.react, '>=18.2.0 <19.0.0-0 >=18.3.1 <19.0.0-0');
   const apart = plan({ '': { workspaces: ['a'], dependencies: { react: '^18.2.0' } }, a: { name: 'a', dependencies: { react: '^19.0.0' } } });
   assert.deepEqual(apart.nested, [{ dir: 'a', dependencies: { react: '^19.0.0' }, lockfile: null }]);
 });
@@ -291,4 +291,39 @@ test("an npm monorepo's v1 package-lock.json loses its local packages too", () =
 test('the plan is worked out once per project', () => {
   const project = projectFromFiles({ 'package.json': '{"workspaces":["a"]}', 'a/package.json': '{"name":"a"}' }, { name: 'p', path: 'p' });
   assert.equal(planOf(project), planOf(project));
+});
+
+test('ranges with || share one copy only where a version is in both: the root\'s spec keeps every bound', async () => {
+  const semver = (await import('semver')).default;
+  const react = ['16.14.0', '17.0.1', '17.0.2', '18.0.0', '18.2.0', '18.3.1', '19.0.0', '19.3.1'];
+  for (const [rootRange, wsRange] of [['^18.2.0', '^18.0.0 || ^19.0.0'], ['^18 || ^17', '^17.0.2'], ['^18.0.0 || ^19.0.0', '^18.2.0 || ^17.0.0']]) {
+    const p = plan({ '': { workspaces: ['a'], dependencies: { react: rootRange } }, a: { name: 'a', dependencies: { react: wsRange } } });
+    assert.deepEqual(p.nested, [], `${rootRange} + ${wsRange}`);
+    const combined = p.root.dependencies!.react;
+    const picked = semver.maxSatisfying(react, combined)!;
+    assert.ok(semver.satisfies(picked, rootRange) && semver.satisfies(picked, wsRange), `${combined} picks ${picked}`);
+    assert.doesNotThrow(() => assertRegistryManifest(p.root));
+  }
+});
+
+test('the combined range has only the pairs of comparator sets that share a version', () => {
+  const p = plan({ '': { workspaces: ['a'], dependencies: { react: '^18 || ^17' } }, a: { name: 'a', dependencies: { react: '^17.0.2' } } });
+  assert.equal(p.root.dependencies!.react, '>=17.0.0 <18.0.0-0 >=17.0.2 <18.0.0-0');
+});
+
+test("names an object has from its prototype are names like any other: constructor, toString, __proto__", () => {
+  const p = plan({
+    '': { workspaces: ['ws/*'], dependencies: { toString: '^1.0.0', constructor: '*' } },
+    'ws/a': { name: 'constructor', version: '1.0.0', dependencies: { valueOf: '^1.0.0', toString: '^1.0.0' }, peerDependencies: { hasOwnProperty: '^1.0.0' } },
+  });
+  assert.deepEqual(p.workspaces, { constructor: 'ws/a' });
+  assert.deepEqual(p.links, { 'node_modules/constructor': 'ws/a' });
+  assert.deepEqual(p.root.dependencies, { toString: '^1.0.0', valueOf: '^1.0.0', hasOwnProperty: '^1.0.0' });
+  assert.deepEqual(p.nested, []);
+  // In a monorepo without a workspace of that name: a registry dependency.
+  const registry = plan({ '': { workspaces: ['w'], dependencies: { constructor: '*' } }, w: { name: 'w' } });
+  assert.deepEqual(registry.root.dependencies, { constructor: '*' });
+  assert.deepEqual(registry.links, { 'node_modules/w': 'w' });
+  assert.equal(code(() => plan({ '': { workspaces: ['a'] }, a: { name: '__proto__' } })), 'APP');
+  assert.equal(code(() => plan({ '': { dependencies: { constructor: 'workspace:*' } } })), 'APP');
 });

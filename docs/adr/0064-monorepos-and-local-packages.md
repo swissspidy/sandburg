@@ -35,8 +35,10 @@ pure: the host's install and the page's use it) takes them out of what npm insta
   replace native ones).
 - **One copy where one version serves.** Two packages' ranges of a dependency share the copy at the
   root when one version can satisfy both: with a package-lock, when its locked version does; without
-  one, when the ranges intersect (the root's spec becomes both ranges, `^18.2.0 ^18.3.1`, so npm picks
-  a version in both). Two copies of a package such as React in one app do not work. Only a range
+  one, when the ranges intersect: the root's spec becomes the versions in both, each pair of the
+  two ranges' comparator sets that has a version in common, joined by `||` (`^18.2.0` and `^18.0.0 ||
+  ^19.0.0` give `>=18.2.0 <19.0.0-0 >=18.0.0 <19.0.0-0`), so npm picks a version in both. (Writing the
+  two ranges side by side would not do: `||` binds less tightly than a space.) Two copies of a package such as React in one app do not work. Only a range
   that copy cannot serve goes into the local package's own node_modules: a second install, combined
   with the root's under one key as `client/` and `server/` packages already are
   (`Installer.combine`), from the package-lock's own entries under that package's node_modules when
@@ -127,8 +129,12 @@ entries are descriptors, not locations), so they are not translated into a packa
   No override is added for a package the project names itself (npm refuses an override that differs
   from a direct dependency's spec) or overrides itself.
 - **Lockfile aliases are pinned by their real package name.** A yarn.lock descriptor
-  `"string-width-cjs@npm:string-width@^4.2.0"` is a version of `string-width`; no pin or override is
-  keyed by an alias, and a name that is not a package name is never pinned.
+  `"string-width-cjs@npm:string-width@^4.2.0"` is a version of `string-width`, as is, in yarn v1, a
+  bare `"isnum@npm:is-number"` or `"sis@npm:@sindresorhus/is"` (an `npm:` package name that is not a
+  range); no pin or override is keyed by an alias, and a name that is not a package name is never
+  pinned.
+- **Names an object has from its prototype** (`constructor`, `toString`) are names like any other:
+  the plan and the shell read only their own entries.
 - **Warm starts.** An install records which overrides are pins (`sandburgPins` in its package.json);
   the closest install that lends its lockfile (ADR 0032) is chosen by the project's own overrides,
   and a pinned version counts as the same spec as a range it is in. npm applies this install's pins

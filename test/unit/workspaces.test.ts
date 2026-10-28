@@ -112,6 +112,8 @@ test('YAML: deep nesting does not overflow the stack; a __proto__ key is a key',
   assert.doesNotThrow(() => parseYaml(`a: ${'['.repeat(200_000)}`));
   assert.doesNotThrow(() => parseYaml(`a: ${'{x: '.repeat(100_000)}`));
   assert.doesNotThrow(() => parseYaml(Array.from({ length: 20_000 }, (_, i) => `${' '.repeat(i)}k${i}:`).join('\n')));
+  // Sequences at their key's indentation, nested: each counts toward the limit.
+  assert.doesNotThrow(() => parseYaml(Array.from({ length: 20_000 }, (_, i) => `${' '.repeat(i)}k:\n${' '.repeat(i)}- `).join('\n')));
   const doc = parseYaml('__proto__:\n  polluted: yes\nflow: {__proto__: {polluted: yes}}\n') as Record<string, unknown>;
   assert.equal(Object.getPrototypeOf(doc), Object.prototype);
   assert.deepEqual(Object.keys(doc), ['__proto__', 'flow']);

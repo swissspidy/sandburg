@@ -67,11 +67,12 @@ function pnpmPins(text: string): LockPins | null {
   if (!('lockfileVersion' in doc)) return null;
   // Importers (workspaces); a lockfile without them (pnpm 5, one package) has its root's at the top.
   const importers = asMap(doc.importers);
-  const importer = (dir: string) => asMap(importers[dir || '.'] ?? (dir ? undefined : doc));
+  const importer = (dir: string) => asMap(Object.hasOwn(importers, dir || '.') ? importers[dir || '.'] : dir ? undefined : doc);
   const direct = (dir: string, name: string, spec: string): string | null => {
     const imp = importer(dir);
     for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-      const entry = asMap(imp[field])[name] ?? undefined;
+      const deps = asMap(imp[field]);
+      const entry = Object.hasOwn(deps, name) ? deps[name] : undefined;
       if (entry === undefined) continue;
       // v6/v9: { specifier, version }; v5: the version, with the specifier in `specifiers`.
       const version = typeof entry === 'string' ? entry : asMap(entry).version;
@@ -96,6 +97,7 @@ function pnpmPins(text: string): LockPins | null {
 function yarnEntries(text: string): Map<string, { name: string; version: string }> {
   const out = new Map<string, { name: string; version: string }>();
   let descriptors: string[] = [];
+  const berry = /^__metadata:/m.test(text);
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim() || line.trimStart().startsWith('#')) continue;
     if (!/^\s/.test(line)) {
@@ -115,9 +117,8 @@ function yarnEntries(text: string): Map<string, { name: string; version: string 
       let range = d.slice(at + 1);
       // Berry's protocols other than npm: (workspace:, patch:, link:, portal:, file:) are not registry versions.
       if (/^[a-z]+:/.test(range) && !range.startsWith('npm:')) continue;
-      const aliased = range.startsWith('npm:') ? ALIASED.exec(range.slice('npm:'.length)) : null;
+      const real = range.startsWith('npm:') ? (aliasOf(range.slice('npm:'.length), berry) ?? name) : name;
       range = range.replace(/^npm:/, '');
-      const real = aliased ? aliased[1] : name;
       if (!isPackageName(name) || !isPackageName(real)) continue;
       out.set(`${name}@${range}`, { name: real, version: m[1] });
     }
@@ -127,6 +128,17 @@ function yarnEntries(text: string): Map<string, { name: string; version: string 
 }
 /** An alias's target after `npm:`: `<package>@<range>`. */
 const ALIASED = /^((?:@[^/@\s]+\/)?[^/@\s]+)@(.*)$/;
+
+/**
+ * The package an `npm:` descriptor is an alias of, or null for a plain range: `npm:<package>@<range>`,
+ * or in yarn v1 a bare `npm:<package>` (`"isnum@npm:is-number"`), which is not a range. Berry writes
+ * `npm:<range>` for every registry descriptor (a dist-tag among them), and aliases with a range.
+ */
+function aliasOf(rest: string, berry: boolean): string | null {
+  const aliased = ALIASED.exec(rest);
+  if (aliased) return aliased[1];
+  return !berry && isPackageName(rest) && !semver.validRange(rest, { loose: true }) ? rest : null;
+}
 
 function yarnPins(text: string): LockPins | null {
   const entries = yarnEntries(text);

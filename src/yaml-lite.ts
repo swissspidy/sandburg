@@ -58,7 +58,7 @@ function block(lines: Line[], at: { i: number }, indent: number, depth: number):
     if (entry.value) put(map, entry.key, scalarOrFlow(entry.value));
     else if (at.i < lines.length && lines[at.i].indent > indent && depth < MAX_DEPTH) put(map, entry.key, block(lines, at, lines[at.i].indent, depth + 1));
     // A sequence may sit at its key's indentation ("packages:\n- a").
-    else if (at.i < lines.length && lines[at.i].indent === indent && lines[at.i].text.startsWith('- ')) put(map, entry.key, block(lines, at, indent, depth + 1));
+    else if (at.i < lines.length && lines[at.i].indent === indent && lines[at.i].text.startsWith('- ') && depth < MAX_DEPTH) put(map, entry.key, block(lines, at, indent, depth + 1));
     else put(map, entry.key, '');
     skipDeeper(lines, at, indent);
   }
