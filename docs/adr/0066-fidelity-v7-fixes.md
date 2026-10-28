@@ -20,8 +20,9 @@ apps right cold and 226 warm. All 93 seeded faults were caught. Its 8 false alar
   them, but replaying one reaches no handler: Solid's delegated handler walks `composedPath()`,
   which is empty for an event that has finished dispatching (solid-js 1.9.17, `web/dist/dev.js`).
   `_$HY.done` means "Solid has handled an event", not "hydrated": Solid sets it when it handles
-  its first event after hydrating (SolidStart also when the URL changed before hydration), and it
-  stays unset after a hydration no event followed.
+  its first event once hydration has begun (its `registry` exists), which can be a click on an
+  element it has claimed while a lazy route's are not claimed yet; SolidStart also sets it when the
+  URL changed before hydration. It stays unset after a hydration no event followed.
 - **Angular, 134 (cold).** Vite's dependency optimizer, inside Angular's dev server, failed with a
   WebAssembly trap in rolldown (`Error during dependency optimization … memory access out of
   bounds`). The page's request was never answered. The ready phase waited for the frame's load event
@@ -57,11 +58,11 @@ apps right cold and 226 warm. All 93 seeded faults were caught. Its 8 false alar
   without that exclusion, Astro's error overlay made a crashed page "rendered". At most 2,000 elements are looked at, across the document
   and its shadow roots, with tree walkers that stop there (a blank page of 100,000 elements is not
   listed whole). Closed shadow roots cannot be read; such an app can pass `--ready`.
-- **Solid is hydrated when every server-rendered element (`[data-hk]`, the first 500 in the body) is
+- **Solid is hydrated when every server-rendered element (`[data-hk]`, all of them in the body) is
   in `_$HY.completed`**, which Solid fills as it claims each element. It is also hydrated once Solid
-  clears `completed`, or once `done` is set (which comes after hydration, when Solid has handled an
-  event). A lazy route's elements are claimed when its chunk has loaded, so a check waits for those
-  too.
+  clears `completed`, which it does once it is done and has replayed its recorded events. `done`
+  alone does not count (above). A lazy route's elements are claimed when its chunk has loaded, so
+  a check waits for those too.
 - **A framework that says it has not hydrated yet is waited for up to 10 s** (`SETTLE_HYDRATE_MAX_MS`)
   before the checks start. When the framework says nothing, the app's servers going quiet decides,
   with the 3 s limit as before. This applies to Solid, Nuxt and SvelteKit, which can say "not yet".

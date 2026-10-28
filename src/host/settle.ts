@@ -20,12 +20,13 @@ export function quiet(a: Activity, quietMs: number, longMs: number): boolean {
  *
  * - Solid's server-rendered page records events until it has hydrated (`_$HY`), but replaying one
  *   does not reach the app's handlers: an event that has finished dispatching has no composedPath().
- *   A fill() before then was lost. Hydrated: every server-rendered element (`data-hk`) is one Solid
- *   has claimed (`_$HY.completed`), or Solid has let go of what it recorded (`completed` cleared), or
- *   set `_$HY.done`. `done` does not mean hydrated: Solid sets it when it handles its first event
- *   after hydrating (SolidStart also when the URL changed before hydration), so it is past hydration
- *   when set, but stays unset after a hydration no event followed. SolidStart goes on loading its
- *   dev overlay's modules for seconds after.
+ *   A fill() before then was lost. Hydrated: every server-rendered element (`data-hk`) in the page is
+ *   one Solid has claimed (`_$HY.completed`), or Solid has let go of what it recorded (`completed`
+ *   cleared, once it is done and has replayed its events). `_$HY.done` alone does not say so: Solid
+ *   sets it when it handles its first event once hydration has begun, which can be a click on an
+ *   element it has claimed while a lazy route's are not yet (and SolidStart sets it when the URL
+ *   changed before hydration, then renders afresh). SolidStart goes on loading its dev overlay's
+ *   modules for seconds after.
  * - React, once its root is created (hydrateRoot), replays a click on what it has not hydrated yet
  *   (Next.js and React Router hydrate the document).
  * - Nuxt mounts its app before its page component has hydrated (`isHydrating`), and its requests
@@ -39,9 +40,11 @@ export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | un
     if (!w) return undefined;
     const doc = w.document;
     if (w._$HY && typeof w._$HY === 'object') {
-      const hy = w._$HY as { done?: boolean; completed?: WeakSet<Element> | null };
-      if (hy.done || !hy.completed) return true;
-      return [...(doc.body?.querySelectorAll('[data-hk]') ?? [])].slice(0, 500).every((e) => hy.completed!.has(e));
+      const completed = (w._$HY as { completed?: WeakSet<Element> | null }).completed;
+      if (!completed) return true;
+      // All of them: a lazy route's elements come after the page's (WeakSet lookups are cheap).
+      for (const e of doc.body?.querySelectorAll('[data-hk]') ?? []) if (!completed.has(e)) return false;
+      return true;
     }
     const reactRoot = (node: Node | null) => !!node && Object.keys(node).some((k) => k.startsWith('__reactContainer$'));
     if ([doc, doc.body, doc.getElementById('root'), doc.getElementById('app'), doc.getElementById('__next')].some(reactRoot)) return true;
