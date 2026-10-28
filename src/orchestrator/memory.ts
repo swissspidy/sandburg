@@ -26,15 +26,15 @@ export function availableMemory(): number {
  */
 function darwinAvailable(): number | null {
   // A batch short of memory asks on each look: one vm_stat (a few ms, on the main thread) a second.
-  const now = performance.now();
-  if (vmStat && now - vmStat.at < VM_STAT_TTL_MS) return vmStat.bytes;
+  if (vmStat && clock() - vmStat.at < VM_STAT_TTL_MS) return vmStat.bytes;
   let bytes: number | null = null;
   try {
-    bytes = parseVmStat(execFileSync(VM_STAT, { encoding: 'utf8', timeout: 2000 }));
+    bytes = parseVmStat(readVmStat());
   } catch {
     // none: os.freemem()
   }
-  vmStat = { at: now, bytes };
+  // Timed from when the reading came back: a slow one (up to its 2 s timeout) is still kept a second.
+  vmStat = { at: clock(), bytes };
   return bytes;
 }
 
@@ -42,6 +42,16 @@ function darwinAvailable(): number | null {
 export const VM_STAT = '/usr/bin/vm_stat';
 const VM_STAT_TTL_MS = 1000;
 let vmStat: { at: number; bytes: number | null } | null = null;
+let clock = () => performance.now();
+let readVmStat = () => execFileSync(VM_STAT, { encoding: 'utf8', timeout: 2000 });
+
+/** For tests: macOS's reading with a clock and a vm_stat of their own (none: the real ones, and no reading kept). */
+export function darwinAvailableWith(fake: { clock: () => number; vmStat: () => string } | null): () => number | null {
+  clock = fake?.clock ?? (() => performance.now());
+  readVmStat = fake?.vmStat ?? (() => execFileSync(VM_STAT, { encoding: 'utf8', timeout: 2000 }));
+  vmStat = null;
+  return darwinAvailable;
+}
 
 /** Bytes free or inactive in vm_stat's output; null if it does not have them. */
 export function parseVmStat(out: string): number | null {

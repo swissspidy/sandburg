@@ -236,14 +236,20 @@ function contentHash(integrity: string): { algorithm: string; hex: string; base6
 /** npm's cache directory and registry (`npm config get`), asked once per process. */
 function npmConfig(): Promise<{ cache: string; registry: string }> {
   config ??= new Promise((done) => {
-    const child = spawn(...npmCommand(['config', 'get', 'cache', 'registry']), { stdio: ['ignore', 'pipe', 'ignore'] });
     let out = '';
-    child.stdout.on('data', (b: Buffer) => (out += b.toString()));
     const finish = () => {
       const value = (key: string) => new RegExp(`^${key}=(.*)$`, 'm').exec(out)?.[1].trim();
       const registry = value('registry') || 'https://registry.npmjs.org/';
       done({ cache: value('cache') || join(homedir(), '.npm'), registry: registry.endsWith('/') ? registry : `${registry}/` });
     };
+    let child;
+    try {
+      child = spawn(...npmCommand(['config', 'get', 'cache', 'registry']), { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      // No npm to ask (npmCommand): npm's defaults, as when it fails to start.
+      return finish();
+    }
+    child.stdout.on('data', (b: Buffer) => (out += b.toString()));
     child.on('error', finish);
     child.on('close', finish);
   });

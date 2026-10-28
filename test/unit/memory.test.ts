@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { totalmem } from 'node:os';
-import { availableMemory, parseVmStat, VM_STAT } from '../../src/orchestrator/memory.ts';
+import { availableMemory, darwinAvailableWith, parseVmStat, VM_STAT } from '../../src/orchestrator/memory.ts';
 
 test('available memory is a positive number of bytes no larger than the machine has', () => {
   const free = availableMemory();
@@ -30,4 +30,24 @@ File-backed pages:                        80000.
   assert.equal(parseVmStat(out), (5000 + 150000) * 16384);
   assert.equal(parseVmStat('Pages free: 12.'), null);
   assert.equal(parseVmStat(''), null);
+});
+
+test('macOS: a reading is kept for a second from when vm_stat answered, however long it took', () => {
+  let now = 0;
+  let calls = 0;
+  const read = darwinAvailableWith({
+    clock: () => now,
+    // Takes 1.5 s, as a loaded machine's might.
+    vmStat: () => ((calls += 1), (now += 1500), `Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: ${calls}.\nPages inactive: 0.\n`),
+  });
+  try {
+    assert.equal(read(), 4096);
+    now += 900;
+    assert.equal(read(), 4096, 'kept: 0.9 s after it came back');
+    now += 200;
+    assert.equal(read(), 2 * 4096, 'read again after a second');
+    assert.equal(calls, 2);
+  } finally {
+    darwinAvailableWith(null);
+  }
 });

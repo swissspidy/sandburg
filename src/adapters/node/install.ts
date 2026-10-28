@@ -679,7 +679,13 @@ const viewed = new Map<string, Promise<string | null>>();
 
 function npmView(spec: string): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = spawn(...npmCommand(['view', spec, 'version', '--json']), { stdio: ['ignore', 'pipe', 'ignore'] });
+    let child;
+    try {
+      child = spawn(...npmCommand(['view', spec, 'version', '--json']), { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      // No npm (npmCommand): as when it fails to start.
+      return resolve(null);
+    }
     let out = '';
     child.stdout.on('data', (b: Buffer) => (out += b.toString()));
     child.on('error', () => resolve(null));

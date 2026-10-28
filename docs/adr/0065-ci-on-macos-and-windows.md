@@ -39,9 +39,12 @@ and 25 on Windows, and every e2e `run` test on Windows.
   only through a shell (CVE-2024-27980): every install failed with `spawn npm ENOENT`. npm is now
   spawned as its `npm-cli.js` on the running Node (`src/adapters/node/npm-cli.ts`), and the
   in-process resolver, which had no npm to load on Windows, finds it the same way. That npm is the
-  one that started the process (`npm_execpath`, under `npm run` or `npm test`), else the one bundled
-  beside `node.exe`: after `npm i -g npm@X`, the `npm` on PATH can be another version, which a
-  process started outside npm (`node bin/sandburg.js`) does not use.
+  first there of: the one that started the process (`npm_execpath`, under `npm run` or `npm test`),
+  the one bundled beside `node.exe`, and the one beside each `npm.cmd` on PATH, in PATH's order (an
+  npm.cmd shim runs `node_modules\npm\bin\npm-cli.js` beside it; a version manager's shim without
+  one is passed over). After `npm i -g npm@X`, the `npm` on PATH can be another version than the
+  bundled one, which a process started outside npm (`node bin/sandburg.js`) then uses. With none of
+  them, an install fails with an error that names where it looked and how to fix it.
 - **The resolver wrote a wrong lockfile through a symlink.** Arborist was given the install
   directory as named; npm's CLI gives it its working directory, a real path. Through a link
   (macOS's `/var` is `/private/var`, where its temporary directory is) the lockfile named the
@@ -53,7 +56,8 @@ and 25 on Windows, and every e2e `run` test on Windows.
   file's other batch tests do, since it checks parallelism, not the machine. Available memory on macOS is now free
   plus inactive pages (`vm_stat`), as psutil counts it. `memory.ts` joins the reviewed list of host
   files that start a process (`.oxlintrc.json`): it runs `/usr/bin/vm_stat` (by its path, with no
-  arguments) on macOS, at most once a second (the batch asks on each look while it waits).
+  arguments) on macOS, at most once a second from when it answered (the batch asks on each look
+  while it waits).
 - **A preload list could lose another process's entries on Windows.** There a rename over a file
   that another handle has open fails (EPERM, EACCES, EBUSY), and the list's write, from a timer,
   dropped the error and what this process had recorded. It is retried as the app files' rename
@@ -61,6 +65,14 @@ and 25 on Windows, and every e2e `run` test on Windows.
 - **`npm run build`** removed `dist/` with `rm -rf`, which cmd.exe does not have.
 - **Scripts and tests**: the architecture rules and the API report named modules with `\`; a
   script found the repository from a URL's pathname, and a test imported a path with a drive letter.
+- **`sandburg compare`'s signal tests (from #104) could not signal on Windows.**
+  There a process cannot send another a signal: `kill('SIGINT')` or `kill('SIGTERM')` ends the child
+  without running its handlers, so it exited with no code instead of 130 or 143. On Windows the test
+  names the signal on the child's stdin and the child raises it (`process.emit`) to the listeners
+  compare installed; every assertion is the same (exit code, cleanup order, no report, no project
+  copies left), and Linux and macOS still send the real signal. Compare's handler needs nothing more
+  for a console's Ctrl-C on Windows, which Node delivers as `SIGINT`; Ctrl-Break (`SIGBREAK`) is not
+  handled, and ends the process as before.
 
 Tests that check something Windows does not have say so in their skip or their condition: POSIX
 user ids (the Docker reference as a user other than root), executable bits (npm's bin links in the
