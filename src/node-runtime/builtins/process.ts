@@ -67,6 +67,7 @@ class Timeout {
   /** Scheduled, and pending (in byId) until it fires or is cleared; a refresh() after it fired schedules it again. */
   private start() {
     const fn = this.fn;
+    this.done = false;
     this.due = performance.now() + this.ms;
     this.id = this.repeat ? nativeSetInterval(() => {
       this.due += this.ms;
@@ -85,12 +86,15 @@ class Timeout {
   cancelNative() {
     if (this.id !== null && !this.repeat) nativeClearTimeout(this.id);
   }
-  /** Scheduled and not cleared (a timeout: not fired yet). */
+  /** Scheduled and not cleared (a timeout: not fired yet; refresh() schedules it again). */
   get pending() {
-    return this.id !== null;
+    return this.id !== null && !this.done;
   }
+  /** A timeout that fired. */
+  private done = false;
   /** It fired (a timeout: no longer pending). */
   fired() {
+    this.done = true;
     if (this.id !== null) byId.delete(Number(this.id));
   }
   clear() {
@@ -180,7 +184,7 @@ function clear(t: unknown) {
  */
 export const pendingWork = { count: 0 };
 export function timersActive(): boolean {
-  if (turnPosted || immediateQueue.length || closeQueue.length || ioQueue.length || nextIoQueue.length || dueTimers.length || pendingWork.count > 0) return true;
+  if (turnPosted || turnRunning || immediateQueue.length || closeQueue.length || ioQueue.length || nextIoQueue.length || dueTimers.length || pendingWork.count > 0) return true;
   for (const t of byId.values()) if (t.alive) return true;
   return false;
 }
@@ -224,8 +228,12 @@ const nextIoQueue: (() => void)[] = [];
 type Step = 'io' | 'check' | 'close';
 const STEPS: Step[] = ['io', 'check', 'close'];
 const queues: Record<Step, (() => void)[]> = { io: ioQueue, check: immediateQueue, close: closeQueue };
-/** A turn is posted or going (timers wait for it; it keeps the process alive: see timersActive). */
+/** A turn is wanted (posted, going, or asked for while one goes): timers wait for it, and it keeps the process alive (see timersActive). */
 let turnPosted = false;
+/** A turn is going (its steps or its timers phase): one at a time, so a timer of it runs once. */
+let turnRunning = false;
+/** The message that starts the next turn is posted. */
+let turnMessage = false;
 /** Timers that came due while a turn was posted: they run as it ends. */
 const dueTimers: Timeout[] = [];
 const yieldChannel = new MessageChannel();
@@ -238,11 +246,16 @@ const nextTask = () =>
     yieldChannel.port2.postMessage(0);
   });
 function postTurn() {
-  if (turnPosted) return;
   turnPosted = true;
+  // One going posts the next as it ends.
+  if (turnRunning || turnMessage) return;
+  turnMessage = true;
   immediateChannel.port2.postMessage(0);
 }
-immediateChannel.port1.onmessage = () => void runTurn();
+immediateChannel.port1.onmessage = () => {
+  turnMessage = false;
+  void runTurn();
+};
 /** Runs a callback of the turn: as in Node, what it throws is uncaught (process 'uncaughtException'), and the rest still run. */
 function runOne(fn: () => void) {
   try {
@@ -267,6 +280,7 @@ function takeDueTimers(): Timeout[] {
   return due.sort((a, b) => a.due - b.due);
 }
 async function runTurn() {
+  turnRunning = true;
   try {
     do {
       for (const step of STEPS) {
@@ -292,7 +306,8 @@ async function runTurn() {
       await nextTask();
     }
     phase = 'poll';
-    if (ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
+    turnRunning = false;
+    if (turnPosted || ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
   }
 }
 /** Whether a timeout has come due (its browser timer has not run it yet). */

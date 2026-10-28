@@ -131,6 +131,12 @@ test('timers: all an immediate queued (nextTick, promises, at any depth) runs be
   ]);
 });
 
+test('timers: timers due together at the end of a turn each fire once, in order, also when one queues an immediate', async () => {
+  assert.deepEqual(await run('timers-once.cjs'), [
+    'A, B, C, immediate from A',
+  ]);
+});
+
 test("http: a server's request destroyed (read or not), or its socket or response: when its events come", async () => {
   assert.deepEqual(await run('server-destroy.cjs'), [
     '/ destroy: pre,aborted,post,tick,req close,immediate,res close',
