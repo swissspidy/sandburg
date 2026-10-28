@@ -373,6 +373,10 @@ export function createAdapter(): RuntimeAdapter {
       return proc?.activity() ?? null;
     },
 
+    async projectReads(packages: { name: string; from: string }[]) {
+      return proc ? proc.projectReads(packages) : { reads: null, installed: packages.map(() => false) };
+    },
+
     failed() {
       return proc ? proc.failed() : new Promise<never>(() => {});
     },

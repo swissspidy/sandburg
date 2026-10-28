@@ -53,7 +53,7 @@ export function recordDocuments(context: BrowserContext, run: RunState): void {
   context.on('response', (res) => {
     const req = res.request();
     if (!req.isNavigationRequest() || run.documents.length >= 200) return;
-    const doc: RunState['documents'][number] = { frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers(), ended: false };
+    const doc: RunState['documents'][number] = { frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers(), ended: false, at: Date.now() };
     run.documents.push(doc);
     void res.finished().then(
       () => void (doc.ended = true),
@@ -70,8 +70,8 @@ export class RunState {
   network: EgressStats | null = null;
   console: ConsoleEntry[] = [];
   pageErrors: PageError[] = [];
-  /** `ended`: the document's body has been read to its end (a page a server streams and never ends has not). */
-  documents: { frame: Frame; url: string; status: number; csp?: boolean; ended?: boolean }[] = [];
+  /** `ended`: the document's body has been read to its end (a page a server streams and never ends has not); `at`: when its response came (Date.now()). */
+  documents: { frame: Frame; url: string; status: number; csp?: boolean; ended?: boolean; at?: number }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
   /** The run's project or checks file did not load (failSetup). */
   setupError: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null = null;

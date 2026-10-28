@@ -11,7 +11,7 @@ import { DEFAULT_RUNTIME, getAdapter } from '../adapters.ts';
 import type { AdapterDescriptor } from '../types.ts';
 import { loadProject, projectFromFiles } from '../project.ts';
 import type { FileTree, InstallReport, PhaseName, ProbeVerdict, Project, RunResult } from '../types.ts';
-import type { HostApi, RpcResult } from '../host/types.ts';
+import type { HostApi, ProjectReads, RpcResult } from '../host/types.ts';
 import { ChecksProgress, loadChecks, runChecks, type Checks } from './checks.ts';
 import { loadPageChecks, type PageChecks } from '../page-checks/index.ts';
 import { EgressGateway, newEgressStats, originMatcher, type EgressStats } from './egress.ts';
@@ -24,8 +24,8 @@ import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
 import { recordRequestFailures, recordDocuments, RunState, unwrap } from './run-state.ts';
-import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, failOnSourceStall } from './app-ready.ts';
-import { checkSources } from '../source-check.ts';
+import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, failOnSourceStall, pageHangs, relevantFindings } from './app-ready.ts';
+import { checkSources, type SourceFinding } from '../source-check.ts';
 import { appFilesFrom } from './app-files.ts';
 
 /** Options of a Session: the browser, the caches and stores it keeps on disk. */
@@ -597,13 +597,16 @@ export class Session {
               await host('ready', url, navigate ?? true);
               await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
             })();
-            // The page hangs: its document answered 2xx and has not ended, and it is not a loading page.
-            const hanging = async () => {
-              const doc = run.documents.filter((d) => d.frame === frame).at(-1);
-              return !!doc && doc.status >= 200 && doc.status < 300 && !doc.ended && !(await loadingPage());
+            // The page hangs (pageHangs), and it is not a loading page.
+            const hanging = async () => pageHangs(run.documents.filter((d) => d.frame === frame)) && !(await loadingPage());
+            // What the app's processes read, and whether undeclared packages are installed after all (relevantFindings).
+            const relevant = async (found: SourceFinding[]) => {
+              const packages = found.filter((f) => f.rule === 'undeclared-import').map((f) => ({ name: f.message, from: f.file }));
+              const answer = (await Promise.race([host('projectReads', packages), sleep(PROJECT_READS_MS).then(() => null)])) as ProjectReads | null;
+              return relevantFindings(found, answer);
             };
             const stall = new AbortController();
-            const sources = failOnSourceStall(render, run, () => checkSources(project.files, { app: project.app }), hanging, stall.signal);
+            const sources = failOnSourceStall(render, run, () => checkSources(project.files, { app: project.app }), hanging, relevant, stall.signal);
             await failFastOnAppError(sources, run, loadingPage, frame).finally(() => stall.abort());
             return frame;
           });
@@ -797,6 +800,9 @@ const RENDERER_LOCATE_MS = 250;
 
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;
+
+/** How long the source check waits for the runtime to say what the app read (failOnSourceStall's `relevant`): nothing bears on the app without an answer. */
+const PROJECT_READS_MS = 3_000;
 
 /** Convenience: open a session, run one project, close. */
 export async function runProject(project: string | Project, options: RunOptions & SessionOptions = {}): Promise<RunResult> {

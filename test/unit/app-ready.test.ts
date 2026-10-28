@@ -2,7 +2,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Frame } from 'playwright-core';
-import { failFastOnAppError, failFastOnRuntimeFetch, failOnSourceStall, waitForRender } from '../../src/orchestrator/app-ready.ts';
+import { failFastOnAppError, failFastOnRuntimeFetch, failOnSourceStall, pageHangs, relevantFindings, waitForRender } from '../../src/orchestrator/app-ready.ts';
 import type { SourceFinding } from '../../src/source-check.ts';
 import type { RunState } from '../../src/orchestrator/run-state.ts';
 import type { ConsoleEntry, PageError } from '../../src/types.ts';
@@ -235,6 +235,46 @@ test("without the app's frame, the host page's documents are left out", async (t
   assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });
 
+test("what bears on the app: findings in files its processes read, and undeclared imports of packages not installed where they are imported", () => {
+  const syntax: SourceFinding = { rule: 'compile-error', file: 'src/a.ts', line: 1, column: 1, message: 'x' };
+  const h3: SourceFinding = { rule: 'undeclared-import', file: 'server/api/hello.ts', line: 1, message: 'h3' };
+  const faker: SourceFinding = { rule: 'undeclared-import', file: 'lib/report.js', line: 1, message: '@faker-js/faker' };
+  const dayjs: SourceFinding = { rule: 'undeclared-import', file: 'src/a.ts', line: 2, message: 'dayjs' };
+  // `installed` answers the undeclared imports in order: h3 (hoisted by npm), faker, dayjs.
+  const answer = { reads: ['src/a.ts', 'server/api/hello.ts', 'package.json'], installed: [true, false, false] };
+  assert.deepEqual(relevantFindings([syntax, h3, faker, dayjs], answer), [syntax, dayjs]);
+  // A runtime that does not record reads: nothing bears on the app.
+  assert.deepEqual(relevantFindings([syntax], { reads: null, installed: [] }), []);
+  assert.deepEqual(relevantFindings([syntax], null), []);
+});
+
+test('a finding fails the phase only once a file it is in has been read by the app (a page that streams slowly has read no broken file)', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const found: SourceFinding = { rule: 'undeclared-import', file: 'lib/report.js', line: 1, message: '@faker-js/faker' };
+  let reads: string[] = ['server.js'];
+  let asked = 0;
+  const relevant = async (f: SourceFinding[]) => (asked++, relevantFindings(f, { reads, installed: f.map(() => false) }));
+  const phase = watched(failOnSourceStall(new Promise(() => {}), asRun(run), async () => [found], async () => true, relevant));
+  await advance(t, 60_000);
+  assert.deepEqual([phase.settled, run.sourceFindings], ['pending', []]);
+  assert.ok(asked >= 15 && asked <= 21, `matched ${asked} times in 40 s`);
+  // A route that imports it runs: the file is read, and it bears on the app.
+  reads = ['server.js', 'lib/report.js'];
+  await advance(t, 2_200);
+  assert.equal(phase.error?.message, 'app did not render, and its sources have an error: imports undeclared package "@faker-js/faker" (lib/report.js:1)');
+});
+
+test("a page hangs once its document answered 2xx and has streamed 10 s without ending: not before it is answered, nor just after, nor once it ends", () => {
+  const now = 100_000;
+  assert.equal(pageHangs([], now), false, 'not answered yet (compiling)');
+  assert.equal(pageHangs([{ status: 200, ended: false, at: now - 9_000 }], now), false, 'just came: still being read');
+  assert.equal(pageHangs([{ status: 200, ended: false, at: now - 10_000 }], now), true);
+  assert.equal(pageHangs([{ status: 200, ended: true, at: now - 30_000 }], now), false, 'ended');
+  assert.equal(pageHangs([{ status: 500, ended: false, at: now - 30_000 }], now), false, 'an error page');
+  assert.equal(pageHangs([{ status: 200, ended: false, at: now - 30_000 }, { status: 200, ended: true, at: now - 1_000 }], now), false, 'the latest ended');
+});
+
 /** The page hangs (its document answered 2xx and is still streaming), as SolidStart's does. */
 const hanging = async () => true;
 
@@ -316,7 +356,7 @@ test('an app that renders within 20 s never has its sources checked; sources wit
   const ended = runState();
   const stop = new AbortController();
   let late = 0;
-  const stopped = watched(failOnSourceStall(new Promise(() => {}), asRun(ended), async () => (late++, [undeclared]), hanging, stop.signal));
+  const stopped = watched(failOnSourceStall(new Promise(() => {}), asRun(ended), async () => (late++, [undeclared]), hanging, undefined, stop.signal));
   await advance(t, 10_000);
   stop.abort();
   await advance(t, 60_000);

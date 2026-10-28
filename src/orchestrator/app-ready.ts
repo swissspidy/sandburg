@@ -7,6 +7,7 @@ import type { ConsoleEntry } from '../types.ts';
 import { RunState } from './run-state.ts';
 import { appRendered } from '../host/rendered.ts';
 import { describeFinding, type SourceFinding } from '../source-check.ts';
+import type { ProjectReads } from '../host/types.ts';
 import { SOURCE_STALL } from '../classify.ts';
 
 /** Grace period after a runtime asset fails before the phase gives up (the runtime may retry). */
@@ -189,17 +190,55 @@ const SOURCE_QUIET_MS = 10_000;
 const active = (c: ConsoleEntry) => (c.source === 'host' && c.text.startsWith('[runtime:')) || (c.source === 'app' && c.type === 'error');
 
 /**
- * Rejects when the app has not rendered after 20 s, its sources have a syntax error or import a
- * package it does not declare (`check`, source-check.ts), and the page hangs: its document answered
- * 2xx and is still streaming (`hanging`: not a loading page), and its dev server and page have said
- * nothing for 10 s. Some dev servers report neither fault and hang so (SolidStart 2.1.0 streams the
- * page and never ends it). An app whose page has not been answered yet is compiling (`next dev`
- * says so once, then nothing until it answers): it runs to the phase's deadline, and what was found
- * classifies a timeout. The sources are checked once, at 20 s, so a run whose app renders sooner
- * never pays for it; what was found is kept for classification (`run.sourceFindings`). `signal`
- * stops the watch.
+ * Whether the app's page hangs (`docs`: its frame's documents, in order): its latest answered 2xx and
+ * has streamed for at least SOURCE_QUIET_MS without ending (SolidStart's on a fault). Not a page
+ * not answered yet (compiling), nor one that just came and is still being read, nor an error page.
  */
-export async function failOnSourceStall(render: Promise<void>, run: RunState, check: () => Promise<SourceFinding[]>, hanging: () => Promise<boolean>, signal?: AbortSignal): Promise<void> {
+export function pageHangs(docs: { status: number; ended?: boolean; at?: number }[], now = Date.now()): boolean {
+  const doc = docs.at(-1);
+  return !!doc && doc.status >= 200 && doc.status < 300 && doc.ended === false && doc.at !== undefined && now - doc.at >= SOURCE_QUIET_MS;
+}
+
+/** How often what the source check found is matched again with what the app's processes have read (failOnSourceStall). */
+const SOURCE_RELEVANCE_MS = 2_000;
+
+/**
+ * What the source check found that bears on the running app (`answer`, from its runtime): a finding
+ * in a file the app's processes have read (a file only another route imports was not), and of an
+ * undeclared import, only one whose package is not installed where the file imports it from (npm
+ * hoists what dependencies need: Nuxt's h3, a Next app's @tanstack/query-core). Nothing, when the
+ * runtime does not record what it read. `answer.installed` is in the order of the undeclared imports.
+ */
+export function relevantFindings(found: SourceFinding[], answer: ProjectReads | null): SourceFinding[] {
+  if (!answer?.reads) return [];
+  const read = new Set(answer.reads);
+  let i = 0;
+  return found.filter((f) => {
+    const installed = f.rule === 'undeclared-import' ? answer.installed[i++] : false;
+    return read.has(f.file) && !installed;
+  });
+}
+
+/**
+ * Rejects when the app has not rendered after 20 s, its sources have a syntax error or import a
+ * package it does not declare (`check`, source-check.ts) in a file its processes have read
+ * (`relevant`, relevantFindings), and the page hangs: its document answered 2xx and is still
+ * streaming (`hanging`: not a loading page), and its dev server and page have said nothing for 10 s.
+ * Some dev servers report neither fault and hang so (SolidStart 2.1.0 streams the page and never
+ * ends it). An app whose page has not been answered yet is compiling (`next dev` says so once, then
+ * nothing until it answers), and a page that streams slowly has read no broken file: they run to the
+ * phase's deadline, and what was found classifies a timeout. The sources are checked once, at 20 s,
+ * so a run whose app renders sooner never pays for it; what bears on the app is kept for
+ * classification (`run.sourceFindings`), matched again every 2 s. `signal` stops the watch.
+ */
+export async function failOnSourceStall(
+  render: Promise<void>,
+  run: RunState,
+  check: () => Promise<SourceFinding[]>,
+  hanging: () => Promise<boolean>,
+  relevant: (found: SourceFinding[]) => Promise<SourceFinding[]> = async (found) => found,
+  signal?: AbortSignal,
+): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   let done = false;
   // The phase ended otherwise (the app-error watch failed it): stop watching.
@@ -216,6 +255,9 @@ export async function failOnSourceStall(render: Promise<void>, run: RunState, ch
     let quietSince = start;
     let [consoleSeen, errorsSeen] = [run.console.length, run.pageErrors.length];
     let checked = false;
+    /** What the check found (null until it is done), and when it was last matched with what the app read. */
+    let found: SourceFinding[] | null = null;
+    let matchedAt = 0;
     const poll = async () => {
       if (done) return;
       const now = Date.now();
@@ -224,13 +266,18 @@ export async function failOnSourceStall(render: Promise<void>, run: RunState, ch
       if (!checked && now - start >= SOURCE_CHECK_AFTER_MS) {
         checked = true;
         void check().then(
-          (found) => void (run.sourceFindings = found),
-          () => void (run.sourceFindings = []),
+          (f) => void (found = f),
+          () => void (found = []),
         );
       }
-      const found = run.sourceFindings?.[0];
-      if (found && now - quietSince >= SOURCE_QUIET_MS && (await hanging().catch(() => false)) && !done) {
-        reject(new Error(`${SOURCE_STALL}${describeFinding(found)}`));
+      if (found && (found.length || !run.sourceFindings) && now - matchedAt >= SOURCE_RELEVANCE_MS) {
+        matchedAt = now;
+        run.sourceFindings = found.length ? await relevant(found).catch(() => []) : [];
+        if (done) return;
+      }
+      const first = run.sourceFindings?.[0];
+      if (first && Date.now() - quietSince >= SOURCE_QUIET_MS && (await hanging().catch(() => false)) && !done) {
+        reject(new Error(`${SOURCE_STALL}${describeFinding(first)}`));
         return;
       }
       if (!done) timer = setTimeout(() => void poll(), 200);

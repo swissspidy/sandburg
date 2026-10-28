@@ -212,47 +212,82 @@ require('http').createServer((req, res) => {
   assert.ok(ready.durationMs < 30_000, `ready took ${ready.durationMs} ms`);
 });
 
-test("the source check fails a page that hangs with what it found, and leaves an app that is still compiling to render", async () => {
-  // Both servers import, only when a route asks for it, a file with an undeclared import or a syntax
-  // error: reachable from the app's entry (the dev script's file), never run.
-  const app = (name: string, server: string, lazy: string) =>
-    projectFromFiles(
-      { 'package.json': JSON.stringify({ name, private: true, scripts: { dev: 'node server.js' } }), 'server.js': server, 'lib/report.js': lazy },
-      { name, path: `${fixtureDir}#${name}` },
-    );
-  const page = '<!doctype html><html><body><h1>The page</h1></body></html>';
+/** A server-only app: its dev script runs `server`; `files` are its other files. */
+function serverApp(name: string, server: string, files: Record<string, string> = {}, pkg: object = {}) {
+  const main = server.startsWith('import ') ? 'server.mjs' : 'server.js';
+  return projectFromFiles({ 'package.json': JSON.stringify({ name, private: true, scripts: { dev: `node ${main}` }, ...pkg }), [main]: server, ...files }, { name, path: `${fixtureDir}#${name}` });
+}
+const PAGE = '<!doctype html><html><body><h1>The page</h1></body></html>';
+/** A route the run never asks for imports this file, with an undeclared import: reachable from the dev script's file, never read. */
+const UNREAD = { 'lib/report.js': "import { faker } from '@faker-js/faker';\nexport default faker;\n" };
+const REPORT_ROUTE = "if (req.url === '/report') return void (await import('./lib/report.js'));";
+
+test('the source check leaves a slow app to render: one still compiling its page, one whose page streams slowly', async () => {
   // `next dev` says it is compiling once, then nothing until it answers, here after 28 s.
-  const slow = app(
+  const compiling = serverApp(
     'slow-compile',
     `console.log(' ○ Compiling / ...');
 const ready = Date.now() + 28_000;
 require('http').createServer(async (req, res) => {
-  if (req.url === '/report') return void (await import('./lib/report.js'));
+  ${REPORT_ROUTE}
   await new Promise((r) => setTimeout(r, Math.max(0, ready - Date.now())));
   res.setHeader('content-type', 'text/html');
-  res.end(${JSON.stringify(page)});
+  res.end(${JSON.stringify(PAGE)});
 }).listen(3000);`,
-    "import { faker } from '@faker-js/faker';\nexport default faker;\n",
+    UNREAD,
   );
-  const healthy = await session.run(slow, { outDir, timeouts: { ready: 60_000 } });
-  const ready = healthy.phases.find((p) => p.name === 'ready');
-  assert.equal(ready?.status, 'ok', JSON.stringify(healthy.failure));
-  assert.ok(ready.durationMs > 25_000, `ready took ${ready.durationMs} ms`);
-  // SolidStart's way: the page answers 200, streams its start and never ends, and nothing is logged.
-  const hang = app(
+  // A server render that streams the page's start at once and the rest when its data comes, 28 s later.
+  const streaming = serverApp(
+    'slow-stream',
+    `require('http').createServer(async (req, res) => {
+  ${REPORT_ROUTE}
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.write('<!doctype html><html><body>');
+  await new Promise((r) => setTimeout(r, 28_000));
+  res.end('<h1>The page</h1></body></html>');
+}).listen(3000);`,
+    UNREAD,
+  );
+  for (const project of [compiling, streaming]) {
+    const result = await session.run(project, { outDir, timeouts: { ready: 60_000 } });
+    const ready = result.phases.find((p) => p.name === 'ready');
+    assert.equal(ready?.status, 'ok', `${project.name}: ${JSON.stringify(result.failure)}`);
+    assert.ok(ready.durationMs > 25_000, `${project.name}: ready took ${ready.durationMs} ms`);
+  }
+});
+
+test('the source check fails a page that hangs on a file its server read; an undeclared package npm installed anyway is not the fault', async () => {
+  // SolidStart's way: the page answers 200, streams its start, renders with a module that does not
+  // parse (the error swallowed), never ends, and nothing is logged.
+  const hang = serverApp(
     'streams-forever',
     `require('http').createServer(async (req, res) => {
-  if (req.url === '/report') return void (await import('./lib/report.js'));
   res.writeHead(200, { 'content-type': 'text/html' });
   res.write('<!doctype html><html><head><title>x</title></head><body>');
+  await import('./lib/render.js').catch(() => {});
 }).listen(3000);`,
-    'export const broken = ;\n',
+    { 'lib/render.js': 'export const broken = ;\n' },
   );
   const hung = await session.run(hang, { outDir, timeouts: { ready: 60_000 } });
   const failed = hung.phases.find((p) => p.name === 'ready');
   assert.equal(failed?.status, 'failed', JSON.stringify(hung.failure));
-  assert.deepEqual([hung.failure?.class, hung.failure?.rule, hung.failure?.message], ['app-bug', 'compile-error', 'lib/report.js:1:23: Unexpected ";"']);
+  assert.deepEqual([hung.failure?.class, hung.failure?.rule, hung.failure?.message], ['app-bug', 'compile-error', 'lib/render.js:1:23: Unexpected ";"']);
   assert.ok(failed.durationMs < 40_000, `ready took ${failed.durationMs} ms`);
+  // Its server imports ms, which it does not declare: debug, which it does, depends on it, and npm
+  // hoists it (as Nuxt's h3). The page hangs as above: the phase runs to its deadline, a timeout.
+  const phantom = serverApp(
+    'hoisted-import',
+    `import ms from 'ms';
+import { createServer } from 'node:http';
+createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.write('<!doctype html><html><body><!-- ' + ms(1000) + ' -->');
+}).listen(3000);`,
+    {},
+    { dependencies: { debug: '4.4.3' } },
+  );
+  const waited = await session.run(phantom, { outDir, timeouts: { ready: 30_000 } });
+  assert.deepEqual([waited.phases.find((p) => p.name === 'ready')?.status, waited.failure?.class, waited.failure?.rule], ['timeout', 'timeout', 'phase-deadline']);
 });
 
 test('a ready deadline produces a timeout', async () => {

@@ -91,6 +91,7 @@ const api: HostApi = {
       return !!doc && appRendered(doc, selector);
     }),
   activity: () => call(async () => adapter?.activity?.() ?? null),
+  projectReads: (packages: { name: string; from: string }[]) => call(async () => (await adapter?.projectReads?.(packages)) ?? null),
   settled: (quietMs: number, longMs: number, maxMs: number, hydrateMaxMs: number) =>
     call(() => settle({ activity: () => adapter?.activity?.(), safe: () => inputSafe(appFrame().contentWindow), quietMs, longMs, maxMs, hydrateMaxMs, pollMs: SETTLE_POLL_MS })),
   dispose: () =>
