@@ -66,6 +66,7 @@ Snapshots and batches are described in [ADR 0002](../adr/0002-snapshots-and-batc
 | `--checks-in <where>` | `host` | `host`: the checks file is imported by Sandburg's process. `page`: its code runs in the sandbox tab, with Playwright-shaped locators and `expect` ([Writing checks](writing-checks.md#checks-in-the-page---checks-in-page)). |
 | `--parallel <n>` | one per core, up to 8 | `batch`/`compare`: tabs at a time. |
 | `--no-prewarm` | | `batch`/`compare`: do not warm up common stacks first (the warm-up only runs when their installs are missing). |
+| `--no-longest-first` | | `batch`: start the projects in the order found (by name). By default a batch starts first those whose checks, then whole runs, took longest in its earlier batches (`.sandburg/batches`), which shortens its wall time; the order then differs from batch to batch, and so does what each app runs beside. Use this to compare two batches' per-app times. |
 | `--out <dir>` | `.sandburg/runs` | Results directory. |
 | `--cache <dir>` | `.sandburg/cache` | HTTP cache directory. |
 | `--store <dir>` | `.sandburg/store` | Snapshot store directory. |

@@ -29,6 +29,11 @@ test("--no-browser-sandbox turns Chromium's OS sandbox off; without it, the sess
   assert.throws(() => parseCommandLine(['run', 'app', '--browser-sandbox=no']));
 });
 
+test('batch starts the longest projects first unless --no-longest-first', () => {
+  assert.equal(parseCommandLine(['batch', 'apps']).values['longest-first'], true);
+  assert.equal(parseCommandLine(['batch', 'apps', '--no-longest-first']).values['longest-first'], false);
+});
+
 test('open shows its browser; run and batch do unless --headed', () => {
   assert.equal(options('open', 'app').headless, false);
   assert.equal(options('run', 'app').headless, true);
