@@ -84,6 +84,15 @@ class Timeout {
   }
 }
 
+/**
+ * The phase of libuv's loop the program's code runs in, as far as it decides what a connection's other
+ * end sees when (see onPeerPhase): a timer's callback (and what it queued), an immediate, a close
+ * callback, else I/O ('poll': messages, fetches).
+ */
+type Phase = 'timers' | 'poll' | 'check' | 'close';
+let phase: Phase = 'poll';
+const toPoll = () => void (phase = 'poll');
+
 const byId = new Map<number, Timeout>();
 /** The process exited: nothing it scheduled runs any more (see stopTimers). */
 let stopped = false;
@@ -94,7 +103,13 @@ function make(repeat: boolean) {
     const t: Timeout = new Timeout(() => {
       if (!repeat) t.fired();
       if (stopped) return t.clear();
-      bound(...args);
+      phase = 'timers';
+      try {
+        bound(...args);
+      } finally {
+        // What it queued (process.nextTick, promises) still runs in it.
+        queueMicrotask(toPoll);
+      }
     }, Math.max(1, Number(ms) || 1), repeat);
     return t;
   };
@@ -115,7 +130,7 @@ function clear(t: unknown) {
  */
 export const pendingWork = { count: 0 };
 export function timersActive(): boolean {
-  if (immediateQueue.length || closeQueue.length || pendingWork.count > 0) return true;
+  if (immediateQueue.length || closeQueue.length || ioQueue.length || pendingWork.count > 0) return true;
   for (const t of byId.values()) if (t.alive) return true;
   return false;
 }
@@ -130,6 +145,7 @@ export function stopTimers(): void {
   for (const t of [...byId.values()]) t.clear();
   immediateQueue.length = 0;
   closeQueue.length = 0;
+  ioQueue.length = 0;
 }
 
 class Immediate {
@@ -142,35 +158,51 @@ const immediateChannel = new MessageChannel();
 const immediateQueue: (() => void)[] = [];
 /** What runs as Node's close callbacks do (see onClosePhase): after the immediates of the same turn. */
 const closeQueue: (() => void)[] = [];
-/** A turn of immediates (and close callbacks) is posted. */
-let turnPosted = false;
+/** What runs as I/O callbacks do (see onIoPhase): on the next turn, before its immediates. */
+const ioQueue: (() => void)[] = [];
+/**
+ * A turn of the loop: its I/O callbacks, then its immediates, then its close callbacks, each callback a
+ * task of its own (what it queued with process.nextTick or promises runs before the next, as in Node).
+ * `batch`: what is left of the step's callbacks, taken as it began (those queued since wait for the next turn).
+ */
+type Step = 'io' | 'check' | 'close';
+let turn: { step: Step | null; batch: (() => void)[] | null } | null = null;
+const queues: Record<Step, (() => void)[]> = { io: ioQueue, check: immediateQueue, close: closeQueue };
+const STEPS: Step[] = ['io', 'check', 'close'];
 function postTurn() {
-  if (turnPosted) return;
-  turnPosted = true;
+  if (turn) return;
+  turn = { step: null, batch: null };
   immediateChannel.port2.postMessage(0);
 }
-/**
- * Runs `batch`; as in Node, what one of them throws is uncaught (process 'uncaughtException'), and
- * the rest still run, on the next turn, before those queued since; process.exit() ends it there.
- */
-function runBatch(batch: (() => void)[], queue: (() => void)[]) {
-  for (let i = 0; i < batch.length; i++) {
-    try {
-      batch[i]();
-    } catch (e) {
-      if (!(e instanceof ExitError) && i + 1 < batch.length) {
-        queue.unshift(...batch.slice(i + 1));
-        postTurn();
-      }
-      throw e;
+immediateChannel.port1.onmessage = () => {
+  const t = turn as { step: Step | null; batch: (() => void)[] | null };
+  // Its first step with something to run, as it begins.
+  t.step ??= STEPS.find((step) => queues[step].length) ?? 'close';
+  if (!t.batch) {
+    // As libuv's closing handles, the last closed first.
+    t.batch = t.step === 'close' ? closeQueue.splice(0).reverse() : queues[t.step].splice(0);
+  }
+  phase = t.step === 'io' ? 'poll' : t.step;
+  try {
+    // As in Node: what it throws is uncaught (process 'uncaughtException'); the rest still run, before
+    // those queued since. process.exit() ends it there (nothing runs once it stopped).
+    t.batch.shift()?.();
+  } finally {
+    queueMicrotask(toPoll);
+    // Its next callback, the next step's (skipping those with none), or the next turn, if anything waits for one.
+    let next: Step | undefined = t.step;
+    if (!t.batch.length) {
+      t.batch = null;
+      next = STEPS.slice(STEPS.indexOf(t.step) + 1).find((step) => queues[step].length);
+    }
+    if (next) {
+      t.step = next;
+      immediateChannel.port2.postMessage(0);
+    } else {
+      turn = null;
+      if (ioQueue.length || immediateQueue.length || closeQueue.length) postTurn();
     }
   }
-}
-immediateChannel.port1.onmessage = () => {
-  turnPosted = false;
-  runBatch(immediateQueue.splice(0), immediateQueue);
-  // Those queued until now, by the immediates too (a destroy in one closes right after it).
-  runBatch(closeQueue.splice(0), closeQueue);
 };
 
 /**
@@ -182,6 +214,24 @@ export function onClosePhase(fn: () => void): void {
     if (!stopped) fn();
   });
   postTurn();
+}
+
+/** Runs `fn` as libuv runs an I/O callback: on the next turn, before the immediates queued until then. */
+function onIoPhase(fn: () => void): void {
+  ioQueue.push(() => {
+    if (!stopped) fn();
+  });
+  postTurn();
+}
+
+/**
+ * Runs `fn` as the other end of a connection in this process sees what this end did now (its data,
+ * end or reset): in libuv's next poll phase. In a timer's callback that is the same loop iteration's,
+ * before the immediates and close callbacks this turn queued; else the next iteration's, after them.
+ */
+export function onPeerPhase(fn: () => void): void {
+  if (phase === 'timers' || phase === 'close') onIoPhase(fn);
+  else onClosePhase(() => onIoPhase(fn));
 }
 
 export const timers = {

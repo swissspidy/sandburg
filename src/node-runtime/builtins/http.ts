@@ -8,7 +8,7 @@
 import { Buffer } from 'buffer';
 import { EventEmitter } from 'events';
 import { Duplex, Readable, Writable } from 'readable-stream';
-import { ExitError, onClosePhase, timers } from './process.ts';
+import { ExitError, onClosePhase, onPeerPhase, timers } from './process.ts';
 
 const STATUS_CODES: Record<number, string> = {
   100: 'Continue', 101: 'Switching Protocols', 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
@@ -90,6 +90,8 @@ class FakeSocket extends EventEmitter {
   destroyed = false;
   /** What the program wrote to the socket itself (a 'clientError' listener's raw response), for the server to send (see Server.dispatch). */
   written: Uint8Array[] = [];
+  /** Tells the other end of the connection, as it is destroyed. */
+  onDestroy: (() => void) | null = null;
   /** setTimeout's: 'timeout' once the connection has been idle that long (0: never), and its timer. */
   #timeoutMs = 0;
   #timer: ReturnType<typeof timers.setTimeout> | undefined;
@@ -128,6 +130,7 @@ class FakeSocket extends EventEmitter {
     this.destroyed = true;
     this.readable = this.writable = false;
     timers.clearTimeout(this.#timer);
+    this.onDestroy?.();
     // As a real socket's: once the handle closed, after what this turn queued.
     onClosePhase(() => this.emit('close'));
     return this;
@@ -323,14 +326,10 @@ export class ServerResponse extends Writable {
   }
   /** A 'clientError' to come ('pending'), and with its 'close' held until it came ('close'). */
   private clientError: 'pending' | 'close' | null = null;
-  /**
-   * Its connection closed before it ended (see Server.dispatch): it closes at once, and the client's
-   * request fails ("socket hang up"), after the server's side has seen it close.
-   */
+  /** Its connection closed before it ended (see Server.dispatch): it closes at once. */
   connectionClosed() {
     this.destroy();
     this.emitCloseOnce();
-    queueMicrotask(() => this.bridge.error?.('socket hang up', 'ECONNRESET'));
   }
   private emitCloseOnce() {
     if (this.hasClosed) return;
@@ -420,7 +419,8 @@ export class ServerResponse extends Writable {
     this.bridge.end();
     this.socket.active();
     cb();
-    queueMicrotask(() => this.emitCloseOnce());
+    // As Node's (its 'finish' listener queues it): a tick after the request's own 'close'.
+    queueMicrotask(() => queueMicrotask(() => this.emitCloseOnce()));
   }
   destroy(err?: Error) {
     // As Node: the error is the socket's, for the server's 'clientError' (also once the response ended),
@@ -594,22 +594,28 @@ export class Server extends EventEmitter {
     const socket = req.socket as FakeSocket;
     socket.server = this;
     const res = new ServerResponse(req, bridge);
-    // The connection closed before the response ended (the client went away, res.destroy(),
-    // req.socket.destroy(), a timeout): as Node's abortIncoming, the request is destroyed ('aborted' if
-    // it was not read to its end; its 'error' and 'close' later) and the response closes at once. What
-    // the program wrote to the socket itself before (a 'clientError' listener's response) goes out first.
+    // The connection is closed before the response ended (res.destroy(), req.socket.destroy(), a
+    // timeout): its client hears it, as it is (see onPeerPhase): what the program wrote to the socket
+    // itself (a 'clientError' listener's response), else the reset.
+    socket.onDestroy = () => {
+      if (res.finished || (!res.headersSent && sendWritten(socket.written, bridge))) return;
+      bridge.error?.('socket hang up', 'ECONNRESET');
+    };
+    // Once it closed (or the client went away): as Node's abortIncoming, the request is destroyed
+    // ('aborted' if it was not read to its end; its 'error' and 'close' later), and the response closes at once.
     socket.once('close', () => {
       this.#incoming.delete(req);
       if (res.finished) return;
-      if (!res.headersSent) sendWritten(socket.written, bridge);
       req.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
       res.connectionClosed();
     });
     // As Node's socketOnTimeout: the connection's idle timeout is the request's (while its body is
     // coming), the response's (until it ended) and the server's to handle; else the connection closes.
+    let detached = false;
+    res.once('finish', () => (detached = true));
     socket.on('timeout', () => {
       const reqTimeout = !req.complete && req.emit('timeout', socket);
-      const resTimeout = !res.finished && res.emit('timeout', socket);
+      const resTimeout = !detached && res.emit('timeout', socket);
       const serverTimeout = this.emit('timeout', socket);
       if (!reqTimeout && !resTimeout && !serverTimeout) socket.destroy();
     });
@@ -629,7 +635,7 @@ export class Server extends EventEmitter {
       // As Node's onRequestTimeout (socketOnError): the server's 'clientError' handles it; else a 408, and the connection closes.
       const err = Object.assign(new Error('Request timeout'), { code: 'ERR_HTTP_REQUEST_TIMEOUT' });
       if (this.emit('clientError', err, socket)) return;
-      if (!res.headersSent) sendWritten([Buffer.from('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n')], bridge);
+      if (!res.headersSent) socket.write('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n');
       socket.destroy();
     };
     /** Body bytes it took that the program has not read yet (they are acknowledged as it reads: see BridgeResponse.consumed). */
@@ -649,7 +655,11 @@ export class Server extends EventEmitter {
     }
     this.emit('request', req, res);
     return {
-      abort: () => void socket.destroy(),
+      // Its client went away: the connection closes (and nothing goes back to it).
+      abort: () => {
+        socket.onDestroy = null;
+        socket.destroy();
+      },
       write: (chunk) => {
         if (!streamed || req.complete || req.destroyed) return;
         socket.active();
@@ -701,13 +711,13 @@ function clientIdle(idle: number | null, keepAliveTimeout: number): number | nul
  * A response the program wrote to a connection itself (a 'clientError' listener's
  * `socket.end('HTTP/1.1 400 Bad Request\r\n\r\n')`, or Node's own 408) goes to its client as one.
  */
-function sendWritten(written: Uint8Array[], bridge: BridgeResponse) {
-  if (!written.length) return;
+function sendWritten(written: Uint8Array[], bridge: BridgeResponse): boolean {
+  if (!written.length) return false;
   const bytes = Buffer.concat(written);
   const end = bytes.indexOf('\r\n\r\n');
   const head = bytes.subarray(0, end < 0 ? bytes.length : end).toString('latin1').split('\r\n');
   const status = /^HTTP\/1\.[01] (\d{3})(?: (.*))?$/.exec(head[0]);
-  if (!status || end < 0) return;
+  if (!status || end < 0) return false;
   const headers: [string, string][] = [];
   for (const line of head.slice(1)) {
     const colon = line.indexOf(':');
@@ -717,6 +727,7 @@ function sendWritten(written: Uint8Array[], bridge: BridgeResponse) {
   const rest = bytes.subarray(end + 4);
   if (rest.length) bridge.chunk(new Uint8Array(rest));
   bridge.end();
+  return true;
 }
 
 function createServer(opts?: unknown, handler?: (req: IncomingMessage, res: ServerResponse) => void) {
@@ -802,8 +813,16 @@ class ClientRequest extends Writable {
   /** Its headers are to go out (it was written to, flushed or ended), and they went (#open): to a server here, or by fetch() ('fetch', at its end). */
   #started = false;
   #out: Outgoing | 'fetch' | null = null;
-  /** Its body has no framing (as Node's for a GET without a length): it does not go out. */
-  #dropBody = false;
+  /**
+   * How its body is framed, as Node's: chunked (each chunk as it was written), with its length (when
+   * it was ended before anything was written, or the program set one: what is written in a tick goes
+   * together), or not at all (a GET's without a length: it does not go out). Set as its headers are.
+   */
+  #framing: 'chunked' | 'length' | 'none' = 'length';
+  /** end() is being called before anything was written: its body is all there is (its length is known). */
+  #ending = false;
+  /** Chunks written in this tick, with its length (see #framing): they go together. */
+  #batch: Uint8Array[] = [];
   /** What it was written before its headers went out (and for fetch(), all of it). */
   #pending: Uint8Array[] = [];
   /** It was ended; _final's callback ('finish') waits until its body went out. */
@@ -817,6 +836,8 @@ class ClientRequest extends Writable {
   #hadError = false;
   #socketClosed = false;
   #closed = false;
+  /** The program destroyed it (not its server, see #reset). */
+  #gone = false;
   /** Tells its server (on this machine) that its client went away. */
   #cancelServer: (() => void) | null = null;
   aborted = false;
@@ -918,11 +939,14 @@ class ClientRequest extends Writable {
   destroy(err?: Error) {
     if (this.destroyed) return this;
     super.destroy();
+    this.#gone = true;
     this.controller.abort();
     this.#heldWrite = null;
     if (this.#ended && this.res?.complete) return this;
     this.#error = err;
     if (!this.#hasSocket) return this;
+    // Its server (on this machine) learns it as from its end of the connection.
+    this.#cancelServer?.();
     if (err) {
       this.#hadError = true;
       queueMicrotask(() => this.emit('error', err));
@@ -957,7 +981,6 @@ class ClientRequest extends Writable {
       }
       this.#emitClose();
     }
-    if (!res?.complete || !this.#ended) this.#cancelServer?.();
   }
   /** Its connection broke (its server went away, or could not be reached): `err` comes first, then the rest as its socket closes. */
   #reset(err?: Error) {
@@ -982,9 +1005,10 @@ class ClientRequest extends Writable {
     });
     res.once('close', () => {
       // Destroyed before its end (by the program): its connection closes, what is still coming is not read, and its server learns it.
-      if (res.complete) return;
+      if (res.complete || this.#socketClosed) return;
+      this.#gone = true;
       this.controller.abort();
-      if (!this.destroyed) super.destroy();
+      this.#cancelServer?.();
       onClosePhase(() => this.#connectionClosed());
     });
     this.#active();
@@ -992,17 +1016,33 @@ class ClientRequest extends Writable {
     if (!this.emit('response', res)) res.resume();
     return res;
   }
-  /** Its headers are to go out: they do once it has its socket. */
+  /** Its headers are to go out (with how its body is framed): they do once it has its socket. */
   #start() {
-    if (!this.#started) this.#started = this.headersSent = true;
+    if (!this.#started) {
+      this.#started = this.headersSent = true;
+      if ('transfer-encoding' in this.headers) this.#framing = /chunked/i.test(this.headers['transfer-encoding']) ? 'chunked' : 'length';
+      else if ('content-length' in this.headers) this.#framing = 'length';
+      else if (!BODY_METHODS.has(this.method)) this.#framing = 'none';
+      else this.#framing = this.#ending ? 'length' : 'chunked';
+    }
     if (this.#hasSocket && !this.#out && !this.destroyed) this.#open();
+  }
+  // Node's req.end(data, encoding, cb) also accepts (cb) and (data, cb).
+  end(...args: unknown[]) {
+    if (!this.#started && !this.writableEnded) this.#ending = true;
+    return super.end(...(args as []));
   }
   _write(chunk: unknown, enc: BufferEncoding, cb: () => void) {
     const bytes = typeof chunk === 'string' ? Buffer.from(chunk, enc) : (chunk as Uint8Array);
-    this.#start();
-    if (this.#dropBody || !bytes.length) return cb();
+    // Before its headers went out, with what it is written (they may go out now, see #open).
+    if (!this.#out) {
+      if (bytes.length) this.#pending.push(bytes);
+      this.#start();
+      return cb();
+    }
     const out = this.#out;
-    if (!out || out === 'fetch') {
+    if (this.#framing === 'none' || !bytes.length) return cb();
+    if (out === 'fetch') {
       this.#pending.push(bytes);
       return cb();
     }
@@ -1014,7 +1054,15 @@ class ClientRequest extends Writable {
   #sendBody(out: Outgoing, bytes: Uint8Array) {
     this.#unread += bytes.length;
     // A copy: the program may reuse what it wrote once write() returned.
-    out.write(new Uint8Array(bytes));
+    if (this.#framing === 'chunked') return out.write(new Uint8Array(bytes));
+    this.#batch.push(new Uint8Array(bytes));
+    if (this.#batch.length === 1) queueMicrotask(() => this.#flushBatch());
+  }
+  #flushBatch() {
+    const batch = this.#batch;
+    if (!batch.length || !this.#out || this.#out === 'fetch') return;
+    this.#batch = [];
+    this.#out.write(batch.length === 1 ? batch[0] : new Uint8Array(Buffer.concat(batch)));
   }
   /** Its server read `n` bytes of its body. */
   #consumed(n: number) {
@@ -1035,7 +1083,10 @@ class ClientRequest extends Writable {
   #finish() {
     const out = this.#out;
     if (out === 'fetch') this.#fetch();
-    else out?.end();
+    else {
+      this.#flushBatch();
+      out?.end();
+    }
     const cb = this.#finalCb;
     this.#finalCb = null;
     cb?.();
@@ -1051,10 +1102,8 @@ class ClientRequest extends Writable {
     if (this.target !== null) {
       if (!('connection' in this.headers)) headers.push(['connection', this.#idle === 0 ? 'close' : 'keep-alive']);
       if (!('content-length' in this.headers) && !('transfer-encoding' in this.headers)) {
-        const framed = BODY_METHODS.has(this.method);
-        if (!framed) this.#dropBody = true;
-        else if (this.#ended) headers.push(['content-length', String(this.#pending.reduce((n, c) => n + c.length, 0))]);
-        else headers.push(['transfer-encoding', 'chunked']);
+        if (this.#framing === 'chunked') headers.push(['transfer-encoding', 'chunked']);
+        else if (this.#framing === 'length') headers.push(['content-length', String(this.#pending.reduce((n, c) => n + c.length, 0))]);
       }
     }
     const out = this.target !== null ? this.#local(headers) : false;
@@ -1067,7 +1116,7 @@ class ClientRequest extends Writable {
     this.#cancelServer = out.cancel;
     const pending = this.#pending;
     this.#pending = [];
-    if (!this.#dropBody) for (const chunk of pending) this.#sendBody(out, chunk);
+    if (this.#framing !== 'none') for (const chunk of pending) this.#sendBody(out, chunk);
     if (this.#ended) this.#finish();
   }
   /** Delivers the request to a server on this machine, if there is one. */
@@ -1088,7 +1137,8 @@ class ClientRequest extends Writable {
       },
       error: (message: string, code = 'ECONNRESET') => {
         // The server went away (its process crashed, it reset the connection): before a response, the
-        // request fails; else the response in flight is cut short, as in Node.
+        // request fails; else the response in flight is cut short, as in Node. Not once the program closed it.
+        if (this.#gone) return;
         if (!res) return this.#reset(Object.assign(new Error(message), { code }));
         if (!res.complete && !res.destroyed) this.#reset();
       },
@@ -1097,15 +1147,25 @@ class ClientRequest extends Writable {
     };
     const server = servers.get(this.target!);
     if (server) {
-      // As over a connection: the server sees the request, and each chunk of its body, a little later.
+      // As over a connection: each end sees what the other did (the request, each chunk of its body,
+      // the response, a reset) as it would from a socket, in order (see wire).
+      const toServer = wire();
+      const toClient = wire();
+      const theirs: BridgeResponse = {
+        start: (status, statusText, headers) => toClient(() => bridge.start(status, statusText, headers)),
+        chunk: (data) => toClient(() => bridge.chunk(data)),
+        end: () => toClient(() => bridge.end()),
+        error: (message, code) => toClient(() => bridge.error(message, code)),
+        flush: () => {},
+        consumed: (n) => toClient(() => bridge.consumed(n)),
+        idle: bridge.idle,
+      };
       let dispatched: Dispatched | null = null;
-      queueMicrotask(() => {
-        if (!this.destroyed) dispatched = server.dispatch(this.method, this.path, headers, STREAMED, bridge);
-      });
+      toServer(() => (dispatched = server.dispatch(this.method, this.path, headers, STREAMED, theirs)));
       return {
-        write: (chunk) => queueMicrotask(() => dispatched?.write(chunk)),
-        end: () => queueMicrotask(() => dispatched?.end()),
-        cancel: () => dispatched?.abort(),
+        write: (chunk) => toServer(() => dispatched?.write(chunk)),
+        end: () => toServer(() => dispatched?.end()),
+        cancel: () => toServer(() => dispatched?.abort()),
       };
     }
     return loopback.route?.(this.target!, this.method, this.path, headers, STREAMED, bridge) ?? false;
@@ -1144,6 +1204,18 @@ class ClientRequest extends Writable {
         },
       );
   }
+}
+
+/**
+ * One direction of a connection in this runtime: what one end does reaches the other as over a socket
+ * (see onPeerPhase), in the order it was done.
+ */
+function wire(): (deliver: () => void) => void {
+  const queue: (() => void)[] = [];
+  return (deliver) => {
+    queue.push(deliver);
+    onPeerPhase(() => queue.shift()!());
+  };
 }
 
 const connectionReset = (message: string) => Object.assign(new Error(message), { code: 'ECONNRESET' });
