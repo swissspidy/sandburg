@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, link, mkdir, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { appFilePathProblem, appFilesFrom, renameRetrying, writeAppFiles } from '../../src/orchestrator/app-files.ts';
+import { appFilePathProblem, appFilesFrom, writeAppFiles } from '../../src/orchestrator/app-files.ts';
+import { renameRetrying } from '../../src/rename-retrying.ts';
 import { tempDir } from './temp-dir.ts';
 
 test('only paths that match the pattern are kept, whatever else the page returned', () => {

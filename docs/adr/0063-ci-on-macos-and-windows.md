@@ -48,6 +48,10 @@ and 25 on Windows, and every e2e `run` test on Windows.
   and macOS keeps those low by caching files in the rest. Available memory on macOS is now free
   plus inactive pages (`vm_stat`), as psutil counts it. `memory.ts` joins the reviewed list of host
   files that start a process (`.oxlintrc.json`): it runs `vm_stat`, with no arguments, on macOS.
+- **A preload list could lose another process's entries on Windows.** There a rename over a file
+  that another handle has open fails (EPERM, EACCES, EBUSY), and the list's write, from a timer,
+  dropped the error and what this process had recorded. It is retried as the app files' rename
+  already was (`renameRetrying`, now in `src/rename-retrying.ts`); so is the preload bundle's.
 - **`npm run build`** removed `dist/` with `rm -rf`, which cmd.exe does not have.
 - **Scripts and tests**: the architecture rules and the API report named modules with `\`; a
   script found the repository from a URL's pathname, and a test imported a path with a drive letter.
