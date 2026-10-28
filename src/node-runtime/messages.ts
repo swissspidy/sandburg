@@ -60,6 +60,8 @@ export type ToParent =
   | NetMessage
   /** A request to a server this runtime does not run, for its parent to route (see loopback.route in worker.ts). */
   | { type: 'lb-request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
+  /** The program that made an lb-request went away from it (destroyed it, or its response): its server learns it. */
+  | { type: 'lb-cancel'; id: number }
   /** A server that 'listening' announced closed, here or in a nested runtime: the parent stops routing its port here. */
   | { type: 'closed'; port: number | string }
   /** From a worker thread to its Worker object in the parent (worker.postMessage's other side). */
@@ -177,6 +179,8 @@ export type ToWorker =
   /** A net connection between runtimes (see netMessage). */
   | NetMessage
   | { type: 'request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
+  /** Its client went away from a request (a loopback request from the parent: see loopback.route): its server learns it. */
+  | { type: 'request-cancel'; id: number }
   /** A message for the program (with init.ipc): process.on('message'). */
   | { type: 'message'; data: unknown }
   /** A WebSocket from the app frame to a virtual server (see websocket.ts). */
