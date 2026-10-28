@@ -13,9 +13,11 @@
  * runtime that this thread serves through shared memory until it exits (sync-child.ts).
  */
 import { EventEmitter } from 'events';
+import util from 'util';
 import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
-import { timers } from './builtins/process.ts';
+import { SIGNALS, timers } from './builtins/process.ts';
+import { UNHANDLED_REJECTIONS, type UnhandledRejections } from './uncaught.ts';
 import { runScript } from './shell.ts';
 import { devScriptRunning, shellStepsAhead } from './process-tree.ts';
 import { serveSyncChild, syncChannel, type SyncEnd } from './sync-child.ts';
@@ -70,7 +72,7 @@ function splitCommand(line: string): string[] {
 
 const isNode = (cmd: string, execPath: string) => cmd === execPath || /(^|\/)node(\.exe)?$/.test(cmd);
 /** node's own flags that take a separate value (`--require x`). */
-const VALUE_FLAGS = new Set(['-r', '--require', '--import', '-C', '--conditions', '--loader', '--experimental-loader', '--env-file', '--input-type', '--inspect-port', '--title', '--stack-size', '--max-old-space-size']);
+const VALUE_FLAGS = new Set(['-r', '--require', '--import', '-C', '--conditions', '--unhandled-rejections', '--loader', '--experimental-loader', '--env-file', '--input-type', '--inspect-port', '--title', '--stack-size', '--max-old-space-size']);
 
 interface NodeCommand {
   execArgv: string[];
@@ -111,11 +113,14 @@ function parseNodeArgs(argv: string[]): NodeCommand {
   return { execArgv, version, script: argv[i] ?? null, evalCode: null, args: argv.slice(i + 1) };
 }
 
-/** --conditions and --require/--import from node's options (and NODE_OPTIONS). */
+/** --conditions, --require/--import and --unhandled-rejections from node's options (and NODE_OPTIONS). */
 export function nodeOptions(execArgv: string[], env: Record<string, string>) {
   const all = [...splitCommand(env.NODE_OPTIONS ?? ''), ...execArgv];
   const conditions: string[] = [];
   const preload: string[] = [];
+  let unhandledRejections: UnhandledRejections = 'throw';
+  /** The options without a value it was given (--no-warnings, --trace-deprecation, …). */
+  const flags: string[] = [];
   for (let i = 0; i < all.length; i++) {
     const a = all[i];
     const eq = a.indexOf('=');
@@ -123,9 +128,13 @@ export function nodeOptions(execArgv: string[], env: Record<string, string>) {
     const value = () => inline ?? all[++i];
     if (flag === '-C' || flag === '--conditions') conditions.push(value());
     else if (flag === '-r' || flag === '--require' || flag === '--import') preload.push(value());
-    else if (VALUE_FLAGS.has(flag) && inline === undefined) i++;
+    else if (flag === '--unhandled-rejections') {
+      const mode = value() as UnhandledRejections;
+      if (UNHANDLED_REJECTIONS.includes(mode)) unhandledRejections = mode;
+    } else if (VALUE_FLAGS.has(flag) && inline === undefined) i++;
+    else if (flag.startsWith('--') && inline === undefined) flags.push(flag);
   }
-  return { conditions, preload };
+  return { conditions, preload, unhandledRejections, flags };
 }
 
 export interface ChildProcessHost extends ThreadHost {
@@ -226,6 +235,8 @@ export function createChildProcess(host: ChildProcessHost) {
     private worker: globalThis.Worker | null = null;
     private shell: { kill(): void } | null = null;
     private done = false;
+    /** A signal (not kill(0)'s probe) is ending it: its program's or script's own end is not its exit. */
+    private signalled = false;
 
     /** Starts `node …` as a nested runtime, or fails (asynchronously, as Node does) for any other program. */
     start(file: string, args: string[], options: SpawnOptions, forkIpc: boolean) {
@@ -253,7 +264,7 @@ export function createChildProcess(host: ChildProcessHost) {
       };
       if (options.sandburgCommand) {
         this.once('exit', (code: number | null) => {
-          if (code && !this.killed) host.reportExit?.({ command: argv.join(' '), code, stderr: stderrTail });
+          if (code && !this.signalled) host.reportExit?.({ command: argv.join(' '), code, stderr: stderrTail });
         });
       }
       this.connected = ipc;
@@ -323,9 +334,10 @@ export function createChildProcess(host: ChildProcessHost) {
         },
         exists: (path) => vfs.exists(path),
         write,
-        // Once killed, the script's end (its commands killed: 143) is not its exit: kill() reports the signal.
+        // Once a signal is ending it, the script's end (its commands killed: 143, as kill() kills them)
+        // is not its exit: kill() reports the signal. kill(0) only probes: the script's end is.
         onExit: (code) => {
-          if (!this.killed) this.finish(code, null);
+          if (!this.signalled) this.finish(code, null);
         },
         stepsAhead: shellStepsAhead,
       });
@@ -356,11 +368,17 @@ export function createChildProcess(host: ChildProcessHost) {
       timers.setTimeout(() => this.emit('close', code, signal), 0);
     }
 
-    kill(signal: string | number = 'SIGTERM') {
+    kill(signal: unknown = 'SIGTERM') {
+      // Signal 0 (as in Node) only tells whether the child can be signalled: it goes on running.
+      // What is neither a signal's name nor its number is ERR_UNKNOWN_SIGNAL, whatever its type.
+      if (typeof signal !== 'string' && typeof signal !== 'number') throw Object.assign(new TypeError(`Unknown signal: ${util.inspect(signal)}`), { code: 'ERR_UNKNOWN_SIGNAL' });
+      const name = signal === 0 ? null : signalName(signal, 'signal');
       if (this.done || (!this.worker && !this.shell)) return false;
       this.killed = true;
+      if (name === null) return true;
+      this.signalled = true;
       this.shell?.kill();
-      this.finish(null, typeof signal === 'number' ? 'SIGTERM' : signal);
+      this.finish(null, name);
       return true;
     }
     send(message: unknown, ...rest: unknown[]) {
@@ -613,15 +631,12 @@ export function createChildProcess(host: ChildProcessHost) {
   };
 }
 
-/** Linux's signals (Node's os.constants.signals on Linux). */
-const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31 };
-
-/** A kill signal's name, as the child's result reports it (SIGTERM by default; SIGIOT is SIGABRT): Node's ERR_UNKNOWN_SIGNAL for one it does not know. */
-function signalName(signal: unknown): string {
+/** A kill signal's name, as the child's result reports it (SIGTERM by default; SIGIOT is SIGABRT): Node's ERR_UNKNOWN_SIGNAL for one it does not know (SIGBREAK, on Linux). */
+function signalName(signal: unknown, what = 'options.killSignal'): string {
   if (signal == null) return 'SIGTERM';
   if (typeof signal !== 'string' && typeof signal !== 'number') {
     const received = typeof signal === 'object' ? `an instance of ${signal?.constructor?.name ?? 'Object'}` : `type ${typeof signal} (${String(signal)})`;
-    throw Object.assign(new TypeError(`The "options.killSignal" property must be one of type string or number. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    throw Object.assign(new TypeError(`The "${what}" ${what.includes('.') ? 'property' : 'argument'} must be one of type string or number. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
   }
   const number = typeof signal === 'number' ? signal : SIGNALS[String(signal).toUpperCase()];
   const name = Object.keys(SIGNALS).find((n) => SIGNALS[n] === number);
