@@ -145,7 +145,9 @@ also when a phase before the checks failed: to look at an app, or at why it fail
 | `1` | A blocking check failed (the app ran). In `batch`: a run failed. | |
 | `2` | Error: the run did not reach the checks, or they did not finish in time, or its project or checks file did not load. In `batch`: a run ended in error. The browser could not be set up (Chromium missing, its sandbox could not start). | Nothing could be compared: the reference judged no app, or every run of one side ended in error. |
 | `64` | Usage error: an unknown command or option, a missing argument, an invalid value, no projects in the directory. | Same. |
-| `130`, `143` | | Interrupted (SIGINT, SIGTERM), after removing its containers. |
+| `130` | Interrupted (Ctrl-C), after closing the browser. | Interrupted (Ctrl-C), after removing its containers. |
+| `143` | | Interrupted (SIGTERM), after removing its containers. |
+| `149` | Interrupted (Ctrl-Break on Windows), after closing the browser. | Interrupted (Ctrl-Break on Windows), after removing its containers. |
 
 ## Environment variables
 
