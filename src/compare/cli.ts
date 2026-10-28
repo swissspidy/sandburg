@@ -11,18 +11,20 @@ const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
 /**
  * `sandburg compare`: runs `items` in the browser and in the Docker reference and writes the report
- * (exit code: compareExitCode). `reference` is for tests (a fake docker CLI): the CLI's is dockerReference().
+ * (exit code: compareExitCode). `testing` is for tests, without Docker or a browser: the reference
+ * (on a fake docker CLI) and the session in their place (the CLI's: dockerReference(), a Session).
  */
 export async function compareCommand(
   items: BatchItem[],
   values: { report?: string; json?: boolean; parallel: number; prewarm?: boolean; [k: string]: unknown },
   sessionOptions: SessionOptions,
   runOptions: RunOptions,
-  reference: DockerReferenceFactory = dockerReference(),
+  testing: { reference?: DockerReferenceFactory; session?: (options: SessionOptions) => Session } = {},
 ): Promise<number> {
-  const session = new Session(sessionOptions);
+  const session = testing.session?.(sessionOptions) ?? new Session(sessionOptions);
   await session.open();
   if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
+  const reference = testing.reference ?? dockerReference();
   // Ctrl-C (or a kill) removes the reference's containers and project copies and closes the browser,
   // then exits 130 (143 for SIGTERM). Playwright's own handlers (close the browser, exit at once) wait
   // meanwhile: a second Ctrl-C gets them.

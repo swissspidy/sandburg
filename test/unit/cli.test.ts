@@ -90,18 +90,21 @@ test('compare exits 2 when nothing could be compared, else 0 whatever the apps d
 });
 
 /**
- * `sandburg compare` in a process of its own, its Docker reference on a docker CLI that never answers
- * an image inspect: the reference's run hangs as it mounts. Says "hanging" (stderr) once it does.
+ * `sandburg compare` in a process of its own, without a browser or Docker: its session's browser runs
+ * pass at once, and its reference's run mounts (as Session.run does) on a docker CLI that never answers
+ * an image inspect, so it hangs. Says "hanging" (stderr) once it does.
  */
 const HANGING_COMPARE = `
   import { compareCommand } from ${JSON.stringify(new URL('../../src/compare/cli.ts', import.meta.url).href)};
   import { dockerReference } from ${JSON.stringify(new URL('../../src/reference/docker.ts', import.meta.url).href)};
-  const { app, report, store, work } = JSON.parse(process.env.COMPARE_TEST);
+  import { loadProject } from ${JSON.stringify(new URL('../../src/project.ts', import.meta.url).href)};
+  const { app, report, work } = JSON.parse(process.env.COMPARE_TEST);
   const docker = (args) => {
     console.error('docker ' + args.slice(0, 3).join(' '));
     if (args[0] !== 'image') return Promise.resolve('');
     console.error('hanging');
-    return new Promise(() => {});
+    // As the docker process it stands for, it keeps the process alive while it runs.
+    return new Promise(() => setInterval(() => {}, 60_000));
   };
   const reference = dockerReference({ docker, workDir: work });
   const disposeAll = reference.disposeAll;
@@ -110,7 +113,26 @@ const HANGING_COMPARE = `
     await disposeAll();
     console.error('disposed');
   };
-  await compareCommand([{ project: app, label: 'app' }], { report, parallel: 1, prewarm: false }, { storeDir: store }, {}, reference);
+  const session = {
+    browserSandbox: true,
+    async open() {},
+    // As a browser's, it takes a while: what the batch does meanwhile (a report it would write) shows.
+    async close() {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      console.error('session closed');
+    },
+    async run(path, options) {
+      const project = await loadProject(path);
+      // A mount the signal's disposeAll cut short ends its run as an error result, as Session.run's does.
+      const failure = options.nodeRuntime ? await options.nodeRuntime().mount(project, () => {}).then(() => null, (e) => ({ class: 'infra', rule: 'infra-error', message: String(e) })) : null;
+      return {
+        runId: 'r', status: failure ? 'error' : 'passed', failure, checks: [],
+        project: { name: project.name, path, framework: project.framework, snapshotId: 's' },
+        runtime: { name: 'node', version: '1' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 1 },
+      };
+    },
+  };
+  await compareCommand([{ project: app, label: 'app' }], { report, parallel: 1, prewarm: false }, {}, {}, { reference, session: () => session });
   console.error('compare returned');
 `;
 
@@ -127,7 +149,7 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
     const work = join(dir, 'work');
     const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_COMPARE], {
       cwd: dir,
-      env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, store: join(dir, 'store'), work }) },
+      env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, work }) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     // Not left running (with its browser) by a test that fails waiting for it.
@@ -141,8 +163,8 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
     const [exit] = (await once(child, 'exit')) as [number | null];
     assert.equal(exit, code, stderr);
     assert.match(stderr, new RegExp(`${signal}: removing the reference's containers\\ndisposeAll\\n`));
-    // Its run was disposed: its containers looked up by its label (and none found to remove).
-    assert.match(stderr.slice(stderr.indexOf('disposeAll')), /docker ps -aq --filter\ndisposed\n/);
+    // Its run was disposed (its containers looked up by its label, none found to remove), then the session closed.
+    assert.match(stderr.slice(stderr.indexOf('disposeAll')), /docker ps -aq --filter\ndisposed\nsession closed\n/);
     assert.ok(!stderr.includes('compare returned'), stderr);
     assert.equal(existsSync(join(dir, 'reports')), false);
     assert.deepEqual(existsSync(work) ? readdirSync(work) : [], []);
