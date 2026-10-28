@@ -1,20 +1,43 @@
 /**
  * Memory the machine can still give: what a batch checks before it opens another app (batch.ts).
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { freemem, totalmem } from 'node:os';
 import { join } from 'node:path';
 
 /**
  * Bytes available: the system's (Linux: MemAvailable, which counts the page cache that can be
- * reclaimed), or less when this process's memory cgroup has a lower limit (a container): its limit
- * minus what it uses besides the page cache (which the kernel reclaims before it kills a process;
- * shared memory, which Chromium's shared buffers are, is not reclaimed and counts as used).
+ * reclaimed; macOS: see darwinAvailable), or less when this process's memory cgroup has a lower limit
+ * (a container): its limit minus what it uses besides the page cache (which the kernel reclaims
+ * before it kills a process; shared memory, which Chromium's shared buffers are, is not reclaimed and
+ * counts as used).
  */
 export function availableMemory(): number {
-  const free = freemem();
+  const free = process.platform === 'darwin' ? (darwinAvailable() ?? freemem()) : freemem();
   const cgroup = cgroupAvailable();
   return cgroup === null ? free : Math.min(free, cgroup);
+}
+
+/**
+ * macOS: free and inactive pages, as psutil counts available memory there. os.freemem() is the free
+ * pages alone (libuv's host_statistics free_count), which macOS keeps low by caching files in the
+ * rest: on the CI's macOS runner a batch waited for memory with a single app open.
+ */
+function darwinAvailable(): number | null {
+  try {
+    return parseVmStat(execFileSync('vm_stat', { encoding: 'utf8', timeout: 2000 }));
+  } catch {
+    return null;
+  }
+}
+
+/** Bytes free or inactive in vm_stat's output; null if it does not have them. */
+export function parseVmStat(out: string): number | null {
+  const page = Number(/page size of (\d+) bytes/.exec(out)?.[1]);
+  const pages = (name: string) => Number(new RegExp(`^Pages ${name}:\\s+(\\d+)\\.?$`, 'm').exec(out)?.[1]);
+  const bytes = (pages('free') + pages('inactive')) * page;
+  return Number.isFinite(bytes) && bytes > 0 ? bytes : null;
 }
 
 function cgroupAvailable(): number | null {

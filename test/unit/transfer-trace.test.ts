@@ -3,8 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const MODULE = join(import.meta.dirname, '../../src/transfer-trace.ts');
+// A file: URL (an import of a path with a drive letter on Windows is refused).
+const MODULE = pathToFileURL(join(import.meta.dirname, '../../src/transfer-trace.ts')).href;
 
 /** Runs `code` with the tracer imported as `t`, and returns its stderr. */
 function run(code: string, env: Record<string, string> = {}): string {

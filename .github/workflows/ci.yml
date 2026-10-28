@@ -80,8 +80,9 @@ jobs:
         uses: $/.github/actions/setup-chromium
       - if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
         run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/runtime/*.test.ts
+      # A test that hangs fails at 5 min (each takes seconds on Linux), with what it was waiting for.
       - if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
-        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout --test-concurrency=1 test/e2e/run.test.ts
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout --test-concurrency=1 --test-timeout=300000 test/e2e/run.test.ts
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:

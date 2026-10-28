@@ -41,6 +41,7 @@ import {
 import { lstat, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { TarReader, type TarFile } from './browser-npm/tar.ts';
+import { npmCommand } from './npm-cli.ts';
 
 interface LockEntry {
   version?: string;
@@ -235,7 +236,7 @@ function contentHash(integrity: string): { algorithm: string; hex: string; base6
 /** npm's cache directory and registry (`npm config get`), asked once per process. */
 function npmConfig(): Promise<{ cache: string; registry: string }> {
   config ??= new Promise((done) => {
-    const child = spawn('npm', ['config', 'get', 'cache', 'registry'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const child = spawn(...npmCommand(['config', 'get', 'cache', 'registry']), { stdio: ['ignore', 'pipe', 'ignore'] });
     let out = '';
     child.stdout.on('data', (b: Buffer) => (out += b.toString()));
     const finish = () => {
@@ -398,7 +399,7 @@ function takeQueued(): void {
 
 function npm(args: string[], cwd: string): Promise<void> {
   return new Promise((done, fail) => {
-    const child = spawn('npm', [...args, '--loglevel=error'], { cwd, stdio: 'ignore', env: { ...process.env, npm_config_update_notifier: 'false' } });
+    const child = spawn(...npmCommand([...args, '--loglevel=error']), { cwd, stdio: 'ignore', env: { ...process.env, npm_config_update_notifier: 'false' } });
     child.on('error', fail);
     child.on('close', (code) => (code === 0 ? done() : fail(new Error(`npm ${args[0]} failed (exit ${code})`))));
   });

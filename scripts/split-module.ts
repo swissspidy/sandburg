@@ -23,6 +23,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 
 type Node = { type: string; start: number; end: number; [k: string]: unknown };
@@ -39,7 +40,7 @@ interface ImportInfo {
   typeOnly: boolean;
 }
 
-const ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function parse(path: string, code: string): { body: Node[]; comments: Node[] } {
   const r = parseSync(path, code);

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cachedBody, PackumentCache, revalidates, trimPackument } from '../../src/adapters/node/resolver.ts';
+import { npmCliScript, npmCommand } from '../../src/adapters/node/npm-cli.ts';
 import { tempDir } from './temp-dir.ts';
 
 test('the resolver keeps packuments by their size, least recently used out first', () => {
@@ -110,7 +111,7 @@ test('the resolver writes the lockfile npm does, and reads ahead only what npm r
     }
     // Another app had heavy: npm's cache has its packument, which this resolution does not need.
     await writeFile(join(dirs.other, 'package.json'), JSON.stringify({ name: 'other', private: true, dependencies: { heavy: '1' } }));
-    const npm = (dir: string) => promisify(execFile)('npm', ['install', ...flags, '--no-update-notifier'], { cwd: dir, env: process.env });
+    const npm = (dir: string) => promisify(execFile)(...npmCommand(['install', ...flags, '--no-update-notifier']), { cwd: dir, env: process.env });
     await npm(dirs.other);
     reg.asked.splice(0);
     await npm(dirs.cli);
@@ -128,6 +129,15 @@ test('the resolver writes the lockfile npm does, and reads ahead only what npm r
     assert.equal(await readFile(join(dirs.again, 'package-lock.json'), 'utf8'), expected);
     // Kept in the resolver: read once.
     assert.deepEqual(reg.asked, []);
+    // A directory reached through a link (macOS's temporary directory is under /var, a link to
+    // /private/var) has the same lockfile.
+    const real = join(root, 'linked-real');
+    await mkdir(real);
+    await writeFile(join(real, 'package.json'), manifest);
+    const { symlink } = await import('node:fs/promises');
+    await symlink(real, join(root, 'linked'), 'junction');
+    assert.equal(await resolver.resolve(join(root, 'linked'), () => {}), true);
+    assert.equal(await readFile(join(real, 'package-lock.json'), 'utf8'), expected);
   } finally {
     Object.assign(process.env, env);
     for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
@@ -162,7 +172,9 @@ test('packuments are trimmed into npm\'s cache; a later resolution reads them, a
   const { createRequire } = await import('node:module');
   const { realpathSync } = await import('node:fs');
   const { Resolver } = await import('../../src/adapters/node/resolver.ts');
-  const cacache = createRequire(join(dirname(dirname(realpathSync(execFileSync('sh', ['-c', 'command -v npm'], { encoding: 'utf8' }).trim()))), 'package.json'))('cacache') as {
+  // npm's own package: on Windows its npm-cli.js (`npm` there is a batch file), else the CLI on PATH.
+  const npmRoot = dirname(dirname(process.platform === 'win32' ? npmCliScript()! : realpathSync(execFileSync('sh', ['-c', 'command -v npm'], { encoding: 'utf8' }).trim())));
+  const cacache = createRequire(join(npmRoot, 'package.json'))('cacache') as {
     ls(cache: string): Promise<Record<string, { integrity: string; metadata?: { source?: string } }>>;
     put(cache: string, key: string, data: string, o: object): Promise<unknown>;
     get(cache: string, key: string): Promise<{ data: Buffer; metadata: { source: string } }>;
@@ -188,7 +200,7 @@ test('packuments are trimmed into npm\'s cache; a later resolution reads them, a
       return readFile(join(d, 'package-lock.json'), 'utf8');
     };
     const cli = await dir('cli');
-    await promisify(execFile)('npm', ['install', ...flags, '--no-update-notifier'], { cwd: cli, env: process.env });
+    await promisify(execFile)(...npmCommand(['install', ...flags, '--no-update-notifier']), { cwd: cli, env: process.env });
     const expected = await readFile(join(cli, 'package-lock.json'), 'utf8');
     const key = `sandburg:packument-trim:1:make-fetch-happen:request-cache:${reg.url}lib`;
     // The first resolution reads the full packument (the CLI cached it) and trims it on the side.

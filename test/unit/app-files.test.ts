@@ -128,15 +128,19 @@ test("a file that is replaced keeps its mode; one that fails to be written is sk
   const root = tempDir('sandburg-app-files-');
   await writeFile(join(root, 'notes.db'), 'old');
   await chmod(join(root, 'notes.db'), 0o640);
+  // 0o640 (Windows has only a read-only bit: 0o666).
+  const mode = (await stat(join(root, 'notes.db'))).mode & 0o7777;
   await writeFile(join(root, 'file'), 'a file, where a directory goes');
   const long = `${'n'.repeat(300)}.db`;
   const skipped = await writeAppFiles(root, { 'file/x.db': 'x', [long]: 'too long a name', 'notes.db': 'new', 'b.db': 'b' });
   assert.deepEqual(skipped, [
     { path: 'file/x.db', reason: 'not a directory' },
-    { path: long, reason: 'ENAMETOOLONG' },
+    // The system's own error: Windows reports a name over 255 characters as not found.
+    { path: long, reason: process.platform === 'win32' ? 'ENOENT' : 'ENAMETOOLONG' },
   ]);
   assert.equal(await readFile(join(root, 'notes.db'), 'utf8'), 'new');
-  assert.equal((await stat(join(root, 'notes.db'))).mode & 0o7777, 0o640);
+  assert.equal((await stat(join(root, 'notes.db'))).mode & 0o7777, mode);
+  if (process.platform !== 'win32') assert.equal(mode, 0o640);
   assert.equal(await readFile(join(root, 'b.db'), 'utf8'), 'b');
   // No temporary file left behind.
   assert.deepEqual((await readdir(root)).sort(), ['b.db', 'file', 'notes.db']);

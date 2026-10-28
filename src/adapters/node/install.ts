@@ -26,6 +26,7 @@ import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 import { assertRegistryLockfile, assertRegistryManifest } from './spec-guard.ts';
 import { writeSoon } from './file-writes.ts';
+import { npmCommand } from './npm-cli.ts';
 
 /**
  * A git binary that does not exist, so that npm cannot clone (and prepare, see spec-guard.ts) a git
@@ -678,7 +679,7 @@ const viewed = new Map<string, Promise<string | null>>();
 
 function npmView(spec: string): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = spawn('npm', ['view', spec, 'version', '--json'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const child = spawn(...npmCommand(['view', spec, 'version', '--json']), { stdio: ['ignore', 'pipe', 'ignore'] });
     let out = '';
     child.stdout.on('data', (b: Buffer) => (out += b.toString()));
     child.on('error', () => resolve(null));
@@ -873,9 +874,9 @@ function walkIndex(dir: string): FileIndex {
   return index;
 }
 
-function run(cmd: string, args: string[], cwd: string, log: (line: string) => void): Promise<void> {
+function run(cmd: 'npm', args: string[], cwd: string, log: (line: string) => void): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, npm_config_update_notifier: 'false' } });
+    const child = spawn(...npmCommand(args), { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, npm_config_update_notifier: 'false' } });
     let out = '';
     const onData = (b: Buffer) => {
       out += b.toString();

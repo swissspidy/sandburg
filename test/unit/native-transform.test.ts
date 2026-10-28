@@ -233,6 +233,10 @@ test("the esbuild shim asks the runtime's hook first, and its own esbuild for an
   let answer: (input: string) => Promise<unknown> | null = () => null;
   const hook = Symbol.for('sandburg.esbuildTransform');
   Object.defineProperty(globalThis, hook, { configurable: true, value: (...args: unknown[]) => (asked.push(args), answer(args[1] as string)) });
+  // The shim runs in the browser runtime, whose process.platform is linux: esbuild-wasm reads it to
+  // tell whether paths are Windows', and its browser build works in "/".
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
   try {
     const shim = createRequire(import.meta.url)(join(pkg, 'lib', 'main.js')) as typeof esbuild;
     answer = () => Promise.resolve({ code: 'from the host', map: '', warnings: [] });
@@ -252,6 +256,7 @@ test("the esbuild shim asks the runtime's hook first, and its own esbuild for an
     assert.equal(asked.length, 4);
     await shim.stop();
   } finally {
+    Object.defineProperty(process, 'platform', platform);
     Reflect.deleteProperty(globalThis, hook);
     rmSync(root, { recursive: true, force: true });
   }
