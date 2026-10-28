@@ -4,7 +4,7 @@ import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { link, mkdir, utimes, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { tempDir } from './temp-dir.ts';
 
 // The store reads tarballs from npm's cache: this test's own (`npm config get cache` follows it).
@@ -13,6 +13,9 @@ process.env.npm_config_cache = cache;
 // unpackAhead's cache index keys name the configured registry; the tests write npmjs.org's.
 process.env.npm_config_registry = 'https://registry.npmjs.org/';
 const { installFromLockfile, installedPackages, isInstallLocation, normalizeBin, sweepStore, unpackAhead, unpackHint } = await import('../../src/adapters/node/package-store.ts');
+
+/** A link's target with forward slashes (on Windows, Node writes a link's target with backslashes). */
+const linkTarget = (path: string) => readlinkSync(path).split(sep).join('/');
 
 /** Windows keeps no executable bits (NTFS has no such mode): those are checked elsewhere only. */
 const hasModes = process.platform !== 'win32';
@@ -75,15 +78,15 @@ test('a lockfile installs from the store as npm installs it', async () => {
   }
   assert.equal(readFileSync(join(nm, 'tool/.npmignore'), 'utf8'), 'dist');
   assert.equal(existsSync(join(nm, 'tool/.gitignore')), false);
-  assert.equal(readlinkSync(join(nm, '.bin/tool')), '../tool/bin/tool.js');
-  assert.equal(readlinkSync(join(nm, '.bin/x')), '../alpha/x.js');
+  assert.equal(linkTarget(join(nm, '.bin/tool')), '../tool/bin/tool.js');
+  assert.equal(linkTarget(join(nm, '.bin/x')), '../alpha/x.js');
   // A binary is made executable only where it is linked (bin-links), as the tarball has it elsewhere.
   if (hasModes) {
     assert.equal(statSync(join(nm, 'alpha/x.js')).mode & 0o111, 0o111);
     assert.equal(statSync(join(nm, 'beta/x.js')).mode & 0o111, 0);
   }
-  assert.equal(readlinkSync(join(nm, 'beta/node_modules/.bin/tool')), '../tool/cli.js');
-  assert.equal(readlinkSync(join(nm, 'gamma/node_modules/.bin/inner')), '../inner/i.js');
+  assert.equal(linkTarget(join(nm, 'beta/node_modules/.bin/tool')), '../tool/cli.js');
+  assert.equal(linkTarget(join(nm, 'gamma/node_modules/.bin/inner')), '../inner/i.js');
   assert.deepEqual(readdirSync(join(nm, '@native')), []);
   const hidden = JSON.parse(readFileSync(join(nm, '.package-lock.json'), 'utf8'));
   assert.deepEqual(Object.keys(hidden), ['name', 'lockfileVersion', 'requires', 'packages']);
