@@ -276,7 +276,8 @@ test("the sources are checked once, after 20 s without the app rendering, and wh
   let reads = ['server.js'];
   const relevant = async (f: SourceFinding[]) => (matched++, relevantFindings(f, { reads, installed: f.map(() => false) }));
   const over = new AbortController();
-  watchSources(asRun(run), async () => (checks++, [found]), relevant, over.signal);
+  let told: AbortSignal | null = null;
+  watchSources(asRun(run), async (signal) => ((told = signal), checks++, [found]), relevant, over.signal);
   await advance(t, 19_900);
   assert.deepEqual([checks, run.sourceFindings], [0, null]);
   await advance(t, 200);
@@ -285,8 +286,11 @@ test("the sources are checked once, after 20 s without the app rendering, and wh
   reads = ['server.js', 'lib/report.js'];
   await advance(t, 2_000);
   assert.deepEqual(run.sourceFindings, [found]);
-  // The phase is over (it timed out, or the app rendered): no more matching, and the check is not run again.
+  // The phase is over (it timed out, or the app rendered): the check is told (it is stopped if still running),
+  // no more matching, and the check is not run again.
+  assert.equal(told!.aborted, false);
   over.abort();
+  assert.equal(told!.aborted, true);
   const after = matched;
   await advance(t, 30_000);
   assert.deepEqual([checks, matched], [1, after]);

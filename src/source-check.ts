@@ -2,8 +2,8 @@
  * The project's own sources, checked without running them (ADR 0067): a file of the app that does
  * not parse, and a package one imports that the project neither declares nor has installed. Some
  * dev servers report neither: SolidStart 2.1.0 starts streaming the page, never ends it, and logs
- * nothing. The ready phase asks for this only when it has stalled (failOnSourceStall), and
- * classify() reports what it found.
+ * nothing. The ready phase has it checked once it has gone 20 s without the app rendering
+ * (watchSources), and classify() names what it found as the cause of a ready phase that timed out.
  *
  * - Only the app's files count: those reachable from its entries (an HTML page's scripts, `main.*`,
  *   package.json's `main` and the files its dev script runs) and its frameworks' file-based roots
@@ -87,12 +87,17 @@ const CHILD_FLAG = '--sandburg-source-check';
 
 /**
  * Checks the project's sources in a process of its own: what checkSourcesHere finds, or nothing when
- * the check fails or takes longer than `budgetMs` (then it is killed, with the esbuild it started).
- * Only the files it reads are sent, size-capped, one at a time. The process runs at a lower
- * priority, its JavaScript heap and esbuild's memory are limited, and its output on stderr is
- * dropped (esbuild's crash reports). `onSpawn` is told its process id (tests).
+ * the check fails, takes longer than `budgetMs` or is no longer wanted (`signal`): then it is killed
+ * at once, with the esbuild it started. Only the files it reads are sent, size-capped, one at a
+ * time. The process runs at a lower priority, its JavaScript heap and esbuild's memory are limited,
+ * and its output on stderr is dropped (esbuild's crash reports). `onSpawn` is told its process id (tests).
  */
-export async function checkSources(files: FileTree, options: SourceCheckOptions = {}, budgetMs = SOURCE_CHECK_BUDGET_MS, onSpawn?: (pid: number) => void): Promise<SourceFinding[]> {
+export async function checkSources(
+  files: FileTree,
+  options: SourceCheckOptions = {},
+  { budgetMs = SOURCE_CHECK_BUDGET_MS, signal, onSpawn }: { budgetMs?: number; signal?: AbortSignal; onSpawn?: (pid: number) => void } = {},
+): Promise<SourceFinding[]> {
+  if (signal?.aborted) return [];
   const sent = readable(files);
   let child: ChildProcess;
   try {
@@ -122,11 +127,15 @@ export async function checkSources(files: FileTree, options: SourceCheckOptions 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
       if (found === null) warn(why);
       resolve(found ?? []);
       kill(child);
     };
     const timer = setTimeout(() => finish(null, `it took longer than ${budgetMs} ms`), budgetMs);
+    // No longer wanted (the ready phase is over): not a failure.
+    const stop = () => finish([]);
+    signal?.addEventListener('abort', stop, { once: true });
     child.stdout!.setEncoding('utf8').on('data', (d: string) => (out += d));
     child.once('error', (e) => finish(null, e));
     child.once('exit', (code) => {

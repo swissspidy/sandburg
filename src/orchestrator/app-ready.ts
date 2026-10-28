@@ -215,16 +215,18 @@ export function relevantFindings(found: SourceFinding[], answer: ProjectReads | 
 /**
  * Checks the project's sources (`check`, source-check.ts) once the ready phase has run 20 s without
  * the app rendering, and keeps what bears on the app (`relevant`, relevantFindings) in
- * `run.sourceFindings`, matched again every 2 s, until `signal` (the phase is over). It never fails
+ * `run.sourceFindings`, matched again every 2 s, until `signal` (the phase is over: a check still
+ * running then is stopped). It never fails
  * the phase: a ready phase that times out is classified by it (classify.ts). Some dev servers report
  * neither a syntax error nor an undeclared import, and hang (SolidStart 2.1.0 streams the page and
  * never ends it); no signal tells such a hang from a slow page in time (ADR 0067). A run whose app
  * renders within 20 s never checks its sources.
  */
-export function watchSources(run: RunState, check: () => Promise<SourceFinding[]>, relevant: (found: SourceFinding[]) => Promise<SourceFinding[]>, signal: AbortSignal): void {
+export function watchSources(run: RunState, check: (signal: AbortSignal) => Promise<SourceFinding[]>, relevant: (found: SourceFinding[]) => Promise<SourceFinding[]>, signal: AbortSignal): void {
   let found: SourceFinding[] | null = null;
   const tick = async () => {
-    found ??= await check().catch(() => []);
+    // The check is told when the phase is over (it is stopped then).
+    found ??= await check(signal).catch(() => []);
     if (signal.aborted) return;
     run.sourceFindings = found.length ? await relevant(found).catch(() => []) : [];
     if (found.length && !signal.aborted) timer = setTimeout(() => void tick(), SOURCE_RELEVANCE_MS);

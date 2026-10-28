@@ -193,7 +193,7 @@ test('the check runs on a thread of its own, with a time budget: the same findin
   const files = { 'package.json': pkg(), 'index.html': page(), 'src/main.ts': 'const broken = ;\n' };
   assert.deepEqual(await checkSources(files), await checkSourcesHere(files));
   const start = performance.now();
-  assert.deepEqual(await checkSources(files, {}, 1), []);
+  assert.deepEqual(await checkSources(files, {}, { budgetMs: 1 }), []);
   assert.ok(performance.now() - start < 1_000);
   await sleep(0);
   assert.deepEqual(warnings.filter((w) => w.includes('source')), ["sandburg: a check of a project's sources failed (it took longer than 1 ms); its findings are left out"]);
@@ -250,11 +250,11 @@ test('a check leaves no process behind: not its own, nor the esbuild it started,
   const checks: number[] = [];
   const onSpawn = (pid: number) => checks.push(pid);
   const files: Record<string, string> = { 'package.json': pkg(), 'index.html': page(), 'src/main.ts': 'const broken = ;\n' };
-  assert.deepEqual((await checkSources(files, {}, undefined, onSpawn)).map(describeFinding), ['src/main.ts:1:16: Unexpected ";"']);
+  assert.deepEqual((await checkSources(files, {}, { onSpawn })).map(describeFinding), ['src/main.ts:1:16: Unexpected ";"']);
   // About half a second of work (48 files of 500 KB), stopped before esbuild starts, while it parses, and after.
   const unit = `${'['.repeat(900)}1${']'.repeat(900)},\n`;
   for (let i = 0; i < 48; i++) files[`src/f${i}.ts`] = `export const a = [\n${unit.repeat(Math.floor(500_000 / unit.length))}];\n`;
-  for (const budget of [150, 300, 450]) assert.deepEqual(await checkSources(files, {}, budget, onSpawn), [], `budget ${budget} ms`);
+  for (const budget of [150, 300, 450]) assert.deepEqual(await checkSources(files, {}, { budgetMs: budget, onSpawn }), [], `budget ${budget} ms`);
   await sleep(1_000);
   // Running ones of a check's, wherever they are, and unreaped ones of this process's or a check's.
   // (A killed check's esbuild is its init's to reap, as any orphan is: dead, it is not left running.)
@@ -310,7 +310,7 @@ test('a file that does not fit what is left of the total is not measured: the ho
   const files: Record<string, string> = { 'index.html': page() };
   for (let i = 0; i < 100; i++) files[`src/f${String(i).padStart(3, '0')}.ts`] = `// ${'a'.repeat(400 * 1024)}\n`;
   const measure = t.mock.method(Buffer, 'byteLength');
-  await checkSources(files, {}, 1);
+  await checkSources(files, {}, { budgetMs: 1 });
   const large = measure.mock.calls.filter((c) => typeof c.arguments[0] === 'string' && c.arguments[0].length > 400 * 1024).length;
   assert.ok(large <= 62, `${large} large files measured`);
 });
@@ -330,10 +330,47 @@ test(
     process.env.ESBUILD_BINARY_PATH = fake;
     try {
       const started = Date.now();
-      assert.deepEqual(await checkSources({ 'index.html': page(), 'src/main.ts': 'export {};\n' }, {}, 1_500), []);
+      assert.deepEqual(await checkSources({ 'index.html': page(), 'src/main.ts': 'export {};\n' }, {}, { budgetMs: 1_500 }), []);
       assert.ok(Date.now() - started < 3_000);
       await sleep(500);
       assert.deepEqual(running(), [], 'the stand-in esbuild is still running');
+    } finally {
+      if (before === undefined) delete process.env.ESBUILD_BINARY_PATH;
+      else process.env.ESBUILD_BINARY_PATH = before;
+      for (const line of running()) process.kill(Number(line.trim().split(/\s+/)[0]), 'SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'a check no longer wanted (its ready phase is over) is stopped at once, with what it started, and is no failure',
+  // The same stand-in esbuild (it never answers): POSIX only, for the same reason.
+  { skip: process.platform === 'win32' ? 'a shell script cannot stand in for esbuild on Windows' : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sandburg-fake-esbuild-'));
+    const fake = join(dir, 'esbuild');
+    writeFileSync(fake, "#!/bin/sh\ntrap '' HUP TERM INT PIPE\nwhile :; do sleep 1; done\n");
+    chmodSync(fake, 0o755);
+    const running = () => execFileSync('ps', ['-A', '-o', 'pid=,args='], { encoding: 'utf8' }).split('\n').filter((l) => l.includes(fake));
+    const before = process.env.ESBUILD_BINARY_PATH;
+    process.env.ESBUILD_BINARY_PATH = fake;
+    const warned = warnings.length;
+    try {
+      const over = new AbortController();
+      const started = Date.now();
+      const check = checkSources({ 'index.html': page(), 'src/main.ts': 'export {};\n' }, {}, { signal: over.signal });
+      await sleep(700);
+      over.abort();
+      assert.deepEqual(await check, []);
+      assert.ok(Date.now() - started < 2_000, `stopped after ${Date.now() - started} ms (its budget is 10 s)`);
+      await sleep(500);
+      assert.deepEqual(running(), [], 'the stand-in esbuild is still running');
+      assert.equal(warnings.length, warned, 'a check no longer wanted is no failure');
+      // One no longer wanted before it starts is not started.
+      const asked = Date.now();
+      assert.deepEqual(await checkSources({ 'src/main.ts': 'const broken = ;\n' }, {}, { signal: AbortSignal.abort() }), []);
+      assert.ok(Date.now() - asked < 500, `answered after ${Date.now() - asked} ms`);
     } finally {
       if (before === undefined) delete process.env.ESBUILD_BINARY_PATH;
       else process.env.ESBUILD_BINARY_PATH = before;

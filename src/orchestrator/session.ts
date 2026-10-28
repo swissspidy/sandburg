@@ -612,7 +612,7 @@ export class Session {
             // The project's sources, checked if the app has not rendered after 20 s: what classifies the phase if it times out.
             const over = new AbortController();
             deadline.addEventListener('abort', () => over.abort(), { once: true });
-            watchSources(run, () => checkSources(project.files, { app: project.app }), relevant, over.signal);
+            watchSources(run, (signal) => checkSources(project.files, { app: project.app }, { signal }), relevant, over.signal);
             await failFastOnAppError(render, run, loadingPage, frame).finally(() => over.abort());
             return frame;
           });

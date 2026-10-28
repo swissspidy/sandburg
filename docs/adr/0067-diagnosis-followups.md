@@ -128,15 +128,20 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
     the app is matched again every 2 s until the phase is over, so that it is there when the
     deadline comes. The phase ends as it would without the check: the app renders, it fails on
     its own error, or it times out.
-  - *Classification.* A ready phase that timed out with something found that bears on the app, or
-    that failed with nothing better to say than `unmatched`, is `app-bug` with the finding's rule
-    (`compile-error` or `undeclared-import`) and message (`<file:line:column>: <message>`,
-    `imports undeclared package "<name>" (<file:line>)`). Its first evidence says what happened in
-    plain words: "ready timed out; the app read lib/render.js, which does not parse: lib/render.js:1:23:
-    Unexpected ";"", or "…, which imports "dayjs", a package it neither declares nor has installed
-    (…)". When Sandburg's own machinery failed (an infra error, a broken download), the findings
-    change nothing; the rules that read the dev server's own report, and the app's own errors with
-    a stack through its files, come first.
+  - *Classification.* A ready phase that timed out with something found that bears on the app is
+    `app-bug` with the finding's rule (`compile-error` or `undeclared-import`) and message
+    (`<file:line:column>: <message>`, `imports undeclared package "<name>" (<file:line>)`). Its first
+    evidence says what happened in plain words: "ready timed out; the app read lib/render.js, which
+    does not parse: lib/render.js:1:23: Unexpected ";"", or "…, which imports "dayjs", a package it
+    neither declares nor has installed (…)". Only a timeout is labelled so: a ready phase that failed
+    on an error of its own (the app threw, its page answered 500, a console error) keeps its class
+    and rule, even `unknown: unmatched`, as a file a scanner read is not its cause; the finding is
+    added to its evidence ("the app also read lib/x.js, which does not parse: …"). Nor is a timeout
+    labelled when Sandburg's side or the runtime says why: an infra error or a broken download (in
+    the phase's error, the runtime's errors or its output), a runtime signature (a built-in it
+    lacks), a WebAssembly trap in its output, or a probe that found the project unsupported. The
+    rules that read the dev server's own report come first. The check is stopped (its process
+    group killed) as soon as the phase is over, when it has not finished by then.
 
 The source check first failed the ready phase early (at about 20 s) when it found something. Three
 reviews found healthy apps it failed, each time with a different signal for "the page hangs":
