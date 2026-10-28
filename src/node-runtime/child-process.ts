@@ -74,6 +74,8 @@ const VALUE_FLAGS = new Set(['-r', '--require', '--import', '-C', '--conditions'
 
 interface NodeCommand {
   execArgv: string[];
+  /** -v or --version among node's options: it prints its version and exits, whatever else it was given. */
+  version: boolean;
   script: string | null;
   evalCode: string | null;
   args: string[];
@@ -84,6 +86,8 @@ function parseNodeArgs(argv: string[]): NodeCommand {
   const execArgv: string[] = [];
   let i = 0;
   let evalCode: string | null = null;
+  let version = false;
+  const isVersion = (a: string) => a === '-v' || a === '--version';
   for (; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') {
@@ -95,13 +99,16 @@ function parseNodeArgs(argv: string[]): NodeCommand {
       evalCode = a === '-p' || a === '--print' ? `console.log(${argv[i + 1]})` : argv[i + 1];
       execArgv.push(a, argv[++i]);
       i++;
+      // Options still follow the code until the first argument (`node -e code -v`).
+      for (let j = i; j < argv.length && argv[j].startsWith('-') && argv[j] !== '--'; j++) if (isVersion(argv[j])) version = true;
       break;
     }
+    if (isVersion(a)) version = true;
     execArgv.push(a);
     if (VALUE_FLAGS.has(a) && i + 1 < argv.length) execArgv.push(argv[++i]);
   }
-  if (evalCode !== null) return { execArgv, script: null, evalCode, args: argv.slice(i) };
-  return { execArgv, script: argv[i] ?? null, evalCode: null, args: argv.slice(i + 1) };
+  if (evalCode !== null) return { execArgv, version, script: null, evalCode, args: argv.slice(i) };
+  return { execArgv, version, script: argv[i] ?? null, evalCode: null, args: argv.slice(i + 1) };
 }
 
 /** --conditions and --require/--import from node's options (and NODE_OPTIONS). */
@@ -170,6 +177,11 @@ export function createChildProcess(host: ChildProcessHost) {
       return { ...common, kind: 'shell', script: options.shell ? argv.join(' ') : argv.map(shellQuote).join(' ') };
     }
     const cmd = parseNodeArgs(argv.slice(1));
+    if (cmd.version) {
+      cmd.evalCode = 'console.log(process.version)';
+      cmd.script = null;
+      cmd.args = [];
+    }
     // `node` or `node -` runs what its stdin reads (process.argv[1]: `-`, or none).
     let script: string | null | undefined;
     if ((!cmd.script || cmd.script === '-') && cmd.evalCode === null && stdin !== undefined) {

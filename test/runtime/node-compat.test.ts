@@ -1335,3 +1335,24 @@ test('child_process: a numeric killSignal is reported by name, and node without 
     unknownSignal: [unknown('99'), unknown('0'), unknown('SIGFOO'), unknown('15')],
   });
 });
+
+test('child_process: node -v and --version print the version, synchronously and not, whatever else node is given', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const sync = [
+          cp.execSync('node -v', { encoding: 'utf8' }),
+          cp.spawnSync(n, ['--version'], { encoding: 'utf8' }).stdout,
+          cp.execFileSync(n, ['-v', 'missing.js'], { encoding: 'utf8' }),
+          cp.execSync('node -e "console.log(1)" -v', { encoding: 'utf8' }),
+        ];
+        cp.exec('node --version', (err, stdout) => console.log(JSON.stringify({ version: process.version, sync, async: [err, stdout] })));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const { version, sync, async } = JSON.parse(out.stdout) as { version: string; sync: string[]; async: [unknown, string] };
+  assert.deepEqual({ sync, async }, { sync: Array(4).fill(`${version}\n`), async: [null, `${version}\n`] });
+});
