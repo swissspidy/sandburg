@@ -8,6 +8,7 @@
 import { Buffer } from 'buffer';
 import { EventEmitter } from 'events';
 import { Duplex, Readable, Writable } from 'readable-stream';
+import { ExitError } from './process.ts';
 
 const STATUS_CODES: Record<number, string> = {
   100: 'Continue', 101: 'Switching Protocols', 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
@@ -22,6 +23,8 @@ export interface BridgeResponse {
   start(status: number, statusText: string, headers: [string, string][]): void;
   chunk(data: Uint8Array): void;
   end(): void;
+  /** The connection was reset before the response ended (res.destroy(), its socket closed): Node's client sees ECONNRESET. */
+  error?(message: string, code?: string): void;
 }
 
 /** Listening servers by port, or by path for servers on a local socket; the runtime's request dispatcher reads this. */
@@ -60,8 +63,10 @@ class FakeSocket extends EventEmitter {
   unref() { return this; }
   address() { return { address: '127.0.0.1', family: 'IPv4', port: this.localPort }; }
   destroy() {
+    if (this.destroyed) return this;
     this.destroyed = true;
-    this.emit('close');
+    // As a real socket's, later.
+    queueMicrotask(() => this.emit('close'));
     return this;
   }
   end() { return this.destroy(); }
@@ -170,6 +175,24 @@ export class IncomingMessage extends Readable {
   }
   _read() {}
   setTimeout() { return this; }
+  destroy(err?: Error) {
+    // As Node: destroyed before it was read to its end, it was aborted, and its connection closes. Here,
+    // not in _destroy, whose throws the stream catches: process.exit() in an 'aborted' listener ends the process.
+    if (!this.destroyed && !this.aborted && (!this.readableEnded || !this.complete)) {
+      this.aborted = true;
+      try {
+        this.emit('aborted');
+      } catch (e) {
+        // As Node: what a listener throws is the request's error (process.exit() ends the process).
+        if (e instanceof ExitError) throw e;
+        err = e as Error;
+      }
+      super.destroy(err);
+      if (!this.socket.destroyed) this.socket.destroy();
+      return this;
+    }
+    return super.destroy(err);
+  }
   _destroy(err: Error | null, cb: (e?: Error | null) => void) {
     // As Node: an error is emitted only to listeners ('aborted' and 'close' tell the others).
     cb(this.listenerCount('error') ? err : null);
@@ -191,10 +214,29 @@ export class ServerResponse extends Writable {
   private headerMap = new Map<string, { name: string; value: string | string[] }>();
   private bridge: BridgeResponse;
   constructor(req: IncomingMessage, bridge: BridgeResponse) {
-    super({ decodeStrings: false });
+    // Its 'close' is emitted once (emitCloseOnce): as Node's, at once when its connection closes.
+    super({ decodeStrings: false, emitClose: false });
     this.req = req;
     this.bridge = bridge;
     this.socket = this.connection = req.socket as FakeSocket;
+  }
+  private hasClosed = false;
+  /** A 'clientError' to come ('pending'), and with its 'close' held until it came ('close'). */
+  private clientError: 'pending' | 'close' | null = null;
+  /**
+   * Its connection closed before it ended (see Server.dispatch): it closes at once, and the client's
+   * request fails ("socket hang up"), after the server's side has seen it close.
+   */
+  connectionClosed() {
+    this.destroy();
+    this.emitCloseOnce();
+    queueMicrotask(() => this.bridge.error?.('socket hang up', 'ECONNRESET'));
+  }
+  private emitCloseOnce() {
+    if (this.hasClosed) return;
+    if (this.clientError) return void (this.clientError = 'close');
+    this.hasClosed = true;
+    this.emit('close');
   }
   setHeader(name: string, value: string | number | readonly string[]) {
     if (this.headersSent) throw Object.assign(new Error('Cannot set headers after they are sent to the client'), { code: 'ERR_HTTP_HEADERS_SENT' });
@@ -261,7 +303,33 @@ export class ServerResponse extends Writable {
     this.finished = true;
     this.bridge.end();
     cb();
-    queueMicrotask(() => this.emit('close'));
+    queueMicrotask(() => this.emitCloseOnce());
+  }
+  destroy(err?: Error) {
+    // As Node: the error is the socket's, for the server's 'clientError' (also once the response ended),
+    // later, outside the stream's catch and the caller's; never emitted on the response.
+    // Its 'close' waits for it, as Node's comes after its socket's error.
+    const server = this.socket.server;
+    if (err && !this.destroyed && server?.listenerCount('clientError')) {
+      this.clientError = 'pending';
+      queueMicrotask(() => {
+        const held = this.clientError === 'close';
+        this.clientError = null;
+        try {
+          server.emit('clientError', err, this.socket);
+        } catch (e) {
+          if (!(e instanceof ExitError) && held) this.emitCloseOnce();
+          throw e;
+        }
+        if (held) this.emitCloseOnce();
+      });
+    }
+    return super.destroy();
+  }
+  _destroy(_err: Error | null, cb: (e?: Error | null) => void) {
+    // Destroyed before it ended: its connection closes, which aborts the request (see Server.dispatch).
+    if (!this.finished) this.socket.destroy();
+    cb(null);
   }
   // Node's res.end(data, encoding, cb) also accepts (cb) and (data, cb).
   end(...args: unknown[]) {
@@ -339,18 +407,31 @@ export class Server extends EventEmitter {
   unref() { return this; }
   getConnections(cb: (e: null, n: number) => void) { cb(null, 0); }
 
-  /** Called by the runtime for each bridged request. */
-  dispatch(method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse) {
+  /**
+   * Called by the runtime for each bridged request. Returns what aborts it: the client went away
+   * before the response ended (its process died), and its connection closes.
+   */
+  dispatch(method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse): () => void {
     // Requests surfaced in a service worker carry no Content-Length; a real connection would.
     // Body parsers (e.g. Express') use it to decide whether a request has a body.
     if (body && !headers.some(([k]) => /^(content-length|transfer-encoding)$/i.test(k))) headers = [...headers, ['content-length', String(body.length)]];
     const req = new IncomingMessage(method, url, headers, typeof this.port === 'number' ? this.port : 0);
-    (req.socket as FakeSocket).server = this;
+    const socket = req.socket as FakeSocket;
+    socket.server = this;
     const res = new ServerResponse(req, bridge);
+    // The connection closed before the response ended (the client went away, res.destroy(),
+    // req.socket.destroy()): as Node's abortIncoming, the request is destroyed ('aborted' if it was not
+    // read to its end; its 'error' and 'close' later) and the response closes at once.
+    socket.once('close', () => {
+      if (res.finished) return;
+      req.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
+      res.connectionClosed();
+    });
     if (body?.length) req.push(Buffer.from(body));
     req.push(null);
     req.complete = true;
     this.emit('request', req, res);
+    return () => void socket.destroy();
   }
 
   /**
@@ -402,9 +483,12 @@ class ClientRequest extends Writable {
   socket: FakeSocket;
   connection: FakeSocket;
   private controller = new AbortController();
+  /** Its response, once it has one. */
+  private res: IncomingMessage | null = null;
   aborted = false;
   constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void, socketPath?: string) {
-    super();
+    // Not destroyed once its body is written (the stream's autoDestroy): that would abort its fetch().
+    super({ autoDestroy: false });
     const u = new URL(url);
     this.url = url;
     this.target = socketPath ?? (LOCAL_HOSTS.has(u.hostname) ? Number(u.port || (u.protocol === 'https:' ? 443 : 80)) : null);
@@ -442,9 +526,45 @@ class ClientRequest extends Writable {
     this.aborted = true;
     this.controller.abort();
   }
+  /**
+   * As Node's: before its response, the request fails ("socket hang up" unless `err`); once it has a
+   * response in flight, that is aborted (the request closes, the response errors); once its response
+   * ended, it only closes.
+   */
   destroy(err?: Error) {
+    if (this.destroyed) return this;
     this.controller.abort();
+    const res = this.res;
+    if (!res) return super.destroy(err ?? connectionReset('socket hang up'));
+    if (!res.complete && !res.destroyed) return this.abortResponse(res, err);
     return super.destroy(err);
+  }
+  /** Closes the request, once (not aborting its fetch(), as destroy() does). */
+  private finish(err?: Error) {
+    if (!this.destroyed) super.destroy(err);
+  }
+  /** Its response came: the request closes once it ends, or once it closes (destroyed by the program). */
+  private respond(status: number, statusText: string, headers: [string, string][]): IncomingMessage | null {
+    if (this.destroyed) return null;
+    const res = (this.res = new IncomingMessage(this.method, this.path, headers, 0));
+    res.statusCode = status;
+    res.statusMessage = statusText;
+    res.once('end', () => this.finish());
+    res.once('close', () => {
+      // Destroyed before its end: what is still coming is not read.
+      if (!res.complete) this.controller.abort();
+      queueMicrotask(() => this.finish());
+    });
+    this.emit('response', res);
+    return res;
+  }
+  /** The response in flight is cut short (its server went away, or the program destroyed the request), as in Node. */
+  private abortResponse(res: IncomingMessage, err?: Error) {
+    res.aborted = true;
+    res.emit('aborted');
+    super.destroy(err);
+    res.destroy(connectionReset('aborted'));
+    return this;
   }
   _write(chunk: unknown, enc: BufferEncoding, cb: () => void) {
     this.chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, enc) : (chunk as Uint8Array));
@@ -454,26 +574,20 @@ class ClientRequest extends Writable {
   private local(body: Uint8Array | null): boolean {
     let res: IncomingMessage | null = null;
     const bridge = {
-      start: (status: number, statusText: string, headers: [string, string][]) => {
-        res = new IncomingMessage(this.method, this.path, headers, 0);
-        res.statusCode = status;
-        res.statusMessage = statusText;
-        this.emit('response', res);
+      start: (status: number, statusText: string, headers: [string, string][]) => void (res = this.respond(status, statusText, headers)),
+      chunk: (data: Uint8Array) => {
+        if (res && !res.destroyed) res.push(Buffer.from(data));
       },
-      chunk: (data: Uint8Array) => res?.push(Buffer.from(data)),
       end: () => {
-        if (res) {
+        if (res && !res.destroyed) {
           res.complete = true;
           res.push(null);
         }
       },
       error: (message: string, code = 'ECONNRESET') => {
-        if (!res) return this.emit('error', Object.assign(new Error(message), { code }));
+        if (!res) return this.finish(Object.assign(new Error(message), { code }));
         // The server went away mid-response (its process crashed): the response is cut short, as in Node.
-        if (res.complete || res.destroyed) return;
-        res.aborted = true;
-        res.emit('aborted');
-        res.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
+        if (!res.complete && !res.destroyed) this.abortResponse(res);
       },
     };
     const headers: [string, string][] = Object.entries(this.headers);
@@ -489,27 +603,36 @@ class ClientRequest extends Writable {
     const body = this.chunks.length ? Buffer.concat(this.chunks) : undefined;
     if (this.target !== null && this.local(body ?? null)) return cb();
     fetch(this.url, { method: this.method, headers: this.headers, body: this.method === 'GET' || this.method === 'HEAD' ? undefined : body, signal: this.controller.signal, redirect: 'manual' })
-      .then(async (r) => {
-        const headers: [string, string][] = [];
-        r.headers.forEach((v, k) => headers.push([k, v]));
-        const msg = new IncomingMessage(this.method, this.path, headers, 0);
-        msg.statusCode = r.status;
-        msg.statusMessage = r.statusText;
-        this.emit('response', msg);
-        const reader = r.body?.getReader();
-        if (reader) {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            msg.push(Buffer.from(value));
+      .then(
+        async (r) => {
+          const headers: [string, string][] = [];
+          r.headers.forEach((v, k) => headers.push([k, v]));
+          const msg = this.respond(r.status, r.statusText, headers);
+          if (!msg) return;
+          const reader = r.body?.getReader();
+          try {
+            for (;;) {
+              const read = await reader?.read();
+              if (!read || read.done) break;
+              msg.push(Buffer.from(read.value));
+            }
+          } catch {
+            // Cut short (the connection broke, or the program destroyed it: then it is aborted already).
+            if (!msg.complete && !msg.destroyed) this.abortResponse(msg);
+            return;
           }
-        }
-        msg.push(null);
-      })
-      .catch((e) => this.emit('error', Object.assign(new Error((e as Error)?.message ?? String(e), { cause: e }), { code: 'ECONNREFUSED' })));
+          // Read to its end: complete (else, destroyed as it ends, it would be 'aborted').
+          msg.complete = true;
+          msg.push(null);
+        },
+        // Not when the program destroyed it (destroy() says how it failed).
+        (e) => this.finish(Object.assign(new Error((e as Error)?.message ?? String(e), { cause: e }), { code: 'ECONNREFUSED' })),
+      );
     cb();
   }
 }
+
+const connectionReset = (message: string) => Object.assign(new Error(message), { code: 'ECONNRESET' });
 
 function makeClient(defaultProtocol: 'http:' | 'https:') {
   function request(input: string | URL | Record<string, unknown>, opts?: unknown, cb?: (res: IncomingMessage) => void) {

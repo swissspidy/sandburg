@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path';
 import { format } from 'node:url';
 import { Writable } from 'node:stream';
 import { UnsupportedDependencyError } from './spec-guard.ts';
+import { npmCliScript } from './npm-cli.ts';
 
 /** Bytes of packuments (by their length on the wire) the worker keeps. */
 const PACKUMENT_BYTES = 96 << 20;
@@ -81,9 +82,13 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
         const version = await pacote.manifest(view, { ...flat, fullMetadata: true, packumentCache: cache }).then((m) => String(m.version), () => null);
         return parentPort!.postMessage({ id, version });
       }
-      ahead.start(dir, !active++);
-      // As lib/commands/install.js runs it, with this worker's packuments.
-      const opts = { ...flat, ...(force ? { force: true } : {}), npmCommand: 'install', auditLevel: null, path: dir, add: [], workspaces: undefined, packumentCache: cache };
+      // As lib/commands/install.js runs it, with this worker's packuments. Its path is the real one,
+      // as npm's prefix is (process.cwd()): Arborist reads the tree at its real path, and from a
+      // path through a symlink (macOS's /var is /private/var) wrote the lockfile's packages under
+      // `../../../private/var/...` and the root's version as a file: link. Taken before the
+      // resolution counts as running: a directory that is gone fails here, and only this one.
+      const opts = { ...flat, ...(force ? { force: true } : {}), npmCommand: 'install', auditLevel: null, path: realpathSync(dir), add: [], workspaces: undefined, packumentCache: cache };
+      ahead.start(opts.path, !active++);
       try {
         await new Arborist(opts).reify(opts);
       } finally {
@@ -576,13 +581,18 @@ class ReadAhead {
   }
 }
 
-/** The npm package the CLI on PATH runs, if it has the layout this uses. */
+const hasLayout = (root: string) => existsSync(join(root, 'lib', 'npm.js')) && existsSync(join(root, 'node_modules', '@npmcli', 'arborist'));
+
+/** The npm package the CLI on PATH runs (on Windows, the one npmCliScript finds), if it has the layout this uses. */
 function npmRoot(): string | null {
-  if (process.platform === 'win32') return null;
+  if (process.platform === 'win32') {
+    const cli = npmCliScript();
+    return cli && hasLayout(dirname(dirname(cli))) ? dirname(dirname(cli)) : null;
+  }
   try {
     const bin = execFileSync('sh', ['-c', 'command -v npm'], { encoding: 'utf8' }).trim();
     const root = dirname(dirname(realpathSync(bin)));
-    return existsSync(join(root, 'lib', 'npm.js')) && existsSync(join(root, 'node_modules', '@npmcli', 'arborist')) ? root : null;
+    return hasLayout(root) ? root : null;
   } catch {
     return null;
   }

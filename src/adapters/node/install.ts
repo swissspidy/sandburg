@@ -26,6 +26,7 @@ import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 import { assertRegistryLockfile, assertRegistryManifest } from './spec-guard.ts';
 import { writeSoon } from './file-writes.ts';
+import { npmCommand } from './npm-cli.ts';
 
 /**
  * A git binary that does not exist, so that npm cannot clone (and prepare, see spec-guard.ts) a git
@@ -182,7 +183,7 @@ export class Installer {
       const flags = INSTALL_FLAGS;
       const m = manifest as Manifest;
       const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
-      if (!(await this.resolver.resolve(tmp, log))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+      if (!(await this.resolver.resolve(tmp, log))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
       // The resolved tree holds only registry packages: a transitive git, directory, or
       // off-registry-host tarball dependency (a registry package may declare one) is refused before
       // anything is unpacked or the full npm install fetches it.
@@ -196,7 +197,7 @@ export class Installer {
       const sides = this.sides;
       const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
       additions.catch(() => {});
-      if (!(await installFromLockfile(tmp, this.store, log))) await run('npm', ['install', ...flags], tmp, log);
+      if (!(await installFromLockfile(tmp, this.store, log))) await runNpm(['install', ...flags], tmp, log);
       await ahead;
       // npm creates no node_modules for a project without dependencies; the steps below read it.
       await mkdir(join(tmp, 'node_modules'), { recursive: true });
@@ -630,12 +631,12 @@ function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line
         // As an install: npm resolves (in the resolver's worker, beside others: these are small), the
         // store unpacks; npm installs what the store does not handle.
         const force = flags.includes('--force');
-        if (!(await sides.resolver.resolve(tmp, log, { force, small: true }))) await run('npm', ['install', '--package-lock-only', ...flags], tmp, log);
+        if (!(await sides.resolver.resolve(tmp, log, { force, small: true }))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
         if (!(await installFromLockfile(tmp, sides.store, log, false))) {
           // From its package.json alone, as before: npm installing from a lockfile skips its libc
           // check for optional packages (sass's @parcel/watcher-linux-x64-musl would come along).
           await rm(join(tmp, 'package-lock.json'), { force: true });
-          await run('npm', ['install', ...flags], tmp, log);
+          await runNpm(['install', ...flags], tmp, log);
         }
         await mkdir(join(tmp, 'node_modules'), { recursive: true });
         await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
@@ -678,7 +679,13 @@ const viewed = new Map<string, Promise<string | null>>();
 
 function npmView(spec: string): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = spawn('npm', ['view', spec, 'version', '--json'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let child;
+    try {
+      child = spawn(...npmCommand(['view', spec, 'version', '--json']), { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      // No npm (npmCommand): as when it fails to start.
+      return resolve(null);
+    }
     let out = '';
     child.stdout.on('data', (b: Buffer) => (out += b.toString()));
     child.on('error', () => resolve(null));
@@ -873,9 +880,9 @@ function walkIndex(dir: string): FileIndex {
   return index;
 }
 
-function run(cmd: string, args: string[], cwd: string, log: (line: string) => void): Promise<void> {
+function runNpm(args: string[], cwd: string, log: (line: string) => void): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, npm_config_update_notifier: 'false' } });
+    const child = spawn(...npmCommand(args), { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, npm_config_update_notifier: 'false' } });
     let out = '';
     const onData = (b: Buffer) => {
       out += b.toString();
@@ -884,6 +891,6 @@ function run(cmd: string, args: string[], cwd: string, log: (line: string) => vo
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
   });
 }

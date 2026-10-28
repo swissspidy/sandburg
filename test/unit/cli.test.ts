@@ -1,7 +1,10 @@
 /** The command line's options as the session gets them (src/cli.ts). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, readdirSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main, parseCommandLine, sessionOptions } from '../../src/cli.ts';
@@ -85,3 +88,107 @@ test('compare exits 2 when nothing could be compared, else 0 whatever the apps d
   assert.equal(compareExitCode(report(2, [pair('error', 'passed'), pair('error', 'failed')])), 2, 'no browser run reached its checks');
   assert.equal(compareExitCode(report(2, [pair('passed', 'error'), pair('failed', 'error')])), 2, 'no reference run reached its checks');
 });
+
+/**
+ * `sandburg compare` in a process of its own, without a browser or Docker: its session's browser runs
+ * pass at once, and its reference's run mounts and installs (as Session.run does) on a docker CLI that
+ * never answers `hang` (an image inspect: before anything exists; an exec, npm's install: once the
+ * container and the project copy do), so it hangs. Says "hanging" (stderr) once it does. On Windows,
+ * where a process cannot signal another (kill() ends it without running its handlers), the test
+ * names the signal on its stdin and it is raised here, to the listeners compare installed.
+ */
+const HANGING_COMPARE = `
+  import { compareCommand } from ${JSON.stringify(new URL('../../src/compare/cli.ts', import.meta.url).href)};
+  import { dockerReference } from ${JSON.stringify(new URL('../../src/reference/docker.ts', import.meta.url).href)};
+  import { loadProject } from ${JSON.stringify(new URL('../../src/project.ts', import.meta.url).href)};
+  const { app, report, work, hang } = JSON.parse(process.env.COMPARE_TEST);
+  if (process.platform === 'win32') process.stdin.on('data', (d) => { const signal = String(d).trim(); process.emit(signal, signal); });
+  /** The run's container (docker run -d), found by its label (ps -aq) until it is removed (rm -f). */
+  let container = false;
+  const docker = (args) => {
+    console.error('docker ' + args.slice(0, 3).join(' '));
+    if (args[0] !== hang) {
+      if (args[0] === 'run' && args[1] === '-d') container = true;
+      if (args[0] === 'rm') container = false;
+      return Promise.resolve(container && ((args[0] === 'run' && args[1] === '-d') || (args[0] === 'ps' && args[1] === '-aq')) ? 'cid\\n' : '');
+    }
+    console.error('hanging');
+    // As the docker process it stands for, it keeps the process alive while it runs.
+    return new Promise(() => setInterval(() => {}, 60_000));
+  };
+  const reference = dockerReference({ docker, workDir: work });
+  const disposeAll = reference.disposeAll;
+  reference.disposeAll = async () => {
+    console.error('disposeAll');
+    await disposeAll();
+    console.error('disposed');
+  };
+  const session = {
+    browserSandbox: true,
+    async open() {},
+    // As a browser's, it takes a while: what the batch does meanwhile (a report it would write) shows.
+    async close() {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      console.error('session closed');
+    },
+    async run(path, options) {
+      const project = await loadProject(path);
+      // A mount or install the signal's disposeAll cut short ends its run as an error result, as Session.run's does.
+      const runtime = options.nodeRuntime?.();
+      const failure = runtime ? await runtime.mount(project, () => {}).then(() => runtime.install()).then(() => null, (e) => ({ class: 'infra', rule: 'infra-error', message: String(e) })) : null;
+      return {
+        runId: 'r', status: failure ? 'error' : 'passed', failure, checks: [],
+        project: { name: project.name, path, framework: project.framework, snapshotId: 's' },
+        runtime: { name: 'node', version: '1' }, network: { cacheHits: 0, cacheMisses: 0, blocked: [] }, timings: { totalMs: 1 },
+      };
+    },
+  };
+  await compareCommand([{ project: app, label: 'app' }], { report, parallel: 1, prewarm: false }, {}, {}, { reference, session: () => session });
+  console.error('compare returned');
+`;
+
+const windows = process.platform === 'win32';
+for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, 'image'], ['SIGINT', 130, 'exec']] as const) {
+  test(`compare cut short by ${signal} (at docker ${hang}) removes the reference's runs, writes no report and exits ${code}`, { timeout: 120_000 }, async (t) => {
+    const dir = tempDir('sandburg-compare-signal-');
+    const app = join(dir, 'app');
+    await mkdir(app);
+    await writeFile(join(app, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+    // A Vite app as far as the reference's probe goes (by its config file), with nothing to install.
+    await writeFile(join(app, 'vite.config.js'), 'export default {};');
+    await writeFile(join(app, 'server.js'), `require('http').createServer((req, res) => res.end('<p>hi</p>')).listen(process.env.PORT || 3000);`);
+    const report = join(dir, 'reports', 'fidelity');
+    const work = join(dir, 'work');
+    const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_COMPARE], {
+      cwd: dir,
+      env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, work, hang }) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    // Not left running (with its browser) by a test that fails waiting for it.
+    t.after(() => child.kill('SIGKILL'));
+    let stderr = '';
+    /** The project copies there were as the signal was sent. */
+    let copies: string[] | null = null;
+    child.stderr.on('data', (d: Buffer) => {
+      const was = stderr;
+      stderr += d.toString();
+      if (!was.includes('hanging\n') && stderr.includes('hanging\n')) {
+        copies = existsSync(work) ? readdirSync(work) : [];
+        // Windows: the child raises it (see HANGING_COMPARE).
+        if (windows) child.stdin.write(`${signal}\n`);
+        else child.kill(signal);
+      }
+    });
+    const [exit] = (await once(child, 'exit')) as [number | null];
+    assert.equal(exit, code, stderr);
+    assert.match(stderr, new RegExp(`${signal}: removing the reference's containers\\ndisposeAll\\n`));
+    // Its run was disposed (its container looked up by its label and removed, once there is one), then the session closed.
+    const removed = hang === 'exec' ? 'docker rm -f cid\n' : '';
+    assert.match(stderr.slice(stderr.indexOf('disposeAll')), new RegExp(`docker ps -aq --filter\\n${removed}disposed\\nsession closed\\n`));
+    // Its project copy, there once it mounted, is removed too.
+    assert.equal(copies!.length, hang === 'exec' ? 1 : 0);
+    assert.ok(!stderr.includes('compare returned'), stderr);
+    assert.equal(existsSync(join(dir, 'reports')), false);
+    assert.deepEqual(existsSync(work) ? readdirSync(work) : [], []);
+  });
+}
