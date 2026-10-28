@@ -28,6 +28,7 @@ export class FsError extends Error {
 }
 
 const ERRORS: Record<string, string> = {
+  EFBIG: 'file too large',
   ENOENT: 'no such file or directory',
   EEXIST: 'file already exists',
   ENOTDIR: 'not a directory',
@@ -36,7 +37,7 @@ const ERRORS: Record<string, string> = {
   EINVAL: 'invalid argument',
   EBADF: 'bad file descriptor',
 };
-const ERRNO: Record<string, number> = { ENOENT: 2, EEXIST: 17, ENOTDIR: 20, EISDIR: 21, ENOTEMPTY: 39, EINVAL: 22, EBADF: 9 };
+const ERRNO: Record<string, number> = { EFBIG: 27, ENOENT: 2, EEXIST: 17, ENOTDIR: 20, EISDIR: 21, ENOTEMPTY: 39, EINVAL: 22, EBADF: 9 };
 
 interface FileNode {
   data: Uint8Array | null; // null: not fetched yet (remote)

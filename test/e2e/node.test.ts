@@ -227,6 +227,28 @@ test('a project without dependencies runs (npm creates no node_modules for it)',
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+test('a server that runs synchronous commands as it starts (node -p, a git revision with a fallback) runs', async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'sync-commands', private: true, scripts: { dev: 'node server.js' } }),
+      'server.js': [
+        "const { execSync, execFileSync } = require('node:child_process');",
+        "const sum = execFileSync(process.execPath, ['-p', '6 * 7'], { encoding: 'utf8' }).trim();",
+        // git is not a Node program: it exits with 127, as a command a shell cannot find.
+        "let revision;",
+        "try { revision = execSync('git rev-parse --short HEAD', { stdio: 'pipe' }).toString().trim(); } catch (e) { revision = 'no git (' + e.status + ')'; }",
+        "require('node:http').createServer((q, s) => s.writeHead(200, { 'content-type': 'text/html' }).end('<h1>' + sum + ', ' + revision + '</h1>')).listen(3000);",
+      ].join('\n'),
+    },
+    { name: 'sync-commands', path: 'sync-commands' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: { renders: async ({ app, expect }) => expect(app.getByRole('heading', { level: 1 })).toHaveText('42, no git (127)') },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 // TypeScript 7's tsc is native code: in the runtime it runs tsrs (@tsrs/wasm) instead (install-rules.ts).
 const typescript7 = (name: string, source: string) =>
   projectFromFiles(

@@ -367,7 +367,7 @@ export class RuntimeHarness {
     return (this.server.address() as AddressInfo).port;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string> } = {}) {
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string>; /** As runInstalled's. */ prepare?: number; helperDelay?: number } = {}) {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();

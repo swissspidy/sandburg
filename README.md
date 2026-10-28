@@ -184,7 +184,7 @@ point at the file and line where the dev server reported them.
 | Back ends | Express and other Node servers next to the front end, reached through Vite's proxy, from the page (`http://localhost:<port>`) or over WebSockets; SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) |
 | Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn scripts, package binaries, `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly |
 | Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, `AsyncLocalStorage` across native `await`s ([ADR 0057](docs/adr/0057-native-awaits-and-the-runtime-warm-path.md)), top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide; TypeScript 7's `tsc` runs tsrs ([ADR 0024](docs/adr/0024-typescript-7.md)) |
-| Not supported | Native addons without a WebAssembly build, synchronous child processes, programs other than Node (`git`, `python` exit with 127), dependencies that are not npm registry versions (git, URL, `file:`, `link:`, `workspace:`, `user/repo` shorthands: the install fails) |
+| Not supported | Native addons without a WebAssembly build, programs other than Node (`git`, `python` exit with 127, also under `execSync`/`spawnSync`), servers started synchronously (`execSync('npm run dev')` blocks with a server nothing reaches), dependencies that are not npm registry versions (git, URL, `file:`, `link:`, `workspace:`, `user/repo` shorthands: the install fails) |
 
 ## How it works
 

@@ -79,12 +79,24 @@ export interface ThreadInit {
   argv: string[];
   /** The thread's entry script; it starts right after init (the parent may be blocked meanwhile). */
   main: string;
+  /** process.argv[1], when it is not `main`: `-` for `node -`, none (null) for `node` reading its program from stdin. */
+  script?: string | null;
   /** The project's files when the thread started (see projectSnapshot): reads of them while they are unchanged, and while the parent is blocked. */
   snapshot?: ProjectSnapshot | Record<string, Uint8Array>;
   /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
   mailboxes?: (Mailbox | null)[];
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
-  process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
+  process?: {
+    cwd: string;
+    execArgv: string[];
+    conditions: string[];
+    preload: string[];
+    ipc: boolean;
+    /** A synchronous child process (execSync, spawnSync): its channel to the parent, which blocks until it exits (sync-child.ts). */
+    sync?: SharedArrayBuffer;
+    /** What its stdin reads (spawnSync's `input`). */
+    stdin?: Uint8Array;
+  };
   /** A thread (at any depth) of the app's own process, not of a child process (see WASM_CRASH_CHANNEL). */
   mainProcess?: boolean;
 }
@@ -133,6 +145,8 @@ export type ToWorker =
       filesChannel?: { port: MessagePort; ready: SharedArrayBuffer } | null;
       /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
       compilePort?: MessagePort | null;
+      /** A port to the main runtime's helper, which starts synchronous child processes (shareSpawner in host-files.ts). */
+      spawner?: { port: MessagePort; owner: string } | null;
       base: string;
       ipc?: boolean;
       tsRunner?: boolean;
@@ -150,7 +164,8 @@ export type ToWorker =
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }
   /** `track`: project directories whose files the runtime notes changes to from now on (see read-cache's ifChanged). */
-  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[] }
+  /** `script`: what process.argv[1] reads when it is not `main` (null: none, as for a program read from stdin). */
+  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[]; script?: string | null }
   /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
   | { type: 'spares' }
   /**
