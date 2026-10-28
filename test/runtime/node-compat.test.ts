@@ -630,6 +630,31 @@ test("http: res.destroy(err) once the response ended still goes to 'clientError'
   assert.equal(out.stdout, 'clientError boom, res close\nclient 200, client body x, client close\n');
 });
 
+test("http: a response that came through fetch() and was read to its end is complete, not 'aborted'", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // Another origin's (not this machine's servers: through fetch()), the harness's.
+        require('http').get(process.env.REMOTE, (res) => {
+          const log = [];
+          res.on('aborted', () => log.push('aborted'));
+          res.on('data', (d) => log.push('data ' + d));
+          res.on('end', () => log.push('end'));
+          res.on('close', () => {
+            log.push('close', 'aborted ' + res.aborted, 'complete ' + res.complete);
+            console.log(log.join(', '));
+          });
+        });`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { env: { REMOTE: `http://fetch.localhost:${h.port}/__test/remote` } },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'data remote, end, close, aborted false, complete true\n');
+});
+
 test('http: a response its handler destroys is reset, not left waiting', { timeout: 30_000 }, async () => {
   const out = await h.run(
     {

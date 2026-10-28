@@ -461,7 +461,8 @@ class ClientRequest extends Writable {
   private controller = new AbortController();
   aborted = false;
   constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void, socketPath?: string) {
-    super();
+    // Not destroyed once its body is written (the stream's autoDestroy): that would abort its fetch().
+    super({ autoDestroy: false });
     const u = new URL(url);
     this.url = url;
     this.target = socketPath ?? (LOCAL_HOSTS.has(u.hostname) ? Number(u.port || (u.protocol === 'https:' ? 443 : 80)) : null);
@@ -561,6 +562,8 @@ class ClientRequest extends Writable {
             msg.push(Buffer.from(value));
           }
         }
+        // Read to its end: complete (else, destroyed as it ends, it would be 'aborted').
+        msg.complete = true;
         msg.push(null);
       })
       .catch((e) => this.emit('error', Object.assign(new Error((e as Error)?.message ?? String(e), { cause: e }), { code: 'ECONNREFUSED' })));

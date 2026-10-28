@@ -268,6 +268,11 @@ export class RuntimeHarness {
         res.writeHead(200, { 'content-type': 'application/wasm' });
         return res.end(await readFile(SQLITE_WASM));
       }
+      // A response from another origin (fetch.localhost:<port>), for a program's http.get that goes through fetch().
+      if (url.pathname === '/__test/remote') {
+        res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+        return res.end('remote');
+      }
       if (url.pathname === '/__sandburg/tla-scan') {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
@@ -349,7 +354,12 @@ export class RuntimeHarness {
     return run;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number } = {}) {
+  /** The port the harness serves on (127.0.0.1, and *.localhost for another origin). */
+  get port(): number {
+    return (this.server.address() as AddressInfo).port;
+  }
+
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string> } = {}) {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();
