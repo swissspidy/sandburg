@@ -94,15 +94,16 @@ test('compare exits 2 when nothing could be compared, else 0 whatever the apps d
  * pass at once, and its reference's run mounts and installs (as Session.run does) on a docker CLI that
  * never answers `hang` (an image inspect: before anything exists; an exec, npm's install: once the
  * container and the project copy do), so it hangs. Says "hanging" (stderr) once it does. On Windows,
- * where a process cannot signal another (kill() ends it without running its handlers), the test
- * names the signal on its stdin and it is raised here, to the listeners compare installed.
+ * where a process cannot signal another (kill() ends it without running its handlers), and for
+ * SIGBREAK (Windows' Ctrl-Break, which no other platform can send), the test names the signal on its
+ * stdin and it is raised here, to the listeners compare installed.
  */
 const HANGING_COMPARE = `
   import { compareCommand } from ${JSON.stringify(new URL('../../src/compare/cli.ts', import.meta.url).href)};
   import { dockerReference } from ${JSON.stringify(new URL('../../src/reference/docker.ts', import.meta.url).href)};
   import { loadProject } from ${JSON.stringify(new URL('../../src/project.ts', import.meta.url).href)};
-  const { app, report, work, hang } = JSON.parse(process.env.COMPARE_TEST);
-  if (process.platform === 'win32') process.stdin.on('data', (d) => { const signal = String(d).trim(); process.emit(signal, signal); });
+  const { app, report, work, hang, raise } = JSON.parse(process.env.COMPARE_TEST);
+  if (raise) process.stdin.on('data', (d) => { const signal = String(d).trim(); process.emit(signal, signal); });
   /** The run's container (docker run -d), found by its label (ps -aq) until it is removed (rm -f). */
   let container = false;
   const docker = (args) => {
@@ -148,7 +149,7 @@ const HANGING_COMPARE = `
 `;
 
 const windows = process.platform === 'win32';
-for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, 'image'], ['SIGINT', 130, 'exec']] as const) {
+for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, 'image'], ['SIGINT', 130, 'exec'], ['SIGBREAK', 149, 'exec']] as const) {
   test(`compare cut short by ${signal} (at docker ${hang}) removes the reference's runs, writes no report and exits ${code}`, { timeout: 120_000 }, async (t) => {
     const dir = tempDir('sandburg-compare-signal-');
     const app = join(dir, 'app');
@@ -159,9 +160,11 @@ for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, '
     await writeFile(join(app, 'server.js'), `require('http').createServer((req, res) => res.end('<p>hi</p>')).listen(process.env.PORT || 3000);`);
     const report = join(dir, 'reports', 'fidelity');
     const work = join(dir, 'work');
+    // Windows, and SIGBREAK anywhere: the child raises it (see HANGING_COMPARE).
+    const raise = windows || signal === 'SIGBREAK';
     const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_COMPARE], {
       cwd: dir,
-      env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, work, hang }) },
+      env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, work, hang, raise }) },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     // Not left running (with its browser) by a test that fails waiting for it.
@@ -174,8 +177,7 @@ for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, '
       stderr += d.toString();
       if (!was.includes('hanging\n') && stderr.includes('hanging\n')) {
         copies = existsSync(work) ? readdirSync(work) : [];
-        // Windows: the child raises it (see HANGING_COMPARE).
-        if (windows) child.stdin.write(`${signal}\n`);
+        if (raise) child.stdin.write(`${signal}\n`);
         else child.kill(signal);
       }
     });
@@ -192,3 +194,43 @@ for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, '
     assert.deepEqual(existsSync(work) ? readdirSync(work) : [], []);
   });
 }
+
+/**
+ * A command's session (withSession) in a process of its own, without a browser: its session opens at
+ * once, its run hangs (says "hanging"), and it takes a while to close. The test raises the signal
+ * named on its stdin, as above.
+ */
+const HANGING_RUN = `
+  import { withSession } from ${JSON.stringify(new URL('../../src/cli.ts', import.meta.url).href)};
+  process.stdin.on('data', (d) => { const signal = String(d).trim(); process.emit(signal, signal); });
+  let closes = 0;
+  const session = {
+    browserSandbox: true,
+    async open() {},
+    async close() {
+      closes++;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      console.error('session closed ' + closes);
+    },
+  };
+  await withSession({}, () => {
+    console.error('hanging');
+    return new Promise((resolve, reject) => process.on('SIGBREAK', () => setTimeout(() => reject(new Error('the browser closed')), 50)));
+  }, session);
+  console.error('withSession returned');
+`;
+
+test("Ctrl-Break (SIGBREAK) during a run stops it and closes the session's browser, once, then exits 149", { timeout: 60_000 }, async (t) => {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_RUN], { stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill('SIGKILL'));
+  let stderr = '';
+  child.stderr.on('data', (d: Buffer) => {
+    const was = stderr;
+    stderr += d.toString();
+    if (!was.includes('hanging\n') && stderr.includes('hanging\n')) child.stdin.write('SIGBREAK\n');
+  });
+  const [exit] = (await once(child, 'exit')) as [number | null];
+  assert.equal(exit, 149, stderr);
+  // The run it cut short failed: not the outcome, nor a second close.
+  assert.equal(stderr, 'hanging\nSIGBREAK: closing the browser\nsession closed 1\n');
+});

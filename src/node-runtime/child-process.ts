@@ -15,7 +15,8 @@
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'stream';
 import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
-import { timers } from './builtins/process.ts';
+import { SIGNALS, timers } from './builtins/process.ts';
+import { UNHANDLED_REJECTIONS, type UnhandledRejections } from './uncaught.ts';
 import { runScript } from './shell.ts';
 import { devScriptRunning, shellStepsAhead } from './process-tree.ts';
 import { serveSyncChild, syncChannel, type SyncEnd } from './sync-child.ts';
@@ -70,7 +71,7 @@ function splitCommand(line: string): string[] {
 
 const isNode = (cmd: string, execPath: string) => cmd === execPath || /(^|\/)node(\.exe)?$/.test(cmd);
 /** node's own flags that take a separate value (`--require x`). */
-const VALUE_FLAGS = new Set(['-r', '--require', '--import', '-C', '--conditions', '--loader', '--experimental-loader', '--env-file', '--input-type', '--inspect-port', '--title', '--stack-size', '--max-old-space-size']);
+const VALUE_FLAGS = new Set(['-r', '--require', '--import', '-C', '--conditions', '--unhandled-rejections', '--loader', '--experimental-loader', '--env-file', '--input-type', '--inspect-port', '--title', '--stack-size', '--max-old-space-size']);
 
 interface NodeCommand {
   execArgv: string[];
@@ -111,11 +112,12 @@ function parseNodeArgs(argv: string[]): NodeCommand {
   return { execArgv, version, script: argv[i] ?? null, evalCode: null, args: argv.slice(i + 1) };
 }
 
-/** --conditions and --require/--import from node's options (and NODE_OPTIONS). */
+/** --conditions, --require/--import and --unhandled-rejections from node's options (and NODE_OPTIONS). */
 export function nodeOptions(execArgv: string[], env: Record<string, string>) {
   const all = [...splitCommand(env.NODE_OPTIONS ?? ''), ...execArgv];
   const conditions: string[] = [];
   const preload: string[] = [];
+  let unhandledRejections: UnhandledRejections = 'throw';
   for (let i = 0; i < all.length; i++) {
     const a = all[i];
     const eq = a.indexOf('=');
@@ -123,9 +125,12 @@ export function nodeOptions(execArgv: string[], env: Record<string, string>) {
     const value = () => inline ?? all[++i];
     if (flag === '-C' || flag === '--conditions') conditions.push(value());
     else if (flag === '-r' || flag === '--require' || flag === '--import') preload.push(value());
-    else if (VALUE_FLAGS.has(flag) && inline === undefined) i++;
+    else if (flag === '--unhandled-rejections') {
+      const mode = value() as UnhandledRejections;
+      if (UNHANDLED_REJECTIONS.includes(mode)) unhandledRejections = mode;
+    } else if (VALUE_FLAGS.has(flag) && inline === undefined) i++;
   }
-  return { conditions, preload };
+  return { conditions, preload, unhandledRejections };
 }
 
 export interface ChildProcessHost extends ThreadHost {
@@ -357,10 +362,11 @@ export function createChildProcess(host: ChildProcessHost) {
     }
 
     kill(signal: string | number = 'SIGTERM') {
+      const name = signalName(signal, 'signal');
       if (this.done || (!this.worker && !this.shell)) return false;
       this.killed = true;
       this.shell?.kill();
-      this.finish(null, typeof signal === 'number' ? 'SIGTERM' : signal);
+      this.finish(null, name);
       return true;
     }
     send(message: unknown, ...rest: unknown[]) {
@@ -613,15 +619,12 @@ export function createChildProcess(host: ChildProcessHost) {
   };
 }
 
-/** Linux's signals (Node's os.constants.signals on Linux). */
-const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31 };
-
-/** A kill signal's name, as the child's result reports it (SIGTERM by default; SIGIOT is SIGABRT): Node's ERR_UNKNOWN_SIGNAL for one it does not know. */
-function signalName(signal: unknown): string {
+/** A kill signal's name, as the child's result reports it (SIGTERM by default; SIGIOT is SIGABRT): Node's ERR_UNKNOWN_SIGNAL for one it does not know (SIGBREAK, on Linux). */
+function signalName(signal: unknown, what = 'options.killSignal'): string {
   if (signal == null) return 'SIGTERM';
   if (typeof signal !== 'string' && typeof signal !== 'number') {
     const received = typeof signal === 'object' ? `an instance of ${signal?.constructor?.name ?? 'Object'}` : `type ${typeof signal} (${String(signal)})`;
-    throw Object.assign(new TypeError(`The "options.killSignal" property must be one of type string or number. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    throw Object.assign(new TypeError(`The "${what}" ${what.includes('.') ? 'property' : 'argument'} must be one of type string or number. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
   }
   const number = typeof signal === 'number' ? signal : SIGNALS[String(signal).toUpperCase()];
   const name = Object.keys(SIGNALS).find((n) => SIGNALS[n] === number);

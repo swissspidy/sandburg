@@ -11,6 +11,7 @@ import { loadChecks } from './orchestrator/checks.ts';
 import { loadPageChecks } from './page-checks/index.ts';
 import { SnapshotStore } from './store.ts';
 import type { FileTree, RunResult } from './types.ts';
+import { untilStopped, type StopSignal } from './stop-signals.ts';
 
 const USAGE = `Usage: sandburg <command> [options]
 
@@ -263,15 +264,26 @@ async function command(argv: string[]): Promise<number> {
   }
 }
 
-async function withSession<T>(options: SessionOptions, fn: (s: Session) => Promise<T>): Promise<T> {
-  const session = new Session(options);
-  await session.open();
-  if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
-  try {
-    return await fn(session);
-  } finally {
+/**
+ * Runs `fn` in a session. Ctrl-Break (SIGBREAK, Windows) stops its runs and closes the browser, then
+ * exits 149, as Ctrl-C does through Playwright's own listener (exit 130), which closes the browser
+ * Playwright launched; Playwright has none for Ctrl-Break, whose default ends the process at once.
+ */
+export async function withSession<T>(options: SessionOptions, fn: (s: Session) => Promise<T>, session = new Session(options)): Promise<T> {
+  const stop = async (signal: StopSignal) => {
+    console.error(`${signal}: closing the browser`);
     await session.close();
-  }
+  };
+  return untilStopped(['SIGBREAK'], stop, async (stopping) => {
+    await session.open();
+    if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
+    try {
+      return await fn(session);
+    } finally {
+      // Not when a signal closes it (the runs it cut short end here).
+      if (!stopping()) await session.close();
+    }
+  });
 }
 
 function exitCode(status: RunResult['status']): number {

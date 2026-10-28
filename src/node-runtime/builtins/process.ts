@@ -20,6 +20,15 @@ export class ExitError extends Error {
   }
 }
 
+/** Linux's signals (Node's os.constants.signals on Linux, the platform the runtime reports: no SIGBREAK, Windows' Ctrl-Break). */
+export const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31 };
+
+/** Signals whose default action leaves a process running (ignored, or it stops: nothing ends it here either). */
+const NOT_ENDING = new Set(['SIGCHLD', 'SIGCONT', 'SIGURG', 'SIGWINCH', 'SIGSTOP', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU']);
+
+/** Where a process keeps its process.setUncaughtExceptionCaptureCallback() function (see uncaught.ts). */
+export const CAPTURE_CALLBACK = Symbol('sandburg.uncaughtExceptionCapture');
+
 // --- timers ---------------------------------------------------------------------
 
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
@@ -215,7 +224,7 @@ export function createProcess(opts: ProcessOptions) {
   let cwd = opts.cwd;
   let exiting = false;
   const t0 = performance.now();
-  const proc = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  const proc = new EventEmitter() as EventEmitter & Record<string | symbol, unknown>;
   const out = (name: 'stdout' | 'stderr') => {
     const w = new Writable({
       write(chunk, _enc, cb) {
@@ -301,10 +310,14 @@ export function createProcess(opts: ProcessOptions) {
           },
         }
       : {}),
-    emitWarning(warning: string | Error, type?: string | { type?: string }) {
-      const text = typeof warning === 'string' ? warning : warning.message;
-      const name = typeof type === 'string' ? type : (type?.type ?? 'Warning');
-      opts.write('stderr', `(node) ${name}: ${text}\n`);
+    // As in Node: a 'warning' event on the next tick, which the process's own listener prints (a
+    // program that removes the listeners prints none).
+    emitWarning(warning: string | Error, type?: string | { type?: string; code?: string; detail?: string }, code?: string) {
+      const options = typeof type === 'object' && type !== null ? type : { type, code };
+      const w = typeof warning === 'string' ? Object.assign(new Error(warning), { name: options.type ?? 'Warning' }) : warning;
+      if (options.code !== undefined && typeof warning === 'string') Object.assign(w, { code: options.code });
+      if (options.detail !== undefined && typeof warning === 'string') Object.assign(w, { detail: options.detail });
+      (proc.nextTick as (fn: () => void) => void)(() => proc.emit('warning', w));
     },
     exit(...args: [code?: number | string | null]) {
       // As in Node: 'exit' listeners see the code as process.exitCode (and may change it); one that
@@ -323,7 +336,36 @@ export function createProcess(opts: ProcessOptions) {
     abort() {
       throw new ExitError(134);
     },
-    kill: () => true,
+    kill(pid: unknown, signal?: unknown) {
+      // As Node's (on Linux): a signal it does not know (SIGBREAK, Windows' Ctrl-Break, among them) is
+      // ERR_UNKNOWN_SIGNAL. One to this process goes to its listeners; with none, one that ends a
+      // process ends it, without 'exit', with exit code 128 + its number (what a shell reports for a
+      // process a signal ended: there is no exit by signal here). Another process's pid is not
+      // looked up: true.
+      // eslint-disable-next-line eqeqeq -- as Node's check: an integer string ('42') is the pid.
+      if ((pid as number) != ((pid as number) | 0)) {
+        const received = typeof pid === 'string' ? `type string ('${pid}')` : typeof pid === 'number' ? `type number (${pid})` : pid == null ? String(pid) : typeof pid === 'object' ? `an instance of ${pid.constructor?.name ?? 'Object'}` : `type ${typeof pid} (${String(pid)})`;
+        throw Object.assign(new TypeError(`The "pid" argument must be of type number. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      }
+      let number: number;
+      if (typeof signal === 'number' && signal === (signal | 0)) number = signal;
+      else {
+        const name = (signal || 'SIGTERM') as string;
+        if (!Object.prototype.hasOwnProperty.call(SIGNALS, name)) throw Object.assign(new TypeError(`Unknown signal: ${String(name)}`), { code: 'ERR_UNKNOWN_SIGNAL' });
+        number = SIGNALS[name];
+      }
+      const name = Object.keys(SIGNALS).find((n) => SIGNALS[n] === number);
+      if (number !== 0 && !name) throw Object.assign(new Error('kill EINVAL'), { errno: -22, code: 'EINVAL', syscall: 'kill' });
+      if (Number(pid) !== proc.pid || !name) return true;
+      // After the nextTick callbacks queued with it (microtasks here, see nextTick).
+      queueMicrotask(() =>
+        queueMicrotask(() => {
+          if (proc.listenerCount(name)) proc.emit(name, name, number);
+          else if (!NOT_ENDING.has(name)) throw new ExitError(128 + number);
+        }),
+      );
+      return true;
+    },
     binding(name: string) {
       throw new Error(`No such module: ${name}`);
     },
@@ -337,8 +379,17 @@ export function createProcess(opts: ProcessOptions) {
     setSourceMapsEnabled() {},
     sourceMapsEnabled: false,
     getActiveResourcesInfo: () => [],
-    setUncaughtExceptionCaptureCallback() {},
-    hasUncaughtExceptionCaptureCallback: () => false,
+    setUncaughtExceptionCaptureCallback(fn: unknown) {
+      if (fn !== null && typeof fn !== 'function') {
+        const received = fn === undefined ? 'undefined' : typeof fn === 'object' ? `an instance of ${fn.constructor?.name ?? 'Object'}` : `type ${typeof fn} (${typeof fn === 'string' ? `'${fn}'` : String(fn)})`;
+        throw Object.assign(new TypeError(`The "fn" argument must be of type function or null. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      }
+      if (fn !== null && proc[CAPTURE_CALLBACK]) {
+        throw Object.assign(new Error('`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active'), { code: 'ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET' });
+      }
+      proc[CAPTURE_CALLBACK] = fn;
+    },
+    hasUncaughtExceptionCaptureCallback: () => !!proc[CAPTURE_CALLBACK],
     loadEnvFile() {},
   });
   // As in Node: an integer string ('2') is the number.
@@ -350,6 +401,27 @@ export function createProcess(opts: ProcessOptions) {
     },
     enumerable: true,
     configurable: true,
+  });
+  // Set once 'exit' is being emitted (process.exit, or an uncaught exception: see uncaught.ts), as Node's.
+  Object.defineProperty(proc, '_exiting', {
+    get: () => exiting,
+    set: (v: unknown) => {
+      exiting = !!v;
+    },
+    enumerable: false,
+    configurable: true,
+  });
+  Object.defineProperty(proc, CAPTURE_CALLBACK, { value: null, writable: true, enumerable: false });
+  // Node's own 'warning' listener: what it prints (a program may remove it).
+  let traceHint = false;
+  proc.on('warning', (w: Error & { code?: string; detail?: string }) => {
+    let text = `(node:${proc.pid as number}) ${w.code ? `[${w.code}] ` : ''}${typeof w.toString === 'function' ? w.toString() : `${w.name}: ${w.message}`}`;
+    if (typeof w.detail === 'string') text += `\n${w.detail}`;
+    if (!traceHint) {
+      traceHint = true;
+      text += '\n(Use `node --trace-warnings ...` to show where the warning was created)';
+    }
+    opts.write('stderr', `${text}\n`);
   });
   return proc;
 }
