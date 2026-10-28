@@ -17,6 +17,11 @@
 const RANGE = /^[\w.\-+~^><=*|\sxX]*$/;
 /** A package name, optionally scoped (npm's rules, loosely): no leading dot, no path or protocol characters. */
 const NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
+/** Whether `name` is a package name (no path, protocol or other character npm refuses in one). */
+export function isPackageName(name: string): boolean {
+  return NAME.test(name);
+}
 /** A local-tarball extension: npm treats a spec ending in one as a file, whatever else it looks like. */
 const TARBALL = /\.(tgz|tar|tar\.gz)$/i;
 /** An `npm:` alias to a registry package: `npm:name` or `npm:@scope/name@range`. */

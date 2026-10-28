@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { lockPins } from '../../src/adapters/node/lockfile-pins.ts';
 import { installPlan } from '../../src/adapters/node/local-packages.ts';
 import type { PackageJson } from '../../src/types.ts';
+import { ownOverrides, sameSpec } from '../../src/adapters/node/install.ts';
 
 const PNPM_9 = `lockfileVersion: '9.0'
 
@@ -191,4 +192,77 @@ test('a yarn.lock pins a project without local packages; without pins the plan r
   const stale = installPlan({ 'package.json': '{}', 'yarn.lock': 'ms@^1.0.0:\n  version "1.0.0"\n' }, { dependencies: { ms: '^2.0.0' } });
   assert.deepEqual(stale.root.dependencies, { ms: '^2.0.0' });
   assert.equal(stale.pinned, null);
+});
+
+test('yarn.lock aliases are pinned by their real package name, never by the alias', () => {
+  const classic = lockPins({
+    'yarn.lock': `"string-width-cjs@npm:string-width@^4.2.0", string-width@^4.1.0:
+  version "4.2.3"
+  resolved "https://registry.yarnpkg.com/string-width/-/string-width-4.2.3.tgz"
+
+"strip-ansi-cjs@npm:strip-ansi@^6.0.1":
+  version "6.0.1"
+
+strip-ansi@^7.0.1:
+  version "7.1.0"
+`,
+  })!;
+  assert.deepEqual(classic.single, { 'string-width': '4.2.3' });
+  assert.equal(classic.direct('', 'string-width', '^4.1.0'), '4.2.3');
+  assert.equal(classic.direct('', 'string-width-cjs', 'npm:string-width@^4.2.0'), null);
+  const berry = lockPins({
+    'yarn.lock': `__metadata:
+  version: 8
+
+"string-width-cjs@npm:string-width@^4.2.0, string-width@npm:^4.1.0":
+  version: 4.2.3
+  resolution: "string-width@npm:4.2.3"
+`,
+  })!;
+  assert.deepEqual(berry.single, { 'string-width': '4.2.3' });
+  // In the plan: no override keyed by an alias.
+  const pkg: PackageJson = { dependencies: { cliui: '^8.0.0' } };
+  const p = installPlan({ 'package.json': JSON.stringify(pkg), 'yarn.lock': 'cliui@^8.0.0:\n  version "8.0.2"\n\n"string-width-cjs@npm:string-width@^4.2.0":\n  version "4.2.3"\n' }, pkg);
+  assert.deepEqual(p.root.overrides, { 'string-width': '4.2.3' });
+});
+
+test('names that are not package names are never pinned or overridden', () => {
+  const yarn = lockPins({ 'yarn.lock': '"../evil@^1.0.0":\n  version "1.0.0"\n\n"foo>bar@^1.0.0":\n  version "1.0.0"\n\nok@^1.0.0:\n  version "1.0.0"\n' })!;
+  assert.deepEqual(yarn.single, { ok: '1.0.0' });
+  const pnpm = lockPins({ 'pnpm-lock.yaml': "lockfileVersion: '9.0'\npackages:\n  'foo>bar@1.0.0':\n    resolution: {integrity: x}\n  ok@1.0.0:\n    resolution: {integrity: y}\n" })!;
+  assert.deepEqual(pnpm.single, { ok: '1.0.0' });
+});
+
+test('a lockfile older than package.json pins no package below the dependencies it no longer pins', () => {
+  // express ^5 in package.json; the yarn.lock still has express 4 and its dependencies.
+  const pkg: PackageJson = { dependencies: { express: '^5.0.0', ms: '^2.0.0' } };
+  const lock = 'express@^4.18.0:\n  version "4.18.2"\n\nbody-parser@1.20.1:\n  version "1.20.1"\n\nms@^2.0.0:\n  version "2.0.0"\n';
+  const p = installPlan({ 'package.json': JSON.stringify(pkg), 'yarn.lock': lock }, pkg);
+  assert.deepEqual(p.root.dependencies, { express: '^5.0.0', ms: '2.0.0' });
+  assert.equal(p.root.overrides, undefined);
+});
+
+test('a range never pins to a prerelease npm would not choose for it', () => {
+  const pins = lockPins({ 'yarn.lock': 'foo@^1.0.0:\n  version "1.1.0-beta.1"\n' })!;
+  assert.equal(pins.direct('', 'foo', '^1.0.0'), null);
+});
+
+test("warm starts compare a project's own overrides, not the versions a lockfile pins", () => {
+  const pkg: PackageJson = { dependencies: { cliui: '^8.0.0' }, overrides: { mine: '1.0.0' } };
+  const p = installPlan({ 'package.json': JSON.stringify(pkg), 'yarn.lock': 'cliui@^8.0.0:\n  version "8.0.2"\n\nwrap@^1.0.0:\n  version "1.2.0"\n' }, pkg);
+  assert.deepEqual(p.root.overrides, { wrap: '1.2.0', mine: '1.0.0' });
+  assert.deepEqual(p.root.sandburgPins, ['wrap']);
+  assert.deepEqual(ownOverrides({ overrides: p.root.overrides, sandburgPins: p.root.sandburgPins }), { mine: '1.0.0' });
+  assert.deepEqual(ownOverrides({ overrides: { a: '1' } }), { a: '1' });
+  assert.equal(ownOverrides({}), null);
+});
+
+test("a pinned version and a range it is in count as the same spec for a warm start", () => {
+  assert.ok(sameSpec('^19.0.0', '^19.0.0'));
+  assert.ok(sameSpec('^19.0.0', '19.2.1'));
+  assert.ok(sameSpec('19.2.1', '^19.0.0'));
+  assert.ok(!sameSpec('^18.0.0', '19.2.1'));
+  assert.ok(!sameSpec('^18.0.0', '^19.0.0'));
+  assert.ok(!sameSpec(undefined, '1.0.0'));
+  assert.ok(!sameSpec('latest', 'next'));
 });

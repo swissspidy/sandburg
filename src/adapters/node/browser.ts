@@ -251,7 +251,9 @@ export function createAdapter(): RuntimeAdapter {
       devCache = host.devCache ?? null;
       Object.assign(files, devCache?.files);
       // The runtime links the local packages and finds workspace packages by name (node-runtime/links.ts).
+      // Only the host's: a project's own .sandburg/ never reaches the runtime.
       if (host.links || host.workspaces) files[WORKSPACE_FILE] = JSON.stringify({ links: host.links ?? {}, packages: host.workspaces ?? {} } satisfies WorkspaceInfo);
+      else delete files[WORKSPACE_FILE];
       let nodeModules = host.index;
       let pack: ReturnType<typeof packFiles> | null = null;
       let resolved = host.resolved;

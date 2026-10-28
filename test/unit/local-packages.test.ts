@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { installPlan } from '../../src/adapters/node/local-packages.ts';
+import { installPlan, planOf } from '../../src/adapters/node/local-packages.ts';
 import { assertRegistryLockfile, assertRegistryManifest } from '../../src/adapters/node/spec-guard.ts';
 import { loadProject, projectFromFiles } from '../../src/project.ts';
 import { browserInstall, devScript, packageDirs, startCommand } from '../../src/adapters/node/plan.ts';
@@ -76,7 +76,7 @@ test('a workspace needing another version of a package than the root gets it in 
     'packages/old': { name: '@acme/old', version: '1.0.0', dependencies: { ms: '1.0.0', kleur: '^4.0.0' } },
   });
   assert.deepEqual(p.root.dependencies, { ms: '^2.1.0', kleur: '^4.0.0' });
-  assert.deepEqual(p.nested, [{ dir: 'packages/old', dependencies: { ms: '1.0.0' } }]);
+  assert.deepEqual(p.nested, [{ dir: 'packages/old', dependencies: { ms: '1.0.0' }, lockfile: null }]);
 });
 
 test('pnpm workspaces: workspace: ranges (and aliases) link the workspace package of that name', () => {
@@ -229,4 +229,66 @@ test('the probe refuses what cannot be installed before anything is; a missing l
   assert.equal(node.probe(app({ x: 'file:../out' })).verdict, 'unsupported');
   assert.equal(node.probe(app({ x: 'file:./missing' })).verdict, 'supported');
   assert.equal(node.probe(app({ x: '^1.0.0' })).verdict, 'supported');
+});
+
+test('compatible ranges of a package are installed once, at the top; only ranges no one version serves are nested', () => {
+  const p = plan({
+    '': { name: 'mono', workspaces: ['apps/*', 'packages/*'], dependencies: { react: '^18.2.0' } },
+    'apps/web': { name: 'web', dependencies: { react: '^18.3.1', ui: '*' } },
+    'packages/ui': { name: 'ui', version: '1.0.0', peerDependencies: { react: '>=18' } },
+  });
+  assert.deepEqual(p.nested, []);
+  assert.equal(p.root.dependencies?.react, '^18.2.0 ^18.3.1');
+  const apart = plan({ '': { workspaces: ['a'], dependencies: { react: '^18.2.0' } }, a: { name: 'a', dependencies: { react: '^19.0.0' } } });
+  assert.deepEqual(apart.nested, [{ dir: 'a', dependencies: { react: '^19.0.0' }, lockfile: null }]);
+});
+
+test("with a package-lock, a workspace's range the locked version does not serve is nested, at the lock's own nested version", () => {
+  const lock = JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      '': { workspaces: ['a'] },
+      'node_modules/react': { version: '18.2.0', resolved: 'https://registry.npmjs.org/react/-/react-18.2.0.tgz', integrity: 'sha512-r' },
+      'node_modules/a': { resolved: 'a', link: true },
+      a: { name: 'a', dependencies: { react: '^18.3.0' } },
+      'a/node_modules/react': { version: '18.3.1', resolved: 'https://registry.npmjs.org/react/-/react-18.3.1.tgz', integrity: 'sha512-s' },
+    },
+  });
+  const p = installPlan(
+    { 'package.json': JSON.stringify({ workspaces: ['a'], dependencies: { react: '^18.2.0' } }), 'a/package.json': JSON.stringify({ name: 'a', dependencies: { react: '^18.3.0' } }), 'package-lock.json': lock },
+    { workspaces: ['a'], dependencies: { react: '^18.2.0' } },
+  );
+  assert.equal(p.root.dependencies?.react, '^18.2.0');
+  assert.equal(p.nested.length, 1);
+  assert.deepEqual(p.nested[0].dependencies, { react: '^18.3.0' });
+  const nestedLock = JSON.parse(p.nested[0].lockfile!);
+  assert.equal(nestedLock.packages['node_modules/react'].version, '18.3.1');
+  assert.doesNotThrow(() => assertRegistryLockfile(p.nested[0].lockfile!));
+});
+
+test("a local package's peer dependencies are installed, as npm 7 and later install them", () => {
+  const p = plan({ '': { workspaces: ['ui'], dependencies: { ms: '^2.0.0' } }, ui: { name: 'ui', peerDependencies: { react: '^18.0.0', ms: '*', opt: '^1.0.0' }, peerDependenciesMeta: { opt: { optional: true } } } });
+  assert.deepEqual(p.root.dependencies, { ms: '^2.0.0', react: '^18.0.0' });
+});
+
+test('names that are not package names are refused: a workspace, or a local dependency', () => {
+  assert.match(message(() => plan({ '': { workspaces: ['a'] }, a: { name: '../../.sandburg' } })), /EINVALIDPACKAGENAME/);
+  assert.equal(code(() => plan({ '': { workspaces: ['a'] }, a: { name: '../../.sandburg' } })), 'APP');
+  assert.equal(code(() => plan({ '': { dependencies: { '../../x': 'file:./lib' } }, lib: { name: 'lib' } })), 'APP');
+  assert.equal(code(() => plan({ '': { dependencies: { 'node_modules/../x': 'workspace:*' }, workspaces: ['lib'] }, lib: { name: 'lib' } })), 'APP');
+});
+
+test("an npm monorepo's v1 package-lock.json loses its local packages too", () => {
+  const lock = JSON.stringify({ lockfileVersion: 1, dependencies: { web: { version: 'file:apps/web' }, lib: { version: 'file:lib', dependencies: { x: { version: '1.0.0' } } }, ms: { version: '2.1.2', resolved: 'https://registry.npmjs.org/ms/-/ms-2.1.2.tgz' } } });
+  const p = installPlan(
+    { 'package.json': '{}', 'apps/web/package.json': JSON.stringify({ name: 'web', dependencies: { ms: '^2.1.0', lib: 'file:../../lib' } }), 'lib/package.json': '{"name":"lib"}', 'package-lock.json': lock },
+    { workspaces: ['apps/*'] },
+  );
+  assert.doesNotThrow(() => assertRegistryLockfile(p.lockfile!));
+  assert.deepEqual(Object.keys(JSON.parse(p.lockfile!).dependencies), ['ms']);
+});
+
+test('the plan is worked out once per project', () => {
+  const project = projectFromFiles({ 'package.json': '{"workspaces":["a"]}', 'a/package.json': '{"name":"a"}' }, { name: 'p', path: 'p' });
+  assert.equal(planOf(project), planOf(project));
 });

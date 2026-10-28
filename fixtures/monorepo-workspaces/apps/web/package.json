@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@acme/greet": "^1.0.0",
-    "@acme/format": "file:../../shared/format"
+    "@acme/format": "file:../../shared/format",
+    "ms": "^2.1.1"
   }
 }

@@ -13,8 +13,8 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { findFullStack } from './scripts.ts';
-import { browserInstall, devScript, isSimple, packageDirs, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
-import { installPlan } from './local-packages.ts';
+import { browserInstall, devScript, isSimple, packageDirs, nestedInstall, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
+import { planOf } from './local-packages.ts';
 import { UnsupportedDependencyError } from './spec-guard.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
@@ -283,7 +283,7 @@ export const node: AdapterDescriptor = {
     // here, before anything is installed. A local package that is not there is the install's to report.
     if (project.framework !== 'static') {
       try {
-        installPlan(project.files, project.packageJson);
+        planOf(project);
       } catch (e) {
         if (e instanceof UnsupportedDependencyError) return { verdict: 'unsupported', reason: e.message };
       }
@@ -298,7 +298,7 @@ export const node: AdapterDescriptor = {
     if (project.framework === 'static') return staticInstall();
     // Workspaces and file:/link: packages are linked, their registry dependencies installed with the
     // root's; a pnpm-lock.yaml or yarn.lock pins versions (local-packages.ts, ADR 0064).
-    const plan = installPlan(project.files, project.packageJson);
+    const plan = planOf(project);
     const pinned = pinnedNote(plan);
     if (pinned) log(pinned);
     if (options?.installIn === 'browser') return browserInstall(project);
@@ -309,7 +309,7 @@ export const node: AdapterDescriptor = {
     const info = await installer.install(root, extraDependencies(root), log);
     const parts = [{ dir: '', key: info.key }];
     // A local package's dependencies in other versions than the root's, in its own node_modules.
-    for (const { dir, dependencies } of plan.nested) parts.push({ dir, key: (await installer.install({ ...project, files: {}, packageJson: { dependencies } }, {}, log)).key });
+    for (const { dir, dependencies, lockfile } of plan.nested) parts.push({ dir, key: (await installer.install({ ...project, ...nestedInstall(dependencies, lockfile) }, {}, log)).key });
     // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
     for (const dir of packageDirs(project, plan.local)) {
       const sub = subProject(project, dir);
@@ -398,7 +398,7 @@ export const node: AdapterDescriptor = {
   isWarm: async (project) => {
     let root: Project;
     try {
-      root = rootInstall(project, installPlan(project.files, project.packageJson));
+      root = rootInstall(project, planOf(project));
     } catch {
       return false; // the install reports it
     }

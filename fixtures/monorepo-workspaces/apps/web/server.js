@@ -6,8 +6,8 @@ const { shout } = require('@acme/format');
 const port = process.env.PORT || 3000;
 http
   .createServer(async (req, res) => {
-    const { greet, msVersion } = await import('@acme/greet');
+    const { greet, msVersion, ms } = await import('@acme/greet');
     res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.end(`<!doctype html><html lang="en"><title>Monorepo</title><main><h1>${shout(greet('monorepo'))}</h1><p id="ms">ms ${msVersion}</p></main></html>`);
+    res.end(`<!doctype html><html lang="en"><title>Monorepo</title><main><h1>${shout(greet('monorepo'))}</h1><p id="ms">ms ${msVersion}</p><p id="copies">${ms === require('ms') ? 'one ms' : 'two copies of ms'}</p></main></html>`);
   })
   .listen(port, () => console.log(`listening on ${port}`));

@@ -25,7 +25,7 @@ import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
-import { parseWorkspace, setLinks, WORKSPACE_FILE } from './links.ts';
+import { parseWorkspace, safeLinks, setLinks, WORKSPACE_FILE } from './links.ts';
 import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
 import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
@@ -297,8 +297,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   const workspaceFile = `${msg.cwd}/${WORKSPACE_FILE}`;
   const workspace = parseWorkspace(vfs.kind(workspaceFile) === 'file' ? new TextDecoder().decode(vfs.read(workspaceFile)) : null);
   if (workspace) {
-    setLinks(workspace.links, msg.cwd);
-    if (!thread) linkLocalPackages(workspace.links, Object.keys(msg.files), msg.cwd);
+    const links = safeLinks(workspace.links);
+    setLinks(links, msg.cwd);
+    if (!thread) linkLocalPackages(links, Object.keys(msg.files), msg.cwd);
   }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).

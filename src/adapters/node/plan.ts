@@ -8,7 +8,7 @@ import { extraDependencies } from './install-rules.ts';
 import { detectFramework } from '../../framework.ts';
 import type { Project } from '../../types.ts';
 import type { HostInstall } from './browser.ts';
-import { installPlan, type InstallPlan } from './local-packages.ts';
+import { planOf, type InstallPlan } from './local-packages.ts';
 import { workspacePatterns } from '../../workspaces.ts';
 
 /**
@@ -97,6 +97,11 @@ export function rootInstall(project: Project, plan: InstallPlan): Project {
   return { ...project, files, packageJson: { ...project.packageJson, ...plan.root } };
 }
 
+/** A local package's own install (InstallPlan's nested): its dependencies, and its package-lock entries if the project has them. */
+export function nestedInstall(dependencies: Record<string, string>, lockfile: string | null): Pick<Project, 'files' | 'packageJson'> {
+  return { files: lockfile === null ? {} : { 'package-lock.json': lockfile }, packageJson: { dependencies } };
+}
+
 /** What the runtime needs to know of a project's local packages (links.ts' WORKSPACE_FILE), or nothing when it has none. */
 export function workspaceInfo(plan: InstallPlan): Pick<HostInstall, 'links' | 'workspaces'> {
   return Object.keys(plan.links).length || Object.keys(plan.workspaces).length ? { links: plan.links, workspaces: plan.workspaces } : {};
@@ -118,9 +123,9 @@ export function browserInstall(project: Project): HostInstall {
     lockfile: typeof p.files['package-lock.json'] === 'string' ? p.files['package-lock.json'] : null,
     extra: dir ? {} : extraDependencies(p),
   });
-  const plan = installPlan(project.files, project.packageJson);
+  const plan = planOf(project);
   const parts = [part('', rootInstall(project, plan))];
-  for (const { dir, dependencies } of plan.nested) parts.push(part(dir, { files: {}, packageJson: { dependencies } }));
+  for (const { dir, dependencies, lockfile } of plan.nested) parts.push(part(dir, nestedInstall(dependencies, lockfile)));
   for (const dir of packageDirs(project, plan.local)) {
     const sub = subProject(project, dir);
     if (Object.keys({ ...sub.packageJson?.dependencies, ...sub.packageJson?.devDependencies }).length) parts.push(part(dir, sub));

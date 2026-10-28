@@ -165,7 +165,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
   };
 
   /** The script a package manager command runs, or null. */
-  const packageScript = (words: string[], dir: string): { script: string; cwd: string; name: string } | null => {
+  const packageScript = (words: string[], dir: string): { script: string; cwd: string; name: string } | { error: string } | null => {
     const [runner, ...rest] = words;
     let args = [...rest];
     let target = dir;
@@ -197,8 +197,12 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       const flag = flags.find((f) => a === f || a.startsWith(`${f}=`));
       const value = flag ? (a === flag ? args[i + 1] : a.slice(flag.length + 1)) : runner === 'yarn' && a === 'workspace' && i === 0 ? args[1] : undefined;
       if (value === undefined) continue;
+      const as = `${runner} ${flag ?? 'workspace'} ${value}`;
+      // pnpm's selectors beyond a name or a directory (`web...`, `./apps/*`, `@scope/*`, `!web`) pick
+      // packages by the dependency graph or a pattern: not run here.
+      if (runner === 'pnpm' && /\.\.\.|[*!^[\]]/.test(value)) return { error: `${as}: selectors other than a package name or a directory are not supported in the browser runtime` };
       const ws = workspace(value, target);
-      if (!ws) return null;
+      if (!ws) return { error: `${as}: no workspace package "${value}"` };
       target = ws;
       args.splice(i, a === flag || a === 'workspace' ? 2 : 1);
       break;
@@ -310,6 +314,10 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       if (cmd === 'npm' && args[0] === 'exec') return command(args.slice(1).filter((a) => a !== '--' && !/^(-y|--yes)$/.test(a)), dir, localEnv, done);
       if ((cmd === 'pnpm' || cmd === 'yarn') && (args[0] === 'exec' || args[0] === 'dlx')) return command(args.slice(1), dir, localEnv, done);
       const target = packageScript(words, dir);
+      if (target && 'error' in target) {
+        host.write(2, `sh: ${target.error}\n`);
+        return later(1);
+      }
       if (target) {
         const npmEnv = { ...localEnv, npm_lifecycle_event: target.name, INIT_CWD: localEnv.INIT_CWD ?? dir };
         return sequence(target.script, target.cwd, npmEnv, (code) => done(code));

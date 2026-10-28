@@ -16,6 +16,7 @@
 import semver from 'semver';
 import { parseYaml, type YamlValue } from '../../yaml-lite.ts';
 import type { FileTree } from '../../types.ts';
+import { isPackageName } from './spec-guard.ts';
 
 export interface LockPins {
   /** The lockfile the pins come from. */
@@ -47,7 +48,7 @@ function lockedVersion(value: string): string | null {
 /** A version that satisfies `spec`, or null (a dist-tag, an alias or another protocol is not pinned). */
 function satisfying(version: string | null, spec: string): string | null {
   if (!version || !semver.validRange(spec, { loose: true })) return null;
-  return semver.satisfies(version, spec, { loose: true, includePrerelease: true }) ? version : null;
+  return semver.satisfies(version, spec, { loose: true }) ? version : null;
 }
 
 /** Name and version of a pnpm `packages` key: "name@1.0.0" (v9), "/name@1.0.0(peer)" (v6), "/name/1.0.0_peer" (v5). */
@@ -55,12 +56,11 @@ function pnpmPackageKey(key: string): { name: string; version: string } | null {
   const k = key.startsWith('/') ? key.slice(1) : key;
   for (const i of [k.indexOf('@', 1), k.lastIndexOf('/')].filter((i) => i > 0)) {
     const name = k.slice(0, i);
-    const version = PACKAGE_NAME.test(name) ? lockedVersion(k.slice(i + 1)) : null;
+    const version = isPackageName(name) ? lockedVersion(k.slice(i + 1)) : null;
     if (version) return { name, version };
   }
   return null;
 }
-const PACKAGE_NAME = /^(?:@[^/@]+\/)?[^/@]+$/;
 
 function pnpmPins(text: string): LockPins | null {
   const doc = asMap(parseYaml(text));
@@ -87,9 +87,14 @@ function pnpmPins(text: string): LockPins | null {
   return { source: 'pnpm-lock.yaml', direct, single: singles(versions) };
 }
 
-/** A yarn.lock (classic v1, or berry's YAML) as descriptor ("name@range", berry's npm: dropped) → version. */
-function yarnEntries(text: string): Map<string, string> {
-  const out = new Map<string, string>();
+/**
+ * A yarn.lock (classic v1, or berry's YAML): its entries by descriptor ("name@range", berry's npm:
+ * dropped), each with the package it resolves to and the version. An alias's descriptor
+ * (`"string-width-cjs@npm:string-width@^4.2.0"`) resolves to its real package: it is pinned by
+ * that name, never by the alias.
+ */
+function yarnEntries(text: string): Map<string, { name: string; version: string }> {
+  const out = new Map<string, { name: string; version: string }>();
   let descriptors: string[] = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim() || line.trimStart().startsWith('#')) continue;
@@ -106,27 +111,34 @@ function yarnEntries(text: string): Map<string, string> {
     for (const d of descriptors) {
       const at = d.indexOf('@', 1);
       if (at < 0) continue;
-      const range = d.slice(at + 1);
+      const name = d.slice(0, at);
+      let range = d.slice(at + 1);
       // Berry's protocols other than npm: (workspace:, patch:, link:, portal:, file:) are not registry versions.
       if (/^[a-z]+:/.test(range) && !range.startsWith('npm:')) continue;
-      out.set(`${d.slice(0, at)}@${range.replace(/^npm:/, '')}`, m[1]);
+      const aliased = range.startsWith('npm:') ? ALIASED.exec(range.slice('npm:'.length)) : null;
+      range = range.replace(/^npm:/, '');
+      const real = aliased ? aliased[1] : name;
+      if (!isPackageName(name) || !isPackageName(real)) continue;
+      out.set(`${name}@${range}`, { name: real, version: m[1] });
     }
     descriptors = [];
   }
   return out;
 }
+/** An alias's target after `npm:`: `<package>@<range>`. */
+const ALIASED = /^((?:@[^/@\s]+\/)?[^/@\s]+)@(.*)$/;
 
 function yarnPins(text: string): LockPins | null {
   const entries = yarnEntries(text);
   if (!entries.size) return null;
   const versions = new Map<string, Set<string>>();
-  for (const [descriptor, version] of entries) {
-    const name = descriptor.slice(0, descriptor.indexOf('@', 1));
+  for (const { name, version } of entries.values()) {
     const v = semver.valid(version);
     if (v) versions.set(name, (versions.get(name) ?? new Set()).add(v));
   }
   // yarn locks by descriptor, not by package: the same range resolves the same in every workspace.
-  const direct = (_dir: string, name: string, spec: string) => satisfying(semver.valid(entries.get(`${name}@${spec}`) ?? ''), spec);
+  // An alias is not pinned: its spec (`npm:other@^1`) is not a range.
+  const direct = (_dir: string, name: string, spec: string) => satisfying(semver.valid(entries.get(`${name}@${spec}`)?.version ?? ''), spec);
   return { source: 'yarn.lock', direct, single: singles(versions) };
 }
 

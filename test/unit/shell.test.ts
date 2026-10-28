@@ -148,5 +148,17 @@ test('every workspace\'s script (npm --workspaces, pnpm -r) is not run, and does
   assert.equal(await s.exit, 127);
   assert.deepEqual(s.ran, []);
   assert.equal(await run('pnpm -r dev', { files }).exit, 127);
-  assert.equal(await run('npm run dev -w missing', { files }).exit, 127);
+  assert.equal(await run('npm run dev -w missing', { files }).exit, 1);
+});
+
+test('a pnpm --filter selector other than a name or a directory is said to be unsupported, by name', async () => {
+  const files = { '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web' } }), '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }) };
+  for (const selector of ['web...', './apps/*', '@scope/*', '...^web', '!web']) {
+    const s = run(`pnpm --filter ${selector} dev`, { files });
+    assert.equal(await s.exit, 1, selector);
+    assert.match(s.err.join(''), new RegExp(`--filter ${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: .*not supported`), selector);
+  }
+  const missing = run('npm run dev -w nope', { files });
+  assert.equal(await missing.exit, 1);
+  assert.match(missing.err.join(''), /no workspace package "nope"/);
 });

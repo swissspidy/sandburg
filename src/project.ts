@@ -89,6 +89,10 @@ async function workspaceManifest(dir: string): Promise<string[] | null> {
 
 /** A project from a file tree in memory: its package.json, framework and snapshot id. */
 export function projectFromFiles(files: FileTree, meta: { name: string; path: string }): Project {
+  // Sandburg's own directory is never the project's, however the project came (a JSON tree, a
+  // snapshot, the API): the disk and zip loaders leave it out as they read; here for the rest. The
+  // runtime reads the links of local packages from it (.sandburg/workspace.json).
+  if (Object.keys(files).some((p) => p.split('/').includes('.sandburg'))) files = Object.fromEntries(Object.entries(files).filter(([p]) => !p.split('/').includes('.sandburg')));
   let packageJson: PackageJson | null = null;
   const pkgSource = files['package.json'];
   if (typeof pkgSource === 'string') {

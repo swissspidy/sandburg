@@ -15,7 +15,7 @@
  * Pure (no Node.js imports): the host's install and the page's use the same plan.
  */
 import semver from 'semver';
-import { parseRegistrySpec, unsupportedDependency } from './spec-guard.ts';
+import { isPackageName, parseRegistrySpec, unsupportedDependency } from './spec-guard.ts';
 import { lockPins } from './lockfile-pins.ts';
 import { workspaceDirs } from '../../workspaces.ts';
 import type { FileTree, PackageJson } from '../../types.ts';
@@ -29,11 +29,11 @@ interface InstallManifest {
 
 export interface InstallPlan {
   /** What npm installs at the project's root: its registry dependencies, and those of every local package. */
-  root: InstallManifest;
+  root: InstallManifest & { /** The overrides that pin a lockfile's versions (not the project's own): see ownOverrides, install.ts. */ sandburgPins?: string[] };
   /** The root's package-lock.json, without the entries of its local packages (their links and directories), or null. */
   lockfile: string | null;
   /** Registry dependencies a local package needs in another version than the root's: installed into its own node_modules. */
-  nested: { dir: string; dependencies: Record<string, string> }[];
+  nested: { dir: string; dependencies: Record<string, string>; lockfile: string | null }[];
   /** Where each local package appears (a project-relative node_modules path) → its directory. */
   links: Record<string, string>;
   /** Workspace packages by name → directory (for `npm -w <name>`, `pnpm --filter <name>`, `yarn workspace <name>`). */
@@ -90,15 +90,23 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
     if (!manifest) throw new LocalPackageError(`npm error code EJSONPARSE: ${dir}/package.json is not a valid package.json`);
     manifests.set(dir, manifest);
     if (typeof manifest.name !== 'string') continue;
+    // A workspace's name is where it is linked (node_modules/<name>): a package name, nothing else.
+    if (!isPackageName(manifest.name)) throw new LocalPackageError(`npm error code EINVALIDPACKAGENAME: ${dir}/package.json: "${manifest.name}" is not a valid package name`);
     const other = workspaces[manifest.name];
     if (other !== undefined) throw new LocalPackageError(`npm error must not have multiple workspaces with the same name: package '${manifest.name}' in ${other} and ${dir}`);
     workspaces[manifest.name] = dir;
   }
   const pins = lockPins(files);
   let pinnedAny = false;
+  // Whether every registry dependency the packages declare is at its locked version: the lockfile
+  // is as new as the package.json files, and what it resolved below them still holds.
+  let pinnedAll = true;
   const pin = (dir: string, name: string, spec: string): string => {
     const version = pins?.direct(dir, name, spec);
-    if (!version) return spec;
+    if (!version) {
+      pinnedAll = false;
+      return spec;
+    }
     pinnedAny = true;
     return version;
   };
@@ -140,8 +148,12 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   };
 
   // The root, every workspace, and each package a file:/link: dependency reaches: their dependencies
-  // in that order (a workspace's and the root's devDependencies too, as npm installs them).
+  // in that order (a workspace's and the root's devDependencies too, as npm installs them), and a
+  // local package's peer dependencies (npm 7 and later install them). Optional dependencies are left
+  // out, for every package, as the install leaves them out (--omit=optional; WebAssembly builds
+  // replace native ones, install-rules.ts).
   const wants: { dir: string; name: string; spec: string; field: 'dependencies' | 'devDependencies' }[] = [];
+  const peers: { name: string; spec: string }[] = [];
   const declared: { dir: string; name: string; to: string }[] = [];
   const queue: { dir: string; manifest: PackageJson; dev: boolean }[] = [{ dir: '', manifest: root, dev: true }, ...members.map((dir) => ({ dir, manifest: manifests.get(dir)!, dev: true }))];
   const seen = new Set(queue.map((q) => q.dir));
@@ -151,6 +163,8 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
       const deps = manifest[field];
       if (!deps || typeof deps !== 'object') continue;
       for (const [name, raw] of Object.entries(deps)) {
+        // A dependency's name is where it is installed or linked: a package name, nothing else.
+        if (!isPackageName(name)) throw new LocalPackageError(`npm error code EINVALIDPACKAGENAME: ${dir || '.'}: dependency "${name}" is not a valid package name`);
         const spec = String(raw);
         const to = target(dir, name, spec);
         if (to === null) {
@@ -164,6 +178,13 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
         }
       }
     }
+    if (dir && manifest.peerDependencies && typeof manifest.peerDependencies === 'object') {
+      const meta = (manifest.peerDependenciesMeta ?? {}) as Record<string, { optional?: boolean } | undefined>;
+      for (const [name, raw] of Object.entries(manifest.peerDependencies as Record<string, unknown>)) {
+        if (meta[name]?.optional || !isPackageName(name) || !parseRegistrySpec(name, String(raw))) continue;
+        peers.push({ name, spec: String(raw) });
+      }
+    }
   }
   const local = [...seen].filter((d) => d !== '').sort();
 
@@ -174,6 +195,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   if (!local.length && !pins) {
     return { root: { dependencies: root.dependencies, devDependencies: root.devDependencies, overrides: root.overrides }, lockfile: lock, nested: [], links: {}, workspaces, pinned: null, local };
   }
+  const tree = lock !== null && local.length ? lockTree(lock) : null;
 
   const dependencies: Record<string, string> = {};
   const devDependencies: Record<string, string> = {};
@@ -185,11 +207,22 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   for (const w of wants) {
     if (!w.dir) continue;
     const there = hoisted(w.name);
-    // A local package's dependencies are installed with the root's, or into its own node_modules
-    // when it needs another version.
+    // A local package's dependencies are installed with the root's: one copy, which every package
+    // finds (two copies of React in one app do not work). Only a range that copy cannot serve (the
+    // locked version, or any version in both ranges) goes into the package's own node_modules.
     if (there === undefined) dependencies[w.name] = w.spec;
-    else if (there !== w.spec) nested.set(w.dir, { ...nested.get(w.dir), [w.name]: w.spec });
+    else if (there === w.spec) continue;
+    else {
+      const locked = tree?.packages[`node_modules/${w.name}`]?.version;
+      if (typeof locked === 'string' ? semver.satisfies(locked, w.spec, { loose: true }) : compatible(there, w.spec)) {
+        // Without a lockfile, npm picks one version in both ranges.
+        if (typeof locked !== 'string') (w.name in dependencies ? dependencies : devDependencies)[w.name] = `${there} ${w.spec}`;
+      } else nested.set(w.dir, { ...nested.get(w.dir), [w.name]: w.spec });
+    }
   }
+  // A local package's peers come from the top, as npm installs them; one the packages already
+  // install is that one.
+  for (const { name, spec } of peers) if (hoisted(name) === undefined && workspaces[name] === undefined && !declared.some((d) => d.name === name)) dependencies[name] = spec;
 
   // npm links every workspace at the top of node_modules, and a file:/link: dependency there unless
   // that place is taken (then into its dependent's node_modules). A registry package of the same
@@ -203,23 +236,27 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
     else links[dir ? `${dir}/node_modules/${name}` : top] = to;
   }
 
-  // The lockfile's single-version packages, pinned with overrides; never one the project names itself
-  // (npm refuses an override that differs from a direct dependency's spec), nor one it overrides.
-  const named = new Set([...wants.map((w) => w.name), ...declared.map((d) => d.name), ...Object.keys(workspaces)]);
+  // The lockfile's single-version packages, pinned with overrides when every dependency the packages
+  // declare is at its locked version (with one that is not, the lockfile's tree below it no longer
+  // holds); never one the project names itself (npm refuses an override that differs from a direct
+  // dependency's spec), nor one it overrides.
+  const named = new Set([...wants.map((w) => w.name), ...peers.map((p) => p.name), ...declared.map((d) => d.name), ...Object.keys(workspaces)]);
   const own = root.overrides && typeof root.overrides === 'object' ? (root.overrides as Record<string, unknown>) : null;
   let overrides: unknown = root.overrides;
-  if (pins) {
-    const singles = Object.entries(pins.single).filter(([name]) => !named.has(name) && !(own && name in own));
+  let sandburgPins: string[] | undefined;
+  if (pins && pinnedAll) {
+    const singles = Object.entries(pins.single).filter(([name]) => !named.has(name) && !(own && name in own) && isPackageName(name));
     if (singles.length) {
       overrides = { ...Object.fromEntries(singles), ...own };
+      sandburgPins = singles.map(([name]) => name);
       pinnedAny = true;
     }
   }
 
   return {
-    root: { dependencies, devDependencies, overrides },
-    lockfile: lock !== null && local.length ? withoutLocal(lock, local, { dependencies, devDependencies }) : lock,
-    nested: [...nested].sort(([a], [b]) => a.localeCompare(b)).map(([dir, deps]) => ({ dir, dependencies: deps })),
+    root: { dependencies, devDependencies, overrides, ...(sandburgPins && { sandburgPins }) },
+    lockfile: tree ? withoutLocal(tree, local, { dependencies, devDependencies }) : lock,
+    nested: [...nested].sort(([a], [b]) => a.localeCompare(b)).map(([dir, deps]) => ({ dir, dependencies: deps, lockfile: tree ? nestedLock(tree, dir, deps) : null })),
     links,
     workspaces,
     pinned: pinnedAny ? pins!.source : null,
@@ -227,32 +264,85 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   };
 }
 
+/** Whether one version can be in both ranges (two ranges, not dist-tags or aliases). */
+function compatible(a: string, b: string): boolean {
+  try {
+    return !!semver.validRange(a, { loose: true }) && !!semver.validRange(b, { loose: true }) && semver.intersects(a, b, { loose: true });
+  } catch {
+    return false;
+  }
+}
+
+interface LockTree {
+  lockfileVersion?: number;
+  packages: Record<string, { version?: unknown; link?: unknown; resolved?: unknown } | null>;
+  dependencies?: Record<string, { version?: unknown } | null>;
+  [k: string]: unknown;
+}
+
+/** A package-lock.json as parsed, or null when it is not one (npm reports that). A v1 lockfile has no `packages`. */
+function lockTree(text: string): LockTree | null {
+  try {
+    const lock = JSON.parse(text) as LockTree;
+    if (!lock || typeof lock !== 'object') return null;
+    if (!lock.packages || typeof lock.packages !== 'object') lock.packages = {};
+    return lock;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A package-lock.json without its local packages: their link entries (`node_modules/web` →
- * `apps/web`), their directories' entries (`apps/web`, `apps/web/node_modules/…`) and the v2
- * lockfile's back-compat tree (which records them as `file:` versions). The root's entry is the
- * plan's. What is left are registry packages, checked as any lockfile is (assertRegistryLockfile);
- * npm reconciles the tree with the plan's package.json.
+ * `apps/web`), their directories' entries (`apps/web`, `apps/web/node_modules/…`) and the back-compat
+ * tree of a v1 or v2 lockfile, whose entries for them are `file:` versions (a v1 lockfile keeps the
+ * rest of its tree). The root's entry is the plan's. What is left are registry packages, checked
+ * as any lockfile is (assertRegistryLockfile); npm reconciles the tree with the plan's package.json.
  */
-function withoutLocal(text: string, local: string[], root: InstallManifest): string {
-  let lock: { lockfileVersion?: number; packages?: Record<string, unknown>; dependencies?: unknown; [k: string]: unknown };
-  try {
-    lock = JSON.parse(text);
-  } catch {
-    return text;
-  }
-  if (!lock || typeof lock !== 'object' || !lock.packages || typeof lock.packages !== 'object') return text;
+function withoutLocal(lock: LockTree, local: string[], root: InstallManifest): string {
   const dirs = new Set(local);
   const isLocal = (loc: string) => local.some((d) => loc === d || loc.startsWith(`${d}/`));
+  const localEntry = (version: unknown) => typeof version === 'string' && /^(file|link):/.test(version) && dirs.has(inside('', version.slice(version.indexOf(':') + 1)) ?? '');
+  if (!Object.keys(lock.packages).length) {
+    // v1: the tree by name; a local package's entry (and what is nested in it) goes.
+    const dependencies = Object.fromEntries(Object.entries(lock.dependencies ?? {}).filter(([, e]) => !localEntry(e?.version)));
+    const v1: Record<string, unknown> = { ...lock, dependencies };
+    delete v1.packages;
+    return JSON.stringify(v1, null, 2);
+  }
   const packages: Record<string, unknown> = {};
   for (const [loc, entry] of Object.entries(lock.packages)) {
     if (loc === '') continue;
     if (isLocal(loc)) continue;
-    const e = entry as { link?: unknown; resolved?: unknown } | null;
-    if (e && e.link === true && typeof e.resolved === 'string' && dirs.has(inside('', e.resolved) ?? '')) continue;
+    if (entry && entry.link === true && typeof entry.resolved === 'string' && dirs.has(inside('', entry.resolved) ?? '')) continue;
     packages[loc] = entry;
   }
   const rest: Record<string, unknown> = { ...lock };
   delete rest.dependencies;
   return JSON.stringify({ ...rest, lockfileVersion: Math.max(3, lock.lockfileVersion ?? 3), packages: { '': { dependencies: root.dependencies, devDependencies: root.devDependencies }, ...packages } }, null, 2);
+}
+
+/**
+ * The lockfile of a local package's own install (its dependencies in versions the root's cannot
+ * serve): the package-lock's entries under its node_modules, where npm put them, or null if it has
+ * none (they resolve from their ranges).
+ */
+function nestedLock(lock: LockTree, dir: string, dependencies: Record<string, string>): string | null {
+  const prefix = `${dir}/node_modules/`;
+  const packages: Record<string, unknown> = {};
+  for (const [loc, entry] of Object.entries(lock.packages)) if (loc.startsWith(prefix)) packages[`node_modules/${loc.slice(prefix.length)}`] = entry;
+  if (!Object.keys(packages).length) return null;
+  return JSON.stringify({ name: 'sandburg-nested', lockfileVersion: 3, requires: true, packages: { '': { dependencies }, ...packages } }, null, 2);
+}
+
+/** Plans by project files (a run's probe, install and warm check ask for the same project's). */
+const plans = new WeakMap<FileTree, { pkg: PackageJson | null; plan: InstallPlan }>();
+
+/** The install plan of a project, worked out once for its files. */
+export function planOf(project: { files: FileTree; packageJson: PackageJson | null }): InstallPlan {
+  const known = plans.get(project.files);
+  if (known && known.pkg === project.packageJson) return known.plan;
+  const plan = installPlan(project.files, project.packageJson);
+  plans.set(project.files, { pkg: project.packageJson, plan });
+  return plan;
 }

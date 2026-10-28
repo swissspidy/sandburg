@@ -21,10 +21,14 @@ export function workspacePatterns(files: FileTree, pkg: PackageJson | null): str
   }
   const yaml = files['pnpm-workspace.yaml'] ?? files['pnpm-workspace.yml'];
   if (typeof yaml === 'string') {
-    declared = true;
+    // pnpm 10 writes one for its settings alone (onlyBuiltDependencies): without `packages`, it
+    // declares no workspaces.
     const doc = parseYaml(yaml);
     const packages = doc && typeof doc === 'object' && !Array.isArray(doc) ? doc.packages : undefined;
-    if (Array.isArray(packages)) out.push(...packages.filter((p): p is string => typeof p === 'string'));
+    if (Array.isArray(packages)) {
+      declared = true;
+      out.push(...packages.filter((p): p is string => typeof p === 'string'));
+    }
   }
   return declared ? out : null;
 }

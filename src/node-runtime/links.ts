@@ -9,9 +9,27 @@
 /** Link → target, absolute, longest link first. */
 let links: [string, string][] = [];
 
+/** A path of a package in a node_modules directory: `node_modules/<name>`, `apps/web/node_modules/@scope/<name>`. */
+const LINK = /^(?:[^/]+\/)*node_modules\/(?:@[^/.][^/]*\/)?[^/.][^/]*$/;
+/** A project-relative directory: no empty, `.` or `..` segment, not absolute. */
+const DIR = /^(?!\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)[^\\]*$/;
+
+/**
+ * The links that are a package's place in a node_modules directory, and point to a directory inside
+ * the project: what the host's plan makes (local-packages.ts). Any other is dropped, so that a
+ * link never writes or resolves outside node_modules or the project.
+ */
+export function safeLinks(map: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [from, to] of Object.entries(map)) {
+    if (typeof to === 'string' && to && LINK.test(from) && DIR.test(from) && DIR.test(to)) out[from] = to;
+  }
+  return out;
+}
+
 /** The project's links (project-relative node_modules path → package directory) under `root`. */
 export function setLinks(map: Record<string, string>, root: string): void {
-  links = Object.entries(map)
+  links = Object.entries(safeLinks(map))
     .map(([from, to]): [string, string] => [`${root}/${from}`, to ? `${root}/${to}` : root])
     .sort(([a], [b]) => b.length - a.length);
 }
