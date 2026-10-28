@@ -263,6 +263,7 @@ deploying, for a pull request that changes the demos, `src/` or the packages.
 CI runs on every pull request and push to `main`. It runs typecheck, lint and unit tests on Node 24 (LTS),
 the runtime tests in Chromium, the packed package, and each e2e file as its own job; the Docker reference tests run there too. Each
 job reports its tests' times, with a warning annotation for a file over its budget in `test/budgets.json`.
+Those jobs run on Linux; macOS and Windows run typecheck, the unit and runtime tests and the e2e `run` file.
 A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, the unit tests with timing assertions,
 `package-lock.json` or the perf workflow is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
 That job fails only when a median is more than 30% slower, or when a side has no result; it also runs
