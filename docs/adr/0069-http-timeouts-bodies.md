@@ -60,6 +60,11 @@ queued meanwhile wait for the next turn.
   the turn runs them itself and cancels theirs, since the next turn's task would beat them. Inside
   an I/O callback, every immediate queued there runs before a `setTimeout(0)`. A timer set during
   the timers phase runs on a later one, as in Node.
+- **One turn at a time.** A turn asked for while one goes (a timer of its timers phase queued an
+  immediate) starts as that one ends. A timeout that fired is done until `refresh()` schedules it
+  again. Before this, two turns could overlap and run the same due timer twice. esbuild-wasm's Go
+  runtime then resumed twice and answered a request twice, and the Angular CLI's builds failed in CI
+  (`Go program has already exited`).
 - **A turn runs into the next iteration.** When it has more to run and no timer is due, it goes
   straight on.
 - **File system callbacks are I/O callbacks** of the loop's next iteration (`onLaterIo`), after
@@ -219,6 +224,8 @@ output of its `fixtures/http` program:
 - What an immediate queued, at any depth, before the next one; and a timer due during an immediate
   before the next iteration's (`microtasks.cjs`).
 - `server.close(cb)` with a connection that outlives a response (`close-waits.cjs`).
+- Timers due together at a turn's end fire once each, in order, when one queues an immediate
+  (`timers-once.cjs`).
 - Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`).
 - A server's action from an I/O callback (an IPC message) reaches its client after its own side
   closed (`from-io.cjs`).
