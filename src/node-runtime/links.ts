@@ -1,5 +1,5 @@
 /**
- * Local packages' links (ADR 0063): a workspace package, or a `file:`/`link:` dependency, appears in
+ * Local packages' links (ADR 0064): a workspace package, or a `file:`/`link:` dependency, appears in
  * node_modules (`/app/node_modules/@acme/ui`) with its files, and resolves to its own directory
  * (`/app/packages/ui`), as npm's symlink does under Node: `fs.realpath` and module resolution give
  * the package's directory, so a module of it loads once, finds its dependencies from there, and a

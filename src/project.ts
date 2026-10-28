@@ -34,7 +34,7 @@ export async function loadProject(path: string, store?: SnapshotStore): Promise<
   let files: FileTree;
   let name: string;
   if (info.isDirectory()) {
-    // A package of a monorepo runs in its monorepo, whose workspaces it uses (ADR 0063).
+    // A package of a monorepo runs in its monorepo, whose workspaces it uses (ADR 0064).
     const root = await workspaceRoot(abs);
     if (root) {
       const project = projectFromFiles(await readDirectory(root), { name: basename(abs), path: root });

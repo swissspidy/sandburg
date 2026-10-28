@@ -1,4 +1,4 @@
-# ADR 0063: Monorepos and local packages; pnpm and yarn lockfiles
+# ADR 0064: Monorepos and local packages; pnpm and yarn lockfiles
 
 - Status: Accepted
 - Date: 2026-10-28

@@ -1,5 +1,5 @@
 /**
- * Local packages in the runtime (src/node-runtime/links.ts, ADR 0063): a workspace package linked
+ * Local packages in the runtime (src/node-runtime/links.ts, ADR 0064): a workspace package linked
  * into node_modules has its files there, and resolves to its own directory, as through npm's symlink.
  */
 import { after, before, test } from 'node:test';

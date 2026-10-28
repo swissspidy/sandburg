@@ -1,5 +1,5 @@
 /**
- * The versions a pnpm-lock.yaml or yarn.lock pins (src/adapters/node/lockfile-pins.ts, ADR 0063),
+ * The versions a pnpm-lock.yaml or yarn.lock pins (src/adapters/node/lockfile-pins.ts, ADR 0064),
  * and how the install plan applies them (local-packages.ts).
  */
 import { test } from 'node:test';

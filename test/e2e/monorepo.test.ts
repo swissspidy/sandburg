@@ -1,5 +1,5 @@
 /**
- * Monorepos and local packages (ADR 0063): npm and pnpm workspaces, file: and link: dependencies,
+ * Monorepos and local packages (ADR 0064): npm and pnpm workspaces, file: and link: dependencies,
  * a run of a workspace package, the versions a pnpm-lock.yaml pins, with either install; and what
  * neither install can give a project, said before anything is installed. Needs the npm registry
  * (the first time).

@@ -1,6 +1,6 @@
 /**
  * A monorepo's workspaces, from its files alone: the package directories that a root package.json's
- * `workspaces` (npm, yarn) or a pnpm-workspace.yaml `packages` list names (ADR 0063). No Node.js
+ * `workspaces` (npm, yarn) or a pnpm-workspace.yaml `packages` list names (ADR 0064). No Node.js
  * imports: project loading, the host's install plan and the page's use it.
  */
 import { parseYaml } from './yaml-lite.ts';

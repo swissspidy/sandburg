@@ -297,7 +297,7 @@ export const node: AdapterDescriptor = {
     // A static site: no packages, a file server (see browser.ts).
     if (project.framework === 'static') return staticInstall();
     // Workspaces and file:/link: packages are linked, their registry dependencies installed with the
-    // root's; a pnpm-lock.yaml or yarn.lock pins versions (local-packages.ts, ADR 0063).
+    // root's; a pnpm-lock.yaml or yarn.lock pins versions (local-packages.ts, ADR 0064).
     const plan = installPlan(project.files, project.packageJson);
     const pinned = pinnedNote(plan);
     if (pinned) log(pinned);

@@ -1,6 +1,6 @@
 /**
  * The versions a pnpm-lock.yaml or yarn.lock pins, for a project without a package-lock.json
- * (ADR 0063). npm cannot read them, and their trees are not npm's (pnpm's is isolated, yarn's
+ * (ADR 0064). npm cannot read them, and their trees are not npm's (pnpm's is isolated, yarn's
  * descriptors are not locations), so they are not translated into a package-lock. Instead:
  *
  * - each package's direct dependencies are pinned to the version the lockfile resolved for that

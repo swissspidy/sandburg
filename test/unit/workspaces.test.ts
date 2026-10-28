@@ -1,6 +1,6 @@
 /**
  * A monorepo's workspaces (src/workspaces.ts) and the YAML pnpm writes (src/yaml-lite.ts), and how
- * a directory inside a monorepo loads (src/project.ts, ADR 0063).
+ * a directory inside a monorepo loads (src/project.ts, ADR 0064).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

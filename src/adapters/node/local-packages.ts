@@ -1,5 +1,5 @@
 /**
- * Local packages (ADR 0063): a monorepo's workspaces (npm's and yarn's `workspaces`,
+ * Local packages (ADR 0064): a monorepo's workspaces (npm's and yarn's `workspaces`,
  * pnpm-workspace.yaml) and `file:`, `link:` and `workspace:` dependencies on directories inside the
  * project. npm never sees them: the host installs registry packages only, because npm prepares a
  * directory or git dependency on the host whatever `--ignore-scripts` says (spec-guard.ts, ADR 0054).

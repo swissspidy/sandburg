@@ -1,6 +1,6 @@
 # ADR 0054: Security review (round 4): registry-only installs, parser fuzzing, the boundary map
 
-- Status: Accepted; amended by [ADR 0061](0061-chromium-sandbox.md) (the boundary its map leaves out, between the app and the machine: Chromium's OS sandbox, now on by default, and site isolation); and by [ADR 0063](0063-monorepos-and-local-packages.md) (`file:`, `link:` and `workspace:` packages inside the project are linked by Sandburg, never given to npm; paths outside it stay refused)
+- Status: Accepted; amended by [ADR 0061](0061-chromium-sandbox.md) (the boundary its map leaves out, between the app and the machine: Chromium's OS sandbox, now on by default, and site isolation); and by [ADR 0064](0064-monorepos-and-local-packages.md) (`file:`, `link:` and `workspace:` packages inside the project are linked by Sandburg, never given to npm; paths outside it stay refused)
 - Date: 2026-10-25
 
 ## Context

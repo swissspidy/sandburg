@@ -1,5 +1,5 @@
 /**
- * Local packages (src/adapters/node/local-packages.ts, ADR 0063): what npm installs for a monorepo,
+ * Local packages (src/adapters/node/local-packages.ts, ADR 0064): what npm installs for a monorepo,
  * and for file:/link:/workspace: dependencies, and what is refused before anything is installed.
  */
 import { test } from 'node:test';
