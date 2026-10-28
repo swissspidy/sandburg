@@ -273,6 +273,49 @@ test("the dev server's report of a page it could not render on the server: Nuxt'
   assert.deepEqual([deps?.class, deps?.rule], ['unknown', 'unmatched']);
 });
 
+test("a WebAssembly trap in the app's own code in the page (sql.js) is the app's", () => {
+  const f = classify(
+    input({
+      phases: failedAt('ready', 'app threw before rendering: RuntimeError: memory access out of bounds'),
+      pageErrors: [{ source: 'app', message: 'RuntimeError: memory access out of bounds', stack: 'RuntimeError: memory access out of bounds\n    at wasm://wasm/0012:wasm-function[44]:0x1f0\n    at openDb (http://s-1.sandburg.localhost:39303/src/db.ts:12:7)' }],
+    }),
+  );
+  assert.deepEqual([f?.class, f?.rule], ['app-bug', 'app-error-before-ready']);
+});
+
+test('a warning the app logged with a stack (React\'s missing key) is not an error the app threw', () => {
+  const f = classify(
+    input({
+      phases: failedAt('ready', 'app did not render after a console error: Failed to load resource: the server responded with a status of 404 (Not Found) (http://s-1.sandburg.localhost:39303/__sw__/chunk.js)'),
+      pageErrors: [{ source: 'app', message: 'Warning: Each child in a list should have a unique "key" prop.\n    at li\n    at List (http://s-1.sandburg.localhost:39303/src/List.tsx:4:3)' }],
+    }),
+  );
+  assert.deepEqual([f?.class, f?.rule], ['unknown', 'unmatched']);
+});
+
+test("dependencies and generated code are not the project's: node_modules at any depth, .nuxt, .svelte-kit and the like", () => {
+  const ready = failedAt('ready', 'app did not render after a console error: x');
+  for (const frame of ['/app/packages/web/node_modules/some-lib/dist/index.js:10:5', '/app/.nuxt/dist/server/server.mjs:120:11', '/app/.svelte-kit/generated/root.js:3:1', '/app/.angular/cache/vite/deps/chunk.js:1:1']) {
+    const f = classify(input({ phases: ready, pageErrors: [{ source: 'app', message: `TypeError: x\n    at run (${frame})` }] }));
+    assert.deepEqual([f?.class, f?.rule], ['unknown', 'unmatched'], frame);
+  }
+});
+
+test("only the dev server's report on the app's page, since the ready phase began, is a server render error", () => {
+  const ready = failedAt('ready', 'app did not render after a console error: Failed to load resource: the server responded with a status of 500');
+  // The app's API, not its page.
+  const api = classify(input({ phases: ready, appPath: '/', runtimeOutput: ['[runtime:stdout] [request error] [GET] /api/items', '[runtime:stdout]   ✖ Error (500): db down'] }));
+  assert.deepEqual([api?.class, api?.rule], ['unknown', 'unmatched']);
+  // A page request with a query is the page.
+  const page = classify(input({ phases: ready, appPath: '/', runtimeOutput: ['[runtime:stdout] [request error] [GET] /?x=1', '[runtime:stdout]   ✖ Error (500): db down'] }));
+  assert.deepEqual([page?.class, page?.rule], ['app-bug', 'server-render-error']);
+  // An error handled before the ready phase began (a seed script, a warm-up) is not the page's.
+  const earlier = classify(
+    input({ phases: ready, readyOutputFrom: 2, runtimeOutput: ['[runtime:stderr] [ERROR] TypeError: seed failed', '[runtime:stderr]     at seed (/app/server/seed.ts:4:1)', '[runtime:stdout] ready in 300 ms'] }),
+  );
+  assert.deepEqual([earlier?.class, earlier?.rule], ['unknown', 'unmatched']);
+});
+
 test('a project or checks file that did not load is the failure, even with no phase or check recorded', () => {
   const setupError = { rule: 'checks-load', class: 'unknown', message: 'SyntaxError: Unexpected end of input' } as const;
   assert.deepEqual(classify({ probe: null, phases: [], checks: [], pageErrors: [], infraError: null, declaredDependencies: [], setupError }), {

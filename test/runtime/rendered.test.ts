@@ -52,12 +52,25 @@ test('empty custom elements are not rendered: no shadow root, an empty one, or o
   assert.equal(await rendered('<app-root></app-root>', closed), false);
 });
 
-test("a dev server's overlays are not the app: Vite's error overlay, Astro's toolbar", async () => {
+test('shadow text counts only where it is shown, as innerText would count it', async () => {
+  // Text right in the shadow root (Lit renders so) is shown as its host is.
+  assert.equal(await rendered('<app-root></app-root>', element('app-root', 'Music Tracker')), true);
+  assert.equal(await rendered('<app-root hidden></app-root>', element('app-root', 'Music Tracker')), false);
+  assert.equal(await rendered('<app-root style="visibility: hidden"></app-root>', element('app-root', '<h1>Music Tracker</h1>')), false);
+  assert.equal(await rendered('<app-root></app-root>', element('app-root', '<h1 style="visibility: hidden">Music Tracker</h1>')), false);
+  // Text inside a style is not shown.
+  assert.equal(await rendered('<app-root></app-root>', element('app-root', '<style>h1 { color: red }</style>')), false);
+});
+
+test("a dev server's overlays and tools are not the app: Vite's and vite-plugin-checker's error overlays, Astro's toolbar", async () => {
   assert.equal(await rendered('<vite-error-overlay></vite-error-overlay>', element('vite-error-overlay', '<div class="message">Internal server error</div>')), false);
+  assert.equal(await rendered('<vite-plugin-checker-error-overlay></vite-plugin-checker-error-overlay>', element('vite-plugin-checker-error-overlay', '<pre>TS2322</pre>')), false);
   assert.equal(await rendered('<astro-dev-toolbar></astro-dev-toolbar>', element('astro-dev-toolbar', '<button>Menu</button>')), false);
 });
 
-test('the search is bounded: text past the first 2,000 elements is not looked for', async () => {
-  const script = `${element('late-text', '<p>Late</p>')} for (let i = 0; i < 2100; i++) document.body.prepend(document.createElement('span'));`;
-  assert.equal(await rendered('<late-text></late-text>', script), false);
+test('the search is bounded: the first 2,000 elements are looked at, not one more', async () => {
+  // <late-text> is element n + 1 of the body.
+  const after = (n: number) => `${element('late-text', '<p>Late</p>')} for (let i = 0; i < ${n}; i++) document.body.prepend(document.createElement('span'));`;
+  assert.equal(await rendered('<late-text></late-text>', after(1_999)), true);
+  assert.equal(await rendered('<late-text></late-text>', after(2_000)), false);
 });

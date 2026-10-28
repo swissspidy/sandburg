@@ -11,7 +11,7 @@ const runState = () => ({
   network: { failed: [] as { url: string; reason: string }[] },
   console: [] as Partial<ConsoleEntry>[],
   pageErrors: [] as Partial<PageError>[],
-  documents: [] as { url: string; status: number }[],
+  documents: [] as { url: string; status: number; frame?: unknown }[],
 });
 const asRun = (run: ReturnType<typeof runState>) => run as unknown as RunState;
 
@@ -152,6 +152,37 @@ test("the app's page answering a server error fails the phase after 8 s, even wh
   await advance(t, 7_900);
   assert.equal(phase.settled, 'pending');
   await advance(t, 300);
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
+});
+
+test("only the app's frame's page counts: not a frame the app embeds, nor the host page; and a page that recovers is not failing", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const embedded = {} as Frame;
+  const host = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app }, { url: 'http://widget.test/', status: 502, frame: embedded }, { url: 'http://app.test/__sandburg/', status: 500, frame: host });
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  // A cold start's 500, then the page loads again and answers 200 before the grace period is up.
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  await advance(t, 4_000);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app });
+  await advance(t, 6_000);
+  assert.equal(phase.settled, 'pending');
+  // One that stays: the app failing.
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  await advance(t, 8_200);
+  assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
+});
+
+test("without the app's frame, the host page's documents are left out", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  run.documents.push({ url: 'http://app.test/', status: 500 }, { url: 'http://app.test/__sandburg/', status: 200 });
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run)));
+  await advance(t, 8_200);
   assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });
 

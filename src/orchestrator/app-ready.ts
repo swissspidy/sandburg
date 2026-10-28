@@ -93,9 +93,11 @@ const BENIGN_CONSOLE = /favicon\.ico|Download the React DevTools|chrome-error:/i
  * Rejects if the app throws (or logs a console error) and still has not
  * rendered after a grace period, so a broken app fails `ready` with its own
  * error instead of timing out. A module that 404s, for example, fails
- * silently except for a console error.
+ * silently except for a console error. So does a page that still answers a
+ * server error (other than a loading page's 503) after that grace period:
+ * `frame`'s documents, else those not the host page's.
  */
-export async function failFastOnAppError(render: Promise<void>, run: RunState, loadingPage?: () => Promise<boolean>): Promise<void> {
+export async function failFastOnAppError(render: Promise<void>, run: RunState, loadingPage?: () => Promise<boolean>, frame?: Frame): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   // What a dev server's loading page logs (Nuxt answers 503 while it builds) is not the app's.
   let seenErrors = 0;
@@ -104,6 +106,14 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
   const watch = new Promise<never>((_, reject) => {
     let deadline = 0;
     let reason = '';
+    /** For a deadline set on the page's answer: whether the page still answers a server error (it may have recovered). */
+    let still: (() => boolean) | null = null;
+    // The app's page: its frame's documents (not the host page's, nor those of frames the app embeds).
+    const pageDocument = () => (frame ? run.documents.filter((d) => d.frame === frame) : run.documents.filter((d) => !d.url.includes('/__sandburg/'))).at(-1);
+    const serverError = () => {
+      const page = pageDocument();
+      return page && page.status >= 500 && page.status !== 503 ? page : null;
+    };
     const poll = async () => {
       if (!deadline && loadingPage && (await loadingPage())) [seenErrors, seenConsole] = [run.pageErrors.length, run.console.length];
       if (done) return;
@@ -115,13 +125,17 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
         const loading503 = (c: ConsoleEntry) => !!c.url && /\b503\b/.test(c.text) && run.documents.some((d) => d.status === 503 && d.url === c.url);
         const logged = run.console.slice(seenConsole).find((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`) && !loading503(c));
         // The app's page itself answered a server error (not a dev server's 503 loading page).
-        const page = run.documents.filter((d) => !d.url.includes('/__sandburg/')).at(-1);
+        const page = serverError();
         if (err) [deadline, reason] = [Date.now() + RENDER_GRACE_MS, `app threw before rendering: ${err.message}`];
         else if (logged) [deadline, reason] = [Date.now() + CONSOLE_GRACE_MS, `app did not render after a console error: ${logged.text}${logged.url ? ` (${logged.url})` : ''}`];
-        else if (page && page.status >= 500 && page.status !== 503) [deadline, reason] = [Date.now() + CONSOLE_GRACE_MS, `app did not render: its page answered HTTP ${page.status} (${page.url})`];
+        else if (page) [deadline, reason, still] = [Date.now() + CONSOLE_GRACE_MS, `app did not render: its page answered HTTP ${page.status} (${page.url})`, () => !!serverError()];
       } else if (Date.now() >= deadline) {
-        reject(new Error(reason));
-        return;
+        // A server error the page has since recovered from (a cold start's 500, then a 200) is not the app failing.
+        if (still && !still()) [deadline, still] = [0, null];
+        else {
+          reject(new Error(reason));
+          return;
+        }
       }
       timer = setTimeout(() => void poll(), 100);
     };

@@ -35,6 +35,17 @@ for (const name of ['solid-vite', 'preact-vite', 'lit-vite']) {
   });
 }
 
+test('a Lit app that renders only into its shadow root (no light-DOM text) is ready, and passes its checks', async () => {
+  const dir = fixture('lit-vite');
+  const base = await loadProject(dir);
+  const html = base.files['index.html'] as string;
+  const shadowOnly = html.replace(/<my-element>[\s\S]*?<\/my-element>/, '<my-element></my-element>');
+  assert.notEqual(shadowOnly, html);
+  const project = projectFromFiles({ ...base.files, 'index.html': shadowOnly }, { name: 'lit-shadow-only', path: `${dir}#shadow-only` });
+  const result = await session.run(project, { checks: `${dir}/checks.spec.ts`, outDir, timeouts: { ready: 60_000 } });
+  assert.equal(result.status, 'passed', failures(result));
+});
+
 test('Tailwind CSS v4 (@tailwindcss/vite) is compiled by the app\'s own tailwindcss', async () => {
   const project = projectFromFiles(
     {

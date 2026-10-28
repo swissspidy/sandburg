@@ -20,6 +20,8 @@ interface ClassifyInput {
     pageErrors: PageError[];
     runtimeErrors?: string[];
     runtimeOutput?: string[];
+    readyOutputFrom?: number;
+    appPath?: string | null;
     declaredDependencies: string[];
     infraError: {
         phase: PhaseName;

@@ -21,8 +21,11 @@ export function quiet(a: Activity, quietMs: number, longMs: number): boolean {
  * - Solid's server-rendered page records events until it has hydrated (`_$HY`), but replaying one
  *   does not reach the app's handlers: an event that has finished dispatching has no composedPath().
  *   A fill() before then was lost. Hydrated: every server-rendered element (`data-hk`) is one Solid
- *   has claimed (`_$HY.completed`), or Solid says it is done. SolidStart goes on loading its dev
- *   overlay's modules for seconds after.
+ *   has claimed (`_$HY.completed`), or Solid has let go of what it recorded (`completed` cleared), or
+ *   set `_$HY.done`. `done` does not mean hydrated: Solid sets it when it handles its first event
+ *   after hydrating (SolidStart also when the URL changed before hydration), so it is past hydration
+ *   when set, but stays unset after a hydration no event followed. SolidStart goes on loading its
+ *   dev overlay's modules for seconds after.
  * - React, once its root is created (hydrateRoot), replays a click on what it has not hydrated yet
  *   (Next.js and React Router hydrate the document).
  * - Nuxt mounts its app before its page component has hydrated (`isHydrating`), and its requests
@@ -49,5 +52,36 @@ export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | un
     return !!app && app.isHydrating === false;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Waits until the app has settled (HostApi.settled): its framework's word (inputSafe) where it gives
+ * it, else its servers being quiet; at most `maxMs`, or `hydrateMaxMs` while its framework says it has
+ * not hydrated yet. Whether it settled; null without a runtime that reports its activity.
+ */
+export async function settle(o: {
+  activity: () => Activity | null | undefined;
+  safe: () => boolean | undefined;
+  quietMs: number;
+  longMs: number;
+  maxMs: number;
+  hydrateMaxMs: number;
+  pollMs: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<unknown>;
+}): Promise<boolean | null> {
+  const now = o.now ?? (() => performance.now());
+  const sleep = o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const start = now();
+  for (;;) {
+    const a = o.activity();
+    if (!a || a.sinceRequestMs === undefined) return null;
+    const safe = o.safe();
+    if (safe ?? quiet(a, o.quietMs, o.longMs)) return true;
+    // A framework that says it has not hydrated yet is waited for longer (a cold SolidStart page).
+    const left = start + (safe === false ? o.hydrateMaxMs : o.maxMs) - now();
+    if (left <= 0) return false;
+    await sleep(Math.min(left, o.pollMs));
   }
 }

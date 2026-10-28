@@ -19,7 +19,9 @@ apps right cold and 226 warm. All 93 seeded faults were caught. Its 8 false alar
   "safe at once", since Solid records events until it hydrates and replays them. It does record
   them, but replaying one reaches no handler: Solid's delegated handler walks `composedPath()`,
   which is empty for an event that has finished dispatching (solid-js 1.9.17, `web/dist/dev.js`).
-  `_$HY.done` is no hydration signal either: Solid sets it when it handles its first event.
+  `_$HY.done` means "Solid has handled an event", not "hydrated": Solid sets it when it handles
+  its first event after hydrating (SolidStart also when the URL changed before hydration), and it
+  stays unset after a hydration no event followed.
 - **Angular, 134 (cold).** Vite's dependency optimizer, inside Angular's dev server, failed with a
   WebAssembly trap in rolldown (`Error during dependency optimization … memory access out of
   bounds`). The page's request was never answered. The ready phase waited for the frame's load event
@@ -45,37 +47,55 @@ apps right cold and 226 warm. All 93 seeded faults were caught. Its 8 false alar
 
 - **Rendered includes open shadow roots** (`host/rendered.ts`, used by both `waitForRender` and the
   host page's `rendered`). After the document checks, which are unchanged, text in an open shadow
-  root at any depth counts, if it is visible and not inside `style`, `script` or `template`. An
-  element with no shadow root, an empty one, or one with only styles and slots does not count.
-  Neither do a dev server's overlays (`vite-error-overlay`, `astro-dev-toolbar`, `nextjs-portal`):
-  without that exclusion, Astro's error overlay made a crashed page "rendered". At most 2,000
-  elements are looked at, across the document and its shadow roots. Closed shadow roots cannot be
-  read; such an app can pass `--ready`.
+  root at any depth counts if it is shown, as `innerText` would count it
+  (`checkVisibility({ visibilityProperty: true })` of its element, or of the shadow root's host for
+  text right in the root, as Lit renders): not under `display: none`, `hidden` or
+  `visibility: hidden`, nor inside a style. An element with no shadow root, an empty one, or one
+  with only styles and slots does not count. Neither do a dev server's overlays and tools (element
+  names matching `/^vite-|overlay|devtools|toolbar|^nextjs-portal$/`: Vite's and
+  vite-plugin-checker's error overlays, Astro's toolbar): without that exclusion, Astro's error
+  overlay made a crashed page "rendered". At most 2,000 elements are looked at, across the document
+  and its shadow roots, with tree walkers that stop there (a blank page of 100,000 elements is not
+  listed whole). Closed shadow roots cannot be read; such an app can pass `--ready`.
 - **Solid is hydrated when every server-rendered element (`[data-hk]`, the first 500 in the body) is
   in `_$HY.completed`**, which Solid fills as it claims each element. It is also hydrated once Solid
-  clears `completed` or sets `done`. A lazy route's elements are claimed when its chunk has loaded,
-  so a check waits for those too.
+  clears `completed`, or once `done` is set (which comes after hydration, when Solid has handled an
+  event). A lazy route's elements are claimed when its chunk has loaded, so a check waits for those
+  too.
 - **A framework that says it has not hydrated yet is waited for up to 10 s** (`SETTLE_HYDRATE_MAX_MS`)
   before the checks start. When the framework says nothing, the app's servers going quiet decides,
   with the 3 s limit as before. This applies to Solid, Nuxt and SvelteKit, which can say "not yet".
+  The cost: a page whose framework never says "hydrated" (SvelteKit with `csr = false`, a Nuxt page
+  whose Suspense never resolves, a Solid hydration mismatch that leaves elements unclaimed) waits
+  up to 7 s more per `settled()` call: before the checks, and after each check that timed out and
+  loaded the app again.
 - **The ready phase is watched from the app's first load**, not from after its load event: an error
-  the app reports while its page never finishes loading now fails the phase.
+  the app reports while its page never finishes loading now fails the phase. The app's frame is
+  taken before the app loads into it (the host page has it from the start), so a loading page is
+  recognised from the first load too.
 - **A console error counts as the loading page's only when it is about a 503.** Separately, the
   app's page answering a 5xx other than 503 fails the phase after 8 s, the console-error grace
-  period, unless the app renders first. That holds even when the frame shows the browser's error
-  page instead of an error page that refuses to be framed. The ready deadlines are unchanged.
+  period, unless the app renders first, and only if the page still answers one then (a cold
+  start's 500 followed by a 200 does not). The page is the app frame's latest document, not the
+  host page's nor one of a frame the app embeds. That holds even when the frame shows the browser's
+  error page instead of an error page that refuses to be framed. The ready deadlines are unchanged.
 - **Classification.** Rules still run in order, and the first match wins:
-  - `app-error-before-ready` also counts a console error from the app whose text carries a stack
-    through the project's files (Angular's ErrorHandler, SolidStart). A bare `(/app/<path>)` stack
-    frame now counts as the project's too, outside `node_modules`.
+  - `app-error-before-ready` also counts a console error from the app that reports a thrown error
+    (its first line `TypeError: …`, Angular's `ERROR TypeError: …`; not a warning such as React's
+    `Warning: Each child in a list …`) and carries a stack through the project's files (Angular's
+    ErrorHandler, SolidStart). A bare `(/app/<path>)` stack frame now counts as the project's too.
+    A frame is the project's only outside `node_modules` at any depth and outside generated code
+    (`.next`, `.nuxt`, `.output`, `.svelte-kit`, `.angular`, `.astro`).
   - New rule `server-render-error` (`app-bug`), checked after `app-error-before-ready` for a ready
-    phase that failed. It covers the dev server reporting a page it could not render on the
-    server: Nuxt's `[request error]` followed by `✖ <Error> (500): <message>`, or an error line in
-    the dev server's output followed by a stack through the project's files (Astro). Nuxt's
-    `SyntaxError` / `[VITE_ERROR]` there is a `compile-error`.
-  - `signature:wasm-trap` (`runtime-unsupported`) also matches the failed phase's own message.
-    Vite reports its dependency optimizer's failure to the page, so the trap shows up there, not
-    only in the dev server's output.
+    phase that failed. It covers the dev server reporting the app's page could not be rendered on
+    the server, in what it logged since the ready phase began: Nuxt's `[request error] [GET] <the
+    app's page>` followed by `✖ <Error> (500): <message>`, or an error line followed by a stack
+    through the project's files (Astro). Nuxt's `SyntaxError` / `[VITE_ERROR]` there is a
+    `compile-error`.
+  - `signature:wasm-trap` (`runtime-unsupported`) also matches the failed phase's own message
+    when that is the dev server's report (`dependency optimization`, `Build failed`: Vite reports
+    its dependency optimizer's failure to the page) or no stack runs through the project. A trap in
+    the app's own WebAssembly in the page (sql.js, with a stack through `src/db.ts`) stays the app's.
 
 ## Results
 
@@ -124,7 +144,8 @@ fast as `runtime-unsupported` and can be run again.
 - An app that renders only into shadow roots is ready as soon as it shows text there. One whose
   only text sits in a closed shadow root, or past the first 2,000 elements, needs `--ready`.
 - SolidStart, Nuxt and SvelteKit apps that hydrate slowly start their checks up to 10 s after
-  rendering instead of 3 s. Apps whose framework says nothing are unaffected.
+  rendering instead of 3 s, and one whose framework never says "hydrated" waits up to 7 s more
+  per settle. Apps whose framework says nothing are unaffected.
 - Faults in server-rendered pages (Nuxt, Astro, SolidStart) and Angular's logged crashes are now
   classified by what the dev server or app reported, mostly within the console-error grace period
   instead of after the 240 s deadline.

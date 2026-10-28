@@ -56,6 +56,10 @@ export interface ClassifyInput {
   runtimeErrors?: string[];
   /** The app's output (stdout and stderr), line by line: dev servers report compile errors there. */
   runtimeOutput?: string[];
+  /** Where in runtimeOutput the ready phase began: what the dev server logged while it served the app's page. */
+  readyOutputFrom?: number;
+  /** The path of the app's page (the URL the ready phase loads), when known. */
+  appPath?: string | null;
   /** Dependency names declared in package.json (dependencies and devDependencies). */
   declaredDependencies: string[];
   /** Set when the orchestrator or browser itself failed (crash, offline cache miss). */
@@ -123,8 +127,11 @@ export function classify(input: ClassifyInput): Failure | null {
     const evidence = [message, ...appErrors];
     const sig = matchSignature(evidence);
     if (sig) return failure('runtime-unsupported', failedPhase.name, sig, message, evidence);
-    // In the dev server's output, or in the phase's own error (Vite reports its dependency optimizer's failure to the page).
-    const trap = [...output, message].find((l) => WASM_TRAP.test(l));
+    // In the dev server's output, or in the phase's own error when that is the dev server's report (Vite
+    // reports its dependency optimizer's failure to the page) or no stack runs through the project: a trap
+    // in the app's own WebAssembly (sql.js in the page) is the app's.
+    const devServerTrap = WASM_TRAP.test(message) && (/dependency optimization|Build failed/.test(message) || !hasProjectStack(input.pageErrors));
+    const trap = output.find((l) => WASM_TRAP.test(l)) ?? (devServerTrap ? message : undefined);
     if (trap) return failure('runtime-unsupported', failedPhase.name, 'signature:wasm-trap', (trap === message ? message.split('\n').filter((l) => l.trim()).join(' ') : trap).replace(/^\[runtime:std(?:out|err)\] /, ''), [trap, ...evidence]);
     // The project's own source does not compile (dev servers report this for syntax errors).
     const compile = [message, ...appErrors, ...(input.runtimeErrors ?? [])].find((e) => COMPILE_ERROR.test(e));
@@ -134,7 +141,7 @@ export function classify(input: ClassifyInput): Failure | null {
       return failure('app-bug', 'ready', 'app-error-before-ready', message, appErrors);
     }
     // The dev server could not render the app's page on the server: the error page (a 500) is all the page shows.
-    const ssr = failedPhase.name === 'ready' ? serverRenderError(output) : null;
+    const ssr = failedPhase.name === 'ready' ? serverRenderError(output.slice(input.readyOutputFrom ?? 0), input.appPath ?? null) : null;
     if (ssr) return failure('app-bug', 'ready', ssr.rule, ssr.message, [ssr.message, ...evidence]);
     return failure('unknown', failedPhase.name, 'unmatched', message, evidence);
   }
@@ -217,31 +224,36 @@ function matchSignature(texts: string[]): string | null {
  * An error whose stack runs through the project's own files (not dependencies or runtime code): served
  * to the page, bundled by webpack (webpack-internal:///(…)/./pages/index.tsx), or run in the runtime.
  */
-const PROJECT_FRAME = /(?:https?:\/\/[^/\s]+\/|webpack-internal:\/\/\/(?:\([^)]*\)\/)?\.\/|file:\/\/\/app\/|\(\/app\/)(?!@|node_modules\/|__sandburg\/|\.next\/|_next\/)[^\s:?()]+\.(?:[cm]?[jt]sx?|vue|svelte|astro)\b/;
+const PROJECT_FRAME = /(?:https?:\/\/[^/\s]+\/|webpack-internal:\/\/\/(?:\([^)]*\)\/)?\.\/|file:\/\/\/app\/|\(\/app\/)(?!@|__sandburg\/|_next\/)(?![^\s()]*?(?<=\/)(?:node_modules|\.next|\.nuxt|\.output|\.svelte-kit|\.angular|\.astro)\/)[^\s:?()]+\.(?:[cm]?[jt]sx?|vue|svelte|astro)\b/;
 
 /**
- * A page error's stack, or a console error's text when it carries one (Angular's ErrorHandler logs
+ * A page error's stack, or a console error's text when it reports a thrown error and carries its stack (Angular's ErrorHandler logs
  * what the app threw, "ERROR TypeError: …\n    at …", instead of throwing it; so does SolidStart for its
  * server render's error).
  */
-const stackOf = (e: PageError) => e.stack ?? (/\n\s+at /.test(e.message) ? e.message : '');
+const stackOf = (e: PageError) => e.stack ?? (CONSOLE_THROWN.test(e.message) && /\n\s+at /.test(e.message) ? e.message : '');
+
+/** A console error that reports a thrown error ("TypeError: …", Angular's "ERROR TypeError: …"), not a warning that carries a stack (React's "Warning: Each child in a list …"). */
+const CONSOLE_THROWN = /^(?:ERROR )?(?:Uncaught )?\w*Error\b/;
 
 function hasProjectStack(errors: PageError[]): boolean {
   return errors.some((e) => e.source === 'app' && PROJECT_FRAME.test(stackOf(e)));
 }
 
 /**
- * The dev server's report of an error while it rendered a page on the server (the page then shows its
- * 500 error page):
- * - Nuxt: "[request error] [GET] /", then "✖ TypeError (500): <message>". Its "SyntaxError [VITE_ERROR]"
- *   is a file of the project that does not compile.
+ * The dev server's report of an error while it rendered the app's page on the server (the page then
+ * shows its 500 error page), in what it logged since the ready phase began:
+ * - Nuxt: "[request error] [GET] <the app's page>", then "✖ TypeError (500): <message>". Its
+ *   "SyntaxError [VITE_ERROR]" is a file of the project that does not compile.
  * - Astro and others: an error line followed by a stack through the project's own files
  *   ("at eval (/app/src/pages/index.astro:30:28)").
  */
-function serverRenderError(lines: string[]): { rule: 'server-render-error' | 'compile-error'; message: string } | null {
+function serverRenderError(lines: string[], appPath: string | null): { rule: 'server-render-error' | 'compile-error'; message: string } | null {
   const clean = lines.map((l) => l.replace(/^\[runtime:std(?:err|out)\]\s?/, '').replace(/^\[[\w@:./-]{1,40}\]\s(?!\[)/, ''));
   for (let i = 0; i < clean.length; i++) {
-    if (!/\[request error\]/.test(clean[i])) continue;
+    // The request for the app's page, not one of its API's.
+    const request = /\[request error\] \[GET\] (\S+)/.exec(clean[i]);
+    if (!request || (appPath !== null && request[1].split('?')[0] !== appPath)) continue;
     for (let j = i + 1; j < Math.min(clean.length, i + 4); j++) {
       const m = /✖ (\w*Error)(?: \[(\w+)\])? \((5\d\d)\): (.+)$/.exec(clean[j]);
       if (!m) continue;

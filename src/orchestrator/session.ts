@@ -582,21 +582,22 @@ export class Session {
             return watch(host('install', hostData));
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
+          run.appPath = URL.canParse(url) ? new URL(url).pathname : null;
           const app = await run.phase('ready', timeouts.ready, async () => {
-            let frame: Frame | null = null;
+            // The host page's frame for the app, there before the app loads into it.
+            const frame = await appFrame(page);
             // A dev server that answers 503 while it builds (Nuxt's "Dev server is loading...") shows a loading page.
-            const loading = () => !!frame && run.documents.filter((d) => d.frame === frame).at(-1)?.status === 503;
-            const loadingPage = async () => loading() || (!!frame && (await frame.evaluate(() => document.documentElement.outerHTML.includes('__NUXT_LOADING__')).catch(() => false)));
+            const loading = () => run.documents.filter((d) => d.frame === frame).at(-1)?.status === 503;
+            const loadingPage = async () => loading() || (await frame.evaluate(() => document.documentElement.outerHTML.includes('__NUXT_LOADING__')).catch(() => false));
             const rendered = () => host('rendered', options.readySelector ?? null) as Promise<boolean>;
             // Watched from the first load on: a dev server that never answers the page's request (Angular's,
             // after its dependency optimizer crashed) never fires its load event, and reports the error meanwhile.
             const render = (async () => {
               await host('ready', url, navigate ?? true);
-              frame = await appFrame(page);
               await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
             })();
-            await failFastOnAppError(render, run, loadingPage);
-            return frame!;
+            await failFastOnAppError(render, run, loadingPage, frame);
+            return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been
           // quiet for a moment, and its page has no timer due before the assertion's time is up and
@@ -669,7 +670,7 @@ export class Session {
       });
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });
-        await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run);
+        await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run, undefined, page.mainFrame());
         return page.mainFrame();
       });
       await runChecksPhase(run, page, app, checks, timeouts, outDir);
