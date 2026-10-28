@@ -12,7 +12,7 @@ const runState = () => ({
   network: { failed: [] as { url: string; reason: string }[] },
   console: [] as Partial<ConsoleEntry>[],
   pageErrors: [] as Partial<PageError>[],
-  documents: [] as { url: string; status: number; frame?: unknown }[],
+  documents: [] as { url: string; status: number; frame?: unknown; at?: number; ended?: boolean }[],
   sourceFindings: null as SourceFinding[] | null,
 });
 const asRun = (run: ReturnType<typeof runState>) => run as unknown as RunState;
