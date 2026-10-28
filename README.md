@@ -232,6 +232,8 @@ The study method and every report are in [`docs/fidelity`](docs/fidelity/README.
 
 ## Development
 
+How to contribute (setup, tests, changesets, ADRs, pull requests) is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ```sh
 npm test               # unit tests
 npm run lint           # oxlint (type-aware, with Sandburg's own rules) and knip
