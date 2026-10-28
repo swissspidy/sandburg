@@ -142,15 +142,25 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
 
   | App | Before (v7 study) | Now, cold | Now, warm |
   |---|---|---|---|
-  | 148 (syntax) | `timeout` after 242 s | `compile-error` `src/components/ConverterFeature.tsx:3:16: Unexpected ";"`, 38.9 s (ready 20.3 s) | the same, 21.9 s (ready 20.3 s) |
-  | 203 (undeclared import) | `timeout` after 242 s | `undeclared-import` `imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)`, 28.0 s (ready 20.5 s) | the same, 21.8 s (ready 20.3 s) |
+  | 148 (syntax) | `timeout` after 242 s | `compile-error` `src/components/ConverterFeature.tsx:3:16: Unexpected ";"`, 28.4 s (ready 20.5 s) | the same, 22.2 s (ready 20.5 s) |
+  | 203 (undeclared import) | `timeout` after 242 s | `undeclared-import` `imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)`, 26.9 s (ready 20.5 s) | the same, 22.1 s (ready 20.5 s) |
 
-- **A slow, healthy app is left to render** (`test/e2e/run.test.ts`): a server that says it is
-  compiling once and answers its page after 28 s, with a reachable file (imported only by a route
-  the run never asks for) that imports an undeclared `@faker-js/faker`, passes its ready phase at
-  28 s. Without the hanging-page condition it failed at 21 s as `undeclared-import`. Beside it, a
-  server that answers 200, streams the page's start and never ends it, with a reachable file that
-  does not parse, fails at about 20 s as `compile-error` with that file's line and column.
+  SolidStart's server render reads the broken component, and dayjs is not installed: both bear on
+  the app.
+
+- **Slow, healthy apps are left to render** (`test/e2e/run.test.ts`), each with a reachable file,
+  imported only by a route the run never asks for, that imports an undeclared `@faker-js/faker`:
+  a server that says it is compiling once and answers its page after 28 s, and one that sends 200
+  and `<body>` at once and the rest after 28 s (a server render waiting on slow data, as the
+  review found). Both pass their ready phase at about 28 s, as on main. With every finding counted
+  (relevance off), the streaming one fails at 20 s as `undeclared-import`; without the 10 s of
+  streaming in the hanging-page condition, the compiling one failed once at 21 s, the moment its
+  page arrived.
+- **A page that hangs on a file its server read** (the same test file): a server that answers 200,
+  streams the page's start, imports a module that does not parse (the error swallowed) and never
+  ends the page fails at about 20 s as `compile-error` `lib/render.js:1:23`. One whose own file
+  imports `ms` without declaring it, while declaring `debug`, which npm installs `ms` for, runs to
+  its deadline as a `timeout`: without the installed check it failed as `undeclared-import "ms"`.
 - **No false positives on the corpus.** Over all 232 corpus apps, the check flags exactly the 29
   seeded faults, each at the line the generator seeded: the 15 syntax errors (`const broken = ;`, in
   `.ts`, `.tsx`, `.js`, `.vue` and `.svelte` files) and the 14 undeclared imports (v6's `nanoid`, v7's
@@ -158,7 +168,9 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
   fault from its meta.json). The repo's 20 fixtures have no findings either.
 - **Real repositories.** Shallow clones of vercel/commerce, antfu/vitesse, elk-zone/elk,
   nuxt/movies, gothinkster/angular-realworld-example-app, solidjs/solid-start and
-  nestjs/typescript-starter have no findings (each 9–201 ms). With a syntax error put into each of
+  nestjs/typescript-starter have no findings (each 9–201 ms), with their lockfiles; without them, elk's
+  `vue-router` and `h3` are flagged by the check, and a run drops them as installed. With a syntax
+  error put into each of
   26 of their source files in turn, 20 are reported at that file; the 6 not reported are files only
   a build plugin reaches (vitesse's `import.meta.glob`'d modules, its auto-imported components,
   layouts and stores) and a fixture of the solid-start repository's own monorepo, which is not the
@@ -166,16 +178,21 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
   virtual stylesheet, Vue's and Svelte's generics, Astro's expressions and self-closing scripts,
   legacy decorators, hoisted packages in each lockfile format, a peer of a workspace package, test
   setup files, a classic script's `with`.
-- **Cost.** A corpus app takes a median of 6.8 ms (95th percentile 13 ms, at most 23 ms), and a
-  call on its worker thread about 100 ms in all. A 508 KB `.vue` file of 65,000 unclosed `<script>`
-  tags takes 258 ms (before: about 11 s, synchronously, on the host's main thread), and an 898 KB
-  page of 39,000 import-map tags 8 ms when read (before: 13.3 s); over the 512 KB cap it is not
-  read at all.
+- **Cost and containment.** A corpus app takes a median of 6.8 ms (95th percentile 13 ms, at most
+  23 ms) on the check's thread. A 508 KB `.vue` file of 65,000 unclosed `<script>` tags takes 258 ms
+  (before: about 11 s, synchronously, on the host's main thread), and an 898 KB page of 39,000
+  import-map tags 8 ms when read (before: 13.3 s); over the 512 KB cap it is not read at all. A
+  check of 64 files of about 500 KB (the 24 MB cap reached) takes about 0.7 s in its process, while
+  the host's event loop is delayed at most 9 ms (before, at the 64 MB cap: 260–740 ms). After ten
+  checks no esbuild process is left, unreaped or running; after checks killed at their budget (150,
+  300 and 450 ms into half a second of work) none is left running, on Linux and on Windows (CI). 500
+  KB of nested `[` or `{` is skipped at once, where esbuild's service crashed.
 - **Healthy runs are not slower.** `scripts/bench.ts` (origin/main against this change, 3 rounds,
-  medians, a 4-vCPU machine): vite-react-counter 6.12 s → 5.93 s cold, 1.61 s → 1.59 s warm;
-  lit-vite 4.95 s → 5.01 s cold, 1.42 s → 1.30 s warm; next-app-router 23.87 s → 22.29 s cold,
-  4.40 s → 4.49 s warm: within the runs' noise. None of these apps' ready phases reaches 20 s, so
-  their sources are never checked.
+  medians, a 4-vCPU machine): vite-react-counter 5.57 s → 5.43 s cold, 1.49 s → 1.54 s warm;
+  lit-vite 4.86 s → 4.66 s cold, 1.23 s → 1.25 s warm; next-app-router 21.19 s → 20.57 s cold,
+  4.12 s → 4.18 s warm: within the runs' noise (their ready phases within 2%). None of these apps'
+  ready phases reaches 20 s, so their sources are never checked; what every run does is record the
+  project files its runtime reads (a set of paths).
 - **The POST after a cold start** (`test/e2e/run.test.ts`): a server that answers its page's first
   load 500, then a blank page whose script posts to its own URL and gets 500, fails the ready
   phase in 17 s with that console error. Before: the 60 s deadline.
@@ -185,9 +202,10 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
 - An app whose page hangs with no output on a syntax error or an undeclared import fails in about
   20 s of ready, with the file and line, whatever its framework. One whose page is never answered
   runs to the deadline as before, and its timeout is classified by what the check found.
-- A reachable file that does not parse, or a reachable import of a package that is neither declared
-  nor installed, still fails an app whose page hangs for another reason (a server render that waits
-  on a backend that never answers). The corpus and the real repositories above have none.
+- A file the app read that does not parse, or its import of a package neither declared nor
+  installed, still fails an app whose page hangs for another reason (a server render that waits on
+  a backend that never answers): the app read a broken file, which is a fault of its own. A file
+  the app did not read never fails it early, so a page that streams slowly is waited for.
 - The check misses what it cannot follow: files a build plugin imports (`import.meta.glob`,
   auto-imported components outside Nuxt), dynamic `import()` and `require()` of packages, and files
   past its caps. A missed fault leaves the run as it was before this change (a timeout).
