@@ -22,7 +22,7 @@ export function availableMemory(): number {
 /**
  * macOS: free and inactive pages, as psutil counts available memory there. os.freemem() is the free
  * pages alone (libuv's host_statistics free_count), which macOS keeps low by caching files in the
- * rest: on the CI's macOS runner a batch waited for memory with a single app open.
+ * rest (on the CI's macOS runner, a batch of two at a time opened one app at a time).
  */
 function darwinAvailable(): number | null {
   try {

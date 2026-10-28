@@ -44,8 +44,10 @@ and 25 on Windows, and every e2e `run` test on Windows.
   (macOS's `/var` is `/private/var`, where its temporary directory is) the lockfile named the
   packages `../../private/var/.../node_modules/app` and the root a `file:` link. It now gets the
   real path.
-- **A batch on macOS opened one app at a time.** `os.freemem()` there counts the free pages only,
-  and macOS keeps those low by caching files in the rest. Available memory on macOS is now free
+- **A batch on macOS opened one app at a time** (the batch test's, with `parallel: 2`, on the macOS
+  runner): its memory guard reads `os.freemem()`, which there counts the free pages only, and macOS
+  keeps those low by caching files in the rest. The test now gives the batch memory to spare, as the
+  file's other batch tests do, since it checks parallelism, not the machine. Available memory on macOS is now free
   plus inactive pages (`vm_stat`), as psutil counts it. `memory.ts` joins the reviewed list of host
   files that start a process (`.oxlintrc.json`): it runs `vm_stat`, with no arguments, on macOS.
 - **A preload list could lose another process's entries on Windows.** There a rename over a file
