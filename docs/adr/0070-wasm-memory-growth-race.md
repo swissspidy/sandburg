@@ -93,7 +93,9 @@ Plain loads and stores are left as they are (guard pages see growth).
 - **Cost**: rolldown's 10.9 MB module takes 110–150 ms to rewrite under Node, once per process, and
   grows by 6.8 % (oxc-parser's 1.5 MB, 13 ms; oxide's 1.7 MB, 66 ms cold). Function bodies without a
   `0xFC` or `0xFE` byte (72 % of rolldown's, 46 % of its code) are copied without decoding. Each
-  guarded operation costs a comparison with `memory.size`.
+  guarded operation costs a comparison with `memory.size`. App 134 cold, alone, three runs each:
+  10.36 s with the guard and 10.25 s without (mean total; the start phase, where rolldown is
+  compiled and runs, 6.62 s and 6.22 s).
 
 ## Results
 
@@ -105,6 +107,11 @@ machine:
 | Without the guard (the same clean install) | 6 | 2 |
 | With the guard | 30 | 0 |
 | With the guard, alone with four CPU spinners | 10 | 0 |
+
+With the guard, 25 corpus apps cold, three at a time (the 12 Angular apps; Vite 8 apps of
+SvelteKit, SolidStart, React Router, Vue, Svelte, Lit and Vue + Express; Nuxt and Astro twice;
+Next.js and Vite + React with Tailwind 4) were all right: the 13 that should pass passed, and the
+12 faults were caught as `app-bug`.
 
 ## Consequences
 
