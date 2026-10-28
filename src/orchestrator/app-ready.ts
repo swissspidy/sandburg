@@ -6,6 +6,8 @@ import type { Frame, Page } from 'playwright-core';
 import type { ConsoleEntry } from '../types.ts';
 import { RunState } from './run-state.ts';
 import { appRendered } from '../host/rendered.ts';
+import { describeFinding, type SourceFinding } from '../source-check.ts';
+import { SOURCE_STALL } from '../classify.ts';
 
 /** Grace period after a runtime asset fails before the phase gives up (the runtime may retry). */
 const RUNTIME_FETCH_GRACE_MS = 3_000;
@@ -173,5 +175,59 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
     // What a loading page logged belongs to the dev server, not to the app the checks look at.
     for (const e of run.pageErrors.slice(0, seenErrors)) e.source = 'host';
     for (const c of run.console.slice(0, seenConsole)) if (c.source === 'app') c.source = 'host';
+  }
+}
+
+/** How long the ready phase waits for the app before it checks the project's sources (failOnSourceStall). */
+const SOURCE_CHECK_AFTER_MS = 20_000;
+
+/** How long the dev server and the page must have been quiet before what the source check found fails the phase. */
+const SOURCE_QUIET_MS = 10_000;
+
+/** Whether a console entry says the app is still getting somewhere: the runtime's output, or the page's error (the app-error watch's to judge). */
+const active = (c: ConsoleEntry) => (c.source === 'host' && c.text.startsWith('[runtime:')) || (c.source === 'app' && c.type === 'error');
+
+/**
+ * Rejects when the app has not rendered after 20 s, its dev server and page have said nothing for
+ * 10 s, and its sources have a syntax error or import a package it does not declare (`check`,
+ * source-check.ts): some dev servers report neither, and hang (SolidStart 2.1.0 streams the page
+ * and never ends it). The sources are checked once, at 20 s, so a run whose app renders sooner
+ * never pays for it; what was found is kept for classification (`run.sourceFindings`), also
+ * when the phase times out instead.
+ */
+export async function failOnSourceStall(render: Promise<void>, run: RunState, check: () => Promise<SourceFinding[]>): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  let done = false;
+  const watch = new Promise<never>((_, reject) => {
+    const start = Date.now();
+    let quietSince = start;
+    let [consoleSeen, errorsSeen] = [run.console.length, run.pageErrors.length];
+    let checked = false;
+    const poll = () => {
+      if (done) return;
+      const now = Date.now();
+      if (run.pageErrors.length > errorsSeen || run.console.slice(consoleSeen).some(active)) quietSince = now;
+      [consoleSeen, errorsSeen] = [run.console.length, run.pageErrors.length];
+      if (!checked && now - start >= SOURCE_CHECK_AFTER_MS) {
+        checked = true;
+        void check().then(
+          (found) => void (run.sourceFindings = found),
+          () => void (run.sourceFindings = []),
+        );
+      }
+      const found = run.sourceFindings?.[0];
+      if (found && now - quietSince >= SOURCE_QUIET_MS) {
+        reject(new Error(`${SOURCE_STALL}${describeFinding(found)}`));
+        return;
+      }
+      timer = setTimeout(poll, 200);
+    };
+    poll();
+  });
+  try {
+    await Promise.race([render, watch]);
+  } finally {
+    done = true;
+    clearTimeout(timer);
   }
 }

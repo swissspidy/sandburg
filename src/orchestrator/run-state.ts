@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { arch, platform } from 'node:os';
 import type { BrowserContext, Frame, Page } from 'playwright-core';
 import { classify } from '../classify.ts';
+import type { SourceFinding } from '../source-check.ts';
 import type { ConsoleEntry, InstallReport, PageError, PhaseName, PhaseRecord, ProbeVerdict, Project, RunResult, SerializedError } from '../types.ts';
 import type { RpcResult } from '../host/types.ts';
 import type { ChecksOutput } from './checks.ts';
@@ -70,6 +71,8 @@ export class RunState {
   setupError: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null = null;
   /** Where the console stood when the ready phase began (what the dev server logged while it served the app's page follows). */
   private readyConsoleFrom: number | null = null;
+  /** What checking the project's sources found, when the ready phase had it checked (failOnSourceStall). */
+  sourceFindings: SourceFinding[] | null = null;
   /** The path of the app's page, once its dev server has started (classification evidence; appStarted). */
   appPath: string | null = null;
 
@@ -191,6 +194,7 @@ export class RunState {
       runtimeOutput: this.console.filter(isRuntimeOutput).map((c) => c.text),
       readyOutputFrom: this.readyConsoleFrom === null ? undefined : this.console.slice(0, this.readyConsoleFrom).filter(isRuntimeOutput).length,
       appPath: this.appPath,
+      sourceFindings: this.sourceFindings,
       infraError: this.infraError,
       setupError: this.setupError,
       declaredDependencies: Object.keys({ ...this.project.packageJson?.dependencies, ...this.project.packageJson?.devDependencies }),

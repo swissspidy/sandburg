@@ -5,6 +5,7 @@
  */
 import { builtinModules } from 'node:module';
 import type { CheckResult, Failure, PageError, PhaseName, PhaseRecord, ProbeVerdict } from './types.ts';
+import { describeFinding, type SourceFinding } from './source-check.ts';
 
 /** Node's built-in modules (`sqlite` is only listed with its prefix, as node:sqlite). */
 const NODE_BUILTINS = [...builtinModules.filter((m) => !m.startsWith('node:')), 'sqlite'];
@@ -43,6 +44,9 @@ const WASM_TRAP = /\b(?:memory access out of bounds|unreachable(?: code should n
 
 const RUNTIME_BOOT_FETCH = /Failed to fetch dynamically imported module|WebWorker failed to load|Failed to register a ServiceWorker/i;
 
+/** How the ready phase reports what the source check found (orchestrator/app-ready.ts, failOnSourceStall). */
+export const SOURCE_STALL = 'app did not render, and its sources have an error: ';
+
 /** Compile errors reported by dev servers and esbuild for the project's sources. */
 const COMPILE_ERROR = /Module build failed|Failed to compile|Transform failed with \d+ error|\[plugin:vite:[a-z-]+\]|Expected [^\n]{1,40} but found|Unexpected token|Unterminated (string|template)/i;
 
@@ -62,6 +66,8 @@ export interface ClassifyInput {
   appPath?: string | null;
   /** Dependency names declared in package.json (dependencies and devDependencies). */
   declaredDependencies: string[];
+  /** What checking the project's sources found, when the ready phase stalled long enough to check them (source-check.ts). */
+  sourceFindings?: SourceFinding[] | null;
   /** Set when the orchestrator or browser itself failed (crash, offline cache miss). */
   infraError: { phase: PhaseName; message: string } | null;
   /**
@@ -91,6 +97,12 @@ export function classify(input: ClassifyInput): Failure | null {
   const devError = failedPhase ? devServerCompileError(input.runtimeOutput ?? []) : null;
   if (failedPhase?.status === 'timeout' && devError && !matchSignature([devError])) {
     return failure('app-bug', failedPhase.name, 'compile-error', devError, [devError]);
+  }
+  // The project's own sources do not parse, or import a package it does not declare, and the dev
+  // server said nothing (SolidStart hangs): what the source check found, in the ready phase only.
+  const source = failedPhase?.name === 'ready' ? input.sourceFindings?.[0] : undefined;
+  if (source && (failedPhase!.status === 'timeout' || failedPhase!.error?.message.startsWith(SOURCE_STALL))) {
+    return failure('app-bug', 'ready', source.rule, describeFinding(source), [failedPhase!.error?.message ?? '', ...appErrors]);
   }
   if (failedPhase?.status === 'timeout') {
     return failure('timeout', failedPhase.name, 'phase-deadline', failedPhase.error?.message ?? `${failedPhase.name} timed out`, []);

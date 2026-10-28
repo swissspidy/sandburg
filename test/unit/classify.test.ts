@@ -344,3 +344,21 @@ test('a project or checks file that did not load is the failure, even with no ph
     evidence: [],
   });
 });
+
+test("what the source check found is the ready phase's failure when that phase stalled on it or timed out, and only then", () => {
+  const syntax = { rule: 'compile-error' as const, file: 'src/components/ConverterFeature.tsx', line: 3, column: 16, message: 'Unexpected ";"' };
+  const undeclared = { rule: 'undeclared-import' as const, file: 'src/components/CounterFeature.tsx', line: 3, message: 'dayjs' };
+  const stalled = (f: typeof syntax | typeof undeclared) => failedAt('ready', `app did not render, and its sources have an error: ${f.rule === 'compile-error' ? 'src/components/ConverterFeature.tsx:3:16: Unexpected ";"' : 'imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)'}`);
+  const s = classify(input({ phases: stalled(syntax), sourceFindings: [syntax] }));
+  assert.deepEqual([s?.class, s?.phase, s?.rule, s?.message], ['app-bug', 'ready', 'compile-error', 'src/components/ConverterFeature.tsx:3:16: Unexpected ";"']);
+  const u = classify(input({ phases: stalled(undeclared), sourceFindings: [undeclared] }));
+  assert.deepEqual([u?.class, u?.rule, u?.message], ['app-bug', 'undeclared-import', 'imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)']);
+  // The ready phase timed out with the dev server never quiet for long enough: the same.
+  const timedOut = classify(input({ phases: failedAt('ready', 'ready timed out after 240000 ms', undefined, 'timeout'), sourceFindings: [syntax] }));
+  assert.deepEqual([timedOut?.class, timedOut?.rule], ['app-bug', 'compile-error']);
+  // The ready phase failed for a reason of its own (the app threw), or another phase failed: not the source check's.
+  const threw = classify(input({ phases: failedAt('ready', 'app threw before rendering: x'), sourceFindings: [syntax] }));
+  assert.deepEqual([threw?.class, threw?.rule], ['unknown', 'unmatched']);
+  const start = classify(input({ phases: failedAt('start', 'start timed out', undefined, 'timeout'), sourceFindings: [syntax] }));
+  assert.deepEqual([start?.class, start?.rule], ['timeout', 'phase-deadline']);
+});

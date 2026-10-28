@@ -23,3 +23,27 @@ test('corpus/ is the generator\'s output, byte for byte, and nothing else', asyn
   assert.deepEqual(onDisk.toSorted(), [...expected.keys()].toSorted(), 'the same files');
   for (const path of onDisk) assert.equal(await readFile(join(corpus, path), 'utf8'), expected.get(path), path);
 });
+
+test("the source check (src/source-check.ts) flags each corpus app's seeded syntax error and undeclared import, at its line, and nothing else", async () => {
+  const { checkSources } = await import('../../src/source-check.ts');
+  const { loadProject } = await import('../../src/project.ts');
+  const index = JSON.parse(await readFile(join(corpus, '_corpus.json'), 'utf8')) as { apps: AppMeta[] };
+  const flagged: string[] = [];
+  const expected: string[] = [];
+  for (const meta of index.apps) {
+    const project = await loadProject(join(corpus, meta.id));
+    for (const f of await checkSources(project.files)) {
+      const source = project.files[f.file] as string;
+      // The seeded line itself: `const broken = ;` (a syntax error's column is past its `=`), or the import.
+      const line = source.split('\n')[f.line - 1].trim();
+      flagged.push(`${meta.id} ${f.rule} ${f.rule === 'compile-error' ? line : `${f.message}: ${line}`}`);
+    }
+    if (meta.fault === 'syntax') expected.push(`${meta.id} compile-error const broken = ;`);
+    // v6's nanoid (vite-react, next-app, vite-vanilla), v7's dayjs: neither is declared.
+    if (meta.fault === 'undeclared-import') {
+      const pkg = /^0[0-9]{2}-(?:vite-react|next-app|vite-vanilla|next-pages)$/.test(meta.id) && Number(meta.id.slice(0, 3)) < 100 ? 'nanoid' : 'dayjs';
+      expected.push(`${meta.id} undeclared-import ${pkg}: import ${pkg === 'nanoid' ? "{ nanoid } from 'nanoid'" : "dayjs from 'dayjs'"};`);
+    }
+  }
+  assert.deepEqual(flagged, expected);
+});

@@ -24,7 +24,8 @@ import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
 import { recordRequestFailures, recordDocuments, RunState, unwrap } from './run-state.ts';
-import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError } from './app-ready.ts';
+import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, failOnSourceStall } from './app-ready.ts';
+import { checkSources } from '../source-check.ts';
 import { appFilesFrom } from './app-files.ts';
 
 /** Options of a Session: the browser, the caches and stores it keeps on disk. */
@@ -596,7 +597,7 @@ export class Session {
               await host('ready', url, navigate ?? true);
               await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
             })();
-            await failFastOnAppError(render, run, loadingPage, frame);
+            await failFastOnAppError(failOnSourceStall(render, run, () => checkSources(project.files)), run, loadingPage, frame);
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been
