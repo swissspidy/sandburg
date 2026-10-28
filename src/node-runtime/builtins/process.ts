@@ -67,7 +67,6 @@ class Timeout {
   /** Scheduled, and pending (in byId) until it fires or is cleared; a refresh() after it fired schedules it again. */
   private start() {
     const fn = this.fn;
-    this.done = false;
     this.due = performance.now() + this.ms;
     this.id = this.repeat ? nativeSetInterval(() => {
       this.due += this.ms;
@@ -86,15 +85,12 @@ class Timeout {
   cancelNative() {
     if (this.id !== null && !this.repeat) nativeClearTimeout(this.id);
   }
-  /** Scheduled and not cleared (a timeout: not fired yet; refresh() schedules it again). */
+  /** Scheduled and not cleared. */
   get pending() {
-    return this.id !== null && !this.done;
+    return this.id !== null;
   }
-  /** A timeout that fired. */
-  private done = false;
-  /** It fired (a timeout: no longer pending). */
+  /** A timeout fired: no longer due (refresh() schedules it again). */
   fired() {
-    this.done = true;
     if (this.id !== null) byId.delete(Number(this.id));
   }
   clear() {
@@ -300,8 +296,10 @@ async function runTurn() {
     } while ((ioQueue.length || immediateQueue.length || closeQueue.length) && !dueTimers.length && !byIdDue());
   } finally {
     turnPosted = false;
-    // The loop's next timers phase. A timer one of them sets runs on a later one, as in Node.
-    for (const timer of takeDueTimers()) {
+    // The loop's next timers phase. A timer one of them sets runs on a later one, as in Node, and so
+    // does one they refresh (it is due later now).
+    for (const [timer, due] of takeDueTimers().map((t) => [t, t.due] as const)) {
+      if (timer.due !== due) continue;
       runOne(timer.run);
       await nextTask();
     }

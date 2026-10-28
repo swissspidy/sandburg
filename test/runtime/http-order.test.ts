@@ -131,9 +131,10 @@ test('timers: all an immediate queued (nextTick, promises, at any depth) runs be
   ]);
 });
 
-test('timers: timers due together at the end of a turn each fire once, in order, also when one queues an immediate', async () => {
+test('timers: timers due together at the end of a turn each fire once, in order, also when one queues an immediate; one refreshed by another waits again', async () => {
   assert.deepEqual(await run('timers-once.cjs'), [
     'A, B, C, immediate from A',
+    'A, C, immediate from A, B',
   ]);
 });
 
