@@ -2,6 +2,8 @@
 
 How Sandburg is built, tested and released. The user guides are in [`guide/`](guide); the map of the
 code is [`architecture.md`](architecture.md), and the design decisions are the [ADRs](adr/README.md).
+How to contribute (setup, tests, changesets, ADRs, pull requests) is in
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## How it works
 

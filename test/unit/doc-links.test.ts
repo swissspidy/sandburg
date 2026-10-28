@@ -1,17 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { anchors, brokenLinks, links, slug } from '../../scripts/doc-links.ts';
 
-// The security policy is added by its own pull request; until it is on this branch, its link is the one allowed to dangle.
-const PENDING = existsSync(new URL('../../SECURITY.md', import.meta.url)) ? [] : ['docs/guide/security.md: ../../SECURITY.md (no SECURITY.md)'];
-
 test('every relative link in the README, the community files and docs/ resolves, to a heading where it names one', () => {
-  assert.deepEqual(
-    brokenLinks().filter((b) => !PENDING.includes(b)),
-    [],
-    'fix the link, or the heading it points at (node scripts/doc-links.ts lists them)',
-  );
+  assert.deepEqual(brokenLinks(), [], 'fix the link, or the heading it points at (node scripts/doc-links.ts lists them)');
 });
 
 test("anchors are GitHub's: code and punctuation dropped, repeats numbered", () => {

@@ -1,0 +1,32 @@
+name: Feature request
+description: Support for a framework, Node API or dev tool, or a new option or capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the README's "What runs" table first: it lists what is supported and what is not (native addons without a WebAssembly build, synchronous child processes, non-Node programs, non-registry dependencies).
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what Sandburg does today (a failure class and rule from `result.json` helps).
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: The behaviour, option or API you have in mind. For a framework or tool, its name and version and a sample project.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Effect on the sandbox
+      description: Would it need an app to reach something it cannot today (the host, the network, the file system)? Say so; such changes need an ADR.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use now, or other ways it could be done.

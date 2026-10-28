@@ -130,6 +130,8 @@ boundary. The details are in [Security](docs/guide/security.md).
 
 ## Development
 
+How to contribute (setup, tests, changesets, ADRs, pull requests) is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 `npm test`, `npm run lint` and `npm run typecheck` are the fast checks; the other suites, the scripts,
 CI and the release flow are in [`docs/development.md`](docs/development.md).
 
