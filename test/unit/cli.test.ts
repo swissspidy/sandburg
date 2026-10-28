@@ -145,7 +145,7 @@ const HANGING_COMPARE = `
 `;
 
 for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, 'image'], ['SIGINT', 130, 'exec']] as const) {
-  test(`compare cut short by ${signal} (at docker ${hang}) removes the reference's runs, writes no report and exits ${code}`, { timeout: 120_000 }, async (t) => {
+  test(`compare cut short by ${signal} (at docker ${hang}) removes the reference's runs, writes no report and exits ${code}`, { timeout: 120_000, skip: process.platform === 'win32' && "Windows has no signals between processes: kill(signal) ends the child without running its handler" }, async (t) => {
     const dir = tempDir('sandburg-compare-signal-');
     const app = join(dir, 'app');
     await mkdir(app);
