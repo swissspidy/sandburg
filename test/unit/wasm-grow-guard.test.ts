@@ -15,8 +15,8 @@ import { guardSharedMemoryGrowth } from '../../src/node-runtime/wasm-grow-guard.
  *     (if (op == 0) (memory.fill addr 7 16)) (if (op == 1) (memory.copy addr 0 8))
  *     (if (op == 2) (i32.atomic.rmw.add addr 1)) (if (op == 3) (i32.store addr 1)) ...)
  *
- * Unguarded, under Node 24 (V8 13.6) and in Chromium, ops 0-2 trap with "memory access out of
- * bounds" within a few thousand rounds; op 3 never does.
+ * Unguarded, ops 0-2 trap with "memory access out of bounds" in the second round under Node 24
+ * (V8 13.6) and in Chromium; op 3 never does.
  */
 const PING_PONG = Buffer.from(
   'AGFzbQEAAAABDAJgAX8Bf2ACf38BfwISAQNlbnYGbWVtb3J5AgMBgIAEAwMCAAEHEwIGd3JpdGVyAAAGcmVhZGVyAAEKxQECRwECfwJAA0AgASAATw0BQQFAAEEQdEHAAGohAiACQcAASA0BQQAgAv4XAgAgAUEBaiEBA0BBBP4QAgAgAUkNAAsMAAsLIAELewEDfwJAA0AgAiAATw0BA0BBAP4QAgAhAyADIARGDQALIAMhBCABRQRAIANBB0EQ/AsACyABQQFGBEAgA0EAQQj8CgAACyABQQJGBEAgA0EB/h4CABoLIAFBA0YEQCADQQE2AgALIAJBAWohAkEEIAL+FwIADAALCyACCw==',
@@ -128,5 +128,5 @@ async function pingPong(bytes: Uint8Array<ArrayBuffer>, op: number, rounds: numb
 
 test('a thread that fills, copies to or atomically updates memory another thread just grew does not trap', async () => {
   const guarded = guardSharedMemoryGrowth(PING_PONG)!;
-  for (const op of [0, 1, 2, 3]) for (let run = 0; run < 2; run++) assert.equal(await pingPong(guarded, op, 20_000), null, `op ${op}`);
+  for (const op of [0, 1, 2, 3]) for (let run = 0; run < 2; run++) assert.equal(await pingPong(guarded, op, 1000), null, `op ${op}`);
 });

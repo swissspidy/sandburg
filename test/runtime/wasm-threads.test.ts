@@ -18,7 +18,10 @@ after(() => h.close());
 /**
  * A thread grows a shared memory a page at a time (`writer`) and publishes each new page's address;
  * `reader` waits for it and fills it (op 0), copies to it (1), adds to it atomically (2) or stores
- * to it (3). WAT and the same module: test/unit/wasm-grow-guard.test.ts (PING_PONG).
+ * to it (3). WAT and the same module: test/unit/wasm-grow-guard.test.ts (PING_PONG). Every round
+ * grows the memory. Without the guard, the runtime trapped in the second round of ops 0-2 in each of
+ * 15 tries; 200 rounds keep a wide margin and take well under a second (with 20,000, CI's Windows
+ * runner had done one op of four when the run's 30 s were up).
  */
 const PING_PONG = 'AGFzbQEAAAABDAJgAX8Bf2ACf38BfwISAQNlbnYGbWVtb3J5AgMBgIAEAwMCAAEHEwIGd3JpdGVyAAAGcmVhZGVyAAEKxQECRwECfwJAA0AgASAATw0BQQFAAEEQdEHAAGohAiACQcAASA0BQQAgAv4XAgAgAUEBaiEBA0BBBP4QAgAgAUkNAAsMAAsLIAELewEDfwJAA0AgAiAATw0BA0BBAP4QAgAhAyADIARGDQALIAMhBCABRQRAIANBB0EQ/AsACyABQQFGBEAgA0EAQQj8CgAACyABQQJGBEAgA0EB/h4CABoLIAFBA0YEQCADQQE2AgALIAJBAWohAkEEIAL+FwIADAALCyACCw==';
 
@@ -28,7 +31,7 @@ test('WebAssembly threads: memory another thread just grew can be filled, copied
       'main.js': `
         const PING_PONG = '${PING_PONG}';
         const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
-        const ROUNDS = 20000;
+        const ROUNDS = 200;
         const bytes = Buffer.from(PING_PONG, 'base64');
         if (isMainThread) {
           (async () => {
@@ -65,10 +68,10 @@ test('WebAssembly threads: memory another thread just grew can be filled, copied
   assert.equal(
     out.stdout,
     [
-      'op 0 (new Module): 20000 rounds; in the thread: true writer,reader',
-      'op 1 (compile): 20000 rounds; in the thread: true writer,reader',
-      'op 2 (instantiate): 20000 rounds; in the thread: true writer,reader',
-      'op 3 (new Module): 20000 rounds; in the thread: true writer,reader',
+      'op 0 (new Module): 200 rounds; in the thread: true writer,reader',
+      'op 1 (compile): 200 rounds; in the thread: true writer,reader',
+      'op 2 (instantiate): 200 rounds; in the thread: true writer,reader',
+      'op 3 (new Module): 200 rounds; in the thread: true writer,reader',
       '',
     ].join('\n'),
   );
