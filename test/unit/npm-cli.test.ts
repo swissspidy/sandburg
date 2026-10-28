@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { npmCliScript, npmCommand } from '../../src/adapters/node/npm-cli.ts';
 import { tempDir } from './temp-dir.ts';
 
@@ -54,6 +54,34 @@ test("npm's script is found beside an npm.cmd on PATH, in PATH's order, when nei
   // Windows' own spelling, in a copy of the environment.
   assert.equal(npmCliScript({ Path: PATH }, node), join(scoop, 'node_modules', 'npm', 'bin', 'npm-cli.js'));
   assert.equal(npmCliScript({ PATH: [empty, volta].join(delimiter) }, node), null);
+});
+
+test('only absolute PATH entries count: a relative one names a file relative to this directory, not npm\'s', () => {
+  const dir = tempDir('sandburg-npm-relative-');
+  const node = join(dir, 'nodejs', 'node.exe');
+  // A directory with an npm shim and npm beside it, reachable from the working directory as ".", "foo\.." and "shim".
+  const shim = join(dir, 'shim');
+  mkdirSync(join(shim, 'node_modules', 'npm', 'bin'), { recursive: true });
+  writeFileSync(join(shim, 'npm.cmd'), '');
+  writeFileSync(join(shim, 'node_modules', 'npm', 'bin', 'npm-cli.js'), '');
+  mkdirSync(join(shim, 'foo'));
+  const cwd = process.cwd();
+  process.chdir(shim);
+  try {
+    for (const platform of ['win32', 'linux'] as const) {
+      assert.equal(npmCliScript({ PATH: '.' }, node, delimiter, platform), null, platform);
+      assert.equal(npmCliScript({ PATH: 'foo\\..' }, node, delimiter, platform), null, platform);
+      assert.equal(npmCliScript({ PATH: 'foo/..' }, node, delimiter, platform), null, platform);
+      // A relative npm_execpath is not taken either.
+      assert.equal(npmCliScript({ npm_execpath: join('node_modules', 'npm', 'bin', 'npm-cli.js') }, node, delimiter, platform), null, platform);
+    }
+    // Mixed: the relative entries are passed over, the absolute one (the same directory) is taken.
+    const found = npmCliScript({ PATH: ['.', 'foo\\..', 'shim', shim].join(delimiter) }, node);
+    assert.equal(found, join(shim, 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+    assert.ok(isAbsolute(found!));
+  } finally {
+    process.chdir(cwd);
+  }
 });
 
 test('on Windows with no npm-cli.js anywhere, spawning npm fails with what was looked for and how to fix it', () => {
