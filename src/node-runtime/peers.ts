@@ -197,6 +197,10 @@ export function forgetNested(worker: globalThis.Worker) {
     bridge.close();
     queueMicrotask(() => entry.abort());
   }
+  // Those it made that went on from here (to another nested runtime, or up): their servers learn it went away.
+  const cancels = loopbackCancels.get(worker);
+  loopbackCancels.delete(worker);
+  for (const cancel of [...(cancels?.values() ?? [])]) cancel();
   for (const [id, w] of nestedSockets) {
     if (w !== worker) continue;
     nestedSockets.delete(id);
@@ -308,9 +312,15 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'response-full':
     case 'response-end':
     case 'response-error': {
+      // Ours (loopback.route), or one this runtime forwarded (from the page or its parent): else one
+      // it no longer waits for (cancelled, or answered with an error as its runtime ended), dropped.
+      const forwarded = inflight.has(m.id);
       if (m.type !== 'response-start' && m.type !== 'response-chunk') inflight.delete(m.id);
       const own = loopbackRequests.get(m.id);
-      if (!own) break;
+      if (!own) {
+        if (forwarded) break;
+        return true;
+      }
       if (m.type === 'response-start') own.start(m.status, m.statusText, m.headers);
       else if (m.type === 'response-chunk') own.chunk(m.chunk);
       else if (m.type === 'response-full') {

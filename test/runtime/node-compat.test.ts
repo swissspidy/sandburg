@@ -1139,6 +1139,246 @@ test("http: an agent's maxSockets: its requests to a host wait for one of its so
   assert.equal(out.stdout, 'start /a active=1 | start /b active=1 | start /c active=1\n');
 });
 
+test("http: stray loopback messages after cancel: what a child's server sent for a request its parent cancelled reaches no one", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // Requests to a child's server cancelled mid-stream (its response destroyed) or as it answers with a
+        // cookie (the request destroyed): what the child had already sent for them goes nowhere.
+        const http = require('http');
+        const { fork } = require('child_process');
+        const child = fork(__dirname + '/child.js');
+        child.on('message', async () => {
+          let n = 0;
+          for (let i = 0; i < 20; i++) {
+            await new Promise((done) => {
+              const req = http.get('http://localhost:3040/stream', (res) => {
+                res.on('error', () => {});
+                res.once('data', () => {
+                  res.destroy();
+                  setTimeout(done, 10);
+                });
+              });
+              req.on('error', () => done());
+            });
+            await new Promise((done) => {
+              const req = http.get('http://localhost:3040/cookie', (res) => res.resume());
+              req.on('error', () => {});
+              setTimeout(() => {
+                req.destroy();
+                setTimeout(done, 10);
+              }, i % 4);
+            });
+            n++;
+          }
+          console.log('done ' + n);
+          child.kill();
+          process.exit(0);
+        });`,
+      'child.js': `
+        require('http').createServer((req, res) => {
+          if (req.url === '/cookie') {
+            res.setHeader('set-cookie', 'stray=1');
+            return res.end('c');
+          }
+          res.writeHead(200);
+          const tick = setInterval(() => res.write('x'.repeat(100)), 1);
+          res.on('close', () => clearInterval(tick));
+        }).listen(3040, () => process.send('ready'));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    // What the child sent last comes after: the run is kept to see it.
+    { linger: 500 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'done 20\n');
+  assert.deepEqual(out.stray, []);
+});
+
+test('http: res.flushHeaders() sends the headers at once: a destroy right after cuts the response short', async () => {
+  const out = await h.run({ 'main.js': `
+        // res.flushHeaders() sends the headers at once: a destroy right after cuts the response short, not the request.
+        const http = require('http');
+        http.createServer((req, res) => {
+          res.writeHead(200);
+          res.flushHeaders();
+          res.destroy();
+        }).listen(3030, () => {
+          const log = [];
+          http.get('http://localhost:3030/', (res) => {
+            log.push('response ' + res.statusCode);
+            res.on('aborted', () => log.push('aborted'));
+            res.on('error', (e) => log.push('res error ' + e.code));
+          }).on('error', (e) => log.push('req error ' + e.code + ' ' + e.message));
+          setTimeout(() => {
+            console.log(log.join(', '));
+            process.exit(0);
+          }, 200);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'response 200, aborted, res error ECONNRESET\n');
+});
+
+test("http: a request's timeout starts once it has a socket, not while it waits for one of its agent's", async () => {
+  const out = await h.run({ 'main.js': `
+        // A request's timeout starts once it has a socket, not while it waits in its agent's queue.
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => setTimeout(() => res.end('x'), req.url === '/a' ? 300 : 50)).listen(3031, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          for (const path of ['/a', '/b']) {
+            const req = http.get({ port: 3031, path, agent, timeout: 200 }, (res) => {
+              res.resume();
+              res.on('end', () => log.push('end ' + path));
+            });
+            req.on('timeout', () => {
+              log.push('timeout ' + path);
+              req.destroy();
+            });
+            req.on('error', (e) => log.push('error ' + path + ' ' + e.code));
+          }
+          setTimeout(() => {
+            console.log(log.join(' | '));
+            process.exit(0);
+          }, 800);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'timeout /a | error /a ECONNRESET | end /b\n');
+});
+
+test("http: an agent's requests get its sockets in the order they were made", async () => {
+  const out = await h.run({ 'main.js': `
+        // An agent's queue goes in the order the requests were made, not the order they were ended.
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => {
+          log.push(req.url);
+          setTimeout(() => res.end('x'), 30);
+        }).listen(3032, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const reqs = ['/a', '/b', '/c'].map((path) => http.request({ port: 3032, path, agent }, (res) => res.resume()));
+          for (const req of reqs.reverse()) req.end();
+          setTimeout(() => {
+            console.log(log.join(' '));
+            process.exit(0);
+          }, 400);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, '/a /b /c\n');
+});
+
+test("http: a request made and not ended keeps its agent's socket", async () => {
+  const out = await h.run({ 'main.js': `
+        // A request made and not ended holds its agent's socket: the next waits until it is ended (and answered).
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => {
+          log.push('start ' + req.url);
+          res.end('x');
+        }).listen(3035, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const a = http.request({ port: 3035, path: '/a', agent }, (res) => res.resume());
+          http.get({ port: 3035, path: '/b', agent }, (res) => res.resume());
+          setTimeout(() => {
+            log.push('ending /a');
+            a.end();
+          }, 150);
+          setTimeout(() => {
+            console.log(log.join(' | '));
+            process.exit(0);
+          }, 400);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'ending /a | start /a | start /b\n');
+});
+
+test("http: a request's 'timeout' comes once (setTimeout again in its handler makes no other)", async () => {
+  const out = await h.run({ 'main.js': `
+        // 'timeout' comes once: setTimeout again in its handler does not make another.
+        const http = require('http');
+        http.createServer((req, res) => setTimeout(() => res.end('x'), 600)).listen(3033, () => {
+          const log = [];
+          const req = http.get('http://localhost:3033/', (res) => {
+            res.resume();
+            res.on('end', () => log.push('end'));
+          });
+          req.setTimeout(150, () => {
+            log.push('timeout');
+            req.setTimeout(100);
+          });
+          req.on('timeout', () => log.push('req timeout'));
+          req.on('close', () => {
+            log.push('close');
+            console.log(log.join(' | '));
+            process.exit(0);
+          });
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'timeout | req timeout | end | close\n');
+});
+
+test('http: req.destroy() then req.abort() in the same tick, before a response: it was aborted (no error)', async () => {
+  const out = await h.run({ 'main.js': `
+        // req.destroy() then req.abort() in the same tick, before a response.
+        const http = require('http');
+        http.createServer((req, res) => res.end('ok')).listen(3034, () => {
+          const log = [];
+          const req = http.get('http://localhost:3034/');
+          req.on('abort', () => log.push('abort'));
+          req.on('error', (e) => log.push('error ' + e.message));
+          req.on('close', () => log.push('close'));
+          req.destroy();
+          req.abort();
+          setTimeout(() => {
+            console.log(log.join(', '));
+            process.exit(0);
+          }, 200);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'close, abort\n');
+});
+
+test("http: a child that dies with a request to its sibling's server (through their parent) aborts it there", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // A child's request to its sibling's server (through their parent): the child dies, and its sibling's server learns it.
+        const { fork } = require('child_process');
+        const server = fork(__dirname + '/server.js');
+        server.on('message', (m) => {
+          if (m === 'listening') {
+            const client = fork(__dirname + '/client.js');
+            client.on('message', () => client.kill());
+          } else {
+            console.log(m);
+            server.kill();
+            process.exit(0);
+          }
+        });`,
+      'server.js': `
+        const log = [];
+        require('http').createServer((req, res) => {
+          log.push('request');
+          req.on('aborted', () => log.push('aborted'));
+          req.on('close', () => log.push('req close'));
+          res.on('close', () => {
+            log.push('res close');
+            setTimeout(() => process.send(log.join(',')), 50);
+          });
+          res.writeHead(200);
+          res.write('a');
+        }).listen(3041, () => process.send('listening'));`,
+      'client.js': `
+        require('http').get('http://localhost:3041/', (res) => res.once('data', () => process.send('got')));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'request,aborted,res close,req close\n');
+});
+
 test("process.exit() in an 'uncaughtException' or 'unhandledRejection' handler ends the process with its code", async () => {
   const outs = [];
   for (const program of [

@@ -280,7 +280,11 @@ export class ServerResponse extends Writable {
   getRawHeaderNames() { return [...this.headerMap.values()].map((h) => h.name); }
   hasHeader(name: string) { return this.headerMap.has(name.toLowerCase()); }
   removeHeader(name: string) { this.headerMap.delete(name.toLowerCase()); }
-  flushHeaders() { this.sendHeaders(); }
+  /** As Node's: the status line and headers go out at once (only writes wait for the end of the tick). */
+  flushHeaders() {
+    this.sendHeaders();
+    this.#flushHeld();
+  }
   /** Node internal that middleware (e.g. compression) calls to commit the status line and headers. */
   _implicitHeader() { this.writeHead(this.statusCode); }
   writeHead(status: number, msgOrHeaders?: string | Record<string, unknown> | unknown[], maybeHeaders?: Record<string, unknown> | unknown[]) {
@@ -542,9 +546,13 @@ class ClientRequest extends Writable {
   #cancelServer: (() => void) | null = null;
   /** setTimeout's: 'timeout' once it has been idle that long (0: never), and its timer. */
   #timeoutMs = 0;
+  /** It has its socket (see #assigned), its body is written (_final: what to send), and its 'timeout' came. */
+  #hasSocket = false;
+  #body: { data: ReturnType<typeof Buffer.concat> | undefined } | null = null;
+  #timedOut = false;
   #timer: ReturnType<typeof timers.setTimeout> | undefined;
   aborted = false;
-  constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void, socketPath?: string) {
+  constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void, socketPath?: string, agent?: Agent) {
     // Not destroyed once its body is written (the stream's autoDestroy): that would abort its fetch().
     super({ autoDestroy: false });
     const u = new URL(url);
@@ -552,13 +560,22 @@ class ClientRequest extends Writable {
     this.target = socketPath ?? (LOCAL_HOSTS.has(u.hostname) ? Number(u.port || (u.protocol === 'https:' ? 443 : 80)) : null);
     // As in Node, the request gets its (connected) socket on a later tick; proxies (httpxy) wait for it.
     this.socket = this.connection = Object.assign(new FakeSocket(0), { pending: false, connecting: false });
-    queueMicrotask(() => this.emit('socket', this.socket));
     this.method = method;
     this.path = u.pathname + u.search;
     this.host = u.host;
     for (const [k, v] of Object.entries(headers)) this.headers[k.toLowerCase()] = String(v);
     if (cb) this.once('response', cb);
     this.once('close', () => timers.clearTimeout(this.#timer));
+    // With an agent's socket limit (maxSockets), once one of its sockets is free, in the order the
+    // requests were made; a request made and never ended keeps its socket, as in Node.
+    if (agent && agent.maxSockets !== Infinity) {
+      this.agent = agent;
+      agent.take(this.host, () => {
+        if (this.destroyed) return agent.free(this.host);
+        this.once('close', () => agent.free(this.host));
+        queueMicrotask(() => this.#assigned());
+      });
+    } else queueMicrotask(() => this.#assigned());
   }
   headersSent = false;
   setHeader(k: string, v: string | number | string[]) {
@@ -585,9 +602,22 @@ class ClientRequest extends Writable {
     return this;
   }
   /** Something came (or the timeout was set): its idle time starts over. */
+  /** Its socket: the request goes out once its body is written too, and its timeout starts. */
+  #assigned() {
+    if (this.destroyed) return;
+    this.#hasSocket = true;
+    this.emit('socket', this.socket);
+    this.#active();
+    if (this.#body) this.#send(this.#body.data);
+  }
   #active() {
     timers.clearTimeout(this.#timer);
-    this.#timer = this.#timeoutMs > 0 && !this.destroyed ? timers.setTimeout(() => this.emit('timeout'), this.#timeoutMs) : undefined;
+    // As Node's (its socket's 'timeout', once): from when it has its socket, and only once.
+    if (this.#timeoutMs <= 0 || !this.#hasSocket || this.#timedOut || this.destroyed) return void (this.#timer = undefined);
+    this.#timer = timers.setTimeout(() => {
+      this.#timedOut = true;
+      this.emit('timeout');
+    }, this.#timeoutMs);
   }
   setNoDelay() {}
   setSocketKeepAlive() {}
@@ -612,7 +642,14 @@ class ClientRequest extends Writable {
     const res = this.res;
     // Its server learns its client went away (as a real one does from the connection's end).
     if (!res?.complete) this.#cancelServer?.();
-    if (!res) return super.destroy(err ?? (this.aborted ? undefined : connectionReset('socket hang up')));
+    if (!res) {
+      if (err) return super.destroy(err);
+      // As Node's: it failed ("socket hang up"), unless it is aborted in the same tick (then it was aborted).
+      queueMicrotask(() => {
+        if (!this.aborted) this.emit('error', connectionReset('socket hang up'));
+      });
+      return super.destroy();
+    }
     if (!res.complete && !res.destroyed) return this.abortResponse(res, err);
     return super.destroy(err);
   }
@@ -697,16 +734,8 @@ class ClientRequest extends Writable {
     return true;
   }
   _final(cb: () => void) {
-    const body = this.chunks.length ? Buffer.concat(this.chunks) : undefined;
-    const agent = this.agent;
-    if (!agent || agent.maxSockets === Infinity) this.#send(body);
-    else {
-      agent.take(this.host, () => {
-        if (this.destroyed) return agent.free(this.host);
-        this.once('close', () => agent.free(this.host));
-        this.#send(body);
-      });
-    }
+    this.#body = { data: this.chunks.length ? Buffer.concat(this.chunks) : undefined };
+    if (this.#hasSocket) this.#send(this.#body.data);
     cb();
   }
   #send(body: ReturnType<typeof Buffer.concat> | undefined) {
@@ -758,9 +787,8 @@ function makeClient(defaultProtocol: 'http:' | 'https:') {
       const host = (o.hostname as string) ?? (o.host as string) ?? 'localhost';
       url = `${protocol}//${host}${o.port ? `:${o.port}` : ''}${(o.path as string) ?? '/'}`;
     }
-    const req = new ClientRequest(url, ((o.method as string) ?? 'GET').toUpperCase(), (o.headers as Record<string, string>) ?? {}, cb, typeof o.socketPath === 'string' ? o.socketPath : undefined);
+    const req = new ClientRequest(url, ((o.method as string) ?? 'GET').toUpperCase(), (o.headers as Record<string, string>) ?? {}, cb, typeof o.socketPath === 'string' ? o.socketPath : undefined, o.agent instanceof Agent ? o.agent : undefined);
     if (typeof o.timeout === 'number') req.setTimeout(o.timeout);
-    if (o.agent instanceof Agent) req.agent = o.agent;
     return req;
   }
   function get(input: string | URL | Record<string, unknown>, opts?: unknown, cb?: (res: IncomingMessage) => void) {
