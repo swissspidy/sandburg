@@ -68,6 +68,15 @@ export class RunState {
   infraError: { phase: PhaseName; message: string } | null = null;
   /** The run's project or checks file did not load (failSetup). */
   setupError: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null = null;
+  /** Where the console stood when the ready phase began (what the dev server logged while it served the app's page follows). */
+  private readyConsoleFrom: number | null = null;
+  /** The path of the app's page, once its dev server has started (classification evidence; appStarted). */
+  appPath: string | null = null;
+
+  /** The app's dev server started: `url` is where the app's page loads, a path ('/', as the node runtime answers) or a whole URL. */
+  appStarted(url: string): void {
+    this.appPath = URL.canParse(url, 'http://app.invalid') ? new URL(url, 'http://app.invalid').pathname : null;
+  }
   /** Output of an out-of-browser runtime (install and server logs), used as classification evidence. */
   runtimeLogs: string[] = [];
   /** The run's renderer, once it has a tab (RunResult.memory). */
@@ -96,6 +105,7 @@ export class RunState {
   /** `fn`'s signal aborts at the deadline (with the PhaseTimeout), for work that can stop. */
   async phase<T>(name: PhaseName, timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
     this.onPhase?.(name);
+    if (name === 'ready') this.readyConsoleFrom = this.console.length;
     const start = performance.now();
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
@@ -178,7 +188,9 @@ export class RunState {
         ...this.console.filter((c) => c.source === 'host' && c.type === 'error').map((c) => c.text),
         ...this.runtimeLogs,
       ],
-      runtimeOutput: this.console.filter((c) => c.source === 'host' && /^\[runtime:std(?:out|err)\]/.test(c.text)).map((c) => c.text),
+      runtimeOutput: this.console.filter(isRuntimeOutput).map((c) => c.text),
+      readyOutputFrom: this.readyConsoleFrom === null ? undefined : this.console.slice(0, this.readyConsoleFrom).filter(isRuntimeOutput).length,
+      appPath: this.appPath,
       infraError: this.infraError,
       setupError: this.setupError,
       declaredDependencies: Object.keys({ ...this.project.packageJson?.dependencies, ...this.project.packageJson?.devDependencies }),
@@ -259,3 +271,6 @@ function serialize(err: unknown): SerializedError {
 function ms(start: number): number {
   return Math.round(performance.now() - start);
 }
+
+/** A line the app's runtime printed (stdout or stderr), as the host page logs it. */
+const isRuntimeOutput = (c: ConsoleEntry) => c.source === 'host' && /^\[runtime:std(?:out|err)\]/.test(c.text);

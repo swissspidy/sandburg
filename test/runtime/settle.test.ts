@@ -33,9 +33,35 @@ test('a page without a framework that says: undefined (the servers decide)', asy
   assert.equal(await safe(), undefined);
 });
 
-test("Solid's server-rendered page records and replays events: safe at once", async () => {
-  await load('<script>window._$HY = { events: [], completed: new WeakSet(), r: {} }</script><button>Clicked 0 times</button>');
+test('Solid: not until it has claimed every server-rendered element (its replay of earlier events reaches no handler)', async () => {
+  await load('<script>window._$HY = { events: [], completed: new WeakSet(), r: {} }</script><main data-hk="0"><input data-hk="00"></main>');
+  assert.equal(await safe(), false);
+  // The page's own elements are claimed as it hydrates; a lazy route's later.
+  await page.evaluate(() => (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY.completed.add(document.querySelector('main')!));
+  assert.equal(await safe(), false);
+  await page.evaluate(() => (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY.completed.add(document.querySelector('input')!));
   assert.equal(await safe(), true);
+  // Solid dropped its claims (done, after replaying an event): it says nothing, and the servers decide.
+  await load('<script>window._$HY = { events: null, completed: null, r: {}, done: true }</script><main data-hk="0"></main>');
+  assert.equal(await safe(), undefined);
+});
+
+test("Solid: `done` alone is not hydrated (an event on a claimed element sets it while a lazy route's are not claimed); every element is looked at", async () => {
+  await load('<script>window._$HY = { events: [], completed: new WeakSet(), r: {}, done: true }</script><main data-hk="0"></main><section data-hk="1"></section>');
+  await page.evaluate(() => (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY.completed.add(document.querySelector('main')!));
+  assert.equal(await safe(), false);
+  await page.evaluate(() => (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY.completed.add(document.querySelector('section')!));
+  assert.equal(await safe(), true);
+  // 600 claimed elements, then a lazy route's, not claimed yet.
+  await load('<script>window._$HY = { events: [], completed: new WeakSet(), r: {} }</script><main></main>');
+  await page.evaluate(() => {
+    const hy = (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY;
+    const main = document.querySelector('main')!;
+    for (let i = 0; i < 600; i++) hy.completed.add(main.appendChild(Object.assign(document.createElement('p'), { textContent: String(i) })));
+    for (const p of main.querySelectorAll('p')) p.setAttribute('data-hk', p.textContent ?? '');
+    main.appendChild(document.createElement('section')).setAttribute('data-hk', 'lazy');
+  });
+  assert.equal(await safe(), false);
 });
 
 test('React: safe once its root exists (it replays clicks on what it has not hydrated)', async () => {

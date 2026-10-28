@@ -69,3 +69,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0063](0063-synchronous-child-processes.md) | Synchronous child processes | Accepted |
 | [0064](0064-monorepos-and-local-packages.md) | Monorepos and local packages; pnpm and yarn lockfiles | Accepted |
 | [0065](0065-ci-on-macos-and-windows.md) | CI on macOS and Windows, and what it found: npm on Windows, lockfiles through a symlink, macOS's free memory | Accepted |
+| [0066](0066-fidelity-v7-fixes.md) | What fidelity study v7 found: shadow roots, Solid's hydration, fail-fast and classification | Accepted |
