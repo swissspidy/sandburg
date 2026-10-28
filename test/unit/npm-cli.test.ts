@@ -78,7 +78,7 @@ test('only absolute PATH entries count: a relative one names a file relative to 
     // Mixed: the relative entries are passed over, the absolute one (the same directory) is taken.
     const found = npmCliScript({ PATH: ['.', 'foo\\..', 'shim', shim].join(delimiter) }, node);
     assert.equal(found, join(shim, 'node_modules', 'npm', 'bin', 'npm-cli.js'));
-    assert.ok(isAbsolute(found!));
+    assert.ok(isAbsolute(found));
   } finally {
     process.chdir(cwd);
   }
