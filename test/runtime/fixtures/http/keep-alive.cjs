@@ -1,30 +1,52 @@
 // Once a response ended, how long its connection stays: by the client's agent (Connection: close, the
-// server's Keep-Alive hint, none) and the server's keepAliveTimeout ('timeout' then, or closed).
+// server's Keep-Alive hint, none) and the server's keepAliveTimeout ('timeout' then, or closed). Each
+// case prints what happened, and checks when the connection's end came after the response.
 const http = require('http');
 const lines = [];
-const run = (name, agent, listen) => new Promise((done) => {
+/** [ms, latest ms]: when the server's side of the connection ends after the response went. */
+const run = (name, agent, listen, [min, max]) => new Promise((done) => {
   const log = [];
-  // What happened when: '>' marks, between the times things happen at (0, 500, 1000 and 3000 ms).
-  const marks = [250, 750, 1500, 2500, 3500].map((ms) => setTimeout(() => log.push('>' + ms), ms));
+  let sent = 0;
+  let end = NaN;
   const s = http.createServer((req, res) => {
     log.push('connection ' + req.headers.connection);
-    req.socket.on('close', () => log.push('server socket close'));
-    res.end('ok');
+    req.socket.on('close', () => {
+      log.push('server socket close');
+      if (Number.isNaN(end)) end = performance.now() - sent;
+    });
+    res.end('ok', () => (sent = performance.now()));
   });
+  // 2 s: the client's hint is 2, which a Node agent keeps a second less.
   s.keepAliveTimeout = 2000;
-  if (listen) s.on('timeout', (sock) => { log.push('server timeout'); sock.destroy(); });
+  if (listen) s.on('timeout', (sock) => {
+    log.push('server timeout');
+    end = performance.now() - sent;
+    sock.destroy();
+  });
   s.listen(0, () => {
     http.get(`http://localhost:${s.address().port}/`, { agent }, (res) => res.resume());
-    setTimeout(() => { marks.forEach(clearTimeout); lines.push(`${name}: ${log.join(', ')}`); s.close(); done(); }, 3700);
+    setTimeout(() => {
+      const when = end >= min - 2 && end <= max ? '' : ` | TIMING: ${Math.round(end)} ms after the response (expected ${min} to ${max})`;
+      lines.push(`${name}: ${log.join(', ')}${when}`);
+      s.close();
+      done();
+    }, max + 200);
   });
 });
 void (async () => {
-  await run('global agent', undefined, false);
-  await run('new Agent()', new http.Agent(), false);
-  await run('agent: false', false, false);
-  await run('keepAlive agent', new http.Agent({ keepAlive: true }), false);
-  await run('keepAlive agent, timeout listener', new http.Agent({ keepAlive: true }), true);
-  await run('keepAlive agent, timeout 500', new http.Agent({ keepAlive: true, timeout: 500 }), false);
+  const part = process.env.PART;
+  if (part !== '2') {
+    // The hint, a second less: 1 s.
+    await run('global agent', undefined, false, [1000, 2500]);
+    await run('new Agent()', new http.Agent(), false, [0, 500]);
+    await run('agent: false', false, false, [0, 500]);
+  }
+  if (part !== '1') {
+    // No timeout of its own: the server's keepAliveTimeout and its buffer, 3 s.
+    await run('keepAlive agent', new http.Agent({ keepAlive: true }), false, [3000, 4200]);
+    await run('keepAlive agent, timeout listener', new http.Agent({ keepAlive: true }), true, [3000, 4200]);
+    await run('keepAlive agent, timeout 500', new http.Agent({ keepAlive: true, timeout: 500 }), false, [500, 950]);
+  }
   console.log(lines.join('\n'));
   process.exit(0);
 })();

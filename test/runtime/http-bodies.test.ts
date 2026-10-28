@@ -71,40 +71,45 @@ test('http: a client writing a body faster than its server reads it waits for it
 
 test("http: server.setTimeout, res.setTimeout and req.setTimeout: 'timeout' on the request, response and server, else the connection closes", async () => {
   assert.deepEqual(await run('server-timeouts.cjs', [], { PART: '1' }), [
-    'server.setTimeout cb: >50, >150, res timeout socket=true, server timeout cb destroyed=false, >250, >350, >450, >550, >650, >750, >950',
-    'server.timeout, no listener: >50, >150, client error socket hang up, aborted, res close, >250, >350, >450, >550, >650, >750, >950',
-    'server.setTimeout cb destroys: >50, >150, client error socket hang up, aborted, res close, >250, >350, >450, >550, >650, >750, >950',
-    'server timeout answers: >50, >150, res timeout socket=true, res close, client response 200, client end "late", >250, >350, >450, >550, >650, >750, >950',
-    'res.setTimeout cb: >50, >150, res timeout socket=true, res cb, res close, client response 200, client end "late", >250, >350, >450, >550, >650, >750, >950',
-    'res.setTimeout no cb: >50, >150, client error socket hang up, aborted, res close, >250, >350, >450, >550, >650, >750, >950',
-    'req.setTimeout complete GET: >50, >150, client error socket hang up, aborted, res close, >250, >350, >450, >550, >650, >750, >950',
-    'req.setTimeout mid-body: >50, >150, req timeout socket=true, req cb, res timeout socket=true, res close, client response 200, client end "t", >250, >350, >450, >550, >650, >750, >950',
-    'writes keep it alive: >50, client response 200, >150, >250, >350, >450, >550, client res aborted, aborted, res close, >650, >750, >950',
+    'server.setTimeout cb: request, res timeout socket=true, server timeout cb destroyed=false',
+    'server.timeout, no listener: request, client error socket hang up, aborted, res close',
+    'server.setTimeout cb destroys: request, client error socket hang up, aborted, res close',
+    'server timeout answers: request, res timeout socket=true, res close, client response 200, client end "late"',
+    'res.setTimeout cb: request, res timeout socket=true, res cb, res close, client response 200, client end "late"',
+    'res.setTimeout no cb: request, client error socket hang up, aborted, res close',
+    'req.setTimeout complete GET: request, client error socket hang up, aborted, res close',
+    'req.setTimeout mid-body: request, req timeout socket=true, req cb, res timeout socket=true, res close, client response 200, client end "t"',
+    'writes keep it alive: request, write 1, client response 200, write 2, write 3, write 4, client res aborted, aborted, res close',
   ]);
 });
 
 test('http: idle time starts over with what is read or written; requestTimeout fails a body that takes too long (408, or clientError)', async () => {
   assert.deepEqual(await run('server-timeouts.cjs', [], { PART: '2' }), [
-    'body keeps it alive: data 0, >50, data 1, >150, data 2, >250, data 3, >350, >450, client error socket hang up, aborted, res close, >550, >650, >750, >950',
-    'fires again after activity: >50, >150, res timeout socket=true, server timeout, >250, client response 200, >350, >450, res timeout socket=true, server timeout, >550, >650, res close, client end "x", >750, >950',
-    'set after the request came: >50, >150, >250, >350, res close, client response 200, client end "ok", >450, >550, >650, >750, >950',
-    'setTimeout(0) clears: >50, >150, >250, >350, >450, res close, client response 200, client end "ok", >550, >650, >750, >950',
-    'requestTimeout: >50, >150, >250, client response 408, aborted, res close, >350, >450, >550, >650, >750, >950',
-    'requestTimeout clientError: >50, >150, >250, clientError ERR_HTTP_REQUEST_TIMEOUT Request timeout, client error socket hang up, aborted, res close, >350, >450, >550, >650, >750, >950',
-    'requestTimeout clientError response: >50, >150, >250, client response 408, client end "slow", aborted, res close, >350, >450, >550, >650, >750, >950',
-    'requestTimeout, headersTimeout longer: >50, >150, >250, >350, >450, >550, client response 408, aborted, res close, >650, >750, >950',
-    'requestTimeout complete: >50, >150, >250, >350, >450, >550, res close, client response 200, client end "ok", >650, >750, >950',
+    'body keeps it alive: request, data 0, data 1, data 2, data 3, client error socket hang up, aborted, res close',
+    'fires again after activity: request, res timeout socket=true, server timeout, write, client response 200, res timeout socket=true, server timeout, res close, client end "x"',
+    'set after the request came: request, res close, client response 200, client end "ok"',
+    'setTimeout(0) clears: request, res close, client response 200, client end "ok"',
+    'requestTimeout: request, client response 408, aborted, res close',
+    'requestTimeout clientError: request, clientError ERR_HTTP_REQUEST_TIMEOUT Request timeout, client error socket hang up, aborted, res close',
+    'requestTimeout clientError response: request, client response 408, client end "slow", aborted, res close',
+    'requestTimeout, headersTimeout longer: request, client response 408, aborted, res close',
+    'requestTimeout complete: request, res close, client response 200, client end "ok"',
   ]);
 });
 
-test("http: once its response ended, a connection stays as long as its client's agent keeps it, or the server's keepAliveTimeout", async () => {
-  assert.deepEqual(await run('keep-alive.cjs'), [
-    'global agent: connection keep-alive, >250, >750, server socket close, >1500, >2500, >3500',
-    'new Agent(): connection close, server socket close, >250, >750, >1500, >2500, >3500',
-    'agent: false: connection close, server socket close, >250, >750, >1500, >2500, >3500',
-    'keepAlive agent: connection keep-alive, >250, >750, >1500, >2500, server socket close, >3500',
-    'keepAlive agent, timeout listener: connection keep-alive, >250, >750, >1500, >2500, server timeout, server socket close, >3500',
-    'keepAlive agent, timeout 500: connection keep-alive, >250, server socket close, >750, >1500, >2500, >3500',
+test("http: once its response ended, a connection stays as long as its client's agent keeps it", async () => {
+  assert.deepEqual(await run('keep-alive.cjs', [], { PART: '1' }), [
+    'global agent: connection keep-alive, server socket close',
+    'new Agent(): connection close, server socket close',
+    'agent: false: connection close, server socket close',
+  ]);
+});
+
+test("http: with a keepAlive agent, a connection stays for the server's keepAliveTimeout ('timeout' then, or closed), or the agent's own timeout", async () => {
+  assert.deepEqual(await run('keep-alive.cjs', [], { PART: '2' }), [
+    'keepAlive agent: connection keep-alive, server socket close',
+    'keepAlive agent, timeout listener: connection keep-alive, server timeout, server socket close',
+    'keepAlive agent, timeout 500: connection keep-alive, server socket close',
   ]);
 });
 
@@ -127,6 +132,7 @@ test("http: a server's connections: 'connection', getConnections(), close() clos
     'closeIdleConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, >300 connections=2 closed=/ok, >1500 connections=2 closed=/ok',
     'closeAllConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, client error /held socket hang up, >300 connections=2 closed=/held+/ok, >1500 connections=2 closed=/held+/ok',
     'close(), all idle: request /ok, >100 connections=1 closed=none, connections 1, closed, >300 connections=1 closed=/ok, >1500 connections=1 closed=/ok',
+    'close(), then closeAllConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, closed, client error /held socket hang up, immediate, >300 connections=2 closed=/held+/ok, >1500 connections=2 closed=/held+/ok',
   ]);
 });
 
@@ -150,14 +156,9 @@ test("http: an unref'd server does not keep the process alive; one ref'd again d
 
 test('http: server.close(cb) with a connection that outlives a response: it keeps the process alive, and cb comes once it closed', async () => {
   assert.deepEqual(await run('close-waits.cjs'), [
-    '>50',
     'connections 2',
     'server socket close /idle',
-    '>200',
     'client got slow done',
-    '>400',
-    '>3000',
-    '>6000',
     'close cb',
     'server socket close /slow',
   ]);

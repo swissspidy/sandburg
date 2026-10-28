@@ -59,10 +59,11 @@ queued meanwhile wait for the next turn.
   then, in the order they came due. That includes those whose browser timer has not fired yet:
   the turn runs them itself and cancels theirs, since the next turn's task would beat them. Inside
   an I/O callback, every immediate queued there runs before a `setTimeout(0)`. A timer set during
-  the timers phase runs on a later one, as in Node.
+  the timers phase runs on a later one, as in Node. So does one that an earlier timer of the phase
+  refreshed: it is due later now.
 - **One turn at a time.** A turn asked for while one goes (a timer of its timers phase queued an
-  immediate) starts as that one ends. A timeout that fired is done until `refresh()` schedules it
-  again. Before this, two turns could overlap and run the same due timer twice. esbuild-wasm's Go
+  immediate) starts as that one ends. Before this, two turns could overlap and run the same due
+  timer twice. esbuild-wasm's Go
   runtime then resumed twice and answered a request twice, and the Angular CLI's builds failed in CI
   (`Go program has already exited`).
 - **A turn runs into the next iteration.** When it has more to run and no timer is due, it goes
@@ -224,12 +225,12 @@ output of its `fixtures/http` program:
 - What an immediate queued, at any depth, before the next one; and a timer due during an immediate
   before the next iteration's (`microtasks.cjs`).
 - `server.close(cb)` with a connection that outlives a response (`close-waits.cjs`).
-- Timers due together at a turn's end fire once each, in order, when one queues an immediate
-  (`timers-once.cjs`).
+- Timers due together at a turn's end fire once each, in order, when one queues an immediate, and
+  one that another refreshed waits its time again (`timers-once.cjs`).
 - Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`).
 - A server's action from an I/O callback (an IPC message) reaches its client after its own side
   closed (`from-io.cjs`).
-- A server's connections (`server-close.cjs`), Expect and informational responses (`expect.cjs`,
+- A server's connections (`server-close.cjs`; its 'close' on a tick after the last one closed), Expect and informational responses (`expect.cjs`,
   and across runtimes in `streamed-body.cjs`), and `unref()` (`server-unref.cjs`).
 - Streamed bodies by echo, a client gone mid-body, and timeouts across runtimes, in four
   topologies: one runtime, a child's server, a child's client, and siblings through their parent
@@ -237,6 +238,8 @@ output of its `fixtures/http` program:
 - Framing and `'data'` timing (`body-framing.cjs`), and backpressure in one runtime and to a child
   (`backpressure*.cjs`).
 - Server timeouts and requestTimeout (`server-timeouts.cjs`), keep-alive by agent
-  (`keep-alive.cjs`), and options (`server-options.cjs`).
+  (`keep-alive.cjs`), and options (`server-options.cjs`). These and `close-waits.cjs` print what
+  happened in order, and check each timed event against what it times: at least its timeout after
+  it, and within a generous bound (1 s and more), so that a loaded machine does not fail them.
 
 Each fix was mutation-checked against these tests.

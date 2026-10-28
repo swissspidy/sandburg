@@ -37,6 +37,12 @@ void (async () => {
   await run('closeAllConnections()', (s) => s.closeAllConnections());
   // Its only connection idle: close() closes it, and 'close' comes.
   await run('close(), all idle', (s, log) => s.close(() => log.push('closed')), ['/ok']);
+  // Its last connection closed: 'close' comes on a tick (before an immediate queued with it).
+  await run('close(), then closeAllConnections()', (s, log) => {
+    s.close(() => log.push('closed'));
+    s.closeAllConnections();
+    setImmediate(() => log.push('immediate'));
+  });
   console.log(lines.join('\n'));
   process.exit(0);
 })();
