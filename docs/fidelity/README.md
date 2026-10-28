@@ -49,3 +49,38 @@ mkdir -p .sandburg/study && node bin/sandburg.js batch corpus --parallel 3 --out
 ```
 
 With Docker, `compare corpus --reference docker` also reports agreement with the reference.
+
+### Cold and warm passes (from v7.1 on)
+
+v7's warm medians for Vue, static HTML, Express + SQLite, Angular, Astro and SvelteKit were higher
+than its cold ones. That was the method, not Sandburg ([ADR 0071](../adr/0071-warm-slower-than-cold.md)):
+measured in the same order, warm is faster than cold on every stack but static HTML, which has nothing
+to install and is the same either way. Run the passes with `scripts/fidelity-study.ts`, which:
+
+- starts the apps in the corpus's order in both passes (`longestFirst: false`). A batch otherwise
+  starts first the apps that took longest in its earlier batches (`.sandburg/batches`). Only the warm
+  pass has an earlier batch, so v7's warm pass ran its fast apps last, side by side, beside other
+  warm apps;
+- keeps each pass's batch summaries apart, and runs each pass in a process of its own;
+- with `--rounds n`, runs n cold/warm pairs one after the other and takes each app's median;
+- records each run's phases, start and end, its mean number of open neighbours and the machine's
+  CPU use while it ran.
+
+```sh
+node scripts/corpus/generate.ts corpus 232 1
+node scripts/fidelity-study.ts corpus --parallel 3 --rounds 2 --out docs/fidelity/vN-node-vs-truth
+```
+
+How to read the times:
+
+- At `--parallel` above 1, an app's time includes its neighbours' load. A warm pass keeps its
+  neighbours busier (their installs, which mostly wait on the network and disk, are gone), so a light
+  app (static HTML, a small Vue app) can take longer in a warm batch than in a cold one while the
+  batch's wall time drops by a third or more. Compare cold with warm per app at `--parallel 1`, or
+  where the `cpu` of both runs is alike. The batch's wall time is the measure of the parallel pass.
+- "Cold" is cold for Sandburg's stores only: npm's own download cache stays warm, the batch warms up
+  the Vite, Vite + React and Next.js stacks first, and only a stack's first app installs from
+  scratch (its later apps install from the store the first one filled).
+- A warm batch's first app is its session's first tab; a cold batch's first app runs after the
+  warm-ups, in a browser that has already run apps (static HTML's first app: 2.0 s cold, 2.3 s warm,
+  n=8).
