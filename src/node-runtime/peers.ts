@@ -172,6 +172,14 @@ export function forgetNested(worker: globalThis.Worker) {
     if (own) own.error('socket hang up', 'ECONNRESET');
     else post({ type: 'response-error', id, message: 'socket hang up' });
   }
+  // Requests it made to servers here: it went away mid-request, so they are aborted (and answer no one).
+  // As a closed connection's events come: later (it may have been killed by the very handler serving it).
+  for (const [bridge, entry] of servingLoopback) {
+    if (entry.from !== worker) continue;
+    servingLoopback.delete(bridge);
+    bridge.close();
+    queueMicrotask(() => entry.abort());
+  }
   for (const [id, w] of nestedSockets) {
     if (w !== worker) continue;
     nestedSockets.delete(id);
@@ -202,13 +210,19 @@ export function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
   }
 }
 
-/** Loopback requests from nested runtimes that this runtime's own servers are answering (see loopbackServersGone). */
-const servingLoopback = new Set<{ error(message: string, code?: string): void }>();
+/**
+ * Loopback requests from nested runtimes that this runtime's own servers are answering, with the
+ * runtime that asked and what aborts the request (see loopbackServersGone, forgetNested).
+ */
+const servingLoopback = new Map<{ error(message: string, code?: string): void; close(): void }, { from: globalThis.Worker; abort: () => void }>();
 
 /** This runtime's program exited: its servers' loopback requests fail as with a process that died. */
 export function loopbackServersGone(): void {
-  for (const bridge of [...servingLoopback]) bridge.error('socket hang up', 'ECONNRESET');
+  for (const bridge of [...servingLoopback.keys()]) bridge.error('socket hang up', 'ECONNRESET');
 }
+
+/** For tests (test/runtime): how many loopback requests this runtime's servers are answering. */
+(globalThis as Record<symbol, unknown>)[Symbol.for('sandburg.servingLoopback')] = () => servingLoopback.size;
 
 /** A loopback request from a nested runtime: served here, or routed on (see loopback.route). */
 function loopbackRequest(m: { id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }, from: globalThis.Worker) {
@@ -231,13 +245,16 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
     },
     end: () => close() && reply({ type: 'lb-end', id }),
     error: (message: string, code?: string) => close() && reply({ type: 'lb-error', id, message, code }),
+    close,
   };
   const body = m.body ? new Uint8Array(m.body) : null;
   const server = servers.get(m.port);
   try {
     if (server) {
-      servingLoopback.add(bridge);
-      server.dispatch(m.method, m.url, m.headers, body, bridge);
+      // Until it is answered (close()): a response the handler destroys is answered later, its error async.
+      const entry = { from, abort: () => {} };
+      servingLoopback.set(bridge, entry);
+      entry.abort = server.dispatch(m.method, m.url, m.headers, body, bridge);
     } else if (nestedPorts.get(m.port) === from || !loopback.route!(m.port, m.method, m.url, m.headers, body, bridge)) {
       bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
     }
