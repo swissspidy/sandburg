@@ -83,6 +83,7 @@ jobs:
       - run: npm ci
       - id: pack
         run: |
+          mkdir -p "$RUNNER_TEMP/pack"
           npm pack --pack-destination "$RUNNER_TEMP/pack"
           echo "tarball=$(ls "$RUNNER_TEMP"/pack/sandburg-*.tgz)" >> "$GITHUB_OUTPUT"
       - id: sandburg
