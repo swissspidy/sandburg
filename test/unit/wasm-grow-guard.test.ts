@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { guardSharedMemoryGrowth } from '../../src/node-runtime/wasm-grow-guard.ts';
+import { FILL_ZEROS, leb, moduleWith } from './wasm-modules.ts';
 
 /**
  * A thread grows a shared memory a page at a time (`writer`) and publishes each new page's address
@@ -129,4 +130,82 @@ async function pingPong(bytes: Uint8Array<ArrayBuffer>, op: number, rounds: numb
 test('a thread that fills, copies to or atomically updates memory another thread just grew does not trap', async () => {
   const guarded = guardSharedMemoryGrowth(PING_PONG)!;
   for (const op of [0, 1, 2, 3]) for (let run = 0; run < 2; run++) assert.equal(await pingPong(guarded, op, 1000), null, `op ${op}`);
+  // Unguarded, V8 traps (in the second round, every time so far). Should a V8 fix it, this fails, so that
+  // the test above is known to exercise nothing any more (ADR 0070).
+  const traps = [];
+  for (const op of [0, 1, 2]) traps.push(await pingPong(PING_PONG, op, 1000));
+  assert.ok(
+    traps.some((t) => t?.includes('out of bounds')),
+    `the unguarded module no longer traps on this V8 (${process.versions.v8}): ${traps.join(', ')}`,
+  );
+});
+
+/** How many checks a guarded module has (the bytes after each check's operands). */
+const checks = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex').split('7c3f00ad42108656').length - 1;
+
+test('ref.as_non_null (0xd4) has no immediate and br_on_null (0xd5) a label: each fill after them is guarded', () => {
+  // (param funcref): i32.const 0, i32.const 0, local.get 0, ref.as_non_null, ref.is_null, memory.fill; and a second fill
+  const bytes = moduleWith([0x41, 0x00, 0x41, 0x00, 0x20, 0x00, 0xd4, 0xd1, 0xfc, 0x0b, 0x00, ...FILL_ZEROS], { params: [0x70] });
+  assert.ok(WebAssembly.validate(bytes));
+  const guarded = guardSharedMemoryGrowth(bytes)!;
+  assert.ok(WebAssembly.validate(guarded));
+  assert.equal(checks(guarded), 2);
+  // block, local.get 0, br_on_null 0 (out of the block when null), drop, end, then a fill
+  const brOnNull = moduleWith([0x02, 0x40, 0x20, 0x00, 0xd5, 0x00, 0x1a, 0x0b, ...FILL_ZEROS], { params: [0x70] });
+  assert.ok(WebAssembly.validate(brOnNull));
+  assert.equal(checks(guardSharedMemoryGrowth(brOnNull)!), 1);
+});
+
+test('a SIMD opcode past those it knows (FP16 lane operations have immediates), and typed references, leave the module as it is', () => {
+  // 0xfd 0x120 (an FP16 operation) before a fill
+  assert.equal(guardSharedMemoryGrowth(moduleWith([0xfd, ...leb(0x120), 0x00, ...FILL_ZEROS])), null);
+  // a local of (ref null func)
+  const typedLocal = moduleWith(FILL_ZEROS, { locals: [[1, 0x63, 0x70]] });
+  assert.ok(WebAssembly.validate(typedLocal));
+  assert.equal(guardSharedMemoryGrowth(typedLocal), null);
+  // a parameter of (ref null func)
+  assert.equal(guardSharedMemoryGrowth(moduleWith(FILL_ZEROS, { params: [0x63, 0x70] })), null);
+});
+
+test('memory.init is guarded like memory.fill', () => {
+  // memory.init of data segment 0: i32.const 0 (dst), i32.const 0 (offset), i32.const 1 (length). The
+  // rewrite does not need the segment (the module would, to validate).
+  assert.equal(checks(guardSharedMemoryGrowth(moduleWith([0x41, 0x00, 0x41, 0x00, 0x41, 0x01, 0xfc, 0x08, 0x00, 0x00]))!), 1);
+});
+
+/** guardSharedMemoryGrowth(bytes) in a thread, given `ms` to answer: 'timeout' if it does not. */
+async function guardInThread(bytes: Uint8Array, ms: number): Promise<string> {
+  const worker = new Worker(
+    `const { workerData, parentPort } = require('node:worker_threads');
+     import(workerData.url).then((m) => parentPort.postMessage(String(m.guardSharedMemoryGrowth(workerData.bytes)?.length ?? null)));`,
+    { eval: true, workerData: { bytes, url: new URL('../../src/node-runtime/wasm-grow-guard.ts', import.meta.url).href } },
+  );
+  try {
+    return await new Promise<string>((resolve) => {
+      worker.once('message', resolve);
+      setTimeout(() => resolve('timeout'), ms);
+    });
+  } finally {
+    await worker.terminate();
+  }
+}
+
+test('bytes that end inside a count or a number are left as they are, at once', async () => {
+  // atomic.fence, then a br_table of 2^32 - 1 labels that are not there
+  assert.equal(await guardInThread(moduleWith([0x00, 0xfe, 0x03, 0x00, 0x0e, 0xff, 0xff, 0xff, 0xff, 0x0f]), 10_000), 'null');
+  // a number whose bytes all have their continuation bit
+  assert.equal(await guardInThread(moduleWith([0xfe, 0x10, 0x82, 0x80, 0x80, 0x80]), 10_000), 'null');
+  // a fill, then a body that ends inside local.get's index
+  assert.equal(await guardInThread(moduleWith([...FILL_ZEROS, 0x20, 0x80], { end: false }), 10_000), 'null');
+});
+
+test('a module the guard would grow by more than half is left as it is', async () => {
+  // 100,000 atomic loads in a row (i32.const 0, i32.atomic.load, drop): 7 bytes each, about 30 guarded
+  const dense = moduleWith(Array.from({ length: 100_000 }, () => [0x41, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x1a]).flat());
+  assert.ok(WebAssembly.validate(dense));
+  const started = performance.now();
+  assert.equal(guardSharedMemoryGrowth(dense), null);
+  assert.ok(performance.now() - started < 2000);
+  // A few of them are guarded.
+  assert.equal(checks(guardSharedMemoryGrowth(moduleWith([0x41, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x1a]))!), 1);
 });

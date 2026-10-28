@@ -73,23 +73,40 @@ These were ruled out on the way:
 
 **The runtime compiles every WebAssembly module with a shared memory guarded**
 (`node-runtime/wasm-grow-guard.ts`, installed in each runtime before the program runs). The
-rewrite changes function bodies only. Before each `memory.fill`, `memory.copy` and atomic
-operation (`0xFE` prefix, fences aside), it checks whether the access ends past `memory.size`. If
-it does, it runs `memory.grow 0` first, which in V8 updates the current instance's size. The operands go
+rewrite changes function bodies only. Before each `memory.fill`, `memory.copy`, `memory.init` and
+atomic operation (`0xFE` prefix, fences aside), it checks whether the access ends past
+`memory.size`. If it does, it runs `memory.grow 0` first, which in V8 updates the current
+instance's size. The operands go
 through five temporaries added after the function's locals, so the function's own locals and all
 indices (functions, types, globals) stay as they are. An access that is out of bounds still traps.
 Plain loads and stores are left as they are (guard pages see growth).
 
+- **Why `memory.grow 0` refreshes, and what it costs**: in V8 a grow of shared memory by 0 pages
+  is still a grow. `BackingStore::GrowWasmMemoryInPlace` takes it as a "degenerate grow" and
+  succeeds (backing-store.cc), and `WasmMemoryObject::Grow` then broadcasts the new size to every
+  isolate sharing the memory, unconditionally for shared memory, updating the current one's
+  instances before it returns (wasm-objects.cc). That is an implementation detail, not something
+  the specification promises: a V8 that returned early for a grow by 0 would silently remove the
+  fix, and the unit test's check that the unguarded module still traps (or no longer does) is
+  what would show it. It costs a global mutex, an interrupt to every isolate and a new
+  SharedArrayBuffer for the memory, which is acceptable because it runs only when the instance's
+  size is behind, i.e. right after another thread grew the memory.
 - **Where**: `new WebAssembly.Module`, `WebAssembly.compile` and `WebAssembly.instantiate` from
-  bytes. A compiled module passed to another thread (emnapi hands its threads the module) is already
+  bytes, with what else they are given (compile options such as `builtins` reach WebAssembly). A
+  detached buffer gets WebAssembly's CompileError, thrown or as a rejected promise. A compiled module passed to another thread (emnapi hands its threads the module) is already
   guarded. `WebAssembly.Module` stays the same prototype, so a module made in another thread is still
   `instanceof WebAssembly.Module`, and its statics (`imports`, `exports`, `customSections`) are
   the native ones.
 - **What is guarded**: of the corpus installs' modules, rolldown's, oxc-parser's and Tailwind's
   oxide (napi-rs WASI builds with threads). **What is left as it is**: modules without a shared
   memory (esbuild-wasm, lightningcss-wasm, `@tsrs/wasm`, source-map's), with several memories or a
-  memory64, or with an instruction the rewrite does not know (GC, typed references). A guarded module that does not compile is
-  compiled as given, so a program gets WebAssembly's own error for its bytes.
+  memory64, with an instruction it does not know (GC, SIMD past relaxed SIMD such as FP16's), with
+  typed references anywhere (block, select, local, parameter or result types `(ref …)`), or
+  that ends inside a number or a count (it returns at once). So are modules of more than 128 MB,
+  and modules the guard would grow by more than half plus 64 KB (real ones grow by 5–8 %; a dense
+  run of atomics, valid or not, would cost seconds and gigabytes). A guarded module that does not
+  compile is compiled from the bytes as given (copied before an asynchronous compile, as
+  WebAssembly copies them), so a program gets WebAssembly's own error for them.
 - **Cost**: rolldown's 10.9 MB module takes 110–150 ms to rewrite under Node, once per process, and
   grows by 6.8 % (oxc-parser's 1.5 MB, 13 ms; oxide's 1.7 MB, 66 ms cold). Function bodies without a
   `0xFC` or `0xFE` byte (72 % of rolldown's, 46 % of its code) are copied without decoding. Each
@@ -125,6 +142,9 @@ Next.js and Vite + React with Tailwind 4) were all right: the 13 that should pas
   still can. That is a V8 bug, and the runtime behaves as the threads proposal says.
 - `WebAssembly.compileStreaming` and `instantiateStreaming` compile as they are. Node programs
   rarely stream, and napi-rs loaders read the file.
+- `memory.size` itself can still return the old size in a thread that has not caught up (the
+  rewrite guards accesses, not reads of the size). Code that sizes memory with it, Emscripten's
+  `sbrk` say, may grow more than it needs; it does not trap.
 - The rewrite counts on guard pages for plain accesses. That holds where V8 uses its trap handler
   (64-bit Linux, macOS and Windows). Without it, plain accesses would need the check too.
 - Stack traces of a guarded module name other byte offsets (`wasm-function[i]:0x…`). Function

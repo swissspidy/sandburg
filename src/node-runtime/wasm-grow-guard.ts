@@ -18,6 +18,20 @@
 
 const SHARED = 0x02;
 const MEMORY64 = 0x04;
+/**
+ * Modules over this are compiled as they are: the rewrite takes ~13 ms a MB of real code, and a
+ * module of more than this is not one a dev tool ships.
+ */
+const MAX_INPUT = 128 << 20;
+/**
+ * Nor is a module the guard would grow by more than half, and 64 KB (real ones grow by 5-8 %; a
+ * small one may grow more): a dense run of atomics, valid or not, is not worth the time and memory.
+ */
+const MAX_GROWTH = 0.5;
+const GROWTH_ALLOWANCE = 64 << 10;
+
+/** The value types `(ref null ht)` and `(ref ht)` (typed function references, GC): the rewrite leaves modules with them as they are. */
+const typedReference = (x: number) => x === 0x63 || x === 0x64;
 
 /** Reads unsigned and signed LEB128 numbers and raw bytes from a module. */
 class Reader {
@@ -40,7 +54,17 @@ class Reader {
   }
   /** Skips a LEB128 number (signed or unsigned). */
   skip(): void {
-    while (this.b[this.p++] & 0x80) if (this.p > this.b.length) throw new Error('truncated');
+    for (;;) {
+      const x = this.b[this.p++];
+      if (x === undefined) throw new Error('truncated');
+      if (!(x & 0x80)) return;
+    }
+  }
+  /** The length of a vector whose items take a byte or more: no more than the bytes left. */
+  count(): number {
+    const n = this.u32();
+    if (n > this.b.length - this.p) throw new Error('truncated');
+    return n;
   }
   byte(): number {
     const x = this.b[this.p++];
@@ -60,6 +84,10 @@ class Writer {
     const next = new Uint8Array(size);
     next.set(this.buf.subarray(0, this.length));
     this.buf = next;
+  }
+  byte(x: number): void {
+    this.room(1);
+    this.buf[this.length++] = x;
   }
   bytes(b: ArrayLike<number>): void {
     this.room(b.length);
@@ -105,7 +133,7 @@ function sharedMemoryFlags(bytes: Uint8Array): number | null {
     const size = r.u32();
     const end = r.p + size;
     if (id === 2) {
-      for (let n = r.u32(); n > 0; n--) {
+      for (let n = r.count(); n > 0; n--) {
         // module and field names (`r.p += r.u32()` would add to the position before the length)
         for (let name = 0; name < 2; name++) {
           const length = r.u32();
@@ -114,7 +142,7 @@ function sharedMemoryFlags(bytes: Uint8Array): number | null {
         const kind = r.byte();
         if (kind === 0x00) r.skip();
         else if (kind === 0x01) {
-          r.byte();
+          if (typedReference(r.byte())) return null;
           const flags = r.byte();
           r.skip();
           if (flags & 1) r.skip();
@@ -125,7 +153,7 @@ function sharedMemoryFlags(bytes: Uint8Array): number | null {
           if (flags & 1) r.skip();
         } else if (kind === 0x03) {
           // a global: its value type (a byte for numbers and references) and mutability
-          if (r.byte() >= 0x63 && r.b[r.p - 1] <= 0x64) return null;
+          if (typedReference(r.byte())) return null;
           r.byte();
         } else if (kind === 0x04) {
           r.byte();
@@ -133,7 +161,7 @@ function sharedMemoryFlags(bytes: Uint8Array): number | null {
         } else return null;
       }
     } else if (id === 5) {
-      for (let n = r.u32(); n > 0; n--) {
+      for (let n = r.count(); n > 0; n--) {
         const flags = r.byte();
         memories.push(flags);
         r.skip();
@@ -155,25 +183,31 @@ const TEMPS = [I32, I32, I32, I64, I64] as const;
 const [A, B, C, X, Y] = [0, 1, 2, 3, 4];
 
 /**
- * The operands of each atomic operation (0xFE prefix) after its address, and the bytes it accesses.
- * Order of the read-modify-write groups: i32, i64, i32 8u, i32 16u, i64 8u, i64 16u, i64 32u.
+ * The bytes each atomic operation (0xFE prefix) accesses, and where its operands after the address
+ * go (the temporaries of their types, in order). Order of the read-modify-write groups: i32, i64,
+ * i32 8u, i32 16u, i64 8u, i64 16u, i64 32u.
  */
-function atomicShape(op: number): { width: number; operands: number[] } | null {
-  if (op === 0x00) return { width: 4, operands: [I32] };
-  if (op === 0x01) return { width: 4, operands: [I32, I64] };
-  if (op === 0x02) return { width: 8, operands: [I64, I64] };
-  const loads: Record<number, [number, number]> = { 0x10: [4, I32], 0x11: [8, I64], 0x12: [1, I32], 0x13: [2, I32], 0x14: [1, I64], 0x15: [2, I64], 0x16: [4, I64] };
-  if (loads[op]) return { width: loads[op][0], operands: [] };
-  if (op >= 0x17 && op <= 0x1d) {
-    const [width, type] = ([[4, I32], [8, I64], [1, I32], [2, I32], [1, I64], [2, I64], [4, I64]] as const)[op - 0x17];
-    return { width, operands: [type] };
+const ATOMICS = (() => {
+  const shapes: ({ width: number; slots: number[] } | undefined)[] = [];
+  const shape = (width: number, operands: number[]) => {
+    const slots: number[] = [];
+    let i32s = 0;
+    let i64s = 0;
+    for (const t of operands) slots.push(t === I32 ? [B, C][i32s++] : [X, Y][i64s++]);
+    return { width, slots };
+  };
+  const widths = [[4, I32], [8, I64], [1, I32], [2, I32], [1, I64], [2, I64], [4, I64]] as const;
+  shapes[0x00] = shape(4, [I32]);
+  shapes[0x01] = shape(4, [I32, I64]);
+  shapes[0x02] = shape(8, [I64, I64]);
+  widths.forEach(([width], i) => (shapes[0x10 + i] = shape(width, [])));
+  widths.forEach(([width, type], i) => (shapes[0x17 + i] = shape(width, [type])));
+  for (let op = 0x1e; op <= 0x4e; op++) {
+    const [width, type] = widths[(op - 0x1e) % 7];
+    shapes[op] = shape(width, op >= 0x48 ? [type, type] : [type]);
   }
-  if (op >= 0x1e && op <= 0x4e) {
-    const [width, type] = ([[4, I32], [8, I64], [1, I32], [2, I32], [1, I64], [2, I64], [4, I64]] as const)[(op - 0x1e) % 7];
-    return { width, operands: op >= 0x48 ? [type, type] : [type] };
-  }
-  return null;
-}
+  return shapes;
+})();
 
 /** Thrown for an instruction the rewrite does not know: the module is left as it is. */
 class Unknown extends Error {}
@@ -207,10 +241,12 @@ const TRY_TABLE = 10;
 const IMMEDIATES = (() => {
   const t = new Uint8Array(256);
   const each = (kind: number, ...ops: number[]) => ops.forEach((op) => (t[op] = kind));
-  each(NONE, 0x00, 0x01, 0x05, 0x0a, 0x0b, 0x0f, 0x19, 0x1a, 0x1b, 0xd1, 0xd3, 0xd5);
+  // 0xd3 ref.eq, 0xd4 ref.as_non_null
+  each(NONE, 0x00, 0x01, 0x05, 0x0a, 0x0b, 0x0f, 0x19, 0x1a, 0x1b, 0xd1, 0xd3, 0xd4);
   for (let op = 0x45; op <= 0xc4; op++) t[op] = NONE;
   each(BLOCK, 0x02, 0x03, 0x04, 0x06, 0xd0);
-  each(LEB, 0x07, 0x08, 0x09, 0x0c, 0x0d, 0x10, 0x12, 0x14, 0x15, 0x18, 0x3f, 0x40, 0x41, 0x42, 0xd2, 0xd4, 0xd6);
+  // 0xd2 ref.func, 0xd5 br_on_null, 0xd6 br_on_non_null
+  each(LEB, 0x07, 0x08, 0x09, 0x0c, 0x0d, 0x10, 0x12, 0x14, 0x15, 0x18, 0x3f, 0x40, 0x41, 0x42, 0xd2, 0xd5, 0xd6);
   for (let op = 0x20; op <= 0x26; op++) t[op] = LEB;
   each(TWO_LEBS, 0x11, 0x13);
   for (let op = 0x28; op <= 0x3e; op++) t[op] = MEMARG;
@@ -245,14 +281,14 @@ function skipImmediates(r: Reader, op: number): void {
       return;
     case BR_TABLE:
       // the labels and the default
-      for (let n = r.u32(); n >= 0; n--) r.skip();
+      for (let n = r.count(); n >= 0; n--) r.skip();
       return;
     case SELECT_TYPES:
-      for (let n = r.u32(); n > 0; n--) if (r.byte() >= 0x63 && r.b[r.p - 1] <= 0x64) throw new Unknown('typed select');
+      for (let n = r.count(); n > 0; n--) if (typedReference(r.byte())) throw new Unknown('typed select');
       return;
     case TRY_TABLE:
       blockType(r);
-      for (let n = r.u32(); n > 0; n--) {
+      for (let n = r.count(); n > 0; n--) {
         // catch and catch_ref name a tag; each clause names a label
         if (r.byte() <= 1) r.skip();
         r.skip();
@@ -263,11 +299,14 @@ function skipImmediates(r: Reader, op: number): void {
   }
 }
 
+/** The last SIMD opcode (0xFD prefix) the rewrite knows: relaxed SIMD's. Later ones (FP16's lane operations) may have immediates. */
+const LAST_SIMD = 0x113;
+
 /** Skips the immediates of a 0xFC or 0xFD instruction (its prefix and opcode have been read). */
 function skipPrefixed(r: Reader, prefix: number, sub: number): void {
   if (prefix === 0xfc) {
     if (sub <= 7) return;
-    if (sub === 8 || sub === 12 || sub === 14) {
+    if (sub === 12 || sub === 14) {
       r.skip();
       r.skip();
       return;
@@ -276,6 +315,7 @@ function skipPrefixed(r: Reader, prefix: number, sub: number): void {
     throw new Unknown(`0xfc ${sub}`);
   }
   if (prefix === 0xfd) {
+    if (sub > LAST_SIMD) throw new Unknown(`0xfd ${sub}`);
     if (sub <= 11 || sub === 92 || sub === 93) {
       memarg(r);
       return;
@@ -298,54 +338,62 @@ function skipPrefixed(r: Reader, prefix: number, sub: number): void {
   throw new Unknown(`prefix 0x${prefix.toString(16)}`);
 }
 
+/** The end of the check (`check`): i64.add, memory.size, i64.extend_i32_u, i64.const 16, i64.shl, i64.gt_u, if, i32.const 0, memory.grow, drop, end. */
+const CHECK_END = new Uint8Array([0x7c, 0x3f, 0x00, 0xad, 0x42, 0x10, 0x86, 0x56, 0x04, 0x40, 0x41, 0x00, 0x40, 0x00, 0x1a, 0x0b]);
+
 /**
  * Emits the check for an access of [address, address + length) where the address is in local
- * `addr` and the length is a constant or in local `len`: when it ends past what memory.size gives,
- * `memory.grow 0`, which updates the instance's size.
+ * `addr` and the length is in local `lengthLocal`, or is `constant` when that is -1: when it ends
+ * past what memory.size gives, `memory.grow 0`, which updates the instance's size.
  */
-function check(w: Writer, addr: number, length: { constant: number } | { local: number }): void {
-  w.bytes([0x20]);
-  w.u32(addr);
-  w.bytes([0xad]); // i64.extend_i32_u
-  if ('constant' in length) {
-    w.bytes([0x42]);
-    w.s64(length.constant);
+function check(w: Writer, addr: number, lengthLocal: number, constant = 0): void {
+  get(w, addr);
+  w.byte(0xad); // i64.extend_i32_u
+  if (lengthLocal < 0) {
+    w.byte(0x42);
+    w.s64(constant);
   } else {
-    w.bytes([0x20]);
-    w.u32(length.local);
-    w.bytes([0xad]);
+    get(w, lengthLocal);
+    w.byte(0xad);
   }
-  // i64.add, memory.size, i64.extend_i32_u, i64.const 16, i64.shl, i64.gt_u, if, i32.const 0, memory.grow, drop, end
-  w.bytes([0x7c, 0x3f, 0x00, 0xad, 0x42, 0x10, 0x86, 0x56, 0x04, 0x40, 0x41, 0x00, 0x40, 0x00, 0x1a, 0x0b]);
+  w.bytes(CHECK_END);
 }
 
-const set = (w: Writer, local: number) => (w.bytes([0x21]), w.u32(local));
-const get = (w: Writer, local: number) => (w.bytes([0x20]), w.u32(local));
+function set(w: Writer, local: number): void {
+  w.byte(0x21);
+  w.u32(local);
+}
+function get(w: Writer, local: number): void {
+  w.byte(0x20);
+  w.u32(local);
+}
 
-/** Where guardBody writes a body (each is copied into the code section before the next). */
-const scratch = new Writer();
+/** V8's limit on a function's locals (parameters included): a function the temporaries would take past it is left as it is. */
+const MAX_LOCALS = 50_000;
 
 /**
- * One function body, guarded (in `scratch`); null when it has no operation to guard. `params`: how many
- * parameters the function has (its temporaries come after them and its locals).
+ * One function body, guarded (written to `w`, from its start); null when it has no operation to
+ * guard. `params`: how many parameters the function has (its temporaries come after them and its
+ * locals).
  */
-function guardBody(body: Uint8Array, params: number): Uint8Array<ArrayBuffer> | null {
+function guardBody(body: Uint8Array, params: number, w: Writer): Uint8Array<ArrayBuffer> | null {
   // Without a 0xFC or 0xFE byte anywhere (most bodies) there is nothing to guard.
   if (body.indexOf(0xfc) < 0 && body.indexOf(0xfe) < 0) return null;
   const r = new Reader(body);
   let locals = 0;
-  const groups = r.u32();
+  const groups = r.count();
   for (let i = 0; i < groups; i++) {
     locals += r.u32();
-    if (r.byte() >= 0x63 && r.b[r.p - 1] <= 0x64) r.skip();
+    if (typedReference(r.byte())) throw new Unknown('typed reference local');
   }
+  if (params + locals + TEMPS.length > MAX_LOCALS) throw new Unknown('too many locals');
   const codeStart = r.p;
   const base = params + locals;
-  let w: Writer | null = null;
+  let started = false;
   let copied = codeStart;
   const out = () => {
-    if (!w) {
-      w = scratch;
+    if (!started) {
+      started = true;
       w.length = 0;
       // The function's own local groups, then the temporaries: its locals keep their indices.
       w.u32(groups + TEMPS.length);
@@ -362,31 +410,21 @@ function guardBody(body: Uint8Array, params: number): Uint8Array<ArrayBuffer> | 
       continue;
     }
     const sub = r.u32();
-    if (op === 0xfc && (sub === 10 || sub === 11)) {
+    // memory.init (data index, memory), memory.copy (two memories), memory.fill (memory)
+    if (op === 0xfc && (sub === 8 || sub === 10 || sub === 11)) {
       r.skip();
-      if (sub === 10) r.skip();
+      if (sub !== 11) r.skip();
       const o = out();
       o.bytes(body.subarray(copied, at));
-      if (sub === 11) {
-        // memory.fill: [dst, value, length]
-        set(o, base + C);
-        set(o, base + B);
-        set(o, base + A);
-        check(o, base + A, { local: base + C });
-        get(o, base + A);
-        get(o, base + B);
-        get(o, base + C);
-      } else {
-        // memory.copy: [dst, src, length]
-        set(o, base + C);
-        set(o, base + B);
-        set(o, base + A);
-        check(o, base + A, { local: base + C });
-        check(o, base + B, { local: base + C });
-        get(o, base + A);
-        get(o, base + B);
-        get(o, base + C);
-      }
+      // [dst, value or src or the segment's offset, length]
+      set(o, base + C);
+      set(o, base + B);
+      set(o, base + A);
+      check(o, base + A, base + C);
+      if (sub === 10) check(o, base + B, base + C);
+      get(o, base + A);
+      get(o, base + B);
+      get(o, base + C);
       o.bytes(body.subarray(at, r.p));
       copied = r.p;
       continue;
@@ -396,30 +434,27 @@ function guardBody(body: Uint8Array, params: number): Uint8Array<ArrayBuffer> | 
         r.p += 1;
         continue;
       }
-      const shape = atomicShape(sub);
+      const shape = ATOMICS[sub];
       if (!shape) throw new Unknown(`atomic 0x${sub.toString(16)}`);
       const offset = memarg(r);
       const o = out();
       o.bytes(body.subarray(copied, at));
       // The operands above the address, last first, into the temporaries of their types.
-      const slots: number[] = [];
-      const free = { [I32]: [B, C], [I64]: [X, Y] } as Record<number, number[]>;
-      for (const t of shape.operands) slots.push(base + free[t].shift()!);
-      for (let i = slots.length - 1; i >= 0; i--) set(o, slots[i]);
+      const slots = shape.slots;
+      for (let i = slots.length - 1; i >= 0; i--) set(o, base + slots[i]);
       set(o, base + A);
-      check(o, base + A, { constant: offset + shape.width });
+      check(o, base + A, -1, offset + shape.width);
       get(o, base + A);
-      for (const s of slots) get(o, s);
+      for (const slot of slots) get(o, base + slot);
       o.bytes(body.subarray(at, r.p));
       copied = r.p;
       continue;
     }
     skipPrefixed(r, op, sub);
   }
-  if (!w) return null;
-  const o = w as Writer;
-  o.bytes(body.subarray(copied));
-  return o.done();
+  if (!started) return null;
+  w.bytes(body.subarray(copied));
+  return w.done();
 }
 
 function lebLength(b: Uint8Array, p: number): number {
@@ -438,15 +473,15 @@ function signatures(bytes: Uint8Array): { params: number[]; funcTypes: number[] 
     const size = r.u32();
     const end = r.p + size;
     if (id === 1) {
-      for (let n = r.u32(); n > 0; n--) {
+      for (let n = r.count(); n > 0; n--) {
         if (r.byte() !== 0x60) throw new Unknown('type that is not a function');
-        const count = r.u32();
-        for (let i = 0; i < count; i++) if (r.byte() >= 0x63 && r.b[r.p - 1] <= 0x64) r.skip();
+        const count = r.count();
+        for (let i = 0; i < count; i++) if (typedReference(r.byte())) throw new Unknown('typed reference parameter');
         params.push(count);
-        for (let i = r.u32(); i > 0; i--) if (r.byte() >= 0x63 && r.b[r.p - 1] <= 0x64) r.skip();
+        for (let i = r.count(); i > 0; i--) if (typedReference(r.byte())) throw new Unknown('typed reference result');
       }
     } else if (id === 3) {
-      for (let n = r.u32(); n > 0; n--) funcTypes.push(r.u32());
+      for (let n = r.count(); n > 0; n--) funcTypes.push(r.u32());
     }
     r.p = end;
   }
@@ -458,10 +493,11 @@ function signatures(bytes: Uint8Array): { params: number[]; funcTypes: number[] 
  * memory; null when it is left as it is (no shared memory, or something the rewrite does not know).
  */
 export function guardSharedMemoryGrowth(input: Uint8Array): Uint8Array<ArrayBuffer> | null {
-  if (input.length < 8 || input[0] !== 0x00 || input[1] !== 0x61 || input[2] !== 0x73 || input[3] !== 0x6d || input[4] !== 1) return null;
+  if (input.length < 8 || input.length > MAX_INPUT || input[0] !== 0x00 || input[1] !== 0x61 || input[2] !== 0x73 || input[3] !== 0x6d || input[4] !== 1) return null;
   try {
     if (sharedMemoryFlags(input) === null) return null;
     const { params, funcTypes } = signatures(input);
+    const most = input.length * (1 + MAX_GROWTH) + GROWTH_ALLOWANCE;
     const w = new Writer();
     w.bytes(input.subarray(0, 8));
     const r = new Reader(input, 8);
@@ -478,22 +514,25 @@ export function guardSharedMemoryGrowth(input: Uint8Array): Uint8Array<ArrayBuff
         continue;
       }
       const code = new Writer();
-      const count = r.u32();
+      // Where each guarded body is written before it is copied into the section.
+      const body = new Writer();
+      const count = r.count();
       code.u32(count);
       for (let i = 0; i < count; i++) {
         const length = r.u32();
         if (r.p + length > end) return null;
-        const body = input.subarray(r.p, r.p + length);
+        const original = input.subarray(r.p, r.p + length);
         r.p += length;
-        const guarded = guardBody(body, params[funcTypes[i]]);
-        const chosen = guarded ?? body;
+        const guarded = guardBody(original, params[funcTypes[i]], body);
+        const chosen = guarded ?? original;
         if (guarded) changed = true;
         code.u32(chosen.length);
         code.bytes(chosen);
+        if (w.length + code.length > most) return null;
       }
       if (r.p !== end) return null;
       const section = code.done();
-      w.bytes([10]);
+      w.byte(10);
       w.u32(section.length);
       w.bytes(section);
       r.p = end;
@@ -506,31 +545,34 @@ export function guardSharedMemoryGrowth(input: Uint8Array): Uint8Array<ArrayBuff
   }
 }
 
-const bytesOf = (source: unknown): Uint8Array | null =>
-  ArrayBuffer.isView(source)
-    ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
-    : source instanceof ArrayBuffer || (typeof SharedArrayBuffer === 'function' && source instanceof SharedArrayBuffer)
-      ? new Uint8Array(source)
-      : null;
-
-/** The bytes to compile for `source`: guarded when it is a module with shared memory. */
-function guarded<T>(source: T): T | Uint8Array {
-  const bytes = bytesOf(source);
-  return (bytes && guardSharedMemoryGrowth(bytes)) ?? source;
+/** The bytes of `source`, a buffer or a view of one; null for anything else, and for a detached buffer. */
+function bytesOf(source: unknown): Uint8Array | null {
+  try {
+    if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    if (source instanceof ArrayBuffer || (typeof SharedArrayBuffer === 'function' && source instanceof SharedArrayBuffer)) return new Uint8Array(source);
+  } catch {
+    // detached: WebAssembly reports it (a CompileError)
+  }
+  return null;
 }
 
 /**
- * Compiles `source` guarded. A guarded module that does not compile is compiled as it was given,
- * so that the program gets WebAssembly's own error for its bytes (the rewrite keeps a valid module
- * valid; an invalid one's error would name other offsets).
+ * Compiles `source` guarded, with `compile` (native). A guarded module that does not compile is
+ * compiled from the bytes it was given, so that the program gets WebAssembly's own error for them
+ * (the rewrite keeps a valid module valid; an invalid one's error would name other offsets). When
+ * the compile is `later` (a promise), those bytes are copied first, as WebAssembly copies them: the
+ * program may change its buffer once the call returns.
  */
-function compileGuarded<R>(source: unknown, compile: (bytes: unknown) => R): R {
-  const bytes = guarded(source);
-  if (bytes === source) return compile(source);
+function compileGuarded<R>(source: unknown, compile: (bytes: unknown) => R, later: boolean): R {
+  const bytes = bytesOf(source);
+  const guarded = bytes && guardSharedMemoryGrowth(bytes);
+  if (!guarded) return compile(source);
+  if (later) {
+    const given = bytes.slice();
+    return (compile(guarded) as Promise<unknown>).catch((e: unknown) => (e instanceof WebAssembly.CompileError ? compile(given) : Promise.reject(e))) as R;
+  }
   try {
-    const result = compile(bytes);
-    if (result instanceof Promise) return result.catch((e: unknown) => (e instanceof WebAssembly.CompileError ? compile(source) : Promise.reject(e))) as R;
-    return result;
+    return compile(guarded);
   } catch (e) {
     if (e instanceof WebAssembly.CompileError) return compile(source);
     throw e;
@@ -541,30 +583,31 @@ let installed = false;
 
 /**
  * Compiles modules with shared memory guarded (guardSharedMemoryGrowth): `new WebAssembly.Module`,
- * `WebAssembly.compile` and `WebAssembly.instantiate` from bytes. A compiled module passed on to
- * another thread is already guarded. The streaming forms compile as they are.
+ * `WebAssembly.compile` and `WebAssembly.instantiate` from bytes, with whatever else they are given
+ * (compile options such as `builtins`). A compiled module passed on to another thread is already
+ * guarded. The streaming forms compile as they are.
  */
 export function installWasmGrowGuard(): void {
   if (installed) return;
   installed = true;
   const wasm = WebAssembly as unknown as Record<string, unknown>;
   const NativeModule = WebAssembly.Module;
-  const nativeCompile = WebAssembly.compile.bind(WebAssembly);
+  const nativeCompile = WebAssembly.compile.bind(WebAssembly) as (source: unknown, ...rest: unknown[]) => Promise<WebAssembly.Module>;
   const nativeInstantiate = WebAssembly.instantiate.bind(WebAssembly) as (source: unknown, ...rest: unknown[]) => Promise<unknown>;
   // A function rather than a subclass, so that modules made elsewhere (another thread's) are still
   // `instanceof WebAssembly.Module`; its statics (exports, imports, customSections) are inherited.
-  const Module = function Module(this: unknown, source: BufferSource) {
+  const Module = function Module(this: unknown, source: BufferSource, ...rest: unknown[]) {
     if (!new.target) throw new TypeError("Class constructor Module cannot be invoked without 'new'");
     const target = new.target;
-    return compileGuarded(source, (bytes) => Reflect.construct(NativeModule, [bytes], target) as WebAssembly.Module);
+    return compileGuarded(source, (bytes) => Reflect.construct(NativeModule, [bytes, ...rest], target) as WebAssembly.Module, false);
   } as unknown as typeof WebAssembly.Module;
   Object.setPrototypeOf(Module, NativeModule);
   Object.defineProperty(Module, 'prototype', { value: NativeModule.prototype, writable: false });
   Object.defineProperty(wasm, 'Module', { value: Module, writable: true, configurable: true, enumerable: false });
   wasm.compile = function compile(source: BufferSource, ...rest: unknown[]) {
-    return compileGuarded(source, (bytes) => (nativeCompile as (s: unknown, ...r: unknown[]) => Promise<WebAssembly.Module>)(bytes, ...rest));
+    return compileGuarded(source, (bytes) => nativeCompile(bytes, ...rest), true);
   };
   wasm.instantiate = function instantiate(source: unknown, ...rest: unknown[]) {
-    return source instanceof NativeModule ? nativeInstantiate(source, ...rest) : compileGuarded(source, (bytes) => nativeInstantiate(bytes, ...rest));
+    return source instanceof NativeModule ? nativeInstantiate(source, ...rest) : compileGuarded(source, (bytes) => nativeInstantiate(bytes, ...rest), true);
   };
 }

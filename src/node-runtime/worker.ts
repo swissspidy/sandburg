@@ -19,6 +19,7 @@ import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
 import pathBrowserify from 'path-browserify';
 import { installAsyncContext } from './async-context.ts';
 import { installWasmGrowGuard } from './wasm-grow-guard.ts';
+import { trackPending } from './track-pending.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
@@ -639,10 +640,7 @@ const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
  * idle for a while.
  */
 function exitWhenIdle() {
-  const track = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => (...args: A): Promise<R> => {
-    pendingWork.count++;
-    return fn(...args).finally(() => pendingWork.count--);
-  };
+  const track = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => trackPending(pendingWork, fn);
   globalThis.fetch = track(globalThis.fetch.bind(globalThis));
   const wasm = WebAssembly as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
   for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) if (wasm[name]) wasm[name] = track(wasm[name].bind(WebAssembly));
