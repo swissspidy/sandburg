@@ -8,7 +8,7 @@ import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
 import { ANSWER_HEADER, FILE_CHANNEL_NAME, MAILBOX_BYTES, MAILBOX_HEADER as CHANNEL_MAILBOX_HEADER, MAX_BODY, MAX_FRAME, POST_HEADER } from '../file-channel.ts';
 import { bundleHeader } from '../bundle-format.ts';
-import { MARK_DEAD } from './sync-child.ts';
+import { SPAWN_HELPER } from './sync-child.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack, nodeModulesIndex } from './worker.ts';
 
 let installedRequests = 0;
@@ -344,30 +344,13 @@ function open(url, ready) {
     asked.clear();
   };
 }
-// Synchronous child processes' runtimes (sync-child.ts), by id: started here, as their parent blocks.
-const runtimes = new Map();
-const markDead = ${MARK_DEAD};
-const handle = async ({ data }) => {
-  if (data.spawn) {
-    // Only the runtime's own script.
-    const url = new URL(data.spawn);
-    if (url.origin !== location.origin || !url.pathname.endsWith('/node-worker.js')) return markDead(data.sync);
-    const worker = new Worker(url.href);
-    runtimes.set(data.id, worker);
-    worker.onerror = (e) => {
-      e.preventDefault();
-      worker.terminate();
-      runtimes.delete(data.id);
-      markDead(data.sync);
-    };
-    return worker.postMessage(data.init, data.transfer);
-  }
-  if (data.kill) {
-    runtimes.get(data.kill)?.terminate();
-    return void runtimes.delete(data.kill);
-  }
+// Synchronous child processes' runtimes (sync-child.ts).
+${SPAWN_HELPER}
+// from: the runtime a message came from ('root': the main runtime; null: a file channel port).
+const handle = async ({ data }, from = 'root') => {
+  if (spawnerMessage(data, from)) return;
   if (data.channel) return open(data.channel, new Int32Array(data.ready));
-  if (data.port) return void (data.port.onmessage = handle);
+  if (data.port) return void (data.port.onmessage = (e) => handle(e, null));
   // A note sent before the socket opens waits for it (what a run read first is what its next run needs most).
   if (data.note) {
     if (socket && socket.readyState === 0 && notes.length < 256) notes.push(data.note);
@@ -463,7 +446,11 @@ export function startDigester(files = true): void {
     const { worker, shared } = preparedHelper ?? newHelper();
     preparedHelper = null;
     const state = new Int32Array(shared, 0, 2);
-    spawner = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), up: () => Atomics.load(state, 1) === 1 };
+    // A child process's own helper (an install's files) is not up yet: it asks the main runtime's (useSpawner).
+    if (!spawner) {
+      spawner = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), up: () => Atomics.load(state, 1) === 1 };
+      spawner.post({ runtime: new URL(`${base}/node-worker.js`, workerHref).href });
+    }
     if (!files) return;
     digester = { worker, shared, state };
     openChannel(worker);
@@ -481,38 +468,51 @@ export function startDigester(files = true): void {
  */
 let spawner: { post(message: unknown, transfer?: Transferable[]): void; up(): boolean } | null = null;
 
-/** A port to the helper for a thread or child process this runtime starts (null without a helper). */
-export function shareSpawner(): MessagePort | null {
+let ports = 0;
+const portPrefix = Math.random().toString(36).slice(2);
+
+/**
+ * A port to the helper for a thread or child process this runtime starts, and its tag (null without
+ * a helper): the runtime's node in the helper's tree of runtimes (SPAWN_HELPER in sync-child.ts).
+ */
+export function shareSpawner(): { port: MessagePort; owner: string } | null {
   const s = spawner;
   if (!s) return null;
   const pair = new NativeMessageChannel();
-  s.post({ port: pair.port2 }, [pair.port2]);
-  return pair.port1;
+  const owner = `${portPrefix}-${++ports}`;
+  s.post({ spawnerPort: pair.port2, owner }, [pair.port2]);
+  return { port: pair.port1, owner };
+}
+
+/** A runtime this one started has ended: the helper ends the synchronous children under it. */
+export function releaseSpawner(owner: string): void {
+  spawner?.post({ end: owner });
 }
 
 /** The helper has started, but does not get this thread's messages yet (see spawner). */
 export const helperStarting = (): boolean => !!spawner && !spawner.up();
 
-export function useSpawner(port: MessagePort): void {
+export function useSpawner(given: { port: MessagePort }): void {
   // The parent started the helper before this runtime: if it is not up yet, it will be by the time
   // the parent (which is not blocked on this one) runs its next task.
-  spawner = { post: (m, t = []) => nativePostMessage.call(port, m, t), up: () => true };
+  spawner = { post: (m, t = []) => nativePostMessage.call(given.port, m, t), up: () => true };
 }
 
-let spawned = 0;
-const spawnPrefix = Math.random().toString(36).slice(2);
-
 /**
- * Has the helper start a runtime for a synchronous child process (`init`, with `sync` the child's
- * channel and `transfer` its ports). Null when there is no helper, or it does not get this
- * thread's messages yet. kill() ends the child's worker.
+ * Has the helper start a runtime for a synchronous child process (`init`, whose spawner port names
+ * it, with `sync` the child's channel and `transfer` its ports). Null when there is no helper, or it
+ * does not get this thread's messages yet. kill() ends the child and the runtimes under it.
  */
-export function spawnSyncRuntime(init: unknown, sync: SharedArrayBuffer, transfer: Transferable[]): { kill(): void } | null {
+export function spawnSyncRuntime(init: { spawner?: { owner: string } | null }, sync: SharedArrayBuffer, transfer: Transferable[]): { kill(): void } | null {
   const s = spawner;
-  if (!s?.up()) return null;
-  const id = `${spawnPrefix}-${++spawned}`;
-  s.post({ spawn: new URL(`${base}/node-worker.js`, workerHref).href, id, init, sync, transfer }, transfer);
-  return { kill: () => s.post({ kill: id }) };
+  const owner = init.spawner?.owner;
+  if (!owner) return null;
+  if (!s?.up()) {
+    s?.post({ end: owner });
+    return null;
+  }
+  s.post({ spawn: owner, init, sync, transfer }, transfer);
+  return { kill: () => s.post({ end: owner }) };
 }
 
 /**

@@ -157,7 +157,8 @@ type Plan = { argv: string[]; cwd: string; env: Record<string, string>; stdio: S
 let nextPid = 100;
 
 export function createChildProcess(host: ChildProcessHost) {
-  function plan(file: string, args: string[], options: SpawnOptions, forkIpc: boolean): Plan {
+  /** `stdin`: what a synchronous child reads from its stdin, which `node` without a script runs, as Node does. */
+  function plan(file: string, args: string[], options: SpawnOptions, forkIpc: boolean, stdin?: string): Plan {
     const argv = [file, ...args];
     const execPath = host.execPath();
     const stdio = normalizeStdio(options.stdio, forkIpc, options.silent);
@@ -169,6 +170,7 @@ export function createChildProcess(host: ChildProcessHost) {
       return { ...common, kind: 'shell', script: options.shell ? argv.join(' ') : argv.map(shellQuote).join(' ') };
     }
     const cmd = parseNodeArgs(argv.slice(1));
+    if (!cmd.script && cmd.evalCode === null && stdin !== undefined) cmd.evalCode = stdin;
     if (!cmd.script && cmd.evalCode === null) return { ...common, kind: 'fail', command: `${argv[0]} (without a script: the REPL)` };
 
     const execArgv = [...(forkIpc ? (options.execArgv ?? []) : []), ...cmd.execArgv];
@@ -431,13 +433,14 @@ export function createChildProcess(host: ChildProcessHost) {
    * `api` names the call in the error for a command that cannot start (no helper to start it).
    */
   function runSync(api: string, file: string, args: string[], options: SyncOptions): SyncResult {
-    const p = plan(file, args, options, false);
+    const input = options.input === undefined ? undefined : typeof options.input === 'string' ? Buffer.from(options.input, (options.encoding && options.encoding !== 'buffer' ? options.encoding : 'utf8') as BufferEncoding) : new Uint8Array(options.input.buffer, options.input.byteOffset, options.input.byteLength).slice();
+    const stdinText = input ? new TextDecoder().decode(input) : '';
+    const p = plan(file, args, options, false, stdinText);
     const { stdio } = p;
     // As Node reports it: a shell command is /bin/sh -c <script>.
     const [errFile, errArgs] = p.kind === 'shell' && options.shell ? [typeof options.shell === 'string' ? options.shell : '/bin/sh', ['-c', p.script]] : [file, args];
     const deadline = options.timeout && options.timeout > 0 ? performance.now() + options.timeout : Infinity;
     const maxBuffer = options.maxBuffer ?? 1024 * 1024;
-    const input = options.input === undefined ? undefined : typeof options.input === 'string' ? Buffer.from(options.input, (options.encoding && options.encoding !== 'buffer' ? options.encoding : 'utf8') as BufferEncoding) : new Uint8Array(options.input.buffer, options.input.byteOffset, options.input.byteLength).slice();
     const chunks: Buffer[][] = [[], [], []];
     const sizes = [0, 0, 0];
     /** Why the command ended early: its time or its output ran out, its runtime failed or could not start. */
@@ -500,7 +503,7 @@ export function createChildProcess(host: ChildProcessHost) {
       pid = nextPid++;
       runScript(p.script, p.cwd, p.env, {
         node: (argv, o) => {
-          const sub = plan(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env }, false);
+          const sub = plan(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env }, false, stdinText);
           o.onExit(sub.kind === 'node' ? (runNode(sub.init) ?? 143) : 127);
           return { kill: () => {} };
         },
@@ -520,10 +523,16 @@ export function createChildProcess(host: ChildProcessHost) {
         },
         sync: {
           sleep: (ms) => {
-            const left = deadline - performance.now();
             if (stopped) return;
+            const left = deadline - performance.now();
+            const wait = Math.min(Number.isNaN(ms) ? 0 : ms, left);
+            if (wait === Infinity) {
+              // sleep inf without a timeout: as it would natively, until killed (nothing kills this thread's wait).
+              stopped = { error: Object.assign(new Error(`child_process.${api}: "sleep" without end and without a timeout would block this thread forever`), { code: 'EINVAL' }) };
+              return;
+            }
             if (ms >= left) stopped = { timedOut: true };
-            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(ms, left)));
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, wait));
           },
         },
       });
@@ -536,8 +545,9 @@ export function createChildProcess(host: ChildProcessHost) {
     };
     const stdout = output(1);
     const stderr = output(2);
-    if (stopped && 'error' in stopped) return { error: stopped.error, status: null, signal: null, output: null, pid: 0 };
-    const signal = stopped ? (typeof options.killSignal === 'string' ? options.killSignal : 'SIGTERM') : null;
+    // What it wrote before it could not go on (a script whose later command could not start).
+    if (stopped && 'error' in stopped) return { error: stopped.error, status: null, signal: null, output: [null, stdout, stderr], pid: 0, stdout, stderr };
+    const signal = stopped ? signalName(options.killSignal) : null;
     const result: SyncResult = { status: stopped ? null : status, signal, output: [null, stdout, stderr], pid, stdout, stderr };
     return stopped ? { error: spawnError('timedOut' in stopped ? 'ETIMEDOUT' : 'ENOBUFS', errFile, errArgs), ...result } : result;
   }
@@ -575,6 +585,15 @@ export function createChildProcess(host: ChildProcessHost) {
     execSync,
     execFileSync,
   };
+}
+
+/** Linux's signals by number (os.constants.signals), for a numeric killSignal. */
+const SIGNALS = ['', 'SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT', 'SIGBUS', 'SIGFPE', 'SIGKILL', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGPIPE', 'SIGALRM', 'SIGTERM', 'SIGSTKFLT', 'SIGCHLD', 'SIGCONT', 'SIGSTOP', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU', 'SIGURG', 'SIGXCPU', 'SIGXFSZ', 'SIGVTALRM', 'SIGPROF', 'SIGWINCH', 'SIGIO', 'SIGPWR', 'SIGSYS'];
+
+/** A kill signal's name (SIGTERM by default). */
+function signalName(signal: string | number | undefined): string {
+  if (typeof signal === 'number') return SIGNALS[signal] || 'SIGTERM';
+  return signal ?? 'SIGTERM';
 }
 
 function shellQuote(word: string): string {

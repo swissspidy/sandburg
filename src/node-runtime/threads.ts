@@ -479,8 +479,11 @@ export interface ThreadHost {
   postToParent(msg: ToParent, transfer?: Transferable[]): void;
   /** Messages of a nested runtime about servers it runs (listening, responses, WebSockets), which this runtime passes on. */
   relay(msg: ToParent, from: globalThis.Worker): boolean;
-  /** A nested runtime ended (terminated): what it served is gone, and requests in flight to it fail. */
-  ended(worker: globalThis.Worker): void;
+  /**
+   * A nested runtime ended (terminated): what it served is gone, and requests in flight to it fail,
+   * and the synchronous children it started end (`init`: what it was started with).
+   */
+  ended(worker: globalThis.Worker, init: Extract<ToWorker, { type: 'init' }>): void;
   /** Ends this process with an error: a WebAssembly thread of it crashed (see Worker's 'fatal'). */
   crash(message: string, stack?: string): void;
 }
@@ -568,7 +571,7 @@ function takeSpare(): globalThis.Worker | undefined {
 }
 
 /** The ports a child runtime's init message carries (worker.ts childInit), in this order. */
-export const runtimePorts = (init: Extract<ToWorker, { type: 'init' }>) => [init.compilePort, init.filesChannel?.port, init.spawner].filter((p): p is MessagePort => !!p);
+export const runtimePorts = (init: Extract<ToWorker, { type: 'init' }>) => [init.compilePort, init.filesChannel?.port, init.spawner?.port].filter((p): p is MessagePort => !!p);
 
 export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: ToParent) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
   const worker = takeSpare() ?? new globalThis.Worker(`${host.base()}/node-worker.js`);
@@ -595,7 +598,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
     liveRuntimes.delete(worker);
     nestedEnded(worker);
     terminate();
-    host.ended(worker);
+    host.ended(worker, message);
   };
   return worker;
 }

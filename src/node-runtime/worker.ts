@@ -31,7 +31,7 @@ import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
 import { COMPILE_POST_MAX } from '../file-channel.ts';
-import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, shareSpawner, useSpawner, spawnSyncRuntime, helperStarting, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
+import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, shareSpawner, useSpawner, spawnSyncRuntime, helperStarting, releaseSpawner, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
 import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone } from './peers.ts';
@@ -333,7 +333,10 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     self: child ? null : thread,
     postToParent: (m, transfer) => realPostMessage(m, transfer ?? []),
     relay: relayFromNested,
-    ended: forgetNested,
+    ended: (worker, message) => {
+      forgetNested(worker);
+      if (message.spawner) releaseSpawner(message.spawner.owner);
+    },
     // Up to this process's main thread, and from there to the page (or the parent process).
     crash: (message, stack) => post({ type: 'fatal', message, stack, trap: true }),
   };

@@ -650,6 +650,7 @@ test('child_process: a synchronous command the runtime cannot start yet fails at
         }
         const r = cp.spawnSync(process.execPath, ['-p', '1']);
         out.spawnSync = [r.error.code, r.status, r.error.message.split(':')[0]];
+        out.result = [Object.keys(r), r.output, r.stdout, r.stderr];
         try {
           cp.execFileSync(process.execPath, ['-p', '1']);
         } catch (e) {
@@ -668,5 +669,156 @@ test('child_process: a synchronous command the runtime cannot start yet fails at
     execSync: ['ENOSYS', `child_process.execSync("node -p 1") ${why}`],
     spawnSync: ['ENOSYS', null, `child_process.spawnSync("/usr/local/bin/node -p 1") ${why}`],
     execFileSync: ['ENOSYS', `child_process.execFileSync("/usr/local/bin/node -p 1") ${why}`],
+    // Node's keys for a command that did not start (its output: none, as the command did not run).
+    result: [['error', 'status', 'signal', 'output', 'pid', 'stdout', 'stderr'], [null, { type: 'Buffer', data: [] }, { type: 'Buffer', data: [] }], { type: 'Buffer', data: [] }, { type: 'Buffer', data: [] }],
   });
+});
+
+test('child_process: a child process in a project with an install runs synchronous commands as it starts', async () => {
+  // A child process with an install starts a file helper of its own; it starts synchronous children
+  // through the main runtime's, which is up (its own is not yet).
+  const out = await h.runInstalled(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const r = cp.spawnSync(process.execPath, ['child.js'], { encoding: 'utf8' });
+        console.log('sync', r.stdout.trim(), r.status);
+        const c = cp.spawn(process.execPath, ['child.js']);
+        c.stdout.on('data', (d) => console.log('async', String(d).trim()));`,
+      'child.js': `console.log(require('child_process').execFileSync(process.execPath, ['-p', '6 * 7'], { encoding: 'utf8' }).trim());`,
+    },
+    { files: {}, bundled: [] },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'sync 42 0\nasync 42\n', out.stderr);
+});
+
+test("child_process: the shell's sleep takes units, fractions and several numbers, as GNU sleep does, synchronously and not", { timeout: 60_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        let t = Date.now();
+        out.units = cp.spawnSync('sleep 0.2s && sleep 0.1 0.1 && sleep .05 && echo slept', { shell: true, encoding: 'utf8' }).stdout;
+        out.unitsWaited = Date.now() - t >= 400;
+        out.invalid = ['abc', '', '1x'].map((a) => {
+          const r = cp.spawnSync(\`sleep \${a}\`, { shell: true, encoding: 'utf8' });
+          return [r.status, r.stderr];
+        });
+        t = Date.now();
+        try {
+          cp.execSync('sleep 1m', { timeout: 300 });
+        } catch (e) {
+          out.timeout = [e.code, Date.now() - t < 5000];
+        }
+        t = Date.now();
+        cp.exec('sleep 0.2s && sleep 0.1 0.1 && echo slept', (err, stdout) => {
+          out.async = [err, stdout, Date.now() - t >= 400];
+          cp.exec('sleep abc', (err, stdout, stderr) => {
+            out.asyncInvalid = [err.code, stderr];
+            console.log(JSON.stringify(out));
+          });
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const invalid = (what: string) => [1, `sleep: ${what}\nTry 'sleep --help' for more information.\n`];
+  assert.deepEqual(JSON.parse(out.stdout), {
+    units: 'slept\n',
+    unitsWaited: true,
+    invalid: [invalid("invalid time interval 'abc'"), invalid('missing operand'), invalid("invalid time interval '1x'")],
+    timeout: ['ETIMEDOUT', true],
+    async: [null, 'slept\n', true],
+    asyncInvalid: invalid("invalid time interval 'abc'"),
+  });
+});
+
+test('child_process: a synchronous child killed (its timeout, or its blocked parent killed) takes its own synchronous children with it', { timeout: 60_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        let ticks = 0;
+        const channel = new BroadcastChannel('ticks');
+        channel.onmessage = () => ticks++;
+        const count = (then) => setTimeout(() => {
+          ticks = 0;
+          setTimeout(() => then(ticks), 1000);
+        }, 300);
+        try {
+          cp.execSync('node mid.js', { timeout: 2000 });
+        } catch (e) {
+          out.timeout = e.code;
+        }
+        // The ticker ran while this thread waited (its ticks arrive now), and not after the timeout.
+        setTimeout(() => {
+          out.ticked = ticks > 0;
+          count((n) => {
+            out.afterTimeout = n;
+            const c = cp.spawn(process.execPath, ['mid.js']);
+            let seen = 0;
+            channel.onmessage = () => {
+              ticks++;
+              if (++seen !== 3) return;
+              c.kill();
+              count((n) => {
+                out.afterKill = n;
+                console.log(JSON.stringify(out));
+                process.exit(0);
+              });
+            };
+          });
+        }, 50);`,
+      'mid.js': `require('child_process').execSync('node ticker.js');`,
+      'ticker.js': `const b = new BroadcastChannel('ticks'); setInterval(() => b.postMessage(1), 50);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { timeout: 'ETIMEDOUT', ticked: true, afterTimeout: 0, afterKill: 0 });
+});
+
+test('child_process: execSync in a worker thread, and a synchronous child that reads, writes and prints megabytes', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const fs = require('fs');
+        const { Worker } = require('worker_threads');
+        const w = new Worker("require('worker_threads').parentPort.postMessage(require('child_process').execSync('node -p 2+3', { encoding: 'utf8' }))", { eval: true });
+        w.on('message', (m) => {
+          fs.writeFileSync('big.txt', 'x'.repeat(5 << 20));
+          const r = cp.spawnSync(process.execPath, ['-e', 'const fs = require("fs"); const s = fs.readFileSync("big.txt", "utf8"); fs.writeFileSync("copy.txt", s + "!"); process.stdout.write(s.slice(0, 3 << 20))'], { maxBuffer: 8 << 20 });
+          console.log(JSON.stringify({ thread: m, large: [r.status, r.stdout.length, fs.readFileSync('copy.txt', 'utf8').length] }));
+          process.exit(0);
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { thread: '5\n', large: [0, 3 << 20, (5 << 20) + 1] });
+});
+
+test('child_process: a numeric killSignal is reported by name, and node without a script runs its input', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const r = cp.spawnSync(n, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: 9 });
+        console.log(JSON.stringify({
+          numericSignal: [r.error.code, r.signal],
+          inputScript: cp.spawnSync(n, [], { input: 'console.log(6 * 7)', encoding: 'utf8' }).stdout,
+          noScript: [cp.spawnSync(n, [], { encoding: 'utf8' }).status, cp.spawnSync(n, [], { encoding: 'utf8' }).stdout],
+          execInput: cp.execSync('node', { input: 'console.log(5)', encoding: 'utf8' }),
+        }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { numericSignal: ['ETIMEDOUT', 'SIGKILL'], inputScript: '42\n', noScript: [0, ''], execInput: '5\n' });
 });

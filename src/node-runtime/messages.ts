@@ -142,7 +142,7 @@ export type ToWorker =
       /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
       compilePort?: MessagePort | null;
       /** A port to the main runtime's helper, which starts synchronous child processes (shareSpawner in host-files.ts). */
-      spawner?: MessagePort | null;
+      spawner?: { port: MessagePort; owner: string } | null;
       base: string;
       ipc?: boolean;
       tsRunner?: boolean;

@@ -265,12 +265,20 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         return later(1);
       case 'exit':
         return later(Number(args[0] ?? 0));
-      case 'sleep':
+      case 'sleep': {
+        const seconds = sleepSeconds(args);
+        if (typeof seconds === 'string') {
+          host.write(2, `sleep: ${seconds}\nTry 'sleep --help' for more information.\n`);
+          return later(1);
+        }
         if (host.sync) {
-          host.sync.sleep(Number(args[0] ?? 0) * 1000);
+          host.sync.sleep(seconds * 1000);
           return done(0);
         }
-        return void setTimeout(() => done(0), Number(args[0] ?? 0) * 1000);
+        // Past setTimeout's range (sleep inf): never.
+        if (seconds * 1000 > 2 ** 31 - 1) return;
+        return void setTimeout(() => done(0), seconds * 1000);
+      }
       case 'cross-env':
       case 'env':
         return command(args, dir, localEnv, done);
@@ -379,6 +387,21 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       for (const r of running) r.kill();
     },
   };
+}
+
+/**
+ * How long `sleep` waits, in seconds, as GNU sleep reads its arguments (the sum of each, a number with
+ * an optional s, m, h or d), or the error it reports.
+ */
+function sleepSeconds(args: string[]): number | string {
+  if (!args.length) return 'missing operand';
+  let total = 0;
+  for (const a of args) {
+    const m = /^\+?(\d+\.?\d*(?:e[+-]?\d+)?|\.\d+(?:e[+-]?\d+)?|inf(?:inity)?)([smhd]?)$/i.exec(a);
+    if (!m) return `invalid time interval '${a}'`;
+    total += Number(/^inf/i.test(m[1]) ? Infinity : m[1]) * { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2].toLowerCase() as '' | 's' | 'm' | 'h' | 'd'];
+  }
+  return total;
 }
 
 function quote(word: string): string {
