@@ -58,12 +58,14 @@ and 25 on Windows, and every e2e `run` test on Windows.
 
 Tests that check something Windows does not have say so in their skip or their condition: POSIX
 user ids (the Docker reference as a user other than root), executable bits (npm's bin links in the
-package store), the error code for a name over 255 characters (Windows reports ENOENT).
+package store), the error code for a name over 255 characters (Windows reports ENOENT). The esbuild
+shim's test answers esbuild-wasm's probe for `C:\` as the runtime's file system does: the shim runs
+only there, and on a Windows host the probe made esbuild-wasm refuse its browser build's `/`.
 
 ## Consequences
 
 - A change that breaks the host on macOS or Windows fails CI on its pull request. In CI run
-  40635991624 the macOS job took 3 min 41 s and the Windows one 6 min 43 s (the e2e `run` file:
-  1 min 18 s and 4 min 23 s), beside the Linux jobs.
+  40638479873 the macOS job took 3 min 2 s and the Windows one 4 min 41 s (the e2e `run` file:
+  1 min 8 s and 2 min 41 s), beside the Linux jobs.
 - A failure in the other e2e files (frameworks, batch, websockets, ...) on macOS or Windows shows only
   when someone runs them there.
