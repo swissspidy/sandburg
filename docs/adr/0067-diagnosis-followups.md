@@ -42,9 +42,9 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
   x`, `Uncaught (in promise) TypeError: …`, `[nuxt] error caught during app initialization
   TypeError: …`, `DOMException: …`, `ERROR TypeError: …` and a namespaced
   `Prisma.PrismaClientKnownRequestError: …` still count; React's warnings are still left out.
-- **The app's sources are checked when the ready phase stalls, and fail it only while its page
-  hangs** (`source-check.ts`, `failOnSourceStall` in `orchestrator/app-ready.ts`), in a way that
-  does not depend on the framework:
+- **The app's sources are checked when the ready phase stalls, and classify it if it times out;
+  they never end it early** (`source-check.ts`, `watchSources` in `orchestrator/app-ready.ts`,
+  `sourceFailure` in `classify.ts`), in a way that does not depend on the framework:
   - *Which files.* Only the app's: those reachable from its entries and its frameworks' file-based
     roots. The entries are an HTML page's `<script src>`s, files named `main.*`, `index.*`,
     `entry-client.*`, `entry-server.*`, `app.*`, `hooks.*`, `middleware.*` or `server.*` at the
@@ -99,11 +99,14 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
     the esbuild service it had started running, and each finished check left an unreaped esbuild
     process), in its own process group on POSIX, at a lower priority, with a 1 GB JavaScript heap and
     `GOMEMLIMIT=1GiB` for esbuild, and its stderr dropped (esbuild's crash reports do not reach the
-    host's). It has a 10 s budget: then, and after every check, its process group (Windows: its
+    host's). `GOMEMLIMIT` is a soft limit: Go's collector works harder near it but does not stop
+    there (the review saw esbuild at 1.2 GB on crafted input); the hard bounds are the input caps,
+    the nesting limit and the time budget. It has a 10 s budget: then, and after every check, its process group (Windows: its
     process tree, `taskkill /T`) is killed, esbuild's service with it, and nothing is found; it
     exits on its own a second later too. It stops esbuild and waits for it before it exits, so it
     reaps it. It reads only the files it is sent, each size-capped in UTF-8 bytes on the host's
-    thread and sent one at a time: source, page, config and manifest files 512 KB each, lockfiles
+    thread (a file that cannot fit what is left of the total is skipped by its length, unmeasured)
+    and sent one at a time: source, page, config and manifest files 512 KB each, lockfiles
     16 MB, 2,000 source files and 24 MB in all. Its scans are linear, and a component's scripts are
     at most 16. A check that fails emits one process warning. `src/source-check.ts` is one of the
     files allowed to start processes (`.oxlintrc.json`); it starts Node on its own module, which runs
@@ -118,49 +121,67 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
     file only another route imports was not read: a slow page that streams has read no broken file.
     A package npm installed anyway (Nuxt's `h3` and `vue-router`, a Next app's
     `@tanstack/query-core`, as dependencies' dependencies, with no lockfile in the project) resolves,
-    as it does under npm.
-  - *When it fails the phase.* The sources are checked once the ready phase has run 20 s without
-    the app rendering: a run whose app renders sooner never checks them. What bears on the app is
-    matched again every 2 s, and fails the phase only while the page hangs: the app frame's latest
-    document answered 2xx and has streamed for at least 10 s without ending (SolidStart streams the
-    page and never ends it; a page whose response just came, still being read, is not one), it is
-    not a loading page (Nuxt's 503), and the dev server (the runtime's output) and the page (its
-    errors) have said nothing for 10 s. An app whose page has not been answered yet is still
-    compiling (`next dev` says "Compiling / ..." once, then nothing until it answers): it runs to the
-    phase's deadline. The message is "app did not render, and its sources have an error:
-    <file:line:column: message>" or "…: imports undeclared package "<name>" (<file:line>)".
-  - *Classification.* A ready phase that failed that way, or timed out after the check found
-    something that bears on the app, is `app-bug` with the finding's rule (`compile-error` or `undeclared-import`) and
-    `<file:line:column>: <message>` or `imports undeclared package "<name>" (<file:line>)`, unless
-    Sandburg's own machinery failed (an infra error, a broken download): then the findings change
-    nothing. Rules that read the dev server's own report come first.
+    as it does under npm. Reading is not running (a scanner reads files it never runs), so this only
+    says which finding to name, never that the app has failed.
+  - *It never ends the ready phase.* The sources are checked once the ready phase has run 20 s
+    without the app rendering (a run whose app renders sooner never checks them), and what bears on
+    the app is matched again every 2 s until the phase is over, so that it is there when the
+    deadline comes. The phase ends as it would without the check: the app renders, it fails on
+    its own error, or it times out.
+  - *Classification.* A ready phase that timed out with something found that bears on the app, or
+    that failed with nothing better to say than `unmatched`, is `app-bug` with the finding's rule
+    (`compile-error` or `undeclared-import`) and message (`<file:line:column>: <message>`,
+    `imports undeclared package "<name>" (<file:line>)`). Its first evidence says what happened in
+    plain words: "ready timed out; the app read lib/render.js, which does not parse: lib/render.js:1:23:
+    Unexpected ";"", or "…, which imports "dayjs", a package it neither declares nor has installed
+    (…)". When Sandburg's own machinery failed (an infra error, a broken download), the findings
+    change nothing; the rules that read the dev server's own report, and the app's own errors with
+    a stack through its files, come first.
+
+The source check first failed the ready phase early (at about 20 s) when it found something. Three
+reviews found healthy apps it failed, each time with a different signal for "the page hangs":
+
+- **"No output for 10 s, and the page's document answered 2xx and has not ended."** A server
+  render that streams the page's start and waits 28 s for its data looks the same (`<body>`, then
+  nothing), and so does `next dev` compiling a page (one "Compiling / ..." line, then nothing).
+- **Network progress** (the page's body bytes): a slow server render sends nothing either until its
+  data comes, exactly as SolidStart sends nothing after the page's head.
+- **"The app read the broken file"** (`Vfs.trackReads`): reading is not running. Tailwind's content
+  scan, a dependency optimizer's crawl and any `fs.readFileSync` over a directory read files they
+  never run, so a broken file a lazy route imports fails a healthy page whose data is slow.
+
+No signal the run can observe separates a page that hangs forever from one that is slow, before the
+deadline. So the check classifies; it does not decide. The cost: SolidStart's silent hangs (148, 203)
+take the whole ready deadline (240 s), as before this change, and now end as `compile-error` or
+`undeclared-import` with the file and line instead of `timeout`. The worst case of a wrong finding
+is a genuine timeout labelled with a source file the app read, and the evidence says so.
 
 ## Results
 
-- **148 and 203** (`corpus/`, run with their checks, the node runtime and Chromium 153; cold is an
-  empty working directory, so empty Sandburg stores, npm's own cache warm):
+- **148 and 203** (`corpus/`, run with their checks, the node runtime and Chromium 153, the ready
+  deadline 240 s; cold is an empty working directory, so empty Sandburg stores, npm's own cache warm):
 
   | App | Before (v7 study) | Now, cold | Now, warm |
   |---|---|---|---|
-  | 148 (syntax) | `timeout` after 242 s | `compile-error` `src/components/ConverterFeature.tsx:3:16: Unexpected ";"`, 28.4 s (ready 20.5 s) | the same, 22.2 s (ready 20.5 s) |
-  | 203 (undeclared import) | `timeout` after 242 s | `undeclared-import` `imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)`, 26.9 s (ready 20.5 s) | the same, 22.1 s (ready 20.5 s) |
+  | 148 (syntax) | `timeout` after 242 s | `compile-error` `src/components/ConverterFeature.tsx:3:16: Unexpected ";"`, {148C} | the same, {148W} |
+  | 203 (undeclared import) | `timeout` after 242 s | `undeclared-import` `imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)`, {203C} | the same, {203W} |
 
   SolidStart's server render reads the broken component, and dayjs is not installed: both bear on
-  the app.
+  the app. With the early fail (before this decision) they ended at about 20 s of ready.
 
-- **Slow, healthy apps are left to render** (`test/e2e/run.test.ts`), each with a reachable file,
-  imported only by a route the run never asks for, that imports an undeclared `@faker-js/faker`:
-  a server that says it is compiling once and answers its page after 28 s, and one that sends 200
-  and `<body>` at once and the rest after 28 s (a server render waiting on slow data, as the
-  review found). Both pass their ready phase at about 28 s, as on main. With every finding counted
-  (relevance off), the streaming one fails at 20 s as `undeclared-import`; without the 10 s of
-  streaming in the hanging-page condition, the compiling one failed once at 21 s, the moment its
-  page arrived.
+- **Slow, healthy apps are never failed** (`test/e2e/run.test.ts`), each with a broken file a route
+  the run never asks for imports: a server that says it is compiling once and answers its page
+  after 28 s, one that sends 200 and `<body>` at once and the rest after 28 s, and two of those
+  whose server first reads every file of `lib/` as text (as Tailwind's content scan does), one with
+  an undeclared import there and one with a syntax error. All pass their ready phase at about 28 s,
+  as on main.
 - **A page that hangs on a file its server read** (the same test file): a server that answers 200,
   streams the page's start, imports a module that does not parse (the error swallowed) and never
-  ends the page fails at about 20 s as `compile-error` `lib/render.js:1:23`. One whose own file
-  imports `ms` without declaring it, while declaring `debug`, which npm installs `ms` for, runs to
-  its deadline as a `timeout`: without the installed check it failed as `undeclared-import "ms"`.
+  ends the page times out at its (shortened, 30 s) deadline, classified `compile-error`
+  `lib/render.js:1:23: Unexpected ";"` with "ready timed out; the app read lib/render.js, which does
+  not parse: …". One whose own file imports `ms` without declaring it, while declaring `debug`, which
+  npm installs `ms` for, is a plain `timeout` (`phase-deadline`): without the installed check it was
+  classified `undeclared-import "ms"`.
 - **No false positives on the corpus.** Over all 232 corpus apps, the check flags exactly the 29
   seeded faults, each at the line the generator seeded: the 15 syntax errors (`const broken = ;`, in
   `.ts`, `.tsx`, `.js`, `.vue` and `.svelte` files) and the 14 undeclared imports (v6's `nanoid`, v7's
@@ -183,9 +204,13 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
   (before: about 11 s, synchronously, on the host's main thread), and an 898 KB page of 39,000
   import-map tags 8 ms when read (before: 13.3 s); over the 512 KB cap it is not read at all. A
   check of 64 files of about 500 KB (the 24 MB cap reached) takes about 0.7 s in its process, while
-  the host's event loop is delayed at most 9 ms (before, at the 64 MB cap: 260–740 ms). After ten
+  the host's event loop is delayed at most 9 ms (before, at the 64 MB cap: 260–740 ms); one of
+  2,000 files of 500 KB, at most 7–31 ms (99th percentile at most 13 ms; before measuring only
+  what fits, 220–280 ms). After ten
   checks no esbuild process is left, unreaped or running; after checks killed at their budget (150,
-  300 and 450 ms into half a second of work) none is left running, on Linux and on Windows (CI). 500
+  300 and 450 ms into half a second of work) none is left running, on Linux and on Windows (CI). A
+  stand-in esbuild that ignores hangups, terminations and the end of its input is gone after the
+  budget's kill of the check's process group (POSIX; killing the check's process alone leaves it). 500
   KB of nested `[` or `{` is skipped at once, where esbuild's service crashed.
 - **Healthy runs are not slower.** `scripts/bench.ts` (origin/main against this change, 3 rounds,
   medians, a 4-vCPU machine): vite-react-counter 5.57 s → 5.43 s cold, 1.49 s → 1.54 s warm;
@@ -199,13 +224,12 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
 
 ## Consequences
 
-- An app whose page hangs with no output on a syntax error or an undeclared import fails in about
-  20 s of ready, with the file and line, whatever its framework. One whose page is never answered
-  runs to the deadline as before, and its timeout is classified by what the check found.
-- A file the app read that does not parse, or its import of a package neither declared nor
-  installed, still fails an app whose page hangs for another reason (a server render that waits on
-  a backend that never answers): the app read a broken file, which is a fault of its own. A file
-  the app did not read never fails it early, so a page that streams slowly is waited for.
+- An app whose page hangs with no output on a syntax error or an undeclared import still takes the
+  ready deadline, as before, and now ends as `compile-error` or `undeclared-import` with the file
+  and line the app read, instead of `timeout`. Healthy apps, however slow, are never failed by it.
+- A page that hangs for another reason (a server render that waits on a backend that never
+  answers), whose app read a broken file, times out labelled with that file: the evidence says the
+  phase timed out and what the app read.
 - The check misses what it cannot follow: files a build plugin imports (`import.meta.glob`,
   auto-imported components outside Nuxt), dynamic `import()` and `require()` of packages, and files
   past its caps. A missed fault leaves the run as it was before this change (a timeout).
