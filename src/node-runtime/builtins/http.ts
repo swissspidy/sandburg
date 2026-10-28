@@ -25,6 +25,8 @@ export interface BridgeResponse {
   end(): void;
   /** The connection was reset before the response ended (res.destroy(), its socket closed): Node's client sees ECONNRESET. */
   error?(message: string, code?: string): void;
+  /** The status line and headers were flushed (res.flushHeaders()): what was sent so far goes out now, whatever comes after. */
+  flush?(): void;
 }
 
 /** Listening servers by port, or by path for servers on a local socket; the runtime's request dispatcher reads this. */
@@ -284,6 +286,7 @@ export class ServerResponse extends Writable {
   flushHeaders() {
     this.sendHeaders();
     this.#flushHeld();
+    this.bridge.flush?.();
   }
   /** Node internal that middleware (e.g. compression) calls to commit the status line and headers. */
   _implicitHeader() { this.writeHead(this.statusCode); }
@@ -626,10 +629,13 @@ class ClientRequest extends Writable {
   abort() {
     if (this.aborted) return;
     this.aborted = true;
-    const inFlight = this.res && !this.res.complete && !this.res.destroyed;
-    if (inFlight) queueMicrotask(() => this.emit('abort'));
+    // Destroyed in this tick once it had its socket: 'abort' comes before the error and 'close' to come.
+    if (this.destroyed && this.#hasSocket) return void this.emit('abort');
+    // First, with a response in flight or a socket (before what destroying it emits); else after its 'close'.
+    const first = (this.res && !this.res.complete && !this.res.destroyed) || this.#hasSocket;
+    if (first) queueMicrotask(() => this.emit('abort'));
     this.destroy();
-    if (!inFlight) queueMicrotask(() => this.emit('abort'));
+    if (!first) queueMicrotask(() => this.emit('abort'));
   }
   /**
    * As Node's: before its response, the request fails ("socket hang up" unless `err`); once it has a
@@ -644,7 +650,9 @@ class ClientRequest extends Writable {
     if (!res?.complete) this.#cancelServer?.();
     if (!res) {
       if (err) return super.destroy(err);
-      // As Node's: it failed ("socket hang up"), unless it is aborted in the same tick (then it was aborted).
+      // As Node's: once it has its socket, it failed ("socket hang up"), aborted or not; before, unless
+      // it is aborted in the same tick (then it was only aborted).
+      if (this.#hasSocket) return super.destroy(connectionReset('socket hang up'));
       queueMicrotask(() => {
         if (!this.aborted) this.emit('error', connectionReset('socket hang up'));
       });
@@ -673,7 +681,8 @@ class ClientRequest extends Writable {
       queueMicrotask(() => this.finish());
     });
     this.#active();
-    this.emit('response', res);
+    // As Node's: a response nobody listens for is read and dropped (so its request closes).
+    if (!this.emit('response', res)) res.resume();
     return res;
   }
   /**

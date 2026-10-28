@@ -1390,6 +1390,122 @@ test("http: a child that dies with a request to its sibling's server (through th
   assert.equal(out.stdout, 'request,aborted,res close,req close\n');
 });
 
+test("http: a child's server that flushes its headers and is destroyed: its client in the parent gets the response, then its abort", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // A child's server sends its headers (flushHeaders) and is destroyed: its client here gets the response,
+        // then its abort; what the server wrote in the same tick after its headers does not come.
+        const http = require('http');
+        const { fork } = require('child_process');
+        const child = fork(__dirname + '/child.js');
+        child.on('message', async () => {
+          const lines = [];
+          for (const path of ['/flush', '/flush-write']) {
+            lines.push(await new Promise((done) => {
+              const log = [path];
+              http.get('http://localhost:3050' + path, (res) => {
+                log.push('response ' + res.statusCode);
+                res.on('data', (d) => log.push('data ' + d));
+                res.on('aborted', () => log.push('aborted'));
+                res.on('error', (e) => log.push('res error ' + e.code));
+                res.on('close', () => setTimeout(() => done(log.join(', ')), 20));
+              }).on('error', (e) => done(log.concat('req error ' + e.code + ' ' + e.message).join(', ')));
+            }));
+          }
+          console.log(lines.join('\\n'));
+          child.kill();
+          process.exit(0);
+        });`,
+      'child.js': `
+        require('http').createServer((req, res) => {
+          res.writeHead(200);
+          res.flushHeaders();
+          if (req.url === '/flush-write') res.write('a');
+          res.destroy();
+        }).listen(3050, () => process.send('ready'));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['/flush, response 200, aborted, res error ECONNRESET', '/flush-write, response 200, aborted, res error ECONNRESET']);
+});
+
+test('http: a server that flushes its headers and is destroyed: the page gets the response start, then the error, and nothing written after', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        require('http').createServer((req, res) => {
+          res.writeHead(200);
+          res.flushHeaders();
+          if (req.url === '/flush-write') res.write('a');
+          res.destroy();
+        }).listen(3000);`,
+    },
+    '/app/main.js',
+    [{ url: '/flush' }, { url: '/flush-write' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.ends, [['response-error', 0], ['response-error', 1]]);
+  assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[200, ''], [200, '']]);
+});
+
+test('http: destroy() then abort(), or abort() alone, once the request has its socket: \'abort\', the error (socket hang up), then \'close\'', async () => {
+  const out = await h.run({ 'main.js': `
+        // destroy() then abort(), and abort() alone, once the request has its socket (20 ms in), before a response.
+        const http = require('http');
+        const lines = [];
+        http.createServer(() => {}).listen(3051, async () => {
+          for (const how of ['destroy+abort', 'abort']) {
+            lines.push(await new Promise((done) => {
+              const log = [how + ':'];
+              const req = http.get('http://localhost:3051/');
+              req.on('abort', () => log.push('abort'));
+              req.on('error', (e) => log.push('error ' + e.message));
+              req.on('close', () => {
+                log.push('close');
+                setTimeout(() => done(log.join(' ')), 20);
+              });
+              setTimeout(() => {
+                if (how === 'destroy+abort') req.destroy();
+                req.abort();
+              }, 20);
+            }));
+          }
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'destroy+abort: abort error socket hang up close\nabort: abort error socket hang up close\n');
+});
+
+test("http: a response nobody listens for is read and dropped: its request closes and frees its agent's socket", async () => {
+  const out = await h.run({ 'main.js': `
+        // A response nobody listens for is read and dropped: its request closes, and frees its agent's socket.
+        const http = require('http');
+        const log = [];
+        http.createServer((req, res) => res.end('x')).listen(3052, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const r1 = http.get({ port: 3052, path: '/1', agent });
+          r1.on('close', () => log.push('r1 close'));
+          http.get({ port: 3052, path: '/2', agent }, (res) => {
+            res.resume();
+            res.on('end', () => {
+              log.push('r2 end');
+              // Without an agent too.
+              const r3 = http.get('http://localhost:3052/3');
+              r3.on('close', () => {
+                log.push('r3 close');
+                console.log(log.join(', '));
+                process.exit(0);
+              });
+            });
+          });
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'r1 close, r2 end, r3 close\n');
+});
+
 test("process.exit() in an 'uncaughtException' or 'unhandledRejection' handler ends the process with its code", async () => {
   const outs = [];
   for (const program of [

@@ -815,6 +815,8 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
         answer({ type: 'response-end', id });
         settle(id);
       },
+      // Its headers were flushed: they (and what came before) go out now, and survive a reset after.
+      flush: release,
       // Reset before it ended (res.destroy()): what was held is dropped, as a real connection's would be.
       error: (message, code) => {
         held = null;
