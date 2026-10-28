@@ -7,6 +7,10 @@
  * Other commands (`shell: true`, sh -c, npm scripts, package binaries such as `vite` or `tsx`) run
  * in the runtime's shell (shell.ts), whose programs are all Node programs; git or a C compiler
  * cannot run in the browser, and such a command exits with 127.
+ *
+ * execSync, spawnSync and execFileSync run the same commands while this thread blocks: the shell
+ * runs here, synchronously, and each Node program it starts (or the one given) runs in a child
+ * runtime that this thread serves through shared memory until it exits (sync-child.ts).
  */
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'stream';
@@ -14,6 +18,7 @@ import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
 import { timers } from './builtins/process.ts';
 import { runScript } from './shell.ts';
 import { devScriptRunning, shellStepsAhead } from './process-tree.ts';
+import { serveSyncChild, syncChannel, type SyncEnd } from './sync-child.ts';
 import type { ThreadInit, ToWorker } from './messages.ts';
 
 const notSupported = (what: string) => Object.assign(new Error(`${what} is not available in the browser runtime`), { code: 'ENOSYS', errno: -38 });
@@ -120,11 +125,71 @@ export interface ChildProcessHost extends ThreadHost {
   execPath(): string;
   /** A command a shell script ran (a dev script's server, say) exited with an error. */
   reportExit?(info: { command: string; code: number; stderr: string }): void;
+  /**
+   * Starts the runtime of a synchronous child process, whose channel `sync` this thread then serves
+   * (sync-child.ts); null if it cannot be started now. kill() ends it.
+   */
+  spawnSync?(init: ThreadInit, sync: SharedArrayBuffer): { kill(): void } | null;
 }
+
+interface SyncOptions extends SpawnOptions {
+  input?: string | ArrayBufferView;
+  timeout?: number;
+  maxBuffer?: number;
+  killSignal?: string | number;
+  argv0?: string;
+}
+
+/** spawnSync's result, in Node's order of keys. */
+interface SyncResult {
+  error?: Error;
+  status: number | null;
+  signal: string | null;
+  output: (string | Buffer | null)[] | null;
+  pid: number;
+  stdout?: string | Buffer | null;
+  stderr?: string | Buffer | null;
+}
+
+/** What `spawn(file, args, options)` runs: a shell script, a Node program, or nothing (the REPL). */
+type Plan = { argv: string[]; cwd: string; env: Record<string, string>; stdio: Stdio[] } & ({ kind: 'shell'; script: string } | { kind: 'node'; init: ThreadInit } | { kind: 'fail'; command: string });
 
 let nextPid = 100;
 
 export function createChildProcess(host: ChildProcessHost) {
+  function plan(file: string, args: string[], options: SpawnOptions, forkIpc: boolean): Plan {
+    const argv = [file, ...args];
+    const execPath = host.execPath();
+    const stdio = normalizeStdio(options.stdio, forkIpc, options.silent);
+    const cwd = options.cwd ? host.resolvePath(options.cwd instanceof URL ? decodeURIComponent(options.cwd.pathname) : String(options.cwd)) : host.cwd();
+    const env = Object.fromEntries(Object.entries(options.env ?? host.env()).filter(([, v]) => v !== undefined)) as Record<string, string>;
+    const common = { argv, cwd, env, stdio };
+    if (options.shell || !isNode(argv[0] ?? '', options.execPath ?? execPath)) {
+      // A shell command line (spawn(cmd, { shell: true }), exec) is the command as written; otherwise quote the arguments.
+      return { ...common, kind: 'shell', script: options.shell ? argv.join(' ') : argv.map(shellQuote).join(' ') };
+    }
+    const cmd = parseNodeArgs(argv.slice(1));
+    if (!cmd.script && cmd.evalCode === null) return { ...common, kind: 'fail', command: `${argv[0]} (without a script: the REPL)` };
+
+    const execArgv = [...(forkIpc ? (options.execArgv ?? []) : []), ...cmd.execArgv];
+    const { conditions, preload } = nodeOptions(execArgv, env);
+    let main: string;
+    const pid = nextPid++;
+    if (cmd.evalCode !== null) {
+      main = `${cwd}/[eval-${pid}].js`;
+      host.vfs().write(main, new TextEncoder().encode(cmd.evalCode));
+    } else main = cmd.script!.startsWith('/') ? cmd.script! : `${cwd}/${cmd.script}`.replace(/\/\.\//g, '/');
+    const init: ThreadInit = {
+      id: pid,
+      workerData: null,
+      env,
+      argv: cmd.args,
+      main,
+      process: { cwd, execArgv, conditions, preload: preload.map((p) => (p.startsWith('.') ? `${cwd}/${p}` : p)), ipc: stdio.includes('ipc') },
+    };
+    return { ...common, kind: 'node', init };
+  }
+
   class ChildProcess extends EventEmitter {
     pid: number | undefined = undefined;
     stdin: Writable | null = null;
@@ -145,36 +210,12 @@ export function createChildProcess(host: ChildProcessHost) {
     start(file: string, args: string[], options: SpawnOptions, forkIpc: boolean) {
       this.spawnfile = file;
       this.spawnargs = [file, ...args];
-      const argv = [file, ...args];
-      const execPath = host.execPath();
-      const stdio = normalizeStdio(options.stdio, forkIpc, options.silent);
-      const cwd = options.cwd ? host.resolvePath(options.cwd instanceof URL ? decodeURIComponent(options.cwd.pathname) : String(options.cwd)) : host.cwd();
-      const env = Object.fromEntries(Object.entries(options.env ?? host.env()).filter(([, v]) => v !== undefined)) as Record<string, string>;
-      if (options.shell || !isNode(argv[0] ?? '', options.execPath ?? execPath)) {
-        // A shell command line (spawn(cmd, { shell: true }), exec) is the command as written; otherwise quote the arguments.
-        const script = options.shell ? argv.join(' ') : argv.map(shellQuote).join(' ');
-        return this.runShell(script, cwd, env, stdio, options);
-      }
-      const cmd = parseNodeArgs(argv.slice(1));
-      if (!cmd.script && cmd.evalCode === null) return this.fail(`${argv[0]} (without a script: the REPL)`);
-
-      const execArgv = [...(forkIpc ? (options.execArgv ?? []) : []), ...cmd.execArgv];
-      const { conditions, preload } = nodeOptions(execArgv, env);
-      let main: string;
-      this.pid = nextPid++;
-      if (cmd.evalCode !== null) {
-        main = `${cwd}/[eval-${this.pid}].js`;
-        host.vfs().write(main, new TextEncoder().encode(cmd.evalCode));
-      } else main = cmd.script!.startsWith('/') ? cmd.script! : `${cwd}/${cmd.script}`.replace(/\/\.\//g, '/');
-      const ipc = stdio.includes('ipc');
-      const init: ThreadInit = {
-        id: this.pid,
-        workerData: null,
-        env,
-        argv: cmd.args,
-        main,
-        process: { cwd, execArgv, conditions, preload: preload.map((p) => (p.startsWith('.') ? `${cwd}/${p}` : p)), ipc },
-      };
+      const p = plan(file, args, options, forkIpc);
+      if (p.kind === 'shell') return this.runShell(p.script, p.cwd, p.env, p.stdio, options);
+      if (p.kind === 'fail') return this.fail(p.command);
+      const { argv, stdio, init } = p;
+      this.pid = init.id;
+      const ipc = init.process!.ipc;
 
       // stdio: 'pipe' gives streams, 'inherit' writes to this process's output, 'ignore' drops it.
       const out = (fd: 1 | 2) => (stdio[fd] === 'pipe' ? new Readable({ read() {} }) : null);
@@ -381,8 +422,148 @@ export function createChildProcess(host: ChildProcessHost) {
     child.start(file, args, { ...options, stdio: 'pipe' }, false);
     return collect(child, options, cb);
   }
-  // Synchronous variants would have to block this thread while it serves the child's file system.
-  const syncError = (cmd: string) => notSupported(`running "${cmd}" synchronously`);
+  const ERRNO: Record<string, number> = { ETIMEDOUT: -110, ENOBUFS: -105 };
+  const spawnError = (code: string, file: string, spawnargs: string[]) =>
+    Object.assign(new Error(`spawnSync ${file} ${code}`), { errno: ERRNO[code], code, syscall: `spawnSync ${file}`, path: file, spawnargs });
+
+  /**
+   * spawnSync: runs the command while this thread blocks (see sync-child.ts), with Node's result.
+   * `api` names the call in the error for a command that cannot start (no helper to start it).
+   */
+  function runSync(api: string, file: string, args: string[], options: SyncOptions): SyncResult {
+    const p = plan(file, args, options, false);
+    const { stdio } = p;
+    // As Node reports it: a shell command is /bin/sh -c <script>.
+    const [errFile, errArgs] = p.kind === 'shell' && options.shell ? [typeof options.shell === 'string' ? options.shell : '/bin/sh', ['-c', p.script]] : [file, args];
+    const deadline = options.timeout && options.timeout > 0 ? performance.now() + options.timeout : Infinity;
+    const maxBuffer = options.maxBuffer ?? 1024 * 1024;
+    const input = options.input === undefined ? undefined : typeof options.input === 'string' ? Buffer.from(options.input, (options.encoding && options.encoding !== 'buffer' ? options.encoding : 'utf8') as BufferEncoding) : new Uint8Array(options.input.buffer, options.input.byteOffset, options.input.byteLength).slice();
+    const chunks: Buffer[][] = [[], [], []];
+    const sizes = [0, 0, 0];
+    /** Why the command ended early: its time or its output ran out, its runtime failed or could not start. */
+    let stopped: { timedOut: true } | { overflow: true } | { error: Error } | null = null;
+    const write = (fd: 1 | 2, text: string): boolean => {
+      if (stopped) return false;
+      if (stdio[fd] === 'inherit') host.write(fd === 1 ? 'stdout' : 'stderr', text);
+      else if (stdio[fd] === 'pipe') {
+        const bytes = Buffer.from(text);
+        chunks[fd].push(bytes);
+        sizes[fd] += bytes.length;
+        if (sizes[fd] > maxBuffer) return false;
+      }
+      return true;
+    };
+    /** Runs a Node program to its end: its exit code, or null once stopped. */
+    const runNode = (init: ThreadInit): number | null => {
+      if (stopped) return null;
+      if (performance.now() >= deadline) {
+        stopped = { timedOut: true };
+        return null;
+      }
+      const sync = syncChannel();
+      const child = host.spawnSync?.({ ...init, process: { ...init.process!, sync, stdin: input } }, sync) ?? null;
+      if (!child) {
+        const command = [file, ...args].join(' ');
+        stopped = {
+          error: Object.assign(new Error(`child_process.${api}("${command}") cannot run yet: the runtime's helper worker, which starts a synchronous child process, has not started. Call it once the program has run a task (after an await or a timer), or use the asynchronous API.`), {
+            code: 'ENOSYS',
+            errno: -38,
+            syscall: `spawnSync ${errFile}`,
+            path: errFile,
+            spawnargs: errArgs,
+          }),
+        };
+        return null;
+      }
+      let end: SyncEnd;
+      try {
+        end = serveSyncChild(sync, host.vfs(), deadline, write);
+      } finally {
+        child.kill();
+      }
+      if ('code' in end) return end.code;
+      if ('crashed' in end) {
+        write(2, 'the child process\'s runtime failed to start or crashed\n');
+        return 1;
+      }
+      stopped = end;
+      return null;
+    };
+
+    let status: number | null = null;
+    let pid = nextPid;
+    if (p.kind === 'fail') stopped = { error: Object.assign(notSupported(`spawning "${p.command}"`), { path: p.command, spawnargs: args }) };
+    else if (p.kind === 'node') {
+      pid = p.init.id;
+      status = runNode(p.init);
+    } else {
+      pid = nextPid++;
+      runScript(p.script, p.cwd, p.env, {
+        node: (argv, o) => {
+          const sub = plan(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env }, false);
+          o.onExit(sub.kind === 'node' ? (runNode(sub.init) ?? 143) : 127);
+          return { kill: () => {} };
+        },
+        readFile: (path) => {
+          try {
+            return new TextDecoder().decode(host.vfs().read(path));
+          } catch {
+            return null;
+          }
+        },
+        exists: (path) => host.vfs().exists(path),
+        write: (fd, text) => {
+          if (!write(fd, text) && !stopped) stopped = { overflow: true };
+        },
+        onExit: (code) => {
+          status = code;
+        },
+        sync: {
+          sleep: (ms) => {
+            const left = deadline - performance.now();
+            if (stopped) return;
+            if (ms >= left) stopped = { timedOut: true };
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(ms, left)));
+          },
+        },
+      });
+    }
+    const encoding = options.encoding && options.encoding !== 'buffer' ? (options.encoding as BufferEncoding) : null;
+    const output = (fd: 1 | 2) => {
+      if (stdio[fd] !== 'pipe') return null;
+      const bytes = Buffer.concat(chunks[fd]);
+      return encoding ? bytes.toString(encoding) : bytes;
+    };
+    const stdout = output(1);
+    const stderr = output(2);
+    if (stopped && 'error' in stopped) return { error: stopped.error, status: null, signal: null, output: null, pid: 0 };
+    const signal = stopped ? (typeof options.killSignal === 'string' ? options.killSignal : 'SIGTERM') : null;
+    const result: SyncResult = { status: stopped ? null : status, signal, output: [null, stdout, stderr], pid, stdout, stderr };
+    return stopped ? { error: spawnError('timedOut' in stopped ? 'ETIMEDOUT' : 'ENOBUFS', errFile, errArgs), ...result } : result;
+  }
+
+  /** execSync's and execFileSync's end: stderr shown unless stdio was given, an error for a failure (Node's checkExecSyncError). */
+  function execResult(ret: SyncResult, options: SyncOptions, command: string): string | Buffer | null | undefined {
+    if (!options.stdio && ret.stderr) host.write('stderr', ret.stderr.toString());
+    if (ret.error) throw Object.assign(ret.error, ret);
+    if (ret.status !== 0) {
+      const stderr = ret.stderr?.length ? `\n${ret.stderr.toString()}` : '';
+      throw Object.assign(new Error(`Command failed: ${command}${stderr}`), ret);
+    }
+    return ret.stdout;
+  }
+
+  function spawnSync(file: string, a?: unknown, b?: unknown): SyncResult {
+    const [args, options] = argsAndOptions(a, b) as [string[], SyncOptions];
+    return runSync('spawnSync', String(file), args, options);
+  }
+  function execSync(command: string, options: SyncOptions = {}) {
+    return execResult(runSync('execSync', String(command), [], { ...options, shell: options.shell || true }), options, command);
+  }
+  function execFileSync(file: string, a?: unknown, b?: unknown) {
+    const [args, options] = argsAndOptions(a, b) as [string[], SyncOptions];
+    return execResult(runSync('execFileSync', String(file), args, options), options, [options.argv0 ?? file, ...args].join(' '));
+  }
 
   return {
     ChildProcess,
@@ -390,13 +571,9 @@ export function createChildProcess(host: ChildProcessHost) {
     fork,
     exec,
     execFile,
-    spawnSync: (cmd: string) => ({ pid: 0, status: null, signal: null, output: [], stdout: '', stderr: '', error: syncError(cmd) }),
-    execSync: (cmd: string) => {
-      throw syncError(cmd);
-    },
-    execFileSync: (cmd: string) => {
-      throw syncError(cmd);
-    },
+    spawnSync,
+    execSync,
+    execFileSync,
   };
 }
 

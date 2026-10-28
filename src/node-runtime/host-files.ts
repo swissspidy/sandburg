@@ -8,6 +8,7 @@ import { NativeMessageChannel, nativePostMessage } from './message-ports.ts';
 import { traceTransfer } from '../transfer-trace.ts';
 import { ANSWER_HEADER, FILE_CHANNEL_NAME, MAILBOX_BYTES, MAILBOX_HEADER as CHANNEL_MAILBOX_HEADER, MAX_BODY, MAX_FRAME, POST_HEADER } from '../file-channel.ts';
 import { bundleHeader } from '../bundle-format.ts';
+import { MARK_DEAD } from './sync-child.ts';
 import { prefetched, thread, installKey, base, preloadUrl, sharedFile, preloaded, shared, loadPreload, compileCache, vfs, pageCompiler, pack, nodeModulesIndex } from './worker.ts';
 
 let installedRequests = 0;
@@ -343,7 +344,28 @@ function open(url, ready) {
     asked.clear();
   };
 }
+// Synchronous child processes' runtimes (sync-child.ts), by id: started here, as their parent blocks.
+const runtimes = new Map();
+const markDead = ${MARK_DEAD};
 const handle = async ({ data }) => {
+  if (data.spawn) {
+    // Only the runtime's own script.
+    const url = new URL(data.spawn);
+    if (url.origin !== location.origin || !url.pathname.endsWith('/node-worker.js')) return markDead(data.sync);
+    const worker = new Worker(url.href);
+    runtimes.set(data.id, worker);
+    worker.onerror = (e) => {
+      e.preventDefault();
+      worker.terminate();
+      runtimes.delete(data.id);
+      markDead(data.sync);
+    };
+    return worker.postMessage(data.init, data.transfer);
+  }
+  if (data.kill) {
+    runtimes.get(data.kill)?.terminate();
+    return void runtimes.delete(data.kill);
+  }
   if (data.channel) return open(data.channel, new Int32Array(data.ready));
   if (data.port) return void (data.port.onmessage = handle);
   // A note sent before the socket opens waits for it (what a run read first is what its next run needs most).
@@ -429,21 +451,68 @@ export function prepareDigester(delay?: number): void {
   }
 }
 
-/** A helper prepared for a runtime that turned out not to need one (a thread, an install in the browser). */
+/** A helper prepared for a runtime that turned out not to need one (a thread). */
 export function dropPreparedDigester(): void {
   preparedHelper?.worker.terminate();
   preparedHelper = null;
 }
 
-export function startDigester(): void {
+/** The helper (`files`: the digester and file channel too), or none. A main runtime always has one: it starts synchronous child processes. */
+export function startDigester(files = true): void {
   try {
     const { worker, shared } = preparedHelper ?? newHelper();
     preparedHelper = null;
-    digester = { worker, shared, state: new Int32Array(shared, 0, 2) };
+    const state = new Int32Array(shared, 0, 2);
+    spawner = { post: (m, t = []) => nativeWorkerPost.call(worker, m, { transfer: t }), up: () => Atomics.load(state, 1) === 1 };
+    if (!files) return;
+    digester = { worker, shared, state };
     openChannel(worker);
   } catch {
     digester = null;
   }
+}
+
+/**
+ * Where this runtime asks for a synchronous child process's worker: the main runtime's helper,
+ * directly or through a port of its own (threads and child processes, shareSpawner). `up`: the
+ * helper gets this thread's messages now (it has had the first: see preparedHelper); one that does
+ * not yet would not get them until this thread runs a task again, and the request would never be
+ * answered.
+ */
+let spawner: { post(message: unknown, transfer?: Transferable[]): void; up(): boolean } | null = null;
+
+/** A port to the helper for a thread or child process this runtime starts (null without a helper). */
+export function shareSpawner(): MessagePort | null {
+  const s = spawner;
+  if (!s) return null;
+  const pair = new NativeMessageChannel();
+  s.post({ port: pair.port2 }, [pair.port2]);
+  return pair.port1;
+}
+
+/** The helper has started, but does not get this thread's messages yet (see spawner). */
+export const helperStarting = (): boolean => !!spawner && !spawner.up();
+
+export function useSpawner(port: MessagePort): void {
+  // The parent started the helper before this runtime: if it is not up yet, it will be by the time
+  // the parent (which is not blocked on this one) runs its next task.
+  spawner = { post: (m, t = []) => nativePostMessage.call(port, m, t), up: () => true };
+}
+
+let spawned = 0;
+const spawnPrefix = Math.random().toString(36).slice(2);
+
+/**
+ * Has the helper start a runtime for a synchronous child process (`init`, with `sync` the child's
+ * channel and `transfer` its ports). Null when there is no helper, or it does not get this
+ * thread's messages yet. kill() ends the child's worker.
+ */
+export function spawnSyncRuntime(init: unknown, sync: SharedArrayBuffer, transfer: Transferable[]): { kill(): void } | null {
+  const s = spawner;
+  if (!s?.up()) return null;
+  const id = `${spawnPrefix}-${++spawned}`;
+  s.post({ spawn: new URL(`${base}/node-worker.js`, workerHref).href, id, init, sync, transfer }, transfer);
+  return { kill: () => s.post({ kill: id }) };
 }
 
 /**

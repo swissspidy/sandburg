@@ -23,6 +23,11 @@ export interface ShellHost {
    * start (`tsc && node server.js` while tsc runs; `sleep 2 && vite`), see process-tree.ts.
    */
   stepsAhead?(delta: 1 | -1): void;
+  /**
+   * Runs the script synchronously (execSync): `node` calls onExit before it returns, and the shell
+   * waits with `sleep` instead of a timer. Otherwise a builtin's end is a microtask, sleep a timer.
+   */
+  sync?: { sleep(ms: number): void };
 }
 
 type Token = { op: '&&' | '||' | ';' | '&' | '|' | '>' } | { word: string; assign?: boolean };
@@ -237,7 +242,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       return done(0);
     }
     const [cmd, ...args] = words;
-    const later = (code: number, newDir?: string) => queueMicrotask(() => done(code, newDir));
+    const later = (code: number, newDir?: string) => (host.sync ? done(code, newDir) : queueMicrotask(() => done(code, newDir)));
     switch (cmd) {
       case 'cd': {
         const to = join(dir, args[0] ?? env.HOME ?? '/');
@@ -261,6 +266,10 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       case 'exit':
         return later(Number(args[0] ?? 0));
       case 'sleep':
+        if (host.sync) {
+          host.sync.sleep(Number(args[0] ?? 0) * 1000);
+          return done(0);
+        }
         return void setTimeout(() => done(0), Number(args[0] ?? 0) * 1000);
       case 'cross-env':
       case 'env':
@@ -302,16 +311,20 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       host.write(2, `sh: ${cmd}: not found (only Node programs run in the browser runtime)\n`);
       return later(127);
     }
-    const handle = host.node(argv, {
+    // Ended already when node() returns, if the shell runs synchronously.
+    let ended = false;
+    let handle: { kill(): void } | undefined;
+    handle = host.node(argv, {
       cwd: dir,
       env: localEnv,
       write: (fd, text) => host.write(fd, text),
       onExit: (code) => {
-        running.delete(handle);
+        ended = true;
+        if (handle) running.delete(handle);
         done(code);
       },
     });
-    running.add(handle);
+    if (!ended) running.add(handle);
   };
 
   /** Runs a whole script; `done` gets the last foreground command's code. */

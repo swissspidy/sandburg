@@ -349,7 +349,7 @@ export class RuntimeHarness {
     return run;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number } = {}) {
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** As runInstalled's. */ prepare?: number; helperDelay?: number } = {}) {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();

@@ -15,7 +15,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0009](0009-full-stack-vue-sqlite.md) | Full-stack apps (front end + Node backend), Vue, and SQLite in WebAssembly | Accepted; amended by [ADR 0014](0014-node-runtime-only.md) (the front end runs on its own dev server) |
 | [0010](0010-websockets-and-top-level-await.md) | WebSockets (and hot reloading) and top-level await in the node runtime | Accepted |
 | [0011](0011-client-frameworks.md) | Svelte, Solid, Preact and Lit in the esbuild adapter | Superseded by [ADR 0014](0014-node-runtime-only.md) |
-| [0012](0012-real-vite-and-meta-frameworks.md) | Real Vite in the node runtime (SvelteKit, Astro, React Router, Nuxt) | Accepted |
+| [0012](0012-real-vite-and-meta-frameworks.md) | Real Vite in the node runtime (SvelteKit, Astro, React Router, Nuxt) | Accepted; amended by [ADR 0063](0063-synchronous-child-processes.md) (synchronous child processes run) |
 | [0013](0013-runtime-consolidation.md) | One Node.js runtime, `--runtime auto`, almostnode, Nodebox and WordPress Playground removed | Accepted; amended by [ADR 0014](0014-node-runtime-only.md) (`--runtime auto`, the esbuild and angular adapters removed) |
 | [0014](0014-node-runtime-only.md) | The node runtime runs every project; esbuild and angular adapters removed | Accepted |
 | [0015](0015-static-demos.md) | Static demos on GitHub Pages replay the host | Accepted |
@@ -66,3 +66,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0060](0060-test-reliability-under-load.md) | Test reliability under load: waits for the thing, not for a time | Accepted |
 | [0061](0061-chromium-sandbox.md) | Chromium's OS sandbox on by default, and site isolation | Accepted |
 | [0062](0062-ci-setup-and-coverage.md) | CI: one Chromium setup, a browser cache, and the runs that were missing | Accepted |
+| [0063](0063-synchronous-child-processes.md) | Synchronous child processes | Accepted |

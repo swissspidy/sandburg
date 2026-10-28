@@ -82,7 +82,17 @@ export interface ThreadInit {
   /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
   mailboxes?: (Mailbox | null)[];
   /** A child process (child_process.spawn/fork of node) rather than a worker thread: see child-process.ts. */
-  process?: { cwd: string; execArgv: string[]; conditions: string[]; preload: string[]; ipc: boolean };
+  process?: {
+    cwd: string;
+    execArgv: string[];
+    conditions: string[];
+    preload: string[];
+    ipc: boolean;
+    /** A synchronous child process (execSync, spawnSync): its channel to the parent, which blocks until it exits (sync-child.ts). */
+    sync?: SharedArrayBuffer;
+    /** What its stdin reads (spawnSync's `input`). */
+    stdin?: Uint8Array;
+  };
   /** A thread (at any depth) of the app's own process, not of a child process (see WASM_CRASH_CHANNEL). */
   mainProcess?: boolean;
 }
@@ -131,6 +141,8 @@ export type ToWorker =
       filesChannel?: { port: MessagePort; ready: SharedArrayBuffer } | null;
       /** The page's compiler (adapters/node/compile-worker.ts), for packages installed in the browser. */
       compilePort?: MessagePort | null;
+      /** A port to the main runtime's helper, which starts synchronous child processes (shareSpawner in host-files.ts). */
+      spawner?: MessagePort | null;
       base: string;
       ipc?: boolean;
       tsRunner?: boolean;

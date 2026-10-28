@@ -449,3 +449,224 @@ test('child_process: a shell command killed exits with its signal, not the shell
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout, 'exit [null,"SIGTERM",true,null,"SIGTERM"]\n');
 });
+
+test('child_process: execSync, execFileSync and spawnSync run Node programs and shell commands while the caller waits', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // Called before the program has run a task: the helper that starts the child is waited for.
+        const cp = require('child_process');
+        const fs = require('fs');
+        const out = {};
+        out.top = cp.execSync('node -e "console.log(6 * 7)"', { encoding: 'utf8' });
+        fs.writeFileSync('from-parent.txt', 'shared');
+        out.execSync = cp.execSync('node child.js one "two words"');
+        out.execFileSync = cp.execFileSync(process.execPath, ['child.js', 'three'], { encoding: 'utf8', env: { GREETING: 'hello' } });
+        const r = cp.spawnSync(process.execPath, ['-e', 'require("fs").writeFileSync("from-child.txt", "written"); console.error("to stderr")']);
+        out.spawnSync = [r.status, r.signal, r.stdout, r.stderr.toString(), r.output.map((o) => o && o.toString()), Buffer.isBuffer(r.stdout), typeof r.pid, 'error' in r];
+        out.fromChild = fs.readFileSync('from-child.txt', 'utf8');
+        out.shell = cp.spawnSync('echo a && node -p "1 + 1" && echo b', { shell: true, encoding: 'utf8' }).stdout;
+        out.nested = cp.execSync(\`node -e "console.log(require('child_process').execSync('node -p 2+3', { encoding: 'utf8' }).trim())"\`, { encoding: 'utf8' });
+        console.log(JSON.stringify(out));`,
+      'child.js': `
+        console.log(JSON.stringify({ argv: process.argv.slice(2), greeting: process.env.GREETING, read: require('fs').readFileSync('from-parent.txt', 'utf8') }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const shown = JSON.stringify({ argv: ['one', 'two words'], read: 'shared' });
+  assert.deepEqual(JSON.parse(out.stdout), {
+    top: '42\n',
+    execSync: { type: 'Buffer', data: [...Buffer.from(`${shown}\n`)] },
+    execFileSync: `${JSON.stringify({ argv: ['three'], greeting: 'hello', read: 'shared' })}\n`,
+    spawnSync: [0, null, { type: 'Buffer', data: [] }, 'to stderr\n', [null, '', 'to stderr\n'], true, 'number', false],
+    fromChild: 'written',
+    shell: 'a\n2\nb\n',
+    nested: '5\n',
+  });
+});
+
+test("child_process: a synchronous command's non-zero exit: execSync and execFileSync throw Node's error, spawnSync reports the status", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const out = {};
+        const thrown = (f) => {
+          try {
+            return ['returned', f()];
+          } catch (e) {
+            return [e.message.replace(process.execPath, "node"), e.status, e.signal, String(e.stdout), String(e.stderr), Object.keys(e)];
+          }
+        };
+        out.execSync = thrown(() => cp.execSync('node -e "console.log(\\'out\\'); console.error(\\'err\\'); process.exit(3)"', { stdio: 'pipe' }));
+        out.execSyncShell = thrown(() => cp.execSync('exit 2'));
+        out.execFileSync = thrown(() => cp.execFileSync(n, ['-e', 'process.exitCode = 4'], { stdio: 'pipe' }));
+        const r = cp.spawnSync(n, ['-e', 'throw new Error("boom")'], { encoding: 'utf8' });
+        out.spawnSync = [r.status, r.signal, r.stderr.includes('Error: boom'), 'error' in r];
+        // Not a Node program: the shell cannot find it (127; natively git runs).
+        out.notNode = [cp.spawnSync("git", ["rev-parse", "HEAD"]).status, cp.spawnSync("git", ["status"], { encoding: "utf8" }).stderr];
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const keys = ['status', 'signal', 'output', 'pid', 'stdout', 'stderr'];
+  assert.deepEqual(JSON.parse(out.stdout), {
+    execSync: [`Command failed: node -e "console.log('out'); console.error('err'); process.exit(3)"\nerr\n`, 3, null, 'out\n', 'err\n', keys],
+    execSyncShell: ['Command failed: exit 2', 2, null, '', '', keys],
+    execFileSync: ['Command failed: node -e process.exitCode = 4', 4, null, '', '', keys],
+    spawnSync: [1, null, true, false],
+    notNode: [127, 'sh: git: not found (only Node programs run in the browser runtime)\n'],
+  });
+});
+
+test('child_process: a synchronous command past its timeout is killed: ETIMEDOUT, with the kill signal', { timeout: 60_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        let t = Date.now();
+        const r = cp.spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { timeout: 1000 });
+        out.spawnSync = [r.error.code, r.error.errno, r.status, r.signal, Date.now() - t >= 1000, Date.now() - t < 20000];
+        t = Date.now();
+        try {
+          cp.execSync('sleep 10', { timeout: 300 });
+        } catch (e) {
+          out.execSync = [e.message, e.code, e.status, e.signal, Date.now() - t >= 300, Date.now() - t < 5000];
+        }
+        try {
+          cp.execFileSync(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeout: 1000, killSignal: 'SIGKILL' });
+        } catch (e) {
+          out.execFileSync = [e.code, e.status, e.signal];
+        }
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    spawnSync: ['ETIMEDOUT', -110, null, 'SIGTERM', true, true],
+    execSync: ['spawnSync /bin/sh ETIMEDOUT', 'ETIMEDOUT', null, 'SIGTERM', true, true],
+    execFileSync: ['ETIMEDOUT', null, 'SIGKILL'],
+  });
+});
+
+test("child_process: a synchronous command's input is its stdin", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const upper = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(s.toUpperCase()))';
+        console.log(JSON.stringify({
+          spawnSync: cp.spawnSync(process.execPath, ['-e', upper], { input: 'abc', encoding: 'utf8' }).stdout,
+          execSync: cp.execSync(\`node -e '\${upper}'\`, { input: Buffer.from('from a buffer') }).toString(),
+          execFileSync: cp.execFileSync(process.execPath, ['-e', upper], { input: new Uint8Array([104, 105]), encoding: 'utf8' }),
+          none: cp.execFileSync(process.execPath, ['-e', upper], { encoding: 'utf8' }),
+        }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { spawnSync: 'ABC\n', execSync: 'FROM A BUFFER\n', execFileSync: 'HI\n', none: '\n' });
+});
+
+test('child_process: a synchronous command whose output passes maxBuffer is killed: ENOBUFS', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        const t = Date.now();
+        const r = cp.spawnSync(process.execPath, ['-e', 'console.log("x".repeat(100)); setTimeout(() => {}, 60000)'], { maxBuffer: 10, encoding: 'utf8' });
+        out.spawnSync = [r.error.code, r.error.errno, r.status, r.signal, r.stdout.length, Date.now() - t < 20000];
+        try {
+          cp.execSync('node -p 1234567', { maxBuffer: 3 });
+        } catch (e) {
+          out.execSync = [e.message, e.code, e.status, e.signal, String(e.stdout)];
+        }
+        out.within = cp.execFileSync(process.execPath, ['-p', '"y".repeat(9)'], { maxBuffer: 10, encoding: 'utf8' });
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    spawnSync: ['ENOBUFS', -105, null, 'SIGTERM', 101, true],
+    execSync: ['spawnSync /bin/sh ENOBUFS', 'ENOBUFS', null, 'SIGTERM', '1234567\n'],
+    within: 'yyyyyyyyy\n',
+  });
+});
+
+test("child_process: a synchronous command's stdio: pipe, ignore, inherit, and execSync's stderr shown by default", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const n = process.execPath;
+        const both = 'console.log("o"); console.error("e")';
+        const show = (r) => [r.stdout === null ? null : String(r.stdout), r.stderr === null ? null : String(r.stderr), r.output && r.output.map((o) => (o === null ? null : String(o)))];
+        console.log(JSON.stringify({
+          pipe: show(cp.spawnSync(n, ['-e', both], { stdio: 'pipe' })),
+          ignore: show(cp.spawnSync(n, ['-e', both], { stdio: 'ignore' })),
+          inherit: show(cp.spawnSync(n, ['-e', both], { stdio: 'inherit' })),
+          mixed: show(cp.spawnSync(n, ['-e', both], { stdio: ['pipe', 'ignore', 'pipe'] })),
+          execInherit: cp.execSync(\`node -e '\${both}'\`, { stdio: 'inherit' }),
+          // execSync's stderr goes to this process's unless stdio is given.
+          execDefault: cp.execSync(\`node -e '\${both}'\`).toString(),
+        }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const lines = out.stdout.trim().split('\n');
+  assert.deepEqual(JSON.parse(lines.pop()!), {
+    pipe: ['o\n', 'e\n', [null, 'o\n', 'e\n']],
+    ignore: [null, null, [null, null, null]],
+    inherit: [null, null, [null, null, null]],
+    mixed: [null, 'e\n', [null, null, 'e\n']],
+    execInherit: null,
+    execDefault: 'o\n',
+  });
+  // inherit (spawnSync's and execSync's) writes to this process's output; execSync shows its stderr after.
+  assert.deepEqual(lines, ['o', 'o']);
+  assert.equal(out.stderr, 'e\ne\ne\n');
+});
+
+test('child_process: a synchronous command the runtime cannot start yet fails at once, with an error that names the call', async () => {
+  // The helper that starts a synchronous child's runtime is slow to start (a loaded machine): the
+  // program runs without it after a while, and its synchronous commands fail instead of blocking forever.
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const out = {};
+        try {
+          cp.execSync('node -p 1');
+        } catch (e) {
+          out.execSync = [e.code, e.message.split(':')[0]];
+        }
+        const r = cp.spawnSync(process.execPath, ['-p', '1']);
+        out.spawnSync = [r.error.code, r.status, r.error.message.split(':')[0]];
+        try {
+          cp.execFileSync(process.execPath, ['-p', '1']);
+        } catch (e) {
+          out.execFileSync = [e.code, e.message.split(':')[0]];
+        }
+        console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { prepare: 50, helperDelay: 10_000 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const why = "cannot run yet";
+  assert.deepEqual(JSON.parse(out.stdout), {
+    execSync: ['ENOSYS', `child_process.execSync("node -p 1") ${why}`],
+    spawnSync: ['ENOSYS', null, `child_process.spawnSync("/usr/local/bin/node -p 1") ${why}`],
+    execFileSync: ['ENOSYS', `child_process.execFileSync("/usr/local/bin/node -p 1") ${why}`],
+  });
+});

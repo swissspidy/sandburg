@@ -10,7 +10,8 @@ import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import { bundleCache, listCache } from './cache-tree.ts';
 import type { FromWorker, NetMessage, ToParent, ThreadInit, ToWorker, SharedPreload } from './messages.ts';
-import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, trackNodeModulesWrites, warmRuntimes, type ThreadHost } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, projectSnapshot, runtimePorts, trackNodeModulesWrites, warmRuntimes, type ThreadHost } from './threads.ts';
+import { syncParent } from './sync-child.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
 import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
@@ -30,7 +31,7 @@ import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
 import { patchBase64Url, patchUtf8, patchHashCopy, patchBase64 } from './buffer-patches.ts';
 import { COMPILE_POST_MAX } from '../file-channel.ts';
-import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
+import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, shareSpawner, useSpawner, spawnSyncRuntime, helperStarting, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
 import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone } from './peers.ts';
@@ -45,7 +46,10 @@ patchBase64();
 
 // Captured before any program runs: programs may assign globalThis.postMessage/onmessage (napi-rs's thread script does).
 /** To the page, or to the runtime that started this one (a thread's or child process's parent). */
-export const realPostMessage = (self as unknown as Worker).postMessage.bind(self) as (msg: ToParent, transfer?: Transferable[]) => void;
+const nativeSelfPost = (self as unknown as Worker).postMessage.bind(self) as (msg: ToParent, transfer?: Transferable[]) => void;
+/** A synchronous child process's way to its parent, which blocks until it exits (sync-child.ts). */
+let toBlockedParent: ((msg: ToParent) => void) | null = null;
+export const realPostMessage = (msg: ToParent, transfer?: Transferable[]) => (toBlockedParent ? toBlockedParent(msg) : nativeSelfPost(msg, transfer));
 const realImportScripts = (self as unknown as { importScripts(url: string): void }).importScripts.bind(self);
 
 /**
@@ -248,6 +252,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   pack = msg.pack ? { bytes: new Uint8Array(msg.pack.sab), index: msg.pack.index, message: msg.pack } : null;
   shared = msg.shared ?? null;
   if (msg.filesChannel) useChannel(msg.filesChannel);
+  if (msg.spawner) useSpawner(msg.spawner);
+  if (msg.thread?.process?.sync) toBlockedParent = syncParent(msg.thread.process.sync);
   sharedBytes = shared ? new Uint8Array(shared.sab) : null;
   if (thread) {
     const installed = new Vfs((path) => {
@@ -290,7 +296,8 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       compileAhead(msg.compileAhead.map((d) => `${msg.cwd}/${d}`), { vfs, base, compileCache });
       vfs.watch((_event, path) => compileWhenWritten(path));
     }
-  } else dropPreparedDigester();
+  } else if (!thread) startDigester(false);
+  else dropPreparedDigester();
   if (Object.keys(sources).length && pageCompiler) {
     asyncModules = (JSON.parse(compileInPage({ op: 'tla', files: sources as Record<string, string> })) as { topLevelAwait: boolean }).topLevelAwait;
   } else if (Object.keys(sources).length) {
@@ -304,7 +311,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   if (!wasiChildThread() && Object.keys(msg.nodeModules ?? {}).some((rel) => /-wasm32-wasi\/package\.json$/.test(rel))) warmRuntimes(msg.base, WARM_RUNTIMES);
 
   const child = thread?.process;
-  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined });
+  proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined, stdin: child?.stdin });
   // A worker thread has its parent's node options (Node's default for `execArgv`); a child process has its own (below).
   if (msg.execArgv?.length) proc.execArgv = msg.execArgv;
   if (child) {
@@ -315,7 +322,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   }
   const nested: ThreadHost = {
     vfs: () => vfs,
-    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
+    childInit: (t) => ({ type: 'init', cwd: projectRoot, env: t.env, files: {}, ...(t.process ? {} : { execArgv: proc.execArgv as string[] }), installKey, preload: preloadUrl, compileCache, nodeModules: nodeModulesIndex, pack: pack?.message ?? null, shared: sharedPreload(), filesChannel: shareChannel(), compilePort: connectPageCompiler(), spawner: shareSpawner(), base, tsRunner, thread: { ...t, mainProcess: (!thread || !!thread.mainProcess) && !t.process }, inherit: { asyncModules, usesSqlite }, nodeModulesWrites }),
     write,
     cwd: () => (proc.cwd as () => string)(),
     root: () => projectRoot,
@@ -331,7 +338,15 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     crash: (message, stack) => post({ type: 'fatal', message, stack, trap: true }),
   };
   threads = createWorkerThreads(nested);
-  childProcess = createChildProcess({ ...nested, execPath: () => proc.execPath as string, reportExit: (info) => post({ type: 'process-exit', ...info }) });
+  childProcess = createChildProcess({
+    ...nested,
+    execPath: () => proc.execPath as string,
+    reportExit: (info) => post({ type: 'process-exit', ...info }),
+    spawnSync: (init, sync) => {
+      const message = nested.childInit({ ...init, snapshot: projectSnapshot(vfs, projectRoot) });
+      return spawnSyncRuntime(message, sync, runtimePorts(message));
+    },
+  });
   const table = buildBuiltins();
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
@@ -575,6 +590,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 /** The browser's own (the runtime may install worker_threads' in its place). */
 const NativeBroadcastChannel = globalThis.BroadcastChannel;
 const nativeSetInterval = globalThis.setInterval.bind(globalThis);
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
 
 /**
@@ -611,7 +627,17 @@ function exitWhenIdle() {
   }, 25);
 }
 
-function run(msg: Extract<ToWorker, { type: 'run' }>) {
+/** How long a main runtime waits for its helper before it runs its program (see run). */
+const HELPER_PATIENCE_MS = 500;
+
+function run(msg: Extract<ToWorker, { type: 'run' }>, since = performance.now()) {
+  // The helper started with this runtime gets its messages only once this thread has run a task
+  // after the helper's start, and a program may block (execSync) before it runs one: it waits for the
+  // helper (one the page prepared is up long before). A thread uses its parent's.
+  if (!thread && helperStarting() && performance.now() - since < HELPER_PATIENCE_MS) {
+    nativeSetTimeout(() => run(msg, since), 1);
+    return;
+  }
   if (msg.track) vfs.track(msg.track.map((d) => `${projectRoot}/${d}`));
   if (!usesSqlite) return start(msg);
   // Work in progress: a child process that has not started its program yet is not idle (see

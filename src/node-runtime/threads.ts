@@ -424,34 +424,39 @@ function walkProject(vfs: Vfs, root: string): ProjectSnapshot {
   return { root, files, stats, dirs, stale };
 }
 
-/** Serves a thread's VFS call on this thread's VFS and wakes the thread. */
-export function serveVfsCall(vfs: Vfs, msg: VfsCall): void {
-  const header = new Int32Array(msg.sab, 0, 4);
-  const capacity = msg.sab.byteLength - HEADER;
-  let status = 1;
-  let kind = 0;
-  let bytes: Uint8Array;
+/** A VFS call's answer: status 1 ok or 2 an error (as JSON), kind 1 bytes or 0 JSON. */
+export type VfsAnswer = { status: number; kind: number; bytes: Uint8Array };
+
+/** Runs a thread's VFS call on this thread's VFS. */
+export function vfsAnswer(vfs: Vfs, op: VfsOp, args: unknown[]): VfsAnswer {
   try {
-    const result = (vfs[msg.op] as (...a: unknown[]) => unknown).apply(vfs, msg.args);
-    if (result instanceof Uint8Array) {
-      kind = 1;
-      bytes = result;
-    } else bytes = result === undefined ? new Uint8Array(0) : new TextEncoder().encode(JSON.stringify(result));
+    const result = (vfs[op] as (...a: unknown[]) => unknown).apply(vfs, args);
+    if (result instanceof Uint8Array) return { status: 1, kind: 1, bytes: result };
+    return { status: 1, kind: 0, bytes: result === undefined ? new Uint8Array(0) : new TextEncoder().encode(JSON.stringify(result)) };
   } catch (e) {
-    status = 2;
     const err = e as FsError;
-    bytes = new TextEncoder().encode(JSON.stringify({ code: err.code, syscall: err.syscall, path: err.path, message: err.message }));
+    return { status: 2, kind: 0, bytes: new TextEncoder().encode(JSON.stringify({ code: err.code, syscall: err.syscall, path: err.path, message: err.message })) };
   }
-  if (bytes.length > capacity) {
+}
+
+/** Writes an answer where the calling thread waits for it (RemoteVfs.call), and wakes it. */
+export function writeVfsAnswer(sab: SharedArrayBuffer, { status, kind, bytes }: VfsAnswer): void {
+  const header = new Int32Array(sab, 0, 4);
+  if (bytes.length > sab.byteLength - HEADER) {
     header[0] = 3;
     header[1] = bytes.length;
   } else {
-    new Uint8Array(msg.sab, HEADER, bytes.length).set(bytes);
+    new Uint8Array(sab, HEADER, bytes.length).set(bytes);
     header[1] = bytes.length;
     header[2] = kind;
     header[0] = status;
   }
   Atomics.notify(header, 0);
+}
+
+/** Serves a thread's VFS call on this thread's VFS and wakes the thread. */
+export function serveVfsCall(vfs: Vfs, msg: VfsCall): void {
+  writeVfsAnswer(msg.sab, vfsAnswer(vfs, msg.op, msg.args));
 }
 
 // --- node:worker_threads -------------------------------------------------------------------
@@ -562,6 +567,9 @@ function takeSpare(): globalThis.Worker | undefined {
   return warm.splice(i < 0 ? 0 : i, 1)[0]?.worker;
 }
 
+/** The ports a child runtime's init message carries (worker.ts childInit), in this order. */
+export const runtimePorts = (init: Extract<ToWorker, { type: 'init' }>) => [init.compilePort, init.filesChannel?.port, init.spawner].filter((p): p is MessagePort => !!p);
+
 export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: ToParent) => void, onError: (message: string) => void, transfer: Transferable[] = []): globalThis.Worker {
   const worker = takeSpare() ?? new globalThis.Worker(`${host.base()}/node-worker.js`);
   if (warmTarget) queueMicrotask(refill);
@@ -578,7 +586,7 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   const message = host.childInit({ ...init, snapshot: projectSnapshot(host.vfs(), host.root()) });
   // The child's own ports to the page's compiler and to the file channel, if there are (worker.ts);
   // last, after the ports of `transfer` (their mailboxes go by position).
-  const ports = [message.compilePort, message.filesChannel?.port].filter((p): p is MessagePort => !!p);
+  const ports = runtimePorts(message);
   worker.postMessage(message, [...transfer, ...ports]);
   liveRuntimes.add(worker);
   nestedStarted(worker, !!init.process);
