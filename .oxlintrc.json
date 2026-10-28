@@ -118,6 +118,7 @@
         "src/adapters/node/install.ts",
         "src/adapters/node/package-store.ts",
         "src/adapters/node/resolver.ts",
+        "src/orchestrator/memory.ts",
         "src/reference/docker.ts",
         "scripts/**",
         "test/**",

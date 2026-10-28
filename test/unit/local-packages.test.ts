@@ -354,3 +354,11 @@ test('a prerelease only one range admits is not in the combined range: that rang
   }
   assert.ok(shared > 1000, String(shared));
 });
+
+test('a local dependency written with Windows separators is the same path; a drive or UNC path is outside', () => {
+  const p = plan({ '': { dependencies: { lib: 'file:.\\lib', other: 'link:shared\\other' } }, lib: { name: 'lib' }, 'shared/other': { name: 'other' } });
+  assert.deepEqual(p.links, { 'node_modules/lib': 'lib', 'node_modules/other': 'shared/other' });
+  for (const spec of ['file:..\\out', 'file:C:\\x', 'file:C:x', 'file:\\\\server\\share', 'file:lib\\..\\..\\out']) {
+    assert.equal(code(() => plan({ '': { dependencies: { x: spec } }, lib: { name: 'lib' } })), 'UNSUPPORTED', spec);
+  }
+});

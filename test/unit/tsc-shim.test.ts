@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TSC_SHIM, WASM_BUILDS } from '../../src/adapters/node/install-rules.ts';
 import { tempDir } from './temp-dir.ts';
@@ -82,8 +82,9 @@ test('--showConfig prefixes inherited files, include and exclude with their conf
   });
   const config = showConfig(dir, join(dir, 'app'), '-p', 'tsconfig.json');
   // As tsc 7.0 prints them, except that tsc also expands files to the files include matches.
+  // ${configDir} is the working directory, a real path (macOS's temporary directory is a link).
   assert.deepEqual(config.include, ['../base/src/**/*.ts', '../base/./lib']);
-  assert.deepEqual(config.exclude, ['../base/node_modules', `${join(dir, 'app')}/out`]);
+  assert.deepEqual(config.exclude, ['../base/node_modules', `${realpathSync(join(dir, 'app'))}/out`]);
   assert.deepEqual(config.files, ['../base/main.ts']);
 });
 

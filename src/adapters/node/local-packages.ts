@@ -54,8 +54,11 @@ class LocalPackageError extends Error {
 }
 
 /** A path inside the project, from `dir` (project-relative) and a relative path; null if it leaves the project. */
-function inside(dir: string, rel: string): string | null {
-  if (rel.startsWith('/') || rel.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(rel) || rel.includes('\\')) return null;
+function inside(dir: string, path: string): string | null {
+  // A Windows path (`file:..\lib`) is written with backslashes: the same path. A drive (`C:\x`,
+  // `C:x`), an absolute or UNC path, or one from home is outside the project.
+  const rel = path.replace(/\\/g, '/');
+  if (rel.startsWith('/') || rel.startsWith('~') || /^[a-zA-Z]:/.test(rel)) return null;
   const parts = dir ? dir.split('/') : [];
   for (const p of rel.split('/')) {
     if (!p || p === '.') continue;
@@ -130,7 +133,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
       if (found === undefined) throw new LocalPackageError(`${at}: ${name}@${spec}: no workspace package is named "${wanted}" (ERR_PNPM_WORKSPACE_PKG_NOT_FOUND)`);
       return found;
     }
-    const path = /^(file|link):/.test(s) ? s.slice(s.indexOf(':') + 1) : /^(\.{1,2}(\/|$)|\/|~\/)/.test(s) ? s : null;
+    const path = /^(file|link):/.test(s) ? s.slice(s.indexOf(':') + 1) : /^(\.{1,2}([\\/]|$)|[\\/]|~[\\/])/.test(s) ? s : null;
     if (path !== null) {
       if (LOCAL_TARBALL.test(path)) throw unsupportedDependency(name, spec, 'local tarballs are not installed; only npm registry versions and package directories inside the project are');
       const local = inside(dir, path);
