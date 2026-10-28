@@ -40,13 +40,40 @@ What Node does after a destroy depends on libuv's phases:
   `res.destroy()` in a request handler closes the server's side first, while `res.destroy()` from a
   `setTimeout` lets the client hear first.
 
-The runtime's immediates (`builtins/process.ts`) are now a turn of three steps: I/O callbacks,
-immediates and close callbacks. Each callback is a task of its own, so what it queued with
-`process.nextTick` or promises runs before the next callback, as in Node. Close callbacks run
-last-in first-out. `onClosePhase(fn)` queues a close callback. `onPeerPhase(fn)` delivers to the
-other end of a connection by the phase the caller runs in: a timer's callback (and its microtasks)
-counts as the timers phase, the steps count as theirs, and anything else (messages, fetches) counts
-as poll.
+The runtime's immediates (`builtins/process.ts`) are now a turn of the loop in three steps: I/O
+callbacks, immediates and close callbacks. Each step runs the callbacks queued when it began; those
+queued meanwhile wait for the next turn.
+
+- **A turn is one task.** Its callbacks run back to back. After each one the turn waits four
+  microtask hops (`SETTLE_HOPS`), so what the callback queued with `process.nextTick` or promises
+  (and what that queued, four deep) runs before the next callback, as in Node.
+- **Timers wait for the turn.** A timer that comes due during a turn waits for its end, as Node's
+  wait for the next timers phase. Inside an I/O callback, every immediate queued there runs before a
+  `setTimeout(0)`. A turn that has run for more than 100 ms (`TURN_BUDGET_MS`) lets the browser in
+  between two callbacks; timers that come due then still wait for the turn.
+- **A turn runs into the next iteration.** When it has more to run and no timer is due, it goes
+  straight on for up to 4 ms (`TURN_CONTINUE_MS`), so a reply to a connection in the same runtime
+  costs no extra task.
+- **A turn keeps the process alive** while it is posted or running (`timersActive`), so a process
+  no longer exits in the middle of a batch of immediates.
+- **Close callbacks run last-in first-out.** `onClosePhase(fn)` queues one.
+- **`onPeerPhase(fn)` delivers to the other end of a connection by the caller's phase.** A timer's
+  callback (and its microtasks) counts as the timers phase, the steps count as theirs, and anything
+  else (messages, fetches) counts as poll. From a timer, delivery is this iteration's I/O step.
+  Otherwise it is the next iteration's, after this one's close callbacks, in the order deliveries were
+  made (a FIFO queue, not the close queue).
+- **A callback's error is uncaught as before.** It is reported as the worker's `'error'` (the
+  browser's `reportError`), so `'uncaughtException'` and `process.exit()` behave as they did.
+
+| Measured (in the runtime unless noted) | Node 24 | main | 1190c2e | now |
+|---|---|---|---|---|
+| 20 immediates of 30 ms each, run before exit | 20 | 20 | 16 | 20 |
+| 100k immediates: run before exit | 100000 | 100000 | ~2000 | 100000 |
+| 100k immediates: time to run | 55–73 ms | 125 ms | (cut short) | 73–105 ms |
+| readFile callback: immediates before its `setTimeout(0)` | 2000 of 2000 | 2000 | 23 | 2000 |
+| loop1 order (`tick0 I1 tick1 p1 I2 I3 … T0`) | yes | no (`I1 I2 I3 tick1 p1`) | yes | yes |
+| 32 MiB upload to the same process | 103 ms | 356 ms | 402 ms | 324–341 ms |
+| 2000 sequential GETs to the same process | 238 ms | 91 ms | 255 ms | 143–148 ms |
 
 On top of that:
 
@@ -92,6 +119,21 @@ callback, so `write()` returns false and `'drain'` waits for the server, as a so
 connection's buffers are full. 8 MiB written as fast as `'drain'` allows, to a server that reads
 nothing for 500 ms, stalls and then arrives intact, in one runtime and to a child.
 
+### Connections, Expect and informational responses
+
+- **A server tracks its connections.** It emits `'connection'` with each, and `getConnections()`
+  counts them. As in Node 19 and later, `close()` closes the idle ones and calls back (with
+  `'close'`) once the last one closed. `closeIdleConnections()` and `closeAllConnections()` do what
+  they say.
+- **`ref()` and `unref()`:** an unref'd server does not keep the process alive.
+- **`Expect: 100-continue`** goes to a `'checkContinue'` listener, or is answered with `100 Continue`
+  before `'request'`. Another expectation goes to `'checkExpectation'`, or is refused with 417.
+- **Informational responses.** `writeContinue()`, `writeProcessing()` and `writeEarlyHints()` send
+  informational responses, between runtimes too (`response-info`/`lb-info`). The client emits
+  `'continue'` for a 100, and `'information'` for each.
+- **Senders are checked.** Messages about a request's body and its informational responses are only
+  taken from the runtime the request went to.
+
 ### Server timeouts
 
 - **Idle timeout.** `server.timeout` / `server.setTimeout(ms, cb)` set a connection's idle timeout
@@ -128,6 +170,15 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
 
 ## What is still different
 
+- **Microtask depth.** A callback's microtasks run before the next callback only to four hops deep.
+  A longer chain (an async function awaiting more than that) goes on after the next callback starts.
+- **'connection' comes with its request.** Node emits it as the connection is accepted, so with two
+  requests at once its two 'connection' events come before either 'request'. The test counts them
+  instead.
+- **Upgraded connections (WebSockets) are not among a server's connections** for `close()` and
+  `getConnections()`.
+- **A forked child stays alive while its IPC channel is open**, where Node's exits when nothing else
+  keeps it. This is not new, and not changed here.
 - **process.nextTick against promises.** The runtime's `process.nextTick` is a microtask, so a
   nextTick queued after a promise runs after it, where Node runs every nextTick first. One measured
   case shows it: a client response the program destroys emits its 'close' after a promise queued
@@ -136,8 +187,10 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
   writes for `requestTimeout` only once the server's side of the connection has closed. The runtime
   ends it as it arrives. The test asserts the 408 and the server's events, not where `'end'` falls
   among them.
-- **Timers against the loop's steps.** The runtime's turn is a chain of tasks, so a `setTimeout(…,
-  0)` (1 ms in a browser) can fire between them, before a close callback Node would run first.
+- **Messages during a long turn.** Timers wait for a turn to end. A message from another runtime or
+  the page can still be handled while a turn longer than 100 ms lets the browser in, which Node would
+  leave to the next poll phase. A turn going on into the next iteration also holds messages for up to
+  4 ms.
 - **Between runtimes**, the order of one process's events against another's is not Node's to
   promise either; it is not modelled beyond the order of each connection's own messages.
 
@@ -151,6 +204,12 @@ output of its `fixtures/http` program:
 - A server's own destroys (`server-destroy.cjs`), and which end hears first (`which-side.cjs`).
 - The loop's steps: ticks between immediates and between close callbacks, close callbacks
   last-closed first, and immediates queued in them (`loop-phases.cjs`).
+- The loop under load in child processes (`loop-busy.cjs`): every immediate runs before exit, 100k
+  of them in under 1 s, and an I/O callback's immediates run before its timer.
+- A server's action from an I/O callback (an IPC message) reaches its client after its own side
+  closed (`from-io.cjs`).
+- A server's connections (`server-close.cjs`), Expect and informational responses (`expect.cjs`,
+  and across runtimes in `streamed-body.cjs`), and `unref()` (`server-unref.cjs`).
 - Streamed bodies by echo, a client gone mid-body, and timeouts across runtimes, in four
   topologies: one runtime, a child's server, a child's client, and siblings through their parent
   (`streamed-body.cjs`).
