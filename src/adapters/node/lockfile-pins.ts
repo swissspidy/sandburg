@@ -117,7 +117,12 @@ function yarnEntries(text: string): Map<string, { name: string; version: string 
       let range = d.slice(at + 1);
       // Berry's protocols other than npm: (workspace:, patch:, link:, portal:, file:) are not registry versions.
       if (/^[a-z]+:/.test(range) && !range.startsWith('npm:')) continue;
-      const real = range.startsWith('npm:') ? (aliasOf(range.slice('npm:'.length), berry) ?? name) : name;
+      let real = name;
+      if (range.startsWith('npm:')) {
+        const target = aliasOf(range.slice('npm:'.length), berry);
+        if (target === false) continue;
+        real = target ?? name;
+      }
       range = range.replace(/^npm:/, '');
       if (!isPackageName(name) || !isPackageName(real)) continue;
       out.set(`${name}@${range}`, { name: real, version: m[1] });
@@ -130,15 +135,18 @@ function yarnEntries(text: string): Map<string, { name: string; version: string 
 const ALIASED = /^((?:@[^/@\s]+\/)?[^/@\s]+)@(.*)$/;
 
 /**
- * The package an `npm:` descriptor is an alias of, or null for a plain range: `npm:<package>@<range>`,
- * or in yarn v1 a bare `npm:<package>` (`"isnum@npm:is-number"`), which is not a range. Berry writes
- * `npm:<range>` for every registry descriptor (a dist-tag among them), and aliases with a range.
+ * The package an `npm:` descriptor is an alias of: null for berry's `npm:<range>` (its form of every
+ * registry descriptor, a dist-tag among them), false for one that names no package. Yarn v1 reads
+ * everything after `npm:` as `<package>[@<range>]` (`"isnum@npm:is-number"`, `npm:@scope/x@^1`): a
+ * URL, a path or anything else that is not a package name is no package.
  */
-function aliasOf(rest: string, berry: boolean): string | null {
-  const aliased = ALIASED.exec(rest);
-  if (aliased) return aliased[1];
-  return !berry && isPackageName(rest) && !semver.validRange(rest, { loose: true }) ? rest : null;
+function aliasOf(rest: string, berry: boolean): string | null | false {
+  if (berry) return ALIASED.exec(rest)?.[1] ?? null;
+  // Whether it is a package name is checked with the alias's own (yarnEntries).
+  return V1_ALIAS.exec(rest)?.[1] ?? false;
 }
+/** Yarn v1's `npm:` target: `<package>` or `<package>@<range>`. */
+const V1_ALIAS = /^((?:@[^/@\s]+\/)?[^/@\s]+)(?:@.*)?$/s;
 
 function yarnPins(text: string): LockPins | null {
   const entries = yarnEntries(text);

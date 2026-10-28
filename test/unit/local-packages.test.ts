@@ -327,3 +327,30 @@ test("names an object has from its prototype are names like any other: construct
   assert.equal(code(() => plan({ '': { workspaces: ['a'] }, a: { name: '__proto__' } })), 'APP');
   assert.equal(code(() => plan({ '': { dependencies: { constructor: 'workspace:*' } } })), 'APP');
 });
+
+test('a prerelease only one range admits is not in the combined range: that range gets its own copy', async () => {
+  const semver = (await import('semver')).default;
+  const p = plan({ '': { workspaces: ['a'], dependencies: { react: '<19.0.0' } }, a: { name: 'a', dependencies: { react: '>=19.0.0-rc.0' } } });
+  assert.deepEqual(p.nested, [{ dir: 'a', dependencies: { react: '>=19.0.0-rc.0' }, lockfile: null }]);
+  assert.equal(p.root.dependencies!.react, '<19.0.0');
+  // Both admit the same prerelease: shared.
+  const both = plan({ '': { workspaces: ['a'], dependencies: { x: '>=1.0.0-beta.1 <2.0.0' } }, a: { name: 'a', dependencies: { x: '^1.0.0-beta.2' } } });
+  assert.deepEqual(both.nested, []);
+  assert.ok(semver.satisfies('1.0.0-beta.3', both.root.dependencies!.x));
+  // Fuzz: whenever the plan shares one copy, the version npm would pick satisfies both ranges.
+  const versions = ['0.9.0', '1.0.0-alpha.1', '1.0.0-beta.2', '1.0.0', '1.2.0', '1.3.0-rc.1', '1.3.0', '2.0.0-rc.0', '2.0.0', '2.1.0-beta.1', '2.1.0', '3.0.0-0', '3.0.0'];
+  const parts = ['^1.0.0', '~1.2.0', '>=1.3.0-rc.0', '<2.0.0', '>=2.0.0-rc.0', '^2.1.0-beta.0', '1.x', '*', '>=1.0.0-alpha.0 <1.0.0', '^2.0.0 || ^1.0.0', '<3.0.0', '>=3.0.0-0', '^1.0.0-beta.1', '2.0.0-rc.0', '~2.1.0-beta.1 || 3.x'];
+  let random = 7;
+  const next = () => (random = (random * 48271) % 2147483647);
+  let shared = 0;
+  for (let i = 0; i < 20_000; i++) {
+    const a = parts[next() % parts.length];
+    const b = next() % 3 ? parts[next() % parts.length] : `${parts[next() % parts.length]} || ${parts[next() % parts.length]}`;
+    const q = installPlan({ 'package.json': '{}', 'w/package.json': JSON.stringify({ name: 'w', dependencies: { x: b } }) }, { workspaces: ['w'], dependencies: { x: a } });
+    if (q.nested.length) continue;
+    shared++;
+    const picked = semver.maxSatisfying(versions, q.root.dependencies!.x);
+    if (picked) assert.ok(semver.satisfies(picked, a) && semver.satisfies(picked, b), `${a} + ${b} → ${q.root.dependencies!.x} picks ${picked}`);
+  }
+  assert.ok(shared > 1000, String(shared));
+});

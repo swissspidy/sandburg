@@ -192,10 +192,16 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     if (args.some((a) => /^(--workspaces|-ws|-r|--recursive)$/.test(a))) return null;
     // A workspace by name or path: `npm -w web run dev`, `pnpm --filter web dev`, `yarn workspace web dev`.
     const flags = runner === 'npm' ? ['--workspace', '-w'] : runner === 'pnpm' ? ['--filter', '-F'] : [];
+    // The package manager's own arguments: those after `--` are the script's.
+    const own = args.indexOf('--') < 0 ? args.length : args.indexOf('--');
     // A script in several workspaces (`--filter web --filter api`) is not one script: not run here.
-    const selectors = args.filter((a) => flags.some((f) => a === f || a.startsWith(`${f}=`)));
+    const selectors: string[] = [];
+    for (let i = 0; i < own; i++) {
+      if (flags.includes(args[i])) selectors.push(`${args[i]} ${args[++i] ?? ''}`.trim());
+      else if (flags.some((f) => args[i].startsWith(`${f}=`))) selectors.push(args[i]);
+    }
     if (selectors.length > 1) return { error: `${runner} ${selectors.join(' ')}: several ${flags[0]} selectors are not supported in the browser runtime` };
-    for (let i = 0; i < args.length; i++) {
+    for (let i = 0; i < own; i++) {
       const a = args[i];
       const flag = flags.find((f) => a === f || a.startsWith(`${f}=`));
       const value = flag ? (a === flag ? args[i + 1] : a.slice(flag.length + 1)) : runner === 'yarn' && a === 'workspace' && i === 0 ? args[1] : undefined;
@@ -226,7 +232,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     } catch {
       return null;
     }
-    const body = scripts[name] ?? (name === 'start' ? 'node server.js' : undefined);
+    const body = Object.hasOwn(scripts, name) ? scripts[name] : name === 'start' ? 'node server.js' : undefined;
     if (!body) return null;
     const pre = scripts[`pre${name}`];
     const withArgs = extra.length ? `${body} ${extra.map(quote).join(' ')}` : body;
@@ -256,7 +262,8 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       const index = host.readFile(`${d === '/' ? '' : d}/node_modules/.sandburg-bins.json`);
       if (index) {
         try {
-          const rel = (JSON.parse(index) as Record<string, string>)[name];
+          const bins = JSON.parse(index) as Record<string, string>;
+          const rel = Object.hasOwn(bins, name) ? bins[name] : undefined;
           if (rel) return `${d === '/' ? '' : d}/${rel}`;
         } catch {
           // a broken index: keep looking

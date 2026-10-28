@@ -38,7 +38,10 @@ pure: the host's install and the page's use it) takes them out of what npm insta
   one, when the ranges intersect: the root's spec becomes the versions in both, each pair of the
   two ranges' comparator sets that has a version in common, joined by `||` (`^18.2.0` and `^18.0.0 ||
   ^19.0.0` give `>=18.2.0 <19.0.0-0 >=18.0.0 <19.0.0-0`), so npm picks a version in both. (Writing the
-  two ranges side by side would not do: `||` binds less tightly than a space.) Two copies of a package such as React in one app do not work. Only a range
+  two ranges side by side would not do: `||` binds less tightly than a space.) A pair is kept only
+  when both sets admit the same prereleases: a set admits a prerelease only of a version one of its
+  comparators names with a prerelease, so `<19.0.0` and `>=19.0.0-rc.0` share no copy (npm would
+  pick 19.0.0-rc, which `<19.0.0` rejects), and the workspace's range is nested. Two copies of a package such as React in one app do not work. Only a range
   that copy cannot serve goes into the local package's own node_modules: a second install, combined
   with the root's under one key as `client/` and `server/` packages already are
   (`Installer.combine`), from the package-lock's own entries under that package's node_modules when
@@ -129,10 +132,12 @@ entries are descriptors, not locations), so they are not translated into a packa
   No override is added for a package the project names itself (npm refuses an override that differs
   from a direct dependency's spec) or overrides itself.
 - **Lockfile aliases are pinned by their real package name.** A yarn.lock descriptor
-  `"string-width-cjs@npm:string-width@^4.2.0"` is a version of `string-width`, as is, in yarn v1, a
-  bare `"isnum@npm:is-number"` or `"sis@npm:@sindresorhus/is"` (an `npm:` package name that is not a
-  range); no pin or override is keyed by an alias, and a name that is not a package name is never
-  pinned.
+  `"string-width-cjs@npm:string-width@^4.2.0"` is a version of `string-width`. Yarn v1 reads
+  everything after `npm:` as `<package>[@<range>]`, so a bare `"isnum@npm:is-number"` or
+  `"sis@npm:@sindresorhus/is"` is an alias too, and an entry whose `npm:` target is no package name
+  (a URL, a path, `github:u/r`) is not read; berry writes `npm:<range>` for every registry
+  descriptor, a dist-tag among them. No pin or override is keyed by an alias, and a name that is not
+  a package name is never pinned.
 - **Names an object has from its prototype** (`constructor`, `toString`) are names like any other:
   the plan and the shell read only their own entries.
 - **Warm starts.** An install records which overrides are pins (`sandburgPins` in its package.json);
@@ -221,6 +226,8 @@ and packages inside the project can be installed`). The install's checks stay as
   gets.
 - A workspace directory that is a symlink on disk is skipped (the directory loader follows no
   symlinks), as are symlinks inside the project.
+- A dependency declared as an alias (`"x": "npm:other@^1"`) is not pinned to its locked version: it
+  resolves from its range (safe, but not the lockfile's version).
 - Translating pnpm or yarn lockfiles exactly (every package at its locked version wherever it is in
   the tree) would mean writing a package-lock from another tool's tree; the pins above are the
   versions that are sound to pin without that.

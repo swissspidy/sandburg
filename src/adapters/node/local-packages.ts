@@ -276,16 +276,35 @@ function own<T>(object: Record<string, T>, key: string): T | undefined {
  * than a space.
  */
 function bothRanges(a: string, b: string): string {
-  const sets = (range: string) => new semver.Range(range, { loose: true }).set.map((comparators) => comparators.map((c) => c.value).filter(Boolean).join(' '));
+  const sets = (range: string) => new semver.Range(range, { loose: true }).set;
+  const text = (set: readonly semver.Comparator[]) => set.map((c) => c.value).filter(Boolean).join(' ');
   const out = new Set<string>();
-  for (const x of sets(a)) for (const y of sets(b)) if (semver.intersects(x || '*', y || '*', { loose: true })) out.add([x, y].filter(Boolean).join(' ') || '*');
+  for (const x of sets(a)) {
+    for (const y of sets(b)) {
+      if (prereleasesAgree(x, y) && semver.intersects(text(x) || '*', text(y) || '*', { loose: true })) out.add([text(x), text(y)].filter(Boolean).join(' ') || '*');
+    }
+  }
   return [...out].join(' || ');
 }
 
-/** Whether one version can be in both ranges (two ranges, not dist-tags or aliases). */
+/**
+ * Whether two comparator sets admit the same prereleases. A set admits a prerelease only of a
+ * version one of its comparators names with a prerelease (`>=19.0.0-rc.0` admits 19.0.0-rc.1;
+ * `<19.0.0` admits no 19.0.0-rc), so a pair whose comparator admits prereleases of a version the
+ * other set names with none would let npm pick a prerelease that set rejects. The upper bound
+ * `<x.y.z-0` that `^` and `~` ranges have admits none.
+ */
+function prereleasesAgree(x: readonly semver.Comparator[], y: readonly semver.Comparator[]): boolean {
+  const named = (c: semver.Comparator) => (c.semver.prerelease?.length ? `${c.semver.major}.${c.semver.minor}.${c.semver.patch}` : null);
+  const admits = (c: semver.Comparator) => named(c) !== null && !(c.operator === '<' && c.semver.prerelease.join('.') === '0');
+  const covered = (from: readonly semver.Comparator[], other: readonly semver.Comparator[]) => from.filter(admits).every((c) => other.some((d) => named(d) === named(c)));
+  return covered(x, y) && covered(y, x);
+}
+
+/** Whether one version can be in both ranges (two ranges, not dist-tags or aliases), as npm picks one. */
 function compatible(a: string, b: string): boolean {
   try {
-    return !!semver.validRange(a, { loose: true }) && !!semver.validRange(b, { loose: true }) && semver.intersects(a, b, { loose: true });
+    return !!semver.validRange(a, { loose: true }) && !!semver.validRange(b, { loose: true }) && bothRanges(a, b) !== '';
   } catch {
     return false;
   }

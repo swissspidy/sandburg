@@ -174,3 +174,30 @@ test('workspace names an object has from its prototype are not workspaces; sever
   assert.equal(await two.exit, 1);
   assert.match(two.err.join(''), /several --filter .*not supported/);
 });
+
+test('selectors after -- are the script\'s arguments; several selectors are named with their values', async () => {
+  const files = {
+    '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web', api: 'apps/api' } }),
+    '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }),
+  };
+  const npm = run('npm run dev -w web -- -w foo', { files });
+  assert.equal(await npm.exit, 0);
+  assert.deepEqual(npm.argv(), ['web.js -w foo']);
+  const pnpm = run('pnpm --filter web dev -- --filter x', { files });
+  assert.equal(await pnpm.exit, 0);
+  assert.deepEqual(pnpm.argv(), ['web.js --filter x']);
+  const two = run('npm run dev -w web -w api', { files });
+  assert.equal(await two.exit, 1);
+  assert.match(two.err.join(''), /npm -w web -w api: several/);
+  const eq = run('pnpm --filter=web --filter api dev', { files });
+  assert.match(eq.err.join(''), /pnpm --filter=web --filter api: several/);
+});
+
+test("scripts and binaries an object has from its prototype are not a package's", async () => {
+  const files = { '/app/package.json': JSON.stringify({ scripts: { dev: 'node a.js' } }), '/app/node_modules/.sandburg-bins.json': JSON.stringify({ vite: 'node_modules/vite/bin/vite.js' }) };
+  for (const script of ['npm run constructor', 'npm run toString', 'hasOwnProperty', 'toString --x']) {
+    const s = run(script, { files });
+    assert.equal(await s.exit, 127, script);
+    assert.deepEqual(s.ran, [], script);
+  }
+});

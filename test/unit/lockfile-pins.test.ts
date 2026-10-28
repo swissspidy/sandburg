@@ -276,3 +276,20 @@ test("berry's npm:<tag> is a dist-tag of the package, not an alias", () => {
   const pins = lockPins({ 'yarn.lock': '__metadata:\n  version: 8\n\n"ms@npm:latest":\n  version: 2.1.3\n  resolution: "ms@npm:2.1.3"\n' })!;
   assert.deepEqual(pins.single, { ms: '2.1.3' });
 });
+
+test('yarn v1 reads everything after npm: as a package name: an alias of it, or nothing if it is not one', () => {
+  const lock = [
+    ['a@npm:x', '1.0.0'],
+    ['b@npm:1', '2.0.0'],
+    ['c@npm:https://example.com/x.tgz', '3.0.0'],
+    ['d@npm:./local', '4.0.0'],
+    ['e@npm:file:../x', '5.0.0'],
+    ['f@npm:github:u/r', '6.0.0'],
+    ['g@npm:@evil', '7.0.0'],
+    ['h@npm:@scope/real@^1.0.0', '8.0.0'],
+  ]
+    .map(([d, v]) => `"${d}":\n  version "${v}"\n`)
+    .join('\n');
+  // a → package x, b → package "1" (a name, if an odd one), h → @scope/real; the rest are not package names.
+  assert.deepEqual(lockPins({ 'yarn.lock': lock })!.single, { '1': '2.0.0', '@scope/real': '8.0.0', x: '1.0.0' });
+});
