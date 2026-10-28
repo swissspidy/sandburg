@@ -109,7 +109,9 @@ it and waits in `Atomics.wait` for it to answer in shared memory, 3 s at most):
 - Benchmark (`scripts/bench.ts`, origin/main against the branch, warm, interleaved, 4 rounds, medians
   of the total): `node-express` 0.75 → 0.81 s (+7%), `vite-react-counter` 1.80 → 1.85 s (+2%),
   `lit-vite` 1.45 → 1.50 s (+4%), with phases the change does not touch (mount, checks) moving as
-  much; `node-express` again at 8 rounds: 0.73 → 0.74 s (+0%). A prepared runtime does not wait for
+  much; `node-express` again at 8 rounds: 0.73 → 0.74 s (+0%). With the tree of runtimes (the
+  review's fixes), 4 rounds again: `node-express` 0.73 → 0.68 s (−7%), `vite-react-counter`
+  1.57 → 1.59 s (+1%), `lit-vite` 1.35 → 1.30 s (−4%). A prepared runtime does not wait for
   its helper; what the change adds to a run is a port per nested runtime and a branch per message to
   the parent.
 - The process tree's "starting" count (ADR 0055) does not count synchronous children: their parent
