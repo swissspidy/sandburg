@@ -125,7 +125,7 @@ The map of the code is [`docs/architecture.md`](docs/architecture.md), and the d
 ## Security
 
 An app runs in a tab of its own: its own browser context and origin, every request through the egress
-gateway and the sandbox's allowlist, inside Chromium's OS sandbox. Where that sandbox cannot start,
+gateway or the sandbox's egress proxy, both held to its allowlist, inside Chromium's OS sandbox. Where that sandbox cannot start,
 `sandburg` stops and says what to change; `--no-browser-sandbox` turns it off, explicitly. A checks file
 runs with Sandburg's own rights unless `--checks-in page`. The Docker reference is not a security
 boundary. The details are in [Security](docs/guide/security.md).

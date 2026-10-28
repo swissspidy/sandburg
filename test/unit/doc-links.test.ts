@@ -12,4 +12,5 @@ test("anchors are GitHub's: code and punctuation dropped, repeats numbered", () 
   assert.equal(slug('result.json'), 'resultjson');
   assert.deepEqual([...anchors('# A\n## A\n```\n# not a heading\n```\n### B')], ['a', 'a-1', 'b']);
   assert.deepEqual(links('[x](a.md#b) `[y](c.md)` ![i](img.png "t")\n```\n[z](d.md)\n```'), ['a.md#b', 'img.png']);
+  assert.deepEqual(links('See [the guide][g].\n\n[g]: missing.md#part\n  [h]: <other.md> "title"\n'), ['missing.md#part', 'other.md']);
 });

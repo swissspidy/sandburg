@@ -33,7 +33,7 @@ prove it ([ADR 0001](../adr/0001-runtime-adapters-serving-results.md),
   are the project's own files, linked. A git or URL dependency, a local tarball or a path outside the
   project fails the run before anything is installed, as unsupported, also when a registry package
   pulls one in ([ADR 0064](../adr/0064-monorepos-and-local-packages.md)). A lockfile's tarball URLs
-  must be on npm's registry.
+  must be on npm's configured registry (`npm_config_registry`) or the public registry.
 - **Caches shared across runs** take writes only with the run's capability token, from its own
   sandbox ([ADR 0040](../adr/0040-security-fixes.md)).
 

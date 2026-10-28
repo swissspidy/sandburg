@@ -6,8 +6,9 @@
  *
  *   node scripts/doc-links.ts [file.md …]   # default: those files, where they exist, and docs/**\/*.md
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(import.meta.dirname, '..');
 
@@ -47,10 +48,12 @@ export function anchors(markdown: string): Set<string> {
   return out;
 }
 
-/** The link targets of a Markdown file (inline links and images), outside code. */
+/** The link targets of a Markdown file (inline links, images and reference definitions), outside code. */
 export function links(markdown: string): string[] {
   const text = markdown.replace(/^\s*(```|~~~)[\s\S]*?^\s*\1/gm, '').replace(/`[^`\n]*`/g, '');
-  return [...text.matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)].map((m) => m[1]);
+  const inline = [...text.matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)].map((m) => m[1]);
+  const definitions = [...text.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*<?([^\s>]+)>?/gm)].map((m) => m[1]);
+  return [...inline, ...definitions];
 }
 
 /** Broken links in `files` (relative to the repository), as "file: target (why)". */
@@ -73,7 +76,8 @@ export function brokenLinks(files: string[] = docFiles()): string[] {
   return broken;
 }
 
-if (import.meta.main) {
+// Not import.meta.main, which needs Node.js 24.2: the package supports every Node.js 24.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const broken = brokenLinks(process.argv.length > 2 ? process.argv.slice(2) : undefined);
   for (const b of broken) console.error(b);
   console.log(broken.length ? `${broken.length} broken links` : 'no broken links');

@@ -103,7 +103,9 @@ await session.close();
 ```
 
 `runBatch` takes `RunOptions` and `parallel`, `prewarm`, `batchDir`, `onResult` and `log`, and
-returns the `BatchSummary` it writes to `summary.json` with every `RunResult`. `compare` runs the same
+returns `{ summary, results }`. `summary` is the `BatchSummary` it writes to `summary.json`: totals and
+one compact `BatchRunSummary` per run (status, failure class and rule, times). The full `RunResult` of
+each run (checks, evidence, console, network) is in `results` and in the run's own `result.json`. `compare` runs the same
 items in a reference runtime too (`reference: { name, factory }`) and returns a `CompareReport`, which
 `renderReport` turns into Markdown.
 

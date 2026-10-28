@@ -12,10 +12,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunResult } from '../src/types.ts';
 
-/** The result in what `run --json` printed: the whole of it, or from its first line that opens an object. */
+/**
+ * The result in what `run --json` printed: the whole of it, or from a line that opens an object (a
+ * host check's own output, a JSON log line say, can come before it). The result is printed last, so
+ * the first start whose rest parses as a result is it.
+ */
 export function parseResult(text: string): RunResult | null {
-  for (const start of [0, text.search(/^\{/m)]) {
-    if (start < 0) continue;
+  for (const start of new Set([0, ...[...text.matchAll(/^\{/gm)].map((m) => m.index)])) {
     try {
       const value = JSON.parse(text.slice(start)) as RunResult;
       if (value && typeof value === 'object' && typeof value.runId === 'string') return value;

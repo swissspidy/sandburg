@@ -17,6 +17,8 @@ test("the action reads sandburg's JSON, also after other output, and summarizes 
   const json = JSON.stringify(result, null, 2);
   assert.equal(parseResult(json)?.runId, 'r1');
   assert.equal(parseResult(`a line of log\n${json}`)?.status, 'failed');
+  // A host check's own JSON log line on stdout, before the result.
+  assert.equal(parseResult(`{"level":"info","msg":"seeded"}\n${json}\n`)?.runId, 'r1');
   assert.equal(parseResult('error: no such project'), null);
   const md = summary(result, 1);
   assert.match(md, /### Sandburg: failed/);
