@@ -42,7 +42,8 @@ updates:
         versions: [">= 7"]
 
   - package-ecosystem: github-actions
-    # / is the workflows; the local composite actions pin actions of their own.
+    # / is the workflows and the repository's own action (action.yml); the local composite actions pin
+    # actions of their own.
     directories: ["/", "/.github/actions/*"]
     schedule:
       interval: weekly

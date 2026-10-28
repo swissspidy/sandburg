@@ -20,7 +20,7 @@ for gzip and WebCrypto for the integrity checks.
 `--install-in browser` (library: `installIn: 'browser'`) makes the page do the install. The host
 default stays the same.
 
-- **Resolution** ([`src/node-runtime/npm/resolve.ts`](../../src/node-runtime/npm/resolve.ts)) follows
+- **Resolution** ([`src/adapters/node/browser-npm/resolve.ts`](../../src/adapters/node/browser-npm/resolve.ts)) follows
   npm. A `package-lock.json` (v2/v3) is installed exactly as it is written. Without one, each range
   resolves to the `latest` tag if that satisfies it, otherwise to the newest version that does. A
   package goes to the top of `node_modules` if that place is free, otherwise into its dependent's
@@ -29,9 +29,9 @@ default stays the same.
   copy is used even if it does not match, as `npm --legacy-peer-deps` would. This keeps packages
   that must share a peer on one copy (emnapi's runtime and the bindings built against it).
   Optional and bundled dependencies are left out, as the host install leaves them out.
-- **Fetching** ([`registry.ts`](../../src/node-runtime/npm/registry.ts)) uses abbreviated package
+- **Fetching** ([`registry.ts`](../../src/adapters/node/browser-npm/registry.ts)) uses abbreviated package
   documents, 16 tarballs at a time, each checked against its sha512 integrity before it is gunzipped
-  and unpacked ([`tar.ts`](../../src/node-runtime/npm/tar.ts)). Tar paths are normalized: some
+  and unpacked ([`tar.ts`](../../src/adapters/node/browser-npm/tar.ts)). Tar paths are normalized: some
   packages are packed with `./` inside paths, which would otherwise create a directory that lists
   itself.
 - **The same changes as the host install**
@@ -39,7 +39,7 @@ default stays the same.
   bindings for napi-rs packages, WebAssembly builds in place of native code, SWC's WebAssembly build
   for Next.js, source patches, and the index of package binaries.
 - **Memory:** `node_modules` becomes one `SharedArrayBuffer` and an index of paths
-  ([`install.ts`](../../src/node-runtime/npm/install.ts)). The runtime and every thread and child
+  ([`install.ts`](../../src/adapters/node/browser-npm/install.ts)). The runtime and every thread and child
   process it starts read files from it without copying, and without asking another thread, which may
   be blocked. Identical files are stored once (SWC's WebAssembly build is at two paths).
 - **Errors are worded as npm words them**, so they classify the same way: a missing package or

@@ -109,6 +109,43 @@ jobs:
       # npm run test:pack, with each file's time in the job summary.
       - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/pack/*.test.ts
 
+  # The repository's own GitHub Action (action.yml), run from this checkout on a fixture, with the
+  # package packed from this commit rather than the npm release the action installs by default.
+  action:
+    name: GitHub Action
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+          echo "tarball=$(ls "$RUNNER_TEMP"/pack/sandburg-*.tgz)" >> "$GITHUB_OUTPUT"
+      - id: sandburg
+        uses: $/
+        with:
+          project: fixtures/vite-react-counter
+          checks: fixtures/vite-react-counter/checks.spec.ts
+          args: --checks-in page
+          sandburg-version: ${{ steps.pack.outputs.tarball }}
+          artifact-name: action-vite-react-counter
+      - name: The action's outputs
+        run: |
+          echo "status=$STATUS result-path=$RESULT_PATH"
+          test "$STATUS" = passed
+          node -e 'const r = require(require("node:path").resolve(process.argv[1])); if (r.status !== "passed") process.exit(1)' "$RESULT_PATH"
+        env:
+          STATUS: ${{ steps.sandburg.outputs.status }}
+          RESULT_PATH: ${{ steps.sandburg.outputs.result-path }}
+
   e2e:
     name: E2E (${{ matrix.suite }})
     runs-on: ubuntu-latest

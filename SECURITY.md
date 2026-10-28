@@ -2,7 +2,8 @@
 
 Sandburg runs code it does not trust: generated apps, their dependencies and their dev scripts. Keeping
 that code inside its sandbox is one of the project's core claims, so reports of a way out are welcome.
-The security model is in the README's [Security](README.md#security) section and in
+The security model is summed up in the README's [Security](README.md#security) section, described in
+[the security guide](docs/guide/security.md), and recorded in
 [ADR 0001](docs/adr/0001-runtime-adapters-serving-results.md) (isolation boundaries),
 [ADR 0040](docs/adr/0040-security-fixes.md) and [ADR 0054](docs/adr/0054-security-review-round-4.md)
 (the security reviews and the boundary map) and [ADR 0061](docs/adr/0061-chromium-sandbox.md)
