@@ -740,6 +740,13 @@ test('http: destroying a request whose response is in flight aborts the response
           req.on('close', () => log.push('req close destroyed=' + req.destroyed));
           req.destroy();
           setTimeout(() => done(log.join(' | ')), 200);
+        }),
+        // The other origin saw both of its connections close, while this program still runs (it
+        // answers once it has, or after 10 s): not as the run ended and took its fetches with it.
+        (done) => http.get(remote + '/__test/hold-closed?count=2', (res) => {
+          let count = '';
+          res.on('data', (d) => (count += d));
+          res.on('end', () => done('hold closed: ' + count));
         }),`),
     },
     '/app/main.js',
@@ -750,7 +757,7 @@ test('http: destroying a request whose response is in flight aborts the response
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   const inFlight = ['response | res aborted | req close | res error ECONNRESET | res close destroyed=true', 'response | res aborted | res close destroyed=false | req close'];
   const before = 'req error ECONNRESET socket hang up | req close destroyed=true';
-  assert.deepEqual(out.stdout.trim().split('\n'), [...inFlight, ...inFlight, before, before]);
+  assert.deepEqual(out.stdout.trim().split('\n'), [...inFlight, ...inFlight, before, before, 'hold closed: 2']);
   // What was still coming from the other origin is not read: its two responses' connections closed.
   assert.deepEqual(h.asked.filter((a) => a === 'hold closed'), ['hold closed', 'hold closed']);
 });

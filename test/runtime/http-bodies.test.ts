@@ -1,5 +1,5 @@
 /**
- * The http shim against Node 24 (ADR 0067): each program in fixtures/http runs as is under Node, and
+ * The http shim against Node 24 (ADR 0069): each program in fixtures/http runs as is under Node, and
  * what it is expected to print here is what Node 24 printed for it (`node test/runtime/fixtures/http/<name>.cjs`).
  */
 import { after, before, test } from 'node:test';

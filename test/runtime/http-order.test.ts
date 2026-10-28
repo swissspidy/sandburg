@@ -1,5 +1,5 @@
 /**
- * The http shim against Node 24 (ADR 0067): each program in fixtures/http runs as is under Node, and
+ * The http shim against Node 24 (ADR 0069): each program in fixtures/http runs as is under Node, and
  * what it is expected to print here is what Node 24 printed for it (`node test/runtime/fixtures/http/<name>.cjs`).
  */
 import { after, before, test } from 'node:test';
@@ -66,6 +66,23 @@ test('http: what destroy(), abort() and their combinations emit, and when, befor
 
 test('http: the same, with the server in a child process', async () => {
   assert.deepEqual(await run('destroy-order.cjs', ['destroy-order-server.cjs'], { CHILD: '1' }), DESTROY_ORDER);
+});
+
+test('timers: what an immediate or a close callback queues runs before the next; close callbacks run last-closed first', async () => {
+  assert.deepEqual(await run('loop-phases.cjs'), [
+    'immediate 1',
+    'tick after immediate 1',
+    'promise after immediate 1',
+    'immediate 2',
+    'close 3',
+    'tick after close 3',
+    'close 2',
+    'tick after close 2',
+    'close 1',
+    'tick after close 1',
+    'immediate from immediate 1',
+    'immediate from close',
+  ]);
 });
 
 test("http: a server's request destroyed (read or not), or its socket or response: when its events come", async () => {
