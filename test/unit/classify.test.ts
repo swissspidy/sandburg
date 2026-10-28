@@ -361,4 +361,14 @@ test("what the source check found is the ready phase's failure when that phase s
   assert.deepEqual([threw?.class, threw?.rule], ['unknown', 'unmatched']);
   const start = classify(input({ phases: failedAt('start', 'start timed out', undefined, 'timeout'), sourceFindings: [syntax] }));
   assert.deepEqual([start?.class, start?.rule], ['timeout', 'phase-deadline']);
+  // Sandburg's own failure (a tab that crashed, an offline cache miss, a download that broke) is
+  // classified as it is without the source check's findings, whether the phase timed out or failed.
+  for (const phases of [failedAt('ready', 'ready timed out after 240000 ms', undefined, 'timeout'), failedAt('ready', 'app did not render, and its sources have an error: x')]) {
+    for (const infra of [{ infraError: { phase: 'ready' as const, message: 'the tab crashed' } }, { runtimeErrors: ['npm registry: socket hang up'] }]) {
+      const without = classify(input({ phases, ...infra }));
+      const withFindings = classify(input({ phases, ...infra, sourceFindings: [syntax] }));
+      assert.notEqual(withFindings?.class, 'app-bug');
+      assert.deepEqual([withFindings?.class, withFindings?.rule], [without?.class, without?.rule]);
+    }
+  }
 });

@@ -29,6 +29,8 @@ test("only the app's files count: not a script, an example, a test's setup, or a
     'examples/demo.ts': 'const broken = ;\n',
     'src/test-setup.ts': "import 'zone.js/testing';\nimport x from 'zone.js';\nexport default x;\n",
     'src/setupTests.ts': "import '@testing-library/jest-dom';\n",
+    // Under a root (app/, every file of which is the app's): a test's setup is still not.
+    'app/test-setup.ts': "import { TestBed } from '@angular/core/testing';\nexport default TestBed;\n",
     'vitest.setup.ts': "import { expect } from 'vitest';\nexport default expect;\n",
     'src/unused.ts': "import dayjs from 'dayjs';\nexport default dayjs;\n",
   };
@@ -135,9 +137,9 @@ test("components are checked by their scripts, each a module, at the file's own 
       '<script define:vars={{ b: a > 0 }}>\n  console.log(b);\n</script>\n' +
       "<script>\n  import confetti from 'canvas-confetti';\n  confetti();\n</script>\n<script is:inline>\n  import x from 'not-processed';\n</script>\n<script type=\"application/ld+json\">{ \"@type\": \"x\" }</script>\n",
     // An empty frontmatter, and `---` later in the HTML; a self-closing script with set:html, then HTML.
-    'src/Layout.astro': '---\n---\n<main><slot /></main>\n<script set:html={code} />\n<p>a > b</p>\n<hr />\n---\n<p>after</p>\n',
+    'src/Layout.astro': "---\n---\n<main><slot /></main>\n<script set:html={code} />\n<p>a > b</p>\n<hr />\n---\n<p>after</p>\n<script>\n  import party from 'party-js';\n  party();\n</script>\n",
   });
-  assert.deepEqual(findings, ['imports undeclared package "dayjs" (src/A.vue:7)', 'src/Child.vue:2:16: Unexpected ";"', 'src/D.svelte:2:18: Unexpected ";"', 'imports undeclared package "canvas-confetti" (src/pages/index.astro:13)']);
+  assert.deepEqual(findings, ['imports undeclared package "dayjs" (src/A.vue:7)', 'src/Child.vue:2:16: Unexpected ";"', 'src/D.svelte:2:18: Unexpected ";"', 'imports undeclared package "party-js" (src/Layout.astro:10)', 'imports undeclared package "canvas-confetti" (src/pages/index.astro:13)']);
 });
 
 test("legacy decorators parse with the project's tsconfig (Angular's and Nest's parameter decorators, Lit's `declare` fields), through `extends`", async () => {

@@ -98,10 +98,12 @@ export function classify(input: ClassifyInput): Failure | null {
   if (failedPhase?.status === 'timeout' && devError && !matchSignature([devError])) {
     return failure('app-bug', failedPhase.name, 'compile-error', devError, [devError]);
   }
-  // The project's own sources do not parse, or import a package it does not declare, and the dev
-  // server said nothing (SolidStart hangs): what the source check found, in the ready phase only.
+  // The app's own sources do not parse, or import a package it does not declare, and the dev server
+  // said nothing (SolidStart hangs): what the source check found, in the ready phase only, and not
+  // when Sandburg's own machinery or download failed (those win).
   const source = failedPhase?.name === 'ready' ? input.sourceFindings?.[0] : undefined;
-  if (source && (failedPhase!.status === 'timeout' || failedPhase!.error?.message.startsWith(SOURCE_STALL))) {
+  const infra = !!input.infraError || [failedPhase?.error?.message ?? '', ...(input.runtimeErrors ?? [])].some((t) => INFRA_SIGNATURE.test(t));
+  if (source && !infra && (failedPhase!.status === 'timeout' || failedPhase!.error?.message.startsWith(SOURCE_STALL))) {
     return failure('app-bug', 'ready', source.rule, describeFinding(source), [failedPhase!.error?.message ?? '', ...appErrors]);
   }
   if (failedPhase?.status === 'timeout') {

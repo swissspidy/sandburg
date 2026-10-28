@@ -210,6 +210,8 @@ test("each of the page's own 5xx loads accounts for one of Chromium's console er
   const app = {} as Frame;
   const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
   const failedLoad = (status: number) => run.console.push({ source: 'app', type: 'error', text: `Failed to load resource: the server responded with a status of ${status} (x)`, url: 'http://app.test/' });
+  // The host page's report of the same URL (its own request) is not one of the app frame's.
+  run.console.push({ source: 'host', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (x)', url: 'http://app.test/' });
   // Two cold-start 5xx loads, then a 200: their two console errors are the page's.
   run.documents.push({ url: 'http://app.test/', status: 502, frame: app });
   failedLoad(502);

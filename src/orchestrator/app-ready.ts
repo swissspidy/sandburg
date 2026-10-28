@@ -140,7 +140,8 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
         const pageLoad = (c: ConsoleEntry) => {
           if (!c.url || !FAILED_LOAD_5XX.test(c.text)) return false;
           const loads = pageDocuments().filter((d) => d.url === c.url && d.status >= 500).length;
-          const upTo = run.console.slice(0, run.console.indexOf(c) + 1).filter((e) => e.url === c.url && FAILED_LOAD_5XX.test(e.text)).length;
+          // The page's own reports only (the host page's, for the same URL, are not about the app's frame).
+          const upTo = run.console.slice(0, run.console.indexOf(c) + 1).filter((e) => e.source === 'app' && e.url === c.url && FAILED_LOAD_5XX.test(e.text)).length;
           return upTo <= loads;
         };
         const logged = run.console.slice(seenConsole).find((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`) && !loading503(c) && !pageLoad(c));
