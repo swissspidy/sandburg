@@ -178,15 +178,7 @@ export function forgetNested(worker: globalThis.Worker) {
     if (entry.from !== worker) continue;
     servingLoopback.delete(bridge);
     bridge.close();
-    queueMicrotask(() => {
-      try {
-        entry.abort();
-      } catch (e) {
-        // process.exit() in an 'aborted' or 'close' listener ends the process.
-        if (e instanceof ExitError) exited(e.code);
-        else throw e;
-      }
-    });
+    queueMicrotask(() => entry.abort());
   }
   for (const [id, w] of nestedSockets) {
     if (w !== worker) continue;
@@ -259,7 +251,7 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
   const server = servers.get(m.port);
   try {
     if (server) {
-      // Answered already (an error) if the handler destroyed the response as it was dispatched.
+      // Until it is answered (close()): a response the handler destroys is answered later, its error async.
       const entry = { from, abort: () => {} };
       servingLoopback.set(bridge, entry);
       entry.abort = server.dispatch(m.method, m.url, m.headers, body, bridge);

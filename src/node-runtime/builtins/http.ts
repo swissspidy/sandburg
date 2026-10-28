@@ -174,12 +174,19 @@ export class IncomingMessage extends Readable {
   }
   _read() {}
   setTimeout() { return this; }
-  _destroy(err: Error | null, cb: (e?: Error | null) => void) {
-    // As Node: destroyed before it was read to its end, it was aborted.
-    if (!this.aborted && (!this.readableEnded || !this.complete)) {
+  destroy(err?: Error) {
+    // As Node: destroyed before it was read to its end, it was aborted, and its connection closes. Here,
+    // not in _destroy, whose throws the stream catches: process.exit() in an 'aborted' listener ends the process.
+    if (!this.destroyed && !this.aborted && (!this.readableEnded || !this.complete)) {
       this.aborted = true;
       this.emit('aborted');
+      super.destroy(err);
+      if (!this.socket.destroyed) this.socket.destroy();
+      return this;
     }
+    return super.destroy(err);
+  }
+  _destroy(err: Error | null, cb: (e?: Error | null) => void) {
     // As Node: an error is emitted only to listeners ('aborted' and 'close' tell the others).
     cb(this.listenerCount('error') ? err : null);
   }
@@ -288,9 +295,14 @@ export class ServerResponse extends Writable {
     cb();
     queueMicrotask(() => this.emitCloseOnce());
   }
-  _destroy(err: Error | null, cb: (e?: Error | null) => void) {
-    // As Node: the error is the socket's, for the server's 'clientError'; never emitted on the response.
-    if (err && this.socket.server?.listenerCount('clientError')) this.socket.server.emit('clientError', err, this.socket);
+  destroy(err?: Error) {
+    // As Node: the error is the socket's, for the server's 'clientError' (also once the response ended);
+    // never emitted on the response. Here, not in _destroy, whose throws the stream catches.
+    const server = this.socket.server;
+    if (err && !this.destroyed && server?.listenerCount('clientError')) server.emit('clientError', err, this.socket);
+    return super.destroy();
+  }
+  _destroy(_err: Error | null, cb: (e?: Error | null) => void) {
     // Destroyed before it ended: its connection closes, which aborts the request (see Server.dispatch).
     if (!this.finished) this.socket.destroy();
     cb(null);
