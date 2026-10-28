@@ -89,7 +89,11 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
   `dayjs`), and nothing in the other 203 apps. A unit test keeps it so
   (`test/unit/corpus.test.ts`). The repo's 20 fixtures have no findings either. The check takes a
   median of 5.5 ms per corpus app (95th percentile 12 ms, at most 25 ms) on a 4-vCPU machine.
-- **Healthy runs are not slower.** See the benchmark below.
+- **Healthy runs are not slower.** `scripts/bench.ts` (origin/main against this change, 3 rounds,
+  medians, the 4-vCPU machine): vite-react-counter 6.34 s → 5.98 s cold, 1.72 s → 1.60 s warm;
+  lit-vite 5.34 s → 5.27 s cold, 1.32 s → 1.33 s warm; next-app-router 22.15 s → 22.19 s cold,
+  4.33 s → 4.61 s warm. All within the runs' noise (−7% to +7%, both ways). None of these apps' ready
+  phases reaches 20 s, so their sources are never checked; the watch itself is a 200 ms poll.
 - **The POST after a cold start** (`test/e2e/run.test.ts`): a server that answers its page's first
   load 500, then a blank page whose script posts to its own URL and gets 500, fails the ready
   phase in 17 s with that console error. Before: the 60 s deadline.
