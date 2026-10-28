@@ -85,6 +85,19 @@ test('timers: what an immediate or a close callback queues runs before the next;
   ]);
 });
 
+test("http: a request waiting for an agent's socket emits 'finish' once it went out; Connection: close closes its connection after the response", async () => {
+  assert.deepEqual(await run('waiting.cjs'), [
+    'request /held',
+    'destroy held',
+    'server socket close /held',
+    'next socket',
+    'next finish',
+    'request /next',
+    'request /close',
+    'server socket close /close',
+  ]);
+});
+
 test("http: a server's request destroyed (read or not), or its socket or response: when its events come", async () => {
   assert.deepEqual(await run('server-destroy.cjs'), [
     '/ destroy: pre,aborted,post,tick,req close,immediate,res close',

@@ -139,8 +139,15 @@ class FakeSocket extends EventEmitter {
     if (data !== undefined && typeof data !== 'function') this.write(data, encoding);
     return this.destroy();
   }
+  /** Kept of what was written, at most (a raw response is a status line and a few headers). */
+  #writtenBytes = 0;
   write(data?: unknown, encoding?: unknown) {
-    if (!this.destroyed && (typeof data === 'string' || data instanceof Uint8Array)) this.written.push(typeof data === 'string' ? Buffer.from(data, typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8') : data);
+    if (this.destroyed || (typeof data !== 'string' && !(data instanceof Uint8Array))) return true;
+    const bytes = typeof data === 'string' ? Buffer.from(data, typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8') : data;
+    if (this.#writtenBytes + bytes.length <= 64 * 1024) {
+      this.#writtenBytes += bytes.length;
+      this.written.push(bytes);
+    }
     return true;
   }
   cork() {}
