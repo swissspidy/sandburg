@@ -16,9 +16,11 @@
  *   the first round's (each round's is in `rounds`).
  * - --only: the apps whose framework (meta.json) matches, e.g. 'vue|static|lit'.
  * - --out: writes <out>.json (cold) and <out>-warm.json (warm), each app with its phases, when it
- *   started and ended (ms from its pass's start), and `neighbours`: the mean number of other runs
- *   open while it ran. Per-app times at --parallel above 1 include its neighbours' load: compare
- *   cold with warm per app only where `neighbours` is alike, or at --parallel 1.
+ *   started and ended (ms from its pass's start), `neighbours`: the mean number of other runs open
+ *   while it ran, and `cpu`: the machine's mean CPU use while it ran (Linux; else null). Per-app
+ *   times at --parallel above 1 include the neighbours' load, and a warm pass keeps its neighbours
+ *   busier (their installs, mostly waiting on the network and disk, are gone): compare cold with
+ *   warm per app where `cpu` is alike, or at --parallel 1.
  *
  * Set SANDBURG_CHROMIUM to use a Chromium other than Playwright's.
  */
@@ -58,6 +60,17 @@ interface Run {
   startMs: number;
   endMs: number;
   neighbours: number;
+  /** The machine's mean CPU use (%) while it ran, from /proc/stat (Linux only; else null). */
+  cpu: number | null;
+}
+
+/** The machine's busy and total CPU ticks, or null where /proc/stat is not there. */
+async function cpuTicks(): Promise<{ busy: number; total: number } | null> {
+  const stat = await readFile('/proc/stat', 'utf8').catch(() => null);
+  if (!stat) return null;
+  const f = stat.split('\n')[0].split(/\s+/).slice(1).map(Number);
+  const total = f.reduce((a, b) => a + b, 0);
+  return { busy: total - f[3] - f[4], total };
 }
 
 const items: (BatchItem & { meta: Meta })[] = [];
@@ -74,11 +87,21 @@ async function pass(mode: 'cold' | 'warm'): Promise<{ wallMs: number; runs: Run[
   const session = new Session();
   await session.open();
   const epoch = Date.now();
+  // The machine's CPU use in each 500 ms from the pass's start, to tell how loaded each run's neighbours kept it.
+  const timeline: { at: number; cpu: number }[] = [];
+  let last = await cpuTicks();
+  const sampler = setInterval(() => {
+    void cpuTicks().then((now) => {
+      if (now && last) timeline.push({ at: Date.now() - epoch, cpu: ((now.busy - last.busy) / (now.total - last.total || 1)) * 100 });
+      last = now;
+    });
+  }, 500);
   let summary;
   let results: RunResult[];
   try {
     ({ summary, results } = await runBatch(session, items, { parallel, batchDir, longestFirst: false, log: (l) => console.error(`  ${l}`) }));
   } finally {
+    clearInterval(sampler);
     await session.close();
     await rm(batchDir, { recursive: true, force: true });
   }
@@ -87,6 +110,7 @@ async function pass(mode: 'cold' | 'warm'): Promise<{ wallMs: number; runs: Run[
     const [start, end] = spans[i];
     let shared = 0;
     for (const [j, [s, e]] of spans.entries()) if (j !== i) shared += Math.max(0, Math.min(end, e) - Math.max(start, s));
+    const during = timeline.filter((t) => t.at > start && t.at <= end + 500).map((t) => t.cpu);
     return {
       result: r.status === 'passed' ? 'pass' : 'fail',
       failureClass: r.failure?.class ?? null,
@@ -96,6 +120,7 @@ async function pass(mode: 'cold' | 'warm'): Promise<{ wallMs: number; runs: Run[
       startMs: start,
       endMs: end,
       neighbours: end > start ? Math.round((shared / (end - start)) * 100) / 100 : 0,
+      cpu: during.length ? Math.round(during.reduce((a, b) => a + b, 0) / during.length) : null,
     };
   });
   return { wallMs: summary.wallMs, runs };
@@ -135,6 +160,7 @@ function apps(mode: 'cold' | 'warm') {
       totalMs: median(runs.map((r) => r.totalMs)),
       phases,
       neighbours: median(runs.map((r) => r.neighbours)),
+      cpu: runs.every((r) => r.cpu !== null) ? median(runs.map((r) => r.cpu!)) : null,
       rounds: runs,
     };
   });
@@ -142,7 +168,7 @@ function apps(mode: 'cold' | 'warm') {
 
 const cold = apps('cold');
 const warm = apps('warm');
-const lines = ['| Framework | Apps | Right, cold / warm | False alarms, cold / warm | Median passing, cold | Median passing, warm | Neighbours, cold / warm |', '|---|---|---|---|---|---|---|'];
+const lines = ['| Framework | Apps | Right, cold / warm | False alarms, cold / warm | Median passing, cold | Median passing, warm | Neighbours, cold / warm | CPU while it ran, cold / warm |', '|---|---|---|---|---|---|---|---|'];
 const s = (ms: number) => (Number.isNaN(ms) ? '–' : `${(ms / 1000).toFixed(1)} s`);
 for (const fw of [...new Set(items.map((i) => i.meta.framework))]) {
   const of = (list: typeof cold) => list.filter((a) => a.framework === fw);
@@ -150,7 +176,11 @@ for (const fw of [...new Set(items.map((i) => i.meta.framework))]) {
   const alarms = (list: typeof cold) => of(list).filter((a) => a.expected === 'pass' && a.result === 'fail').length;
   const passing = (list: typeof cold) => median(of(list).filter((a) => a.expected === 'pass' && a.result === 'pass').map((a) => a.totalMs));
   const near = (list: typeof cold) => median(of(list).map((a) => a.neighbours)).toFixed(1);
-  lines.push(`| ${fw} | ${of(cold).length} | ${right(cold)} / ${right(warm)} | ${alarms(cold)} / ${alarms(warm)} | ${s(passing(cold))} | ${s(passing(warm))} | ${near(cold)} / ${near(warm)} |`);
+  const busy = (list: typeof cold) => {
+    const xs = of(list).flatMap((a) => (a.cpu === null ? [] : [a.cpu]));
+    return xs.length ? `${Math.round(median(xs))}%` : '–';
+  };
+  lines.push(`| ${fw} | ${of(cold).length} | ${right(cold)} / ${right(warm)} | ${alarms(cold)} / ${alarms(warm)} | ${s(passing(cold))} | ${s(passing(warm))} | ${near(cold)} / ${near(warm)} | ${busy(cold)} / ${busy(warm)} |`);
 }
 const wall = (mode: 'cold' | 'warm') => median(passes[mode].map((p) => p.wallMs));
 lines.push('', `Wall time, cold / warm: ${s(wall('cold'))} / ${s(wall('warm'))} (parallel ${parallel}, ${rounds} round${rounds > 1 ? 's' : ''}, ${items.length} apps)`);
