@@ -235,6 +235,8 @@ export function createChildProcess(host: ChildProcessHost) {
     private worker: globalThis.Worker | null = null;
     private shell: { kill(): void } | null = null;
     private done = false;
+    /** A signal (not kill(0)'s probe) is ending it: its program's or script's own end is not its exit. */
+    private signalled = false;
 
     /** Starts `node …` as a nested runtime, or fails (asynchronously, as Node does) for any other program. */
     start(file: string, args: string[], options: SpawnOptions, forkIpc: boolean) {
@@ -262,7 +264,7 @@ export function createChildProcess(host: ChildProcessHost) {
       };
       if (options.sandburgCommand) {
         this.once('exit', (code: number | null) => {
-          if (code) host.reportExit?.({ command: argv.join(' '), code, stderr: stderrTail });
+          if (code && !this.signalled) host.reportExit?.({ command: argv.join(' '), code, stderr: stderrTail });
         });
       }
       this.connected = ipc;
@@ -332,10 +334,10 @@ export function createChildProcess(host: ChildProcessHost) {
         },
         exists: (path) => vfs.exists(path),
         write,
-        // kill() with a signal finishes it at once: the script's end after (its commands killed: 143)
-        // is then not its exit. kill(0) only probes: the script's end is.
+        // Once a signal is ending it, the script's end (its commands killed: 143, as kill() kills them)
+        // is not its exit: kill() reports the signal. kill(0) only probes: the script's end is.
         onExit: (code) => {
-          this.finish(code, null);
+          if (!this.signalled) this.finish(code, null);
         },
         stepsAhead: shellStepsAhead,
       });
@@ -374,6 +376,7 @@ export function createChildProcess(host: ChildProcessHost) {
       if (this.done || (!this.worker && !this.shell)) return false;
       this.killed = true;
       if (name === null) return true;
+      this.signalled = true;
       this.shell?.kill();
       this.finish(null, name);
       return true;
