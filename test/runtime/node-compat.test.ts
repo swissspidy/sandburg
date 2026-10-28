@@ -1088,11 +1088,12 @@ test("http: a request's timeout counts idle time: not while its response keeps c
 
 test("http: a response's start is activity for its request's timeout", async () => {
   const out = await h.run({ 'main.js': `
-        // The response's start is activity too: headers late in the timeout (150 of 200 ms), the body 150 ms after.
+        // The response's start is activity too: headers late in the timeout (300 of 400 ms), the body 300 ms
+        // after. Reported once the request closed.
         const http = require('http');
         http.createServer((req, res) => {
-          setTimeout(() => res.flushHeaders(), 150);
-          setTimeout(() => res.end('late'), 300);
+          setTimeout(() => res.flushHeaders(), 300);
+          setTimeout(() => res.end('late'), 600);
         }).listen(3018, () => {
           const log = [];
           const req = http.get('http://localhost:3018/', (res) => {
@@ -1101,7 +1102,7 @@ test("http: a response's start is activity for its request's timeout", async () 
             res.on('data', (d) => (body += d));
             res.on('end', () => log.push('end ' + body));
           });
-          req.setTimeout(200, () => log.push('timeout'));
+          req.setTimeout(400, () => log.push('timeout'));
           req.on('close', () => {
             console.log(log.concat('req close').join(' | '));
             process.exit(0);
@@ -1226,13 +1227,16 @@ test('http: res.flushHeaders() sends the headers at once: a destroy right after 
 
 test("http: a request's timeout starts once it has a socket, not while it waits for one of its agent's", async () => {
   const out = await h.run({ 'main.js': `
-        // A request's timeout starts once it has a socket, not while it waits in its agent's queue.
+        // A request's timeout starts once it has a socket, not while it waits in its agent's queue: /a (600 ms)
+        // times out at 300; /b (50 ms) waits for its socket meanwhile, then is answered. Reported once both
+        // closed and twice the timeout went by, whatever the machine's speed.
         const http = require('http');
         const log = [];
-        http.createServer((req, res) => setTimeout(() => res.end('x'), req.url === '/a' ? 300 : 50)).listen(3031, () => {
+        http.createServer((req, res) => setTimeout(() => res.end('x'), req.url === '/a' ? 600 : 50)).listen(3031, () => {
           const agent = new http.Agent({ maxSockets: 1 });
+          let open = 2;
           for (const path of ['/a', '/b']) {
-            const req = http.get({ port: 3031, path, agent, timeout: 200 }, (res) => {
+            const req = http.get({ port: 3031, path, agent, timeout: 300 }, (res) => {
               res.resume();
               res.on('end', () => log.push('end ' + path));
             });
@@ -1241,11 +1245,14 @@ test("http: a request's timeout starts once it has a socket, not while it waits 
               req.destroy();
             });
             req.on('error', (e) => log.push('error ' + path + ' ' + e.code));
+            req.on('close', () => {
+              if (--open) return;
+              setTimeout(() => {
+                console.log(log.join(' | '));
+                process.exit(0);
+              }, 600);
+            });
           }
-          setTimeout(() => {
-            console.log(log.join(' | '));
-            process.exit(0);
-          }, 800);
         });` }, '/app/main.js');
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout, 'timeout /a | error /a ECONNRESET | end /b\n');
@@ -1299,17 +1306,18 @@ test("http: a request made and not ended keeps its agent's socket", async () => 
 
 test("http: a request's 'timeout' comes once (setTimeout again in its handler makes no other)", async () => {
   const out = await h.run({ 'main.js': `
-        // 'timeout' comes once: setTimeout again in its handler does not make another.
+        // 'timeout' comes once: setTimeout again in its handler does not make another (it would at 500 ms, before
+        // the response at 1200). Reported once the request closed.
         const http = require('http');
-        http.createServer((req, res) => setTimeout(() => res.end('x'), 600)).listen(3033, () => {
+        http.createServer((req, res) => setTimeout(() => res.end('x'), 1200)).listen(3033, () => {
           const log = [];
           const req = http.get('http://localhost:3033/', (res) => {
             res.resume();
             res.on('end', () => log.push('end'));
           });
-          req.setTimeout(150, () => {
+          req.setTimeout(300, () => {
             log.push('timeout');
-            req.setTimeout(100);
+            req.setTimeout(200);
           });
           req.on('timeout', () => log.push('req timeout'));
           req.on('close', () => {
