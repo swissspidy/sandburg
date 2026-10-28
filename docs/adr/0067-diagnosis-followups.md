@@ -163,8 +163,8 @@ is a genuine timeout labelled with a source file the app read, and the evidence 
 
   | App | Before (v7 study) | Now, cold | Now, warm |
   |---|---|---|---|
-  | 148 (syntax) | `timeout` after 242 s | `compile-error` `src/components/ConverterFeature.tsx:3:16: Unexpected ";"`, {148C} | the same, {148W} |
-  | 203 (undeclared import) | `timeout` after 242 s | `undeclared-import` `imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)`, {203C} | the same, {203W} |
+  | 148 (syntax) | `timeout` after 242 s | `compile-error` `src/components/ConverterFeature.tsx:3:16: Unexpected ";"`, 248.3 s (ready timed out at 240 s) | the same, 241.2 s (ready timed out at 240 s) |
+  | 203 (undeclared import) | `timeout` after 242 s | `undeclared-import` `imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)`, 249.7 s (ready timed out at 240 s) | the same, {203W} |
 
   SolidStart's server render reads the broken component, and dayjs is not installed: both bear on
   the app. With the early fail (before this decision) they ended at about 20 s of ready.
