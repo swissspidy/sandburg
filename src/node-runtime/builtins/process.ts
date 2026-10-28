@@ -26,6 +26,8 @@ const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
 const nativeSetInterval = globalThis.setInterval.bind(globalThis);
 const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
+/** Reports an error as uncaught (the worker's 'error' event), as one thrown from a task would be. */
+const reportUncaught = globalThis.reportError?.bind(globalThis) ?? ((e: unknown) => queueMicrotask(() => { throw e; }));
 
 class Timeout {
   private id: ReturnType<typeof nativeSetTimeout> | null = null;
@@ -41,8 +43,19 @@ class Timeout {
   }
   /** Scheduled, and pending (in byId) until it fires or is cleared; a refresh() after it fired schedules it again. */
   private start() {
-    this.id = this.repeat ? nativeSetInterval(this.fn, this.ms) : nativeSetTimeout(this.fn, this.ms);
+    const fn = this.fn;
+    this.due = performance.now() + this.ms;
+    this.id = this.repeat ? nativeSetInterval(() => {
+      this.due += this.ms;
+      fn();
+    }, this.ms) : nativeSetTimeout(fn, this.ms);
     byId.set(Number(this.id), this);
+  }
+  /** When it fires next (see timerDue). */
+  due = 0;
+  /** Scheduled and not cleared (a timeout: not fired yet). */
+  get pending() {
+    return this.id !== null;
   }
   /** It fired (a timeout: no longer pending). */
   fired() {
@@ -100,7 +113,9 @@ function make(repeat: boolean) {
   return (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
     if (typeof fn !== 'function') throw new TypeError('The "callback" argument must be of type function');
     const bound = bindContext(fn as never) as (...a: unknown[]) => void;
-    const t: Timeout = new Timeout(() => {
+    const fire = () => {
+      // Cleared while it waited for a turn to end (see dueTimers).
+      if (!t.pending) return;
       if (!repeat) t.fired();
       if (stopped) return t.clear();
       phase = 'timers';
@@ -110,7 +125,8 @@ function make(repeat: boolean) {
         // What it queued (process.nextTick, promises) still runs in it.
         queueMicrotask(toPoll);
       }
-    }, Math.max(1, Number(ms) || 1), repeat);
+    };
+    const t: Timeout = new Timeout(() => (turnRunning ? dueTimers.push(fire) : fire()), Math.max(1, Number(ms) || 1), repeat);
     return t;
   };
 }
@@ -130,7 +146,7 @@ function clear(t: unknown) {
  */
 export const pendingWork = { count: 0 };
 export function timersActive(): boolean {
-  if (immediateQueue.length || closeQueue.length || ioQueue.length || pendingWork.count > 0) return true;
+  if (turnPosted || immediateQueue.length || closeQueue.length || ioQueue.length || nextIoQueue.length || dueTimers.length || pendingWork.count > 0) return true;
   for (const t of byId.values()) if (t.alive) return true;
   return false;
 }
@@ -146,6 +162,8 @@ export function stopTimers(): void {
   immediateQueue.length = 0;
   closeQueue.length = 0;
   ioQueue.length = 0;
+  nextIoQueue.length = 0;
+  dueTimers.length = 0;
 }
 
 class Immediate {
@@ -160,50 +178,98 @@ const immediateQueue: (() => void)[] = [];
 const closeQueue: (() => void)[] = [];
 /** What runs as I/O callbacks do (see onIoPhase): on the next turn, before its immediates. */
 const ioQueue: (() => void)[] = [];
+/** I/O for the loop's next iteration, after this one's close callbacks (see onPeerPhase), in the order it came. */
+const nextIoQueue: (() => void)[] = [];
 /**
- * A turn of the loop: its I/O callbacks, then its immediates, then its close callbacks, each callback a
- * task of its own (what it queued with process.nextTick or promises runs before the next, as in Node).
- * `batch`: what is left of the step's callbacks, taken as it began (those queued since wait for the next turn).
+ * A turn of the loop: its I/O callbacks, then its immediates, then its close callbacks (each step's as
+ * they were when it began: those queued since wait for the next turn). It is one task: a timer that
+ * comes due meanwhile waits for its end, as Node's wait for the loop's next timers phase. Between two
+ * callbacks, what the first queued with process.nextTick or promises runs (see settle), as in Node.
  */
 type Step = 'io' | 'check' | 'close';
-let turn: { step: Step | null; batch: (() => void)[] | null } | null = null;
-const queues: Record<Step, (() => void)[]> = { io: ioQueue, check: immediateQueue, close: closeQueue };
 const STEPS: Step[] = ['io', 'check', 'close'];
+const queues: Record<Step, (() => void)[]> = { io: ioQueue, check: immediateQueue, close: closeQueue };
+/** A turn is posted or going (it keeps the process alive: see timersActive). */
+let turnPosted = false;
+let turnRunning = false;
+/** Timers that came due during a turn: they run as it ends. */
+const dueTimers: (() => void)[] = [];
+/**
+ * How long a turn runs before it lets the browser in (a message, a timer, then the rest of the turn):
+ * a huge batch of immediates does not hold the runtime for its whole length.
+ */
+const TURN_BUDGET_MS = 100;
+/** Microtask hops after a callback: what it queued (and what that queued, to this depth) runs before the next. */
+const SETTLE_HOPS = 4;
+const RESOLVED = Promise.resolve();
+const yieldChannel = new MessageChannel();
+const yielded: (() => void)[] = [];
+yieldChannel.port1.onmessage = () => yielded.shift()?.();
 function postTurn() {
-  if (turn) return;
-  turn = { step: null, batch: null };
+  if (turnPosted) return;
+  turnPosted = true;
   immediateChannel.port2.postMessage(0);
 }
-immediateChannel.port1.onmessage = () => {
-  const t = turn as { step: Step | null; batch: (() => void)[] | null };
-  // Its first step with something to run, as it begins.
-  t.step ??= STEPS.find((step) => queues[step].length) ?? 'close';
-  if (!t.batch) {
-    // As libuv's closing handles, the last closed first.
-    t.batch = t.step === 'close' ? closeQueue.splice(0).reverse() : queues[t.step].splice(0);
-  }
-  phase = t.step === 'io' ? 'poll' : t.step;
+immediateChannel.port1.onmessage = () => void runTurn();
+/** Runs a callback of the turn: as in Node, what it throws is uncaught (process 'uncaughtException'), and the rest still run. */
+function runOne(fn: () => void) {
   try {
-    // As in Node: what it throws is uncaught (process 'uncaughtException'); the rest still run, before
-    // those queued since. process.exit() ends it there (nothing runs once it stopped).
-    t.batch.shift()?.();
-  } finally {
-    queueMicrotask(toPoll);
-    // Its next callback, the next step's (skipping those with none), or the next turn, if anything waits for one.
-    let next: Step | undefined = t.step;
-    if (!t.batch.length) {
-      t.batch = null;
-      next = STEPS.slice(STEPS.indexOf(t.step) + 1).find((step) => queues[step].length);
-    }
-    if (next) {
-      t.step = next;
-      immediateChannel.port2.postMessage(0);
-    } else {
-      turn = null;
-      if (ioQueue.length || immediateQueue.length || closeQueue.length) postTurn();
-    }
+    fn();
+  } catch (e) {
+    // process.exit() reports too, and ends it there (nothing runs once it stopped).
+    reportUncaught(e);
   }
-};
+}
+/** Whether a timer has come due (its callback waits for the browser to run it). */
+function timerDue(): boolean {
+  const now = performance.now();
+  for (const t of byId.values()) if (t.due <= now) return true;
+  return false;
+}
+/** How long a turn goes on into the loop's next iteration (no timer due), instead of a task of its own. */
+const TURN_CONTINUE_MS = 4;
+async function runTurn() {
+  turnRunning = true;
+  const start = performance.now();
+  let since = start;
+  try {
+    do {
+      for (const step of STEPS) {
+        if (!queues[step].length) continue;
+        phase = step === 'io' ? 'poll' : step;
+        // As libuv's closing handles, the last closed first.
+        const batch = step === 'close' ? closeQueue.splice(0).reverse() : queues[step].splice(0);
+        for (let i = 0; i < batch.length; i++) {
+          runOne(batch[i]);
+          // What it queued runs before the next (to SETTLE_HOPS deep).
+          for (let hop = 0; hop < SETTLE_HOPS; hop++) await RESOLVED;
+          if (stopped) return;
+          if (performance.now() - since > TURN_BUDGET_MS && i + 1 < batch.length) {
+            await new Promise<void>((resume) => {
+              yielded.push(resume);
+              yieldChannel.port2.postMessage(0);
+            });
+            since = performance.now();
+            phase = step === 'io' ? 'poll' : step;
+          }
+        }
+      }
+      // What this iteration's other ends see on the next.
+      ioQueue.push(...nextIoQueue.splice(0));
+    } while (performance.now() - start < TURN_CONTINUE_MS && (ioQueue.length || immediateQueue.length || closeQueue.length) && !dueTimers.length && !timerDue());
+  } finally {
+    turnRunning = false;
+    turnPosted = false;
+    phase = 'poll';
+    // The loop's next timers phase: those that came due during the turn.
+    for (const timer of dueTimers.splice(0)) {
+      runOne(timer);
+      for (let hop = 0; hop < SETTLE_HOPS; hop++) await RESOLVED;
+    }
+    phase = 'poll';
+    if (ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
+  }
+}
 
 /**
  * Runs `fn` as libuv runs a closed handle's callback (a socket's 'close'): after what process.nextTick,
@@ -230,8 +296,11 @@ function onIoPhase(fn: () => void): void {
  * before the immediates and close callbacks this turn queued; else the next iteration's, after them.
  */
 export function onPeerPhase(fn: () => void): void {
-  if (phase === 'timers' || phase === 'close') onIoPhase(fn);
-  else onClosePhase(() => onIoPhase(fn));
+  if (phase === 'timers') return onIoPhase(fn);
+  nextIoQueue.push(() => {
+    if (!stopped) fn();
+  });
+  postTurn();
 }
 
 export const timers = {

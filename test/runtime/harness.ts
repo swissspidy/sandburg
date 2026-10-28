@@ -290,6 +290,10 @@ export class RuntimeHarness {
       // program to wait, while it runs, for this side to have seen its connections close.
       if (url.pathname === '/__test/hold-closed') {
         const count = Number(url.searchParams.get('count'));
+        if (!Number.isInteger(count) || count < 0) {
+          res.writeHead(400, { 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+          return res.end('count must be a whole number');
+        }
         const closed = () => this.asked.filter((a) => a === 'hold closed').length;
         const answer = () => {
           this.holdWaiters.delete(check);
@@ -300,6 +304,11 @@ export class RuntimeHarness {
         const check = () => void (closed() >= count && answer());
         const timer = setTimeout(answer, 10_000);
         this.holdWaiters.add(check);
+        // Its client went away: nothing to answer.
+        res.on('close', () => {
+          this.holdWaiters.delete(check);
+          clearTimeout(timer);
+        });
         return check();
       }
       if (url.pathname === '/__sandburg/tla-scan') {

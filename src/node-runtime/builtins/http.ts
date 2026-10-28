@@ -11,7 +11,7 @@ import { Duplex, Readable, Writable } from 'readable-stream';
 import { ExitError, onClosePhase, onPeerPhase, timers } from './process.ts';
 
 const STATUS_CODES: Record<number, string> = {
-  100: 'Continue', 101: 'Switching Protocols', 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
+  100: 'Continue', 101: 'Switching Protocols', 102: 'Processing', 103: 'Early Hints', 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
   301: 'Moved Permanently', 302: 'Found', 303: 'See Other', 304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Request Timeout', 409: 'Conflict',
   410: 'Gone', 413: 'Payload Too Large', 415: 'Unsupported Media Type', 422: 'Unprocessable Entity', 429: 'Too Many Requests',
@@ -29,6 +29,8 @@ export interface BridgeResponse {
   flush?(): void;
   /** The server read this many bytes of a streamed request body: its client may send as many more (see BODY_WINDOW). */
   consumed?(bytes: number): void;
+  /** An informational response before the response (100 Continue, 102, 103 Early Hints). */
+  info?(status: number, statusText: string, headers: [string, string][]): void;
   /**
    * How long the client keeps the connection once the response ended (as a Node agent does, see
    * Agent.idleTimeout): 0 closes it then, null keeps it as long as the server does. Unset: the page's
@@ -388,8 +390,23 @@ export class ServerResponse extends Writable {
     }
     return this;
   }
-  writeContinue() {}
-  writeEarlyHints() {}
+  /** As Node's: informational responses, before the response (sent with what else it sends in this tick). */
+  writeContinue(cb?: () => void) {
+    this.#info(100, []);
+    if (cb) queueMicrotask(cb);
+  }
+  writeProcessing(cb?: () => void) {
+    this.#info(102, []);
+    if (cb) queueMicrotask(cb);
+  }
+  writeEarlyHints(hints: Record<string, string | string[]>, cb?: () => void) {
+    this.#info(103, Object.entries(hints ?? {}).map(([k, v]) => [k.toLowerCase(), Array.isArray(v) ? v.join(', ') : String(v)]));
+    if (cb) queueMicrotask(cb);
+  }
+  #info(status: number, headers: [string, string][]) {
+    if (this.headersSent || this.destroyed) return;
+    this.#send(() => this.bridge.info?.(status, STATUS_CODES[status] ?? '', headers));
+  }
   addTrailers() {}
   assignSocket() {}
   detachSocket() {}
@@ -479,6 +496,10 @@ export class Server extends EventEmitter {
   /** How often requests whose body is still coming are checked against requestTimeout (see #checkRequests). */
   connectionsCheckingInterval = 30000;
   maxHeadersCount: number | null = null;
+  /** Its connections, and whether each is idle (its response ended): see closeIdleConnections. */
+  #connections = new Map<FakeSocket, () => boolean>();
+  /** close() was called: 'close' comes once its last connection closed. */
+  #closing: (() => void) | null = null;
   /** Requests whose body is still coming, and since when (for requestTimeout). */
   #incoming = new Map<IncomingMessage, { since: number; expire(): void }>();
   #checking: ReturnType<typeof timers.setInterval> | undefined;
@@ -550,20 +571,38 @@ export class Server extends EventEmitter {
     if (!this.listening) return null;
     return typeof this.port === 'string' ? this.port : { address: '127.0.0.1', family: 'IPv4', port: this.port };
   }
+  /**
+   * As Node's: it stops listening and closes its idle connections; 'close' (and `cb`) once its last
+   * connection closed too. Closed already, `cb` gets ERR_SERVER_NOT_RUNNING.
+   */
   close(cb?: (e?: Error) => void) {
+    if (!this.listening) {
+      if (cb) queueMicrotask(() => cb(Object.assign(new Error('Server is not running.'), { code: 'ERR_SERVER_NOT_RUNNING' })));
+      return this;
+    }
     if (servers.get(this.port) === this) servers.delete(this.port);
     this.listening = false;
     timers.clearInterval(this.#checking);
     this.#checking = undefined;
     serverEvents.emit('closed', this.port);
-    queueMicrotask(() => {
-      this.emit('close');
-      cb?.();
-    });
+    if (cb) this.once('close', cb);
+    this.#closing = () => {
+      if (this.#connections.size) return;
+      this.#closing = null;
+      queueMicrotask(() => this.emit('close'));
+    };
+    this.closeIdleConnections();
+    this.#closing();
     return this;
   }
-  closeAllConnections() {}
-  closeIdleConnections() {}
+  /** As Node's: every connection closes, those with a response in flight too. */
+  closeAllConnections() {
+    for (const socket of [...this.#connections.keys()]) socket.destroy();
+  }
+  /** As Node's: the connections no response is in flight on close (kept alive after one ended). */
+  closeIdleConnections() {
+    for (const [socket, idle] of [...this.#connections]) if (idle()) socket.destroy();
+  }
   /** As Node's: the idle timeout of connections from now on, and `cb` for their 'timeout'. */
   setTimeout(ms?: number, cb?: () => void) {
     if (typeof ms === 'function') [ms, cb] = [undefined, ms];
@@ -571,9 +610,25 @@ export class Server extends EventEmitter {
     if (cb) this.on('timeout', cb);
     return this;
   }
-  ref() { return this; }
-  unref() { return this; }
-  getConnections(cb: (e: null, n: number) => void) { cb(null, 0); }
+  /** As Node's: an unref'd server does not keep the process alive (see keepsAlive). */
+  #refed = true;
+  ref() {
+    this.#refed = true;
+    return this;
+  }
+  unref() {
+    this.#refed = false;
+    return this;
+  }
+  /** Whether it keeps the process alive: listening, and not unref'd. */
+  get keepsAlive() {
+    return this.listening && this.#refed;
+  }
+  getConnections(cb: (e: null, n: number) => void) {
+    const n = this.#connections.size;
+    queueMicrotask(() => cb(null, n));
+    return this;
+  }
 
   /**
    * As Node's checkConnections: a request whose body is still coming after requestTimeout fails
@@ -616,7 +671,11 @@ export class Server extends EventEmitter {
     };
     // Once it closed (or the client went away): as Node's abortIncoming, the request is destroyed
     // ('aborted' if it was not read to its end; its 'error' and 'close' later), and the response closes at once.
+    // A connection of its own (as with Node's client, which does not reuse it for another request here).
+    this.#connections.set(socket, () => res.finished);
     socket.once('close', () => {
+      this.#connections.delete(socket);
+      this.#closing?.();
       this.#incoming.delete(req);
       if (res.finished) return;
       req.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
@@ -666,7 +725,23 @@ export class Server extends EventEmitter {
       req.push(null);
       req.complete = true;
     }
-    this.emit('request', req, res);
+    this.emit('connection', socket);
+    // As Node's: an Expect it knows (100-continue) is the 'checkContinue' listener's to answer, else it
+    // goes on at once; one it does not know is 'checkExpectation''s, else refused (417).
+    const expect = req.headers.expect;
+    if (typeof expect === 'string' && /^100-continue$/i.test(expect)) {
+      if (this.listenerCount('checkContinue')) this.emit('checkContinue', req, res);
+      else {
+        res.writeContinue();
+        this.emit('request', req, res);
+      }
+    } else if (expect !== undefined) {
+      if (this.listenerCount('checkExpectation')) this.emit('checkExpectation', req, res);
+      else {
+        res.writeHead(417);
+        res.end();
+      }
+    } else this.emit('request', req, res);
     return {
       // Its client went away: the connection closes (and nothing goes back to it).
       abort: () => {
@@ -1157,6 +1232,13 @@ class ClientRequest extends Writable {
         if (!res.complete && !res.destroyed) this.#reset();
       },
       consumed: (n: number) => this.#consumed(n),
+      // As Node's: 'continue' for a 100, and 'information' for each.
+      info: (status: number, statusText: string, headers: [string, string][]) => {
+        if (this.destroyed || res) return;
+        if (status === 100) this.emit('continue');
+        const msg = new IncomingMessage(this.method, this.path, headers, 0);
+        this.emit('information', { statusCode: status, statusMessage: statusText, httpVersion: '1.1', httpVersionMajor: 1, httpVersionMinor: 1, headers: msg.headers, rawHeaders: msg.rawHeaders });
+      },
       idle: this.#idle,
     };
     const server = servers.get(this.target!);
@@ -1172,6 +1254,7 @@ class ClientRequest extends Writable {
         error: (message, code) => toClient(() => bridge.error(message, code)),
         flush: () => {},
         consumed: (n) => toClient(() => bridge.consumed(n)),
+        info: (status, statusText, headers) => toClient(() => bridge.info(status, statusText, headers)),
         idle: bridge.idle,
       };
       let dispatched: Dispatched | null = null;

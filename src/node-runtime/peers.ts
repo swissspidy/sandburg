@@ -116,6 +116,9 @@ export const nestedSockets = new Map<number, globalThis.Worker>();
 /** Requests in flight to nested runtimes (from the page, a parent or loopback.route), by id: failed if the runtime ends first (forgetNested). */
 const inflight = new Map<number, globalThis.Worker>();
 
+/** The nested runtime each of this runtime's own loopback requests went to, while its body goes there (see loopback.route). */
+const routedTo = new Map<number, globalThis.Worker>();
+
 /** Requests this runtime's programs made to servers in nested runtimes (http.request to localhost). */
 const loopbackRequests = new Map<number, BridgeResponse & { error(message: string, code?: string): void }>();
 
@@ -138,6 +141,7 @@ loopback.route = (target, method, url, headers, body, bridge) => {
   const send = worker ? (m: ToWorker, t: Transferable[] = []) => worker.postMessage(m, t) : null;
   if (worker) {
     inflight.set(id, worker);
+    if (sending) routedTo.set(id, worker);
     send!({ type: 'request', ...msg }, buf ? [buf] : []);
   } else realPostMessage({ type: 'lb-request', ...msg } satisfies ToParent, buf ? [buf] : []);
   return {
@@ -150,6 +154,7 @@ loopback.route = (target, method, url, headers, body, bridge) => {
     end: () => {
       if (!sending) return;
       sending = false;
+      routedTo.delete(id);
       if (send) send({ type: 'request-body-end', id });
       else realPostMessage({ type: 'lb-body-end', id } satisfies ToParent);
     },
@@ -157,6 +162,7 @@ loopback.route = (target, method, url, headers, body, bridge) => {
       const answering = loopbackRequests.delete(id);
       if (!answering && !sending) return;
       sending = false;
+      routedTo.delete(id);
       if (send) {
         inflight.delete(id);
         send({ type: 'request-cancel', id });
@@ -213,6 +219,7 @@ export function forgetNested(worker: globalThis.Worker) {
   }
   for (const [key, w] of nestedNet) if (w === worker) nestedNet.delete(key);
   for (const [id, w] of forwardedBodies) if (w === worker) forwardedBodies.delete(id);
+  for (const [id, w] of routedTo) if (w === worker) routedTo.delete(id);
   for (const [id, w] of inflight) {
     if (w !== worker) continue;
     inflight.delete(id);
@@ -257,6 +264,7 @@ export function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
   if (m.type === 'lb-start') bridge.start(m.status, m.statusText, m.headers);
   else if (m.type === 'lb-chunk') bridge.chunk(new Uint8Array(m.chunk));
   else if (m.type === 'lb-read') bridge.consumed?.(m.bytes);
+  else if (m.type === 'lb-info') bridge.info?.(m.status, m.statusText, m.headers);
   else {
     loopbackRequests.delete(m.id);
     if (m.type === 'lb-end') bridge.end();
@@ -311,6 +319,7 @@ function loopbackRequest(m: Extract<ToParent, { type: 'lb-request' }>, from: glo
     end: () => close() && reply({ type: 'lb-end', id }),
     error: (message: string, code?: string) => close() && reply({ type: 'lb-error', id, message, code }),
     consumed: (bytes: number) => reply({ type: 'lb-read', id, bytes }),
+    info: (status: number, statusText: string, headers: [string, string][]) => open && reply({ type: 'lb-info', id, status, statusText, headers }),
     idle: m.idle,
     close,
   };
@@ -369,11 +378,15 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'net-closed':
       netMessage(m, (x, t) => from.postMessage(x, t ?? []), from);
       return true;
+    case 'response-info':
     case 'response-read': {
-      // Ours (loopback.route), or one this runtime forwarded from its parent: up to it.
+      // From the runtime the request went to: ours (loopback.route), else one this runtime forwarded
+      // (from its parent), up to it.
+      if (inflight.get(m.id) !== from && forwardedBodies.get(m.id) !== from && routedTo.get(m.id) !== from) return true;
       const own = loopbackRequests.get(m.id);
-      if (own) own.consumed?.(m.bytes);
-      else if (inflight.has(m.id) || forwardedBodies.has(m.id)) post(m);
+      if (!own) post(m);
+      else if (m.type === 'response-info') own.info?.(m.status, m.statusText, m.headers);
+      else own.consumed?.(m.bytes);
       return true;
     }
     case 'response-start':

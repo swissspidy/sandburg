@@ -21,13 +21,16 @@ async function run(main: string, others: string[] = [], env: Record<string, stri
 }
 
 // The same in each topology: the client writes each chunk once the server echoed the one before (a
-// body sent whole at its end would never come), and the server sees a client gone mid-body.
+// body sent whole at its end would never come), Expect: 100-continue and early hints, and the server
+// sees a client gone mid-body.
 const STREAMED = [
   'client /echo: got A, got B, got C, got ., client end',
+  'client /continue: information 100 {}, information 103 {"link":"</a.css>; rel=preload"}, got ok, client end',
   'client /mid: client error socket hang up',
   'client /timeout: got late, client end',
   'client /idle: client error socket hang up',
   'server request /echo content-length=- transfer-encoding=chunked, data a, data b, data c, end, req close',
+  'server request /continue content-length=- transfer-encoding=chunked, data after continue, req close',
   'server request /mid content-length=- transfer-encoding=chunked, data a, aborted, req error ECONNRESET, req close',
   'server request /idle content-length=- transfer-encoding=chunked, aborted, req error ECONNRESET, req close',
 ];
@@ -115,5 +118,31 @@ test('http: server timeout options: their defaults, what is refused, and setTime
     '{"keepAliveTimeout":1.5}: RangeError ERR_OUT_OF_RANGE The value of "keepAliveTimeout" is out of range. It must be an integer. Received 1.5',
     '{"headersTimeout":"5"}: TypeError ERR_INVALID_ARG_TYPE The "headersTimeout" argument must be of type number. Received type string (\'5\')',
     'setTimeout returns the server: true timeout=5 listeners=1',
+  ]);
+});
+
+test("http: a server's connections: 'connection', getConnections(), close() closing the idle ones, closeIdleConnections() and closeAllConnections()", async () => {
+  assert.deepEqual(await run('server-close.cjs'), [
+    'close(): request /ok, request /held, >100 connections=2 closed=none, connections 2, >300 connections=2 closed=/ok, >1500 connections=2 closed=/ok',
+    'closeIdleConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, >300 connections=2 closed=/ok, >1500 connections=2 closed=/ok',
+    'closeAllConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, client error /held socket hang up, >300 connections=2 closed=/held+/ok, >1500 connections=2 closed=/held+/ok',
+  ]);
+});
+
+test("http: Expect: 100-continue ('continue', 'checkContinue'), other expectations (417, 'checkExpectation'), and early hints", async () => {
+  assert.deepEqual(await run('expect.cjs'), [
+    '100-continue: server request, client continue, client information 100 Continue {}, server body "body", client response 200 "ok"',
+    'checkContinue, continued: server checkContinue, client continue, client information 100 Continue {}, server body "body", client response 200 "ok"',
+    'checkContinue, refused: server checkContinue, client response 417 "no"',
+    'other expectation: client response 417 ""',
+    'checkExpectation: server checkExpectation something, client response 200 "checked"',
+    'early hints: server body "y", client information 103 Early Hints {"link":"</a.css>; rel=preload"}, client information 102 Processing {}, client response 200 "ok"',
+  ]);
+});
+
+test("http: an unref'd server does not keep the process alive; one ref'd again does, until it closes", async () => {
+  assert.deepEqual(await run('server-unref.cjs'), [
+    'closing the ref\'d one',
+    'exit',
   ]);
 });

@@ -644,7 +644,7 @@ function exitWhenIdle() {
   globalThis.fetch = track(globalThis.fetch.bind(globalThis));
   const wasm = WebAssembly as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
   for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) if (wasm[name]) wasm[name] = track(wasm[name].bind(WebAssembly));
-  const busy = () => timersActive() || servers.size > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
+  const busy = () => timersActive() || [...servers.values()].some((s) => s.keepsAlive) || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
   let idle = 0;
   const timer = nativeSetInterval(() => {
     if (hasExited) return nativeClearInterval(timer);
@@ -867,6 +867,7 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
       },
       // A streamed body: its client may send as much more as the server read.
       consumed: (bytes) => post({ type: 'response-read', id, bytes }),
+      info: (status, statusText, headers) => answer({ type: 'response-info', id, status, statusText, headers }),
       idle: msg.idle,
     });
     if (inflight.has(id)) requestAborts.set(id, dispatched.abort);

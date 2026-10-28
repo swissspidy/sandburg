@@ -532,6 +532,7 @@ export class NodeProcess {
       case 'booted':
       case 'message':
       case 'response-read':
+      case 'response-info':
         break;
     }
     for (const w of this.waiters) w();

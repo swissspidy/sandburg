@@ -17,21 +17,30 @@ function serve(report) {
       res.writeHead(200);
       req.on('data', (d) => { log.push(`data ${d}`); res.write(String(d).toUpperCase()); });
       req.on('end', () => { log.push('end'); res.end('.'); });
+    } else if (req.url === '/continue') {
+      // Expect: 100-continue: this server's 'checkContinue' lets it go on (the client sends its body then).
+      req.on('data', (d) => log.push(`data ${d}`));
+      req.on('end', () => res.end('ok'));
     } else if (req.url === '/timeout') res.setTimeout(150, () => { log.push('res timeout'); res.end('late'); });
     else if (req.url === '/idle') req.socket.setTimeout(150);
     else req.on('data', (d) => log.push(`data ${d}`));
+  }).on('checkContinue', (req, res) => {
+    res.writeContinue();
+    res.writeEarlyHints({ link: '</a.css>; rel=preload' });
+    req.socket.server.emit('request', req, res);
   }).listen(PORT, () => report('listening'));
 }
 async function client() {
   const lines = [];
-  const one = (path, act) => new Promise((done) => {
+  const one = (path, act, headers = {}) => new Promise((done) => {
     const log = [];
-    const r = http.request(`http://localhost:${PORT}${path}`, { method: 'POST' }, (res) => {
+    const r = http.request(`http://localhost:${PORT}${path}`, { method: 'POST', headers }, (res) => {
       res.on('data', (d) => { log.push(`got ${d}`); r.emit('echo', String(d)); });
       res.on('end', () => log.push('client end'));
       res.on('error', () => {});
     });
     r.on('error', (e) => log.push('client error ' + e.message));
+    r.on('information', (info) => log.push(`information ${info.statusCode} ${JSON.stringify(info.headers)}`));
     act(r, log);
     setTimeout(() => { lines.push(`client ${path}: ${log.join(', ')}`); done(); }, 500);
   });
@@ -44,6 +53,10 @@ async function client() {
     });
     r.write('a');
   });
+  await one('/continue', (r) => {
+    r.on('continue', () => r.end('after continue'));
+    r.flushHeaders();
+  }, { expect: '100-continue' });
   await one('/mid', (r) => { r.write('a'); setTimeout(() => r.destroy(), 100); });
   await one('/timeout', (r) => r.write('a'));
   await one('/idle', (r) => r.write('a'));

@@ -98,6 +98,27 @@ test("http: a request waiting for an agent's socket emits 'finish' once it went 
   ]);
 });
 
+test('timers: under load every immediate runs before the process exits, quickly, and those an I/O callback queued before its timer', async () => {
+  assert.deepEqual(await run('loop-busy.cjs'), [
+    'slow: 20 of 20 ran before the exit',
+    'many: all ran, under 1 s: true',
+    'many: 100000 ran before the exit',
+    'io: 2000 of 2000 immediates before the timer',
+    'order: tick0 I1 tick1 p1 I2 I3 T0',
+  ]);
+});
+
+test('http: what a server does from an I/O callback reaches its client in the process after its own side closed', async () => {
+  assert.deepEqual(await run('from-io.cjs'), [
+    'message',
+    'server aborted',
+    'server res close',
+    'server req close',
+    'client error socket hang up',
+    'client close',
+  ]);
+});
+
 test("http: a server's request destroyed (read or not), or its socket or response: when its events come", async () => {
   assert.deepEqual(await run('server-destroy.cjs'), [
     '/ destroy: pre,aborted,post,tick,req close,immediate,res close',

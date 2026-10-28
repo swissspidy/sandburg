@@ -17,6 +17,8 @@ export type FromWorker =
   | { type: 'response-error'; id: number; message: string; code?: string }
   /** The server read this much of a streamed request body (see BridgeResponse.consumed): its client may send more. */
   | { type: 'response-read'; id: number; bytes: number }
+  /** An informational response before the response (BridgeResponse.info: 100 Continue, 103 Early Hints). */
+  | { type: 'response-info'; id: number; status: number; statusText: string; headers: [string, string][] }
   | { type: 'exit'; code: number }
   /** trap: a WebAssembly trap ended a thread of this runtime (or the runtime itself, if it is a thread). */
   | { type: 'fatal'; message: string; stack?: string; trap?: boolean }
@@ -209,6 +211,7 @@ export type ToWorker =
   | { type: 'lb-chunk'; id: number; chunk: ArrayBuffer }
   | { type: 'lb-end'; id: number }
   | { type: 'lb-read'; id: number; bytes: number }
+  | { type: 'lb-info'; id: number; status: number; statusText: string; headers: [string, string][] }
   | { type: 'lb-error'; id: number; message: string; code?: string };
 
 /**
