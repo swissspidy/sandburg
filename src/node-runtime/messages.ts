@@ -15,6 +15,8 @@ export type FromWorker =
   | { type: 'response-full'; id: number; status: number; statusText: string; headers: [string, string][]; body: ArrayBuffer }
   /** code: the error's code for a client in a runtime (ECONNREFUSED: no server on the port); ECONNRESET without one. */
   | { type: 'response-error'; id: number; message: string; code?: string }
+  /** The server read this much of a streamed request body (see BridgeResponse.consumed): its client may send more. */
+  | { type: 'response-read'; id: number; bytes: number }
   | { type: 'exit'; code: number }
   /** trap: a WebAssembly trap ended a thread of this runtime (or the runtime itself, if it is a thread). */
   | { type: 'fatal'; message: string; stack?: string; trap?: boolean }
@@ -58,8 +60,14 @@ export type NetMessage =
 export type ToParent =
   | FromWorker
   | NetMessage
-  /** A request to a server this runtime does not run, for its parent to route (see loopback.route in worker.ts). */
-  | { type: 'lb-request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
+  /**
+   * A request to a server this runtime does not run, for its parent to route (see loopback.route in
+   * peers.ts): its whole body, or 'stream' for one that comes after it (lb-body, lb-body-end).
+   * `idle`: how long its client keeps the connection once the response ended (BridgeResponse.idle).
+   */
+  | { type: 'lb-request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null | 'stream'; idle?: number | null }
+  | { type: 'lb-body'; id: number; chunk: ArrayBuffer }
+  | { type: 'lb-body-end'; id: number }
   /** The program that made an lb-request went away from it (destroyed it, or its response): its server learns it. */
   | { type: 'lb-cancel'; id: number }
   /** A server that 'listening' announced closed, here or in a nested runtime: the parent stops routing its port here. */
@@ -178,7 +186,10 @@ export type ToWorker =
   | { type: 'disconnect' }
   /** A net connection between runtimes (see netMessage). */
   | NetMessage
-  | { type: 'request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }
+  /** As lb-request: a body of 'stream' comes after it (request-body, request-body-end). */
+  | { type: 'request'; id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null | 'stream'; idle?: number | null }
+  | { type: 'request-body'; id: number; chunk: ArrayBuffer }
+  | { type: 'request-body-end'; id: number }
   /** Its client went away from a request (a loopback request from the parent: see loopback.route): its server learns it. */
   | { type: 'request-cancel'; id: number }
   /** A message for the program (with init.ipc): process.on('message'). */
@@ -197,6 +208,7 @@ export type ToWorker =
   | { type: 'lb-start'; id: number; status: number; statusText: string; headers: [string, string][] }
   | { type: 'lb-chunk'; id: number; chunk: ArrayBuffer }
   | { type: 'lb-end'; id: number }
+  | { type: 'lb-read'; id: number; bytes: number }
   | { type: 'lb-error'; id: number; message: string; code?: string };
 
 /**

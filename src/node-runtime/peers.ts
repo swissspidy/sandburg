@@ -3,7 +3,7 @@
  * requests and WebSockets to servers in another runtime, routed down or up (ADR 0006).
  */
 import type { NetMessage, ToParent, ToWorker } from './messages.ts';
-import { loopback, servers, type BridgeResponse } from './builtins/http.ts';
+import { loopback, servers, STREAMED, type BridgeResponse, type Dispatched } from './builtins/http.ts';
 import { netEvents, netLinks, netServers, Socket as NetSocket } from './builtins/net.ts';
 import { thread, realPostMessage, post, announce, exited } from './worker.ts';
 import { ExitError } from './builtins/process.ts';
@@ -124,44 +124,75 @@ let nextLoopbackId = -1 - Math.floor(Math.random() * 2 ** 40);
 /**
  * A request to a server this runtime does not run: down to the nested runtime that runs it, else up
  * to the parent, which looks among its own servers and its other children (a Vite dev server
- * proxying /api to a backend that the same dev script started).
+ * proxying /api to a backend that the same dev script started). A streamed body follows it there.
  */
 loopback.route = (target, method, url, headers, body, bridge) => {
   const worker = nestedPorts.get(target);
   if (!worker && !thread) return false;
   const id = nextLoopbackId--;
   loopbackRequests.set(id, bridge);
-  const buf = body ? body.slice().buffer : null;
-  const msg = { id, port: target, method, url, headers, body: buf };
+  const buf = body && body !== STREAMED ? body.slice().buffer : null;
+  const msg = { id, port: target, method, url, headers, body: body === STREAMED ? STREAMED : buf, idle: bridge.idle };
+  // Its body goes until its end, or until its client went away.
+  let sending = body === STREAMED;
+  const send = worker ? (m: ToWorker, t: Transferable[] = []) => worker.postMessage(m, t) : null;
   if (worker) {
     inflight.set(id, worker);
-    worker.postMessage({ type: 'request', ...msg } satisfies ToWorker, buf ? [buf] : []);
-    return () => {
-      if (!loopbackRequests.delete(id)) return;
-      inflight.delete(id);
-      worker.postMessage({ type: 'request-cancel', id } satisfies ToWorker);
-    };
-  }
-  realPostMessage({ type: 'lb-request', ...msg }, buf ? [buf] : []);
-  return () => {
-    if (loopbackRequests.delete(id)) realPostMessage({ type: 'lb-cancel', id } satisfies ToParent);
+    send!({ type: 'request', ...msg }, buf ? [buf] : []);
+  } else realPostMessage({ type: 'lb-request', ...msg } satisfies ToParent, buf ? [buf] : []);
+  return {
+    write: (chunk) => {
+      if (!sending) return;
+      const data = chunk.slice().buffer;
+      if (send) send({ type: 'request-body', id, chunk: data }, [data]);
+      else realPostMessage({ type: 'lb-body', id, chunk: data } satisfies ToParent, [data]);
+    },
+    end: () => {
+      if (!sending) return;
+      sending = false;
+      if (send) send({ type: 'request-body-end', id });
+      else realPostMessage({ type: 'lb-body-end', id } satisfies ToParent);
+    },
+    cancel: () => {
+      const answering = loopbackRequests.delete(id);
+      if (!answering && !sending) return;
+      sending = false;
+      if (send) {
+        inflight.delete(id);
+        send({ type: 'request-cancel', id });
+      } else realPostMessage({ type: 'lb-cancel', id } satisfies ToParent);
+    },
   };
 };
 
 /** A request from the parent that this runtime forwarded to a nested one: its cancel goes on there. */
 export function cancelForwarded(id: number): boolean {
-  const worker = inflight.get(id);
+  const worker = inflight.get(id) ?? forwardedBodies.get(id);
   if (!worker) return false;
   inflight.delete(id);
+  forwardedBodies.delete(id);
   worker.postMessage({ type: 'request-cancel', id } satisfies ToWorker);
   return true;
 }
 
-/** A request from the page or the parent for a port a nested runtime serves: down to it. */
+/** Requests from the parent this runtime forwarded to a nested runtime whose body is still coming, by id. */
+const forwardedBodies = new Map<number, globalThis.Worker>();
+
+/** A request from the page or the parent for a port a nested runtime serves: down to it (and its body after it). */
 export function forwardRequest(msg: Extract<ToWorker, { type: 'request' }>) {
   const worker = nestedPorts.get(msg.port)!;
   inflight.set(msg.id, worker);
-  worker.postMessage(msg, msg.body ? [msg.body] : []);
+  if (msg.body === STREAMED) forwardedBodies.set(msg.id, worker);
+  worker.postMessage(msg, msg.body instanceof ArrayBuffer ? [msg.body] : []);
+}
+
+/** More of the body of a request from the parent: on to the nested runtime it went to, if it did. */
+export function forwardBody(msg: Extract<ToWorker, { type: 'request-body' | 'request-body-end' }>): boolean {
+  const worker = forwardedBodies.get(msg.id);
+  if (!worker) return false;
+  if (msg.type === 'request-body-end') forwardedBodies.delete(msg.id);
+  worker.postMessage(msg, msg.type === 'request-body' ? [msg.chunk] : []);
+  return true;
 }
 
 /** No server for `port` here or below any more: the parent stops routing it here (see 'listening'). */
@@ -181,6 +212,7 @@ export function forgetNested(worker: globalThis.Worker) {
     unannounce(port);
   }
   for (const [key, w] of nestedNet) if (w === worker) nestedNet.delete(key);
+  for (const [id, w] of forwardedBodies) if (w === worker) forwardedBodies.delete(id);
   for (const [id, w] of inflight) {
     if (w !== worker) continue;
     inflight.delete(id);
@@ -224,6 +256,7 @@ export function loopbackReply(m: Extract<ToWorker, { type: `lb-${string}` }>) {
   if (!bridge) return;
   if (m.type === 'lb-start') bridge.start(m.status, m.statusText, m.headers);
   else if (m.type === 'lb-chunk') bridge.chunk(new Uint8Array(m.chunk));
+  else if (m.type === 'lb-read') bridge.consumed?.(m.bytes);
   else {
     loopbackRequests.delete(m.id);
     if (m.type === 'lb-end') bridge.end();
@@ -248,12 +281,17 @@ export function loopbackServersGone(): void {
 /** What tells the server of each loopback request from a nested runtime that its client went away, by runtime and id. */
 const loopbackCancels = new WeakMap<globalThis.Worker, Map<number, () => void>>();
 
+/** Where the rest of the body of each of those requests goes (its server here, or on along its route), by runtime and id. */
+const loopbackBodies = new WeakMap<globalThis.Worker, Map<number, Pick<Dispatched, 'write' | 'end'>>>();
+
 /** A loopback request from a nested runtime: served here, or routed on (see loopback.route). */
-function loopbackRequest(m: { id: number; port: number | string; method: string; url: string; headers: [string, string][]; body: ArrayBuffer | null }, from: globalThis.Worker) {
+function loopbackRequest(m: Extract<ToParent, { type: 'lb-request' }>, from: globalThis.Worker) {
   const reply = (x: ToWorker, t: Transferable[] = []) => from.postMessage(x, t);
   const id = m.id;
   // Answered once: nothing is sent after its end, or after the program here exited (loopbackServersGone).
   let open = true;
+  const bodies = loopbackBodies.get(from) ?? new Map<number, Pick<Dispatched, 'write' | 'end'>>();
+  loopbackBodies.set(from, bodies);
   const close = () => {
     const was = open;
     open = false;
@@ -272,27 +310,51 @@ function loopbackRequest(m: { id: number; port: number | string; method: string;
     },
     end: () => close() && reply({ type: 'lb-end', id }),
     error: (message: string, code?: string) => close() && reply({ type: 'lb-error', id, message, code }),
+    consumed: (bytes: number) => reply({ type: 'lb-read', id, bytes }),
+    idle: m.idle,
     close,
   };
-  const body = m.body ? new Uint8Array(m.body) : null;
+  const body = m.body === STREAMED ? STREAMED : m.body ? new Uint8Array(m.body) : null;
   const server = servers.get(m.port);
   try {
     if (server) {
       // Until it is answered (close()): a response the handler destroys is answered later, its error async.
       const entry = { from, abort: () => {} };
       servingLoopback.set(bridge, entry);
-      cancels.set(id, () => close() && entry.abort());
-      entry.abort = server.dispatch(m.method, m.url, m.headers, body, bridge);
+      cancels.set(id, () => {
+        bodies.delete(id);
+        if (close()) entry.abort();
+      });
+      const dispatched = server.dispatch(m.method, m.url, m.headers, body, bridge);
+      entry.abort = dispatched.abort;
+      if (body === STREAMED) bodies.set(id, dispatched);
     } else {
-      const cancel = nestedPorts.get(m.port) !== from && loopback.route!(m.port, m.method, m.url, m.headers, body, bridge);
-      if (!cancel) bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
-      else if (open) cancels.set(id, () => close() && cancel());
+      const out = nestedPorts.get(m.port) !== from && loopback.route!(m.port, m.method, m.url, m.headers, body, bridge);
+      if (!out) bridge.error(`connect ECONNREFUSED ${typeof m.port === 'string' ? m.port : `127.0.0.1:${m.port}`}`, 'ECONNREFUSED');
+      else {
+        if (body === STREAMED) bodies.set(id, out);
+        cancels.set(id, () => {
+          bodies.delete(id);
+          close();
+          out.cancel();
+        });
+      }
     }
   } catch (e) {
     // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
     if (e instanceof ExitError) return exited(e.code);
     bridge.error(String((e as Error)?.message ?? e));
   }
+}
+
+/** More of the body of a loopback request from a nested runtime. */
+function loopbackBody(m: Extract<ToParent, { type: 'lb-body' | 'lb-body-end' }>, from: globalThis.Worker) {
+  const bodies = loopbackBodies.get(from);
+  const body = bodies?.get(m.id);
+  if (!body) return;
+  if (m.type === 'lb-body') return body.write(new Uint8Array(m.chunk));
+  bodies!.delete(m.id);
+  body.end();
 }
 
 export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
@@ -307,6 +369,13 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
     case 'net-closed':
       netMessage(m, (x, t) => from.postMessage(x, t ?? []), from);
       return true;
+    case 'response-read': {
+      // Ours (loopback.route), or one this runtime forwarded from its parent: up to it.
+      const own = loopbackRequests.get(m.id);
+      if (own) own.consumed?.(m.bytes);
+      else if (inflight.has(m.id) || forwardedBodies.has(m.id)) post(m);
+      return true;
+    }
     case 'response-start':
     case 'response-chunk':
     case 'response-full':
@@ -348,6 +417,10 @@ export function relayFromNested(m: ToParent, from: globalThis.Worker): boolean {
       return true;
     case 'lb-request':
       loopbackRequest(m, from);
+      return true;
+    case 'lb-body':
+    case 'lb-body-end':
+      loopbackBody(m, from);
       return true;
     case 'lb-cancel':
       loopbackCancels.get(from)?.get(m.id)?.();

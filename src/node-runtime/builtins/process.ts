@@ -115,7 +115,7 @@ function clear(t: unknown) {
  */
 export const pendingWork = { count: 0 };
 export function timersActive(): boolean {
-  if (immediateQueue.length || pendingWork.count > 0) return true;
+  if (immediateQueue.length || closeQueue.length || pendingWork.count > 0) return true;
   for (const t of byId.values()) if (t.alive) return true;
   return false;
 }
@@ -129,6 +129,7 @@ export function stopTimers(): void {
   stopped = true;
   for (const t of [...byId.values()]) t.clear();
   immediateQueue.length = 0;
+  closeQueue.length = 0;
 }
 
 class Immediate {
@@ -139,22 +140,49 @@ class Immediate {
 }
 const immediateChannel = new MessageChannel();
 const immediateQueue: (() => void)[] = [];
-immediateChannel.port1.onmessage = () => {
-  const batch = immediateQueue.splice(0);
+/** What runs as Node's close callbacks do (see onClosePhase): after the immediates of the same turn. */
+const closeQueue: (() => void)[] = [];
+/** A turn of immediates (and close callbacks) is posted. */
+let turnPosted = false;
+function postTurn() {
+  if (turnPosted) return;
+  turnPosted = true;
+  immediateChannel.port2.postMessage(0);
+}
+/**
+ * Runs `batch`; as in Node, what one of them throws is uncaught (process 'uncaughtException'), and
+ * the rest still run, on the next turn, before those queued since; process.exit() ends it there.
+ */
+function runBatch(batch: (() => void)[], queue: (() => void)[]) {
   for (let i = 0; i < batch.length; i++) {
     try {
       batch[i]();
     } catch (e) {
-      // As in Node: the error is uncaught (process 'uncaughtException'), and the rest of the batch
-      // still runs, on the next turn, before immediates queued since; process.exit() ends it there.
       if (!(e instanceof ExitError) && i + 1 < batch.length) {
-        if (!immediateQueue.length) immediateChannel.port2.postMessage(0);
-        immediateQueue.unshift(...batch.slice(i + 1));
+        queue.unshift(...batch.slice(i + 1));
+        postTurn();
       }
       throw e;
     }
   }
+}
+immediateChannel.port1.onmessage = () => {
+  turnPosted = false;
+  runBatch(immediateQueue.splice(0), immediateQueue);
+  // Those queued until now, by the immediates too (a destroy in one closes right after it).
+  runBatch(closeQueue.splice(0), closeQueue);
 };
+
+/**
+ * Runs `fn` as libuv runs a closed handle's callback (a socket's 'close'): after what process.nextTick,
+ * promises and setImmediate queued before it in this turn, before the timers of the next.
+ */
+export function onClosePhase(fn: () => void): void {
+  closeQueue.push(() => {
+    if (!stopped) fn();
+  });
+  postTurn();
+}
 
 export const timers = {
   setTimeout: make(false),
@@ -167,7 +195,7 @@ export const timers = {
     immediateQueue.push(() => {
       if (!imm.cancelled && !stopped) bound(...args);
     });
-    if (immediateQueue.length === 1) immediateChannel.port2.postMessage(0);
+    postTurn();
     return imm;
   },
   clearImmediate(imm: unknown) {

@@ -8,7 +8,7 @@
 import { Buffer } from 'buffer';
 import { EventEmitter } from 'events';
 import { Duplex, Readable, Writable } from 'readable-stream';
-import { ExitError, timers } from './process.ts';
+import { ExitError, onClosePhase, timers } from './process.ts';
 
 const STATUS_CODES: Record<number, string> = {
   100: 'Continue', 101: 'Switching Protocols', 200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content', 206: 'Partial Content',
@@ -27,7 +27,40 @@ export interface BridgeResponse {
   error?(message: string, code?: string): void;
   /** The status line and headers were flushed (res.flushHeaders()): what was sent so far goes out now, whatever comes after. */
   flush?(): void;
+  /** The server read this many bytes of a streamed request body: its client may send as many more (see BODY_WINDOW). */
+  consumed?(bytes: number): void;
+  /**
+   * How long the client keeps the connection once the response ended (as a Node agent does, see
+   * Agent.idleTimeout): 0 closes it then, null keeps it as long as the server does. Unset: the page's
+   * requests, whose connection the browser keeps longer than a server.
+   */
+  idle?: number | null;
 }
+
+/** A request whose body comes after its headers, chunk by chunk (see ClientRequest#open). */
+export const STREAMED = 'stream' as const;
+
+/** What a dispatched request's server is given more of: its body (when STREAMED), and that its client went away. */
+export interface Dispatched {
+  /** The client went away before the response ended: its connection closes. */
+  abort(): void;
+  /** A chunk of its body, and its end. */
+  write(chunk: Uint8Array): void;
+  end(): void;
+}
+
+/** A request on its way to a server on this machine: its body (when STREAMED), and that its client went away. */
+export interface Outgoing {
+  write(chunk: Uint8Array): void;
+  end(): void;
+  cancel(): void;
+}
+
+/**
+ * Body bytes a client sends before its server has read them, at most: then its writes wait (and
+ * write() returns false), as a socket's do once the connection's buffers are full.
+ */
+export const BODY_WINDOW = 64 * 1024;
 
 /** Listening servers by port, or by path for servers on a local socket; the runtime's request dispatcher reads this. */
 export const servers = new Map<number | string, Server>();
@@ -39,8 +72,8 @@ export const serverEvents = new EventEmitter();
  * runtimes (threads, child processes: see worker.ts). Anything else goes through fetch().
  */
 export const loopback: {
-  /** Routes a request to another runtime's server: false if there is none, else what tells the server its client went away. */
-  route?(target: number | string, method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse & { error(message: string, code?: string): void }): false | (() => void);
+  /** Routes a request to another runtime's server: false if there is none, else what sends it its body and tells it its client went away. */
+  route?(target: number | string, method: string, url: string, headers: [string, string][], body: Uint8Array | null | typeof STREAMED, bridge: BridgeResponse & { error(message: string, code?: string): void }): false | Outgoing;
 } = {};
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', '']);
 
@@ -55,11 +88,36 @@ class FakeSocket extends EventEmitter {
   readable = true;
   writable = true;
   destroyed = false;
+  /** What the program wrote to the socket itself (a 'clientError' listener's raw response), for the server to send (see Server.dispatch). */
+  written: Uint8Array[] = [];
+  /** setTimeout's: 'timeout' once the connection has been idle that long (0: never), and its timer. */
+  #timeoutMs = 0;
+  #timer: ReturnType<typeof timers.setTimeout> | undefined;
   constructor(port: number) {
     super();
     this.localPort = port;
   }
-  setTimeout() { return this; }
+  get timeout() { return this.#timeoutMs || undefined; }
+  /** As net.Socket's: 'timeout' once nothing was read or written for `ms` (see active), again after more comes; 0 stops it. */
+  setTimeout(ms: number, cb?: () => void) {
+    if (cb) {
+      if (ms === 0) this.removeListener('timeout', cb);
+      else this.once('timeout', cb);
+    }
+    this.#timeoutMs = ms;
+    this.active();
+    return this;
+  }
+  /** Something was read or written: its idle time starts over. Its timer does not keep the process alive. */
+  active() {
+    timers.clearTimeout(this.#timer);
+    this.#timer = undefined;
+    if (this.#timeoutMs <= 0 || this.destroyed) return;
+    this.#timer = timers.setTimeout(() => {
+      this.#timer = undefined;
+      this.emit('timeout');
+    }, this.#timeoutMs).unref();
+  }
   setNoDelay() { return this; }
   setKeepAlive() { return this; }
   ref() { return this; }
@@ -68,12 +126,20 @@ class FakeSocket extends EventEmitter {
   destroy() {
     if (this.destroyed) return this;
     this.destroyed = true;
-    // As a real socket's, later.
-    queueMicrotask(() => this.emit('close'));
+    this.readable = this.writable = false;
+    timers.clearTimeout(this.#timer);
+    // As a real socket's: once the handle closed, after what this turn queued.
+    onClosePhase(() => this.emit('close'));
     return this;
   }
-  end() { return this.destroy(); }
-  write() { return true; }
+  end(data?: unknown, encoding?: unknown) {
+    if (data !== undefined && typeof data !== 'function') this.write(data, encoding);
+    return this.destroy();
+  }
+  write(data?: unknown, encoding?: unknown) {
+    if (!this.destroyed && (typeof data === 'string' || data instanceof Uint8Array)) this.written.push(typeof data === 'string' ? Buffer.from(data, typeof encoding === 'string' ? (encoding as BufferEncoding) : 'utf8') : data);
+    return true;
+  }
   cork() {}
   uncork() {}
 }
@@ -138,7 +204,7 @@ export class UpgradeSocket extends Duplex {
     this.ended = true;
     this.sink.end();
   }
-  setTimeout() { return this; }
+  setTimeout(_ms?: number, _cb?: () => void) { return this; }
   setNoDelay() { return this; }
   setKeepAlive() { return this; }
   ref() { return this; }
@@ -176,8 +242,17 @@ export class IncomingMessage extends Readable {
     }
     this.socket = this.connection = new FakeSocket(port);
   }
-  _read() {}
-  setTimeout() { return this; }
+  /** The program wants more of its body (see Server.dispatch: the client may send more). */
+  pull: (() => void) | null = null;
+  _read() {
+    this.pull?.();
+  }
+  /** As Node's: its connection's idle timeout (a server's request gets 'timeout' while its body is still coming). */
+  setTimeout(ms: number, cb?: () => void) {
+    if (cb) this.on('timeout', cb);
+    this.socket.setTimeout(ms);
+    return this;
+  }
   destroy(err?: Error) {
     // As Node: destroyed before it was read to its end, it was aborted, and its connection closes. Here,
     // not in _destroy, whose throws the stream catches: process.exit() in an 'aborted' listener ends the process.
@@ -197,8 +272,11 @@ export class IncomingMessage extends Readable {
     return super.destroy(err);
   }
   _destroy(err: Error | null, cb: (e?: Error | null) => void) {
-    // As Node: an error is emitted only to listeners ('aborted' and 'close' tell the others).
-    cb(this.listenerCount('error') ? err : null);
+    // As Node: an error is emitted only to listeners ('aborted' and 'close' tell the others); it settles
+    // a tick later, when it was aborted with its connection still open (which it closes) or failed.
+    const settle = () => cb(this.listenerCount('error') ? err : null);
+    if (err || (this.aborted && !this.socket.destroyed)) queueMicrotask(settle);
+    else settle();
   }
 }
 
@@ -239,7 +317,9 @@ export class ServerResponse extends Writable {
   #flushHeld() {
     const held = this.#held;
     this.#held = null;
-    if (held) for (const out of held) out();
+    if (!held) return;
+    for (const out of held) out();
+    this.socket.active();
   }
   /** A 'clientError' to come ('pending'), and with its 'close' held until it came ('close'). */
   private clientError: 'pending' | 'close' | null = null;
@@ -307,7 +387,12 @@ export class ServerResponse extends Writable {
   addTrailers() {}
   assignSocket() {}
   detachSocket() {}
-  setTimeout() { return this; }
+  /** As Node's: its connection's idle timeout ('timeout' on it, with `cb`, the request and the server: see Server.dispatch). */
+  setTimeout(ms: number, cb?: () => void) {
+    if (cb) this.on('timeout', cb);
+    this.socket.setTimeout(ms);
+    return this;
+  }
   private sendHeaders() {
     if (this.headersSent) return;
     this.headersSent = true;
@@ -333,6 +418,7 @@ export class ServerResponse extends Writable {
     this.finished = true;
     this.#flushHeld();
     this.bridge.end();
+    this.socket.active();
     cb();
     queueMicrotask(() => this.emitCloseOnce());
   }
@@ -377,15 +463,38 @@ export class Server extends EventEmitter {
   private port: number | string = 0;
   /** Listening on a port the system picked (port 0): a tool's probe or internal server, not the app's. */
   ephemeral = false;
+  /** As Node's: a connection's idle timeout (0: none), for connections from then on. */
   timeout = 0;
   keepAliveTimeout = 5000;
-  headersTimeout = 60000;
+  keepAliveTimeoutBuffer = 1000;
   requestTimeout = 300000;
+  headersTimeout = 60000;
+  /** How often requests whose body is still coming are checked against requestTimeout (see #checkRequests). */
+  connectionsCheckingInterval = 30000;
   maxHeadersCount: number | null = null;
+  /** Requests whose body is still coming, and since when (for requestTimeout). */
+  #incoming = new Map<IncomingMessage, { since: number; expire(): void }>();
+  #checking: ReturnType<typeof timers.setInterval> | undefined;
   constructor(opts?: unknown, handler?: (req: IncomingMessage, res: ServerResponse) => void) {
     super();
     const h = typeof opts === 'function' ? opts : handler;
     if (h) this.on('request', h as never);
+    const o = (typeof opts === 'object' && opts) || {};
+    const int = (name: string) => {
+      const v = (o as Record<string, unknown>)[name];
+      if (v === undefined) return undefined;
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) throw Object.assign(new RangeError(`The value of "options.${name}" is out of range. It must be >= 0 && <= 9007199254740991. Received ${String(v)}`), { code: typeof v === 'number' ? 'ERR_OUT_OF_RANGE' : 'ERR_INVALID_ARG_TYPE' });
+      return v;
+    };
+    this.requestTimeout = int('requestTimeout') ?? 300000;
+    // As Node's: at most requestTimeout by default.
+    this.headersTimeout = int('headersTimeout') ?? Math.min(60000, this.requestTimeout);
+    this.keepAliveTimeout = int('keepAliveTimeout') ?? 5000;
+    this.keepAliveTimeoutBuffer = int('keepAliveTimeoutBuffer') ?? 1000;
+    this.connectionsCheckingInterval = int('connectionsCheckingInterval') ?? 30000;
+    if (this.requestTimeout > 0 && this.headersTimeout > 0 && this.headersTimeout > this.requestTimeout) {
+      throw Object.assign(new RangeError(`The value of "headersTimeout" is out of range. It must be <= requestTimeout. Received ${this.headersTimeout}`), { code: 'ERR_OUT_OF_RANGE' });
+    }
   }
   listen(...args: unknown[]) {
     const cb = typeof args.at(-1) === 'function' ? (args.pop() as () => void) : undefined;
@@ -416,6 +525,9 @@ export class Server extends EventEmitter {
       // The runtime learns of the server first, so it is reachable when the program is told; not of
       // one closed in the meantime (listen() then close() in one tick): its 'closed' has gone up already.
       if (this.listening) serverEvents.emit('listening', this.port, this.ephemeral);
+      // As Node's: requests are checked against requestTimeout from now, by a timer that does not keep the process alive.
+      timers.clearInterval(this.#checking);
+      if (this.listening) this.#checking = timers.setInterval(() => this.#checkRequests(), this.connectionsCheckingInterval).unref();
       this.emit('listening');
       cb?.();
     });
@@ -428,6 +540,8 @@ export class Server extends EventEmitter {
   close(cb?: (e?: Error) => void) {
     if (servers.get(this.port) === this) servers.delete(this.port);
     this.listening = false;
+    timers.clearInterval(this.#checking);
+    this.#checking = undefined;
     serverEvents.emit('closed', this.port);
     queueMicrotask(() => {
       this.emit('close');
@@ -437,36 +551,119 @@ export class Server extends EventEmitter {
   }
   closeAllConnections() {}
   closeIdleConnections() {}
-  setTimeout() { return this; }
+  /** As Node's: the idle timeout of connections from now on, and `cb` for their 'timeout'. */
+  setTimeout(ms?: number, cb?: () => void) {
+    if (typeof ms === 'function') [ms, cb] = [undefined, ms];
+    if (ms !== undefined) this.timeout = ms;
+    if (cb) this.on('timeout', cb);
+    return this;
+  }
   ref() { return this; }
   unref() { return this; }
   getConnections(cb: (e: null, n: number) => void) { cb(null, 0); }
 
   /**
-   * Called by the runtime for each bridged request. Returns what aborts it: the client went away
-   * before the response ended (its process died), and its connection closes.
+   * As Node's checkConnections: a request whose body is still coming after requestTimeout fails
+   * (408). As measured in Node 24, a request with its headers expires after the longer of
+   * requestTimeout and headersTimeout (headers always come whole here: headersTimeout has nothing else to time).
    */
-  dispatch(method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse): () => void {
+  #checkRequests() {
+    const valid = (n: number) => (Number.isFinite(n) && n >= 0 ? n : 0);
+    const requestTimeout = valid(this.requestTimeout);
+    if (!requestTimeout) return;
+    const limit = Math.max(requestTimeout, valid(this.headersTimeout));
+    const now = performance.now();
+    for (const [req, { since, expire }] of [...this.#incoming]) {
+      if (now - since <= limit) continue;
+      this.#incoming.delete(req);
+      expire();
+    }
+  }
+
+  /**
+   * Called by the runtime for each bridged request, with its whole body, or with STREAMED for one
+   * whose body comes after (Dispatched.write and end). Returns what gives the server the rest of it,
+   * and what aborts it: the client went away before the response ended, and its connection closes.
+   */
+  dispatch(method: string, url: string, headers: [string, string][], body: Uint8Array | null | typeof STREAMED, bridge: BridgeResponse): Dispatched {
+    const streamed = body === STREAMED;
     // Requests surfaced in a service worker carry no Content-Length; a real connection would.
     // Body parsers (e.g. Express') use it to decide whether a request has a body.
-    if (body && !headers.some(([k]) => /^(content-length|transfer-encoding)$/i.test(k))) headers = [...headers, ['content-length', String(body.length)]];
+    if (body && !streamed && !headers.some(([k]) => /^(content-length|transfer-encoding)$/i.test(k))) headers = [...headers, ['content-length', String(body.length)]];
     const req = new IncomingMessage(method, url, headers, typeof this.port === 'number' ? this.port : 0);
     const socket = req.socket as FakeSocket;
     socket.server = this;
     const res = new ServerResponse(req, bridge);
     // The connection closed before the response ended (the client went away, res.destroy(),
-    // req.socket.destroy()): as Node's abortIncoming, the request is destroyed ('aborted' if it was not
-    // read to its end; its 'error' and 'close' later) and the response closes at once.
+    // req.socket.destroy(), a timeout): as Node's abortIncoming, the request is destroyed ('aborted' if
+    // it was not read to its end; its 'error' and 'close' later) and the response closes at once. What
+    // the program wrote to the socket itself before (a 'clientError' listener's response) goes out first.
     socket.once('close', () => {
+      this.#incoming.delete(req);
       if (res.finished) return;
+      if (!res.headersSent) sendWritten(socket.written, bridge);
       req.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
       res.connectionClosed();
     });
-    if (body?.length) req.push(Buffer.from(body));
-    req.push(null);
-    req.complete = true;
+    // As Node's socketOnTimeout: the connection's idle timeout is the request's (while its body is
+    // coming), the response's (until it ended) and the server's to handle; else the connection closes.
+    socket.on('timeout', () => {
+      const reqTimeout = !req.complete && req.emit('timeout', socket);
+      const resTimeout = !res.finished && res.emit('timeout', socket);
+      const serverTimeout = this.emit('timeout', socket);
+      if (!reqTimeout && !resTimeout && !serverTimeout) socket.destroy();
+    });
+    if (this.timeout) socket.setTimeout(this.timeout);
+    // Once the response ended, the connection is idle: as Node's, kept alive for keepAliveTimeout (its
+    // 'timeout' then the server's), or less long by its client (an agent's, see Agent.idleTimeout).
+    res.once('finish', () => {
+      if (socket.destroyed) return;
+      const keepAlive = Number.isFinite(this.keepAliveTimeout) && this.keepAliveTimeout >= 0 ? this.keepAliveTimeout : 0;
+      const buffer = Number.isFinite(this.keepAliveTimeoutBuffer) && this.keepAliveTimeoutBuffer >= 0 ? this.keepAliveTimeoutBuffer : 1000;
+      const client = bridge.idle === undefined ? null : clientIdle(bridge.idle, keepAlive);
+      if (client === 0 || !keepAlive || /^close$/i.test(String(req.headers.connection ?? ''))) return void socket.destroy();
+      socket.setTimeout(keepAlive + buffer);
+      if (client !== null) timers.setTimeout(() => socket.destroy(), client).unref();
+    });
+    const expire = () => {
+      // As Node's onRequestTimeout (socketOnError): the server's 'clientError' handles it; else a 408, and the connection closes.
+      const err = Object.assign(new Error('Request timeout'), { code: 'ERR_HTTP_REQUEST_TIMEOUT' });
+      if (this.emit('clientError', err, socket)) return;
+      if (!res.headersSent) sendWritten([Buffer.from('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n')], bridge);
+      socket.destroy();
+    };
+    /** Body bytes it took that the program has not read yet (they are acknowledged as it reads: see BridgeResponse.consumed). */
+    let unread = 0;
+    if (streamed) {
+      this.#incoming.set(req, { since: performance.now(), expire });
+      req.pull = () => {
+        if (!unread) return;
+        const n = unread;
+        unread = 0;
+        bridge.consumed?.(n);
+      };
+    } else {
+      if (body?.length) req.push(Buffer.from(body));
+      req.push(null);
+      req.complete = true;
+    }
     this.emit('request', req, res);
-    return () => void socket.destroy();
+    return {
+      abort: () => void socket.destroy(),
+      write: (chunk) => {
+        if (!streamed || req.complete || req.destroyed) return;
+        socket.active();
+        if (req.push(Buffer.from(chunk))) bridge.consumed?.(chunk.length);
+        else unread += chunk.length;
+      },
+      end: () => {
+        if (!streamed || req.complete || req.destroyed) return;
+        this.#incoming.delete(req);
+        socket.active();
+        req.complete = true;
+        req.push(null);
+      },
+    };
   }
 
   /**
@@ -486,6 +683,42 @@ export class Server extends EventEmitter {
   }
 }
 
+/**
+ * How long a Node agent keeps a connection once its response ended (Agent.keepSocketAlive): its own
+ * timeout (`idle`: null for none, 0 for no keeping), shortened to a second less than the server's
+ * Keep-Alive hint (whole seconds of its keepAliveTimeout), and closed at once when that is none.
+ * null: as long as the server keeps it.
+ */
+function clientIdle(idle: number | null, keepAliveTimeout: number): number | null {
+  if (idle === 0) return 0;
+  if (!keepAliveTimeout) return idle;
+  const hint = Math.floor(keepAliveTimeout / 1000) * 1000 - 1000;
+  if (hint <= 0) return 0;
+  return idle === null || hint < idle ? hint : idle;
+}
+
+/**
+ * A response the program wrote to a connection itself (a 'clientError' listener's
+ * `socket.end('HTTP/1.1 400 Bad Request\r\n\r\n')`, or Node's own 408) goes to its client as one.
+ */
+function sendWritten(written: Uint8Array[], bridge: BridgeResponse) {
+  if (!written.length) return;
+  const bytes = Buffer.concat(written);
+  const end = bytes.indexOf('\r\n\r\n');
+  const head = bytes.subarray(0, end < 0 ? bytes.length : end).toString('latin1').split('\r\n');
+  const status = /^HTTP\/1\.[01] (\d{3})(?: (.*))?$/.exec(head[0]);
+  if (!status || end < 0) return;
+  const headers: [string, string][] = [];
+  for (const line of head.slice(1)) {
+    const colon = line.indexOf(':');
+    if (colon > 0) headers.push([line.slice(0, colon).trim(), line.slice(colon + 1).trim()]);
+  }
+  bridge.start(Number(status[1]), status[2] ?? '', headers);
+  const rest = bytes.subarray(end + 4);
+  if (rest.length) bridge.chunk(new Uint8Array(rest));
+  bridge.end();
+}
+
 function createServer(opts?: unknown, handler?: (req: IncomingMessage, res: ServerResponse) => void) {
   return new Server(opts, handler);
 }
@@ -495,6 +728,7 @@ function createServer(opts?: unknown, handler?: (req: IncomingMessage, res: Serv
 class Agent extends EventEmitter {
   options: Record<string, unknown>;
   maxSockets: number;
+  keepAlive: boolean;
   sockets = {};
   requests = {};
   freeSockets = {};
@@ -503,8 +737,17 @@ class Agent extends EventEmitter {
   private waiting = new Map<string, (() => void)[]>();
   constructor(opts: Record<string, unknown> = {}) {
     super();
-    this.options = opts;
+    this.options = { path: null, ...opts };
     this.maxSockets = typeof opts.maxSockets === 'number' ? opts.maxSockets : Infinity;
+    this.keepAlive = !!opts.keepAlive;
+  }
+  /**
+   * How long it keeps a connection once its response ended (see clientIdle): 0 when it does not keep
+   * connections alive (its requests ask for Connection: close), else its timeout, null for none.
+   */
+  get idleTimeout(): number | null {
+    if (!this.keepAlive) return 0;
+    return typeof this.options.timeout === 'number' && this.options.timeout > 0 ? this.options.timeout : null;
   }
   destroy() {}
   /** Runs `go` once one of `host`'s sockets is free (see free). */
@@ -527,10 +770,13 @@ class Agent extends EventEmitter {
     else this.busy.delete(host);
   }
 }
-const globalAgent = new Agent();
+/** As Node 24's: it keeps connections alive, for 5 s at most. */
+const globalAgent = new Agent({ keepAlive: true, scheduling: 'lifo', timeout: 5000 });
+
+/** Methods whose body Node frames by default (chunked, or with its length); others send none unless given a length. */
+const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH', 'PROPFIND', 'PROPPATCH', 'REPORT', 'SEARCH', 'MKCOL', 'LOCK', 'UNLOCK', 'COPY', 'MOVE', 'MERGE', 'PURGE', 'LINK', 'UNLINK', 'ACL', 'BIND', 'REBIND', 'UNBIND', 'MKACTIVITY', 'CHECKOUT', 'NOTIFY', 'SUBSCRIBE', 'UNSUBSCRIBE', 'M-SEARCH', 'MKCALENDAR', 'QUERY', 'SOURCE']);
 
 class ClientRequest extends Writable {
-  private chunks: Uint8Array[] = [];
   private headers: Record<string, string> = {};
   method: string;
   path: string;
@@ -545,19 +791,40 @@ class ClientRequest extends Writable {
   private res: IncomingMessage | null = null;
   /** An agent with a socket limit (maxSockets): the request waits for one of its sockets. */
   agent: Agent | null = null;
-  /** Tells its server (on this machine) that its client went away. */
-  #cancelServer: (() => void) | null = null;
+  /** How long its agent keeps the connection once the response ended (see Agent.idleTimeout). */
+  #idle: number | null;
   /** setTimeout's: 'timeout' once it has been idle that long (0: never), and its timer. */
   #timeoutMs = 0;
-  /** It has its socket (see #assigned), its body is written (_final: what to send), and its 'timeout' came. */
-  #hasSocket = false;
-  #body: { data: ReturnType<typeof Buffer.concat> | undefined } | null = null;
   #timedOut = false;
   #timer: ReturnType<typeof timers.setTimeout> | undefined;
+  /** It has its socket (see #assigned). */
+  #hasSocket = false;
+  /** Its headers are to go out (it was written to, flushed or ended), and they went (#open): to a server here, or by fetch() ('fetch', at its end). */
+  #started = false;
+  #out: Outgoing | 'fetch' | null = null;
+  /** Its body has no framing (as Node's for a GET without a length): it does not go out. */
+  #dropBody = false;
+  /** What it was written before its headers went out (and for fetch(), all of it). */
+  #pending: Uint8Array[] = [];
+  /** It was ended; _final's callback ('finish') waits until its body went out. */
+  #ended = false;
+  #finalCb: (() => void) | null = null;
+  /** Body bytes its server has not read yet (see BODY_WINDOW), and the write waiting for it to. */
+  #unread = 0;
+  #heldWrite: (() => void) | null = null;
+  /** What destroy(err) was given; an error went out already; its connection closed; 'close' was emitted. */
+  #error: Error | undefined;
+  #hadError = false;
+  #socketClosed = false;
+  #closed = false;
+  /** Tells its server (on this machine) that its client went away. */
+  #cancelServer: (() => void) | null = null;
   aborted = false;
-  constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void, socketPath?: string, agent?: Agent) {
+  headersSent = false;
+  constructor(url: string, method: string, headers: Record<string, string>, cb?: (res: IncomingMessage) => void, socketPath?: string, agent?: Agent | false) {
     // Not destroyed once its body is written (the stream's autoDestroy): that would abort its fetch().
-    super({ autoDestroy: false });
+    // Its 'close' is its connection's (see #emitClose).
+    super({ autoDestroy: false, emitClose: false });
     const u = new URL(url);
     this.url = url;
     this.target = socketPath ?? (LOCAL_HOSTS.has(u.hostname) ? Number(u.port || (u.protocol === 'https:' ? 443 : 80)) : null);
@@ -566,6 +833,7 @@ class ClientRequest extends Writable {
     this.method = method;
     this.path = u.pathname + u.search;
     this.host = u.host;
+    this.#idle = agent === false ? 0 : (agent ?? globalAgent).idleTimeout;
     for (const [k, v] of Object.entries(headers)) this.headers[k.toLowerCase()] = String(v);
     if (cb) this.once('response', cb);
     this.once('close', () => timers.clearTimeout(this.#timer));
@@ -574,13 +842,11 @@ class ClientRequest extends Writable {
     if (agent && agent.maxSockets !== Infinity) {
       this.agent = agent;
       agent.take(this.host, () => {
-        if (this.destroyed) return agent.free(this.host);
         this.once('close', () => agent.free(this.host));
         queueMicrotask(() => this.#assigned());
       });
     } else queueMicrotask(() => this.#assigned());
   }
-  headersSent = false;
   setHeader(k: string, v: string | number | string[]) {
     this.headers[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v);
     return this;
@@ -604,15 +870,23 @@ class ClientRequest extends Writable {
     this.#active();
     return this;
   }
-  /** Something came (or the timeout was set): its idle time starts over. */
-  /** Its socket: the request goes out once its body is written too, and its timeout starts. */
+  /**
+   * Its socket (as Node's onSocketNT): the request goes out once it was written to or ended, and its
+   * timeout starts; destroyed before, it fails now ("socket hang up" unless it was aborted) and closes.
+   */
   #assigned() {
-    if (this.destroyed) return;
+    if (this.destroyed) {
+      const err = this.#error ?? (this.aborted ? undefined : connectionReset('socket hang up'));
+      if (err) this.emit('error', err);
+      return this.#emitClose();
+    }
     this.#hasSocket = true;
     this.emit('socket', this.socket);
+    if (this.destroyed) return;
     this.#active();
-    if (this.#body) this.#send(this.#body.data);
+    if (this.#started) this.#open();
   }
+  /** Something came (or the timeout was set): its idle time starts over. */
   #active() {
     timers.clearTimeout(this.#timer);
     // As Node's (its socket's 'timeout', once): from when it has its socket, and only once.
@@ -624,46 +898,76 @@ class ClientRequest extends Writable {
   }
   setNoDelay() {}
   setSocketKeepAlive() {}
-  flushHeaders() {}
-  /** As Node's: destroys the request without an error, and emits 'abort' (before what aborting its response emits). */
+  /** As Node's: its headers go out now (once it has its socket), before its body. */
+  flushHeaders() {
+    this.#start();
+  }
+  /** As Node's: destroys the request (see destroy), and emits 'abort' on the next tick. */
   abort() {
     if (this.aborted) return;
     this.aborted = true;
-    // Destroyed in this tick once it had its socket: 'abort' comes before the error and 'close' to come.
-    if (this.destroyed && this.#hasSocket) return void this.emit('abort');
-    // First, with a response in flight or a socket (before what destroying it emits); else after its 'close'.
-    const first = (this.res && !this.res.complete && !this.res.destroyed) || this.#hasSocket;
-    if (first) queueMicrotask(() => this.emit('abort'));
+    queueMicrotask(() => this.emit('abort'));
     this.destroy();
-    if (!first) queueMicrotask(() => this.emit('abort'));
   }
   /**
-   * As Node's: before its response, the request fails ("socket hang up" unless `err`); once it has a
-   * response in flight, that is aborted (the request closes, the response errors); once its response
-   * ended, it only closes.
+   * As Node's: destroyed with its socket, its connection closes, and what that emits comes as the
+   * socket's 'close' does (after what this turn queued: see onClosePhase): before its response, the
+   * request fails ("socket hang up" unless `err`, which comes first); with a response in flight, that
+   * is aborted. Before its socket, it fails once it gets it (#assigned); once its response ended, nothing is left to do.
    */
   destroy(err?: Error) {
     if (this.destroyed) return this;
+    super.destroy();
     this.controller.abort();
-    const res = this.res;
-    // Its server learns its client went away (as a real one does from the connection's end).
-    if (!res?.complete) this.#cancelServer?.();
-    if (!res) {
-      if (err) return super.destroy(err);
-      // As Node's: once it has its socket, it failed ("socket hang up"), aborted or not; before, unless
-      // it is aborted in the same tick (then it was only aborted).
-      if (this.#hasSocket) return super.destroy(connectionReset('socket hang up'));
-      queueMicrotask(() => {
-        if (!this.aborted) this.emit('error', connectionReset('socket hang up'));
-      });
-      return super.destroy();
+    this.#heldWrite = null;
+    if (this.#ended && this.res?.complete) return this;
+    this.#error = err;
+    if (!this.#hasSocket) return this;
+    if (err) {
+      this.#hadError = true;
+      queueMicrotask(() => this.emit('error', err));
     }
-    if (!res.complete && !res.destroyed) return this.abortResponse(res, err);
-    return super.destroy(err);
+    onClosePhase(() => this.#connectionClosed());
+    return this;
   }
-  /** Closes the request, once (not aborting its fetch(), as destroy() does). */
-  private finish(err?: Error) {
-    if (!this.destroyed) super.destroy(err);
+  #emitClose() {
+    if (this.#closed) return;
+    this.#closed = true;
+    const state = (this as unknown as { _writableState: { closed: boolean; closeEmitted: boolean } })._writableState;
+    state.closed = state.closeEmitted = true;
+    this.emit('close');
+  }
+  /**
+   * Its connection closed (as Node's socketCloseListener): a response in flight is aborted, else the
+   * request failed ("socket hang up", unless it failed already); it closes. Its server (on this machine) learns it after.
+   */
+  #connectionClosed() {
+    if (this.#socketClosed) return;
+    this.#socketClosed = true;
+    if (!this.destroyed) super.destroy();
+    const res = this.res;
+    if (res) {
+      if (!res.complete) res.destroy(connectionReset('aborted'));
+      this.#emitClose();
+      if (!res.aborted && res.readable) res.push(null);
+    } else {
+      if (!this.#hadError) {
+        this.#hadError = true;
+        this.emit('error', connectionReset('socket hang up'));
+      }
+      this.#emitClose();
+    }
+    if (!res?.complete || !this.#ended) this.#cancelServer?.();
+  }
+  /** Its connection broke (its server went away, or could not be reached): `err` comes first, then the rest as its socket closes. */
+  #reset(err?: Error) {
+    if (this.#socketClosed || this.#closed) return;
+    if (!this.destroyed) super.destroy();
+    if (err && !this.#hadError) {
+      this.#hadError = true;
+      this.emit('error', err);
+    }
+    onClosePhase(() => this.#connectionClosed());
   }
   /** Its response came: the request closes once it ends, or once it closes (destroyed by the program). */
   private respond(status: number, statusText: string, headers: [string, string][]): IncomingMessage | null {
@@ -671,41 +975,103 @@ class ClientRequest extends Writable {
     const res = (this.res = new IncomingMessage(this.method, this.path, headers, 0));
     res.statusCode = status;
     res.statusMessage = statusText;
-    res.once('end', () => this.finish());
+    // As Node's: it closes after what the response's 'end' listeners do.
+    res.once('end', () => {
+      if (!this.destroyed) super.destroy();
+      queueMicrotask(() => this.#emitClose());
+    });
     res.once('close', () => {
-      // Destroyed before its end: what is still coming is not read, and its server learns it.
-      if (!res.complete) {
-        this.controller.abort();
-        this.#cancelServer?.();
-      }
-      queueMicrotask(() => this.finish());
+      // Destroyed before its end (by the program): its connection closes, what is still coming is not read, and its server learns it.
+      if (res.complete) return;
+      this.controller.abort();
+      if (!this.destroyed) super.destroy();
+      onClosePhase(() => this.#connectionClosed());
     });
     this.#active();
     // As Node's: a response nobody listens for is read and dropped (so its request closes).
     if (!this.emit('response', res)) res.resume();
     return res;
   }
-  /**
-   * The response in flight is cut short (its server went away, or the program destroyed the request),
-   * as in Node: the request's error (if any), the response's 'aborted', the request's 'close', then the
-   * response's 'error' and 'close'.
-   */
-  private abortResponse(res: IncomingMessage, err?: Error) {
-    res.aborted = true;
-    queueMicrotask(() => {
-      if (err) this.emit('error', err);
-      res.emit('aborted');
-    });
-    super.destroy();
-    res.destroy(connectionReset('aborted'));
-    return this;
+  /** Its headers are to go out: they do once it has its socket. */
+  #start() {
+    if (!this.#started) this.#started = this.headersSent = true;
+    if (this.#hasSocket && !this.#out && !this.destroyed) this.#open();
   }
   _write(chunk: unknown, enc: BufferEncoding, cb: () => void) {
-    this.chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, enc) : (chunk as Uint8Array));
-    cb();
+    const bytes = typeof chunk === 'string' ? Buffer.from(chunk, enc) : (chunk as Uint8Array);
+    this.#start();
+    if (this.#dropBody || !bytes.length) return cb();
+    const out = this.#out;
+    if (!out || out === 'fetch') {
+      this.#pending.push(bytes);
+      return cb();
+    }
+    this.#sendBody(out, bytes);
+    // As a socket's: once its server is that far behind, the next write waits for it to read.
+    if (this.#unread > BODY_WINDOW) this.#heldWrite = cb;
+    else cb();
+  }
+  #sendBody(out: Outgoing, bytes: Uint8Array) {
+    this.#unread += bytes.length;
+    // A copy: the program may reuse what it wrote once write() returned.
+    out.write(new Uint8Array(bytes));
+  }
+  /** Its server read `n` bytes of its body. */
+  #consumed(n: number) {
+    this.#unread = Math.max(0, this.#unread - n);
+    const cb = this.#heldWrite;
+    if (cb && this.#unread <= BODY_WINDOW) {
+      this.#heldWrite = null;
+      cb();
+    }
+  }
+  _final(cb: () => void) {
+    this.#ended = true;
+    this.#finalCb = cb;
+    this.#start();
+    if (this.#out) this.#finish();
+  }
+  /** Its body went out to its end: 'finish' (as Node's, once its socket wrote it). */
+  #finish() {
+    const out = this.#out;
+    if (out === 'fetch') this.#fetch();
+    else out?.end();
+    const cb = this.#finalCb;
+    this.#finalCb = null;
+    cb?.();
+  }
+  /**
+   * Its headers go out: to a server on this machine, its body after them chunk by chunk (as Node's: with
+   * its length when it was ended first, else chunked; a GET's, with neither, does not go out); else by
+   * fetch(), once it ended.
+   */
+  #open() {
+    const headers: [string, string][] = Object.entries(this.headers);
+    if (!('host' in this.headers)) headers.push(['host', this.host || 'localhost']);
+    if (this.target !== null) {
+      if (!('connection' in this.headers)) headers.push(['connection', this.#idle === 0 ? 'close' : 'keep-alive']);
+      if (!('content-length' in this.headers) && !('transfer-encoding' in this.headers)) {
+        const framed = BODY_METHODS.has(this.method);
+        if (!framed) this.#dropBody = true;
+        else if (this.#ended) headers.push(['content-length', String(this.#pending.reduce((n, c) => n + c.length, 0))]);
+        else headers.push(['transfer-encoding', 'chunked']);
+      }
+    }
+    const out = this.target !== null ? this.#local(headers) : false;
+    if (!out) {
+      this.#out = 'fetch';
+      if (this.#ended) this.#finish();
+      return;
+    }
+    this.#out = out;
+    this.#cancelServer = out.cancel;
+    const pending = this.#pending;
+    this.#pending = [];
+    if (!this.#dropBody) for (const chunk of pending) this.#sendBody(out, chunk);
+    if (this.#ended) this.#finish();
   }
   /** Delivers the request to a server on this machine, if there is one. */
-  private local(body: Uint8Array | null): boolean {
+  #local(headers: [string, string][]): Outgoing | false {
     let res: IncomingMessage | null = null;
     const bridge = {
       start: (status: number, statusText: string, headers: [string, string][]) => void (res = this.respond(status, statusText, headers)),
@@ -721,34 +1087,33 @@ class ClientRequest extends Writable {
         }
       },
       error: (message: string, code = 'ECONNRESET') => {
-        if (!res) return this.finish(Object.assign(new Error(message), { code }));
-        // The server went away mid-response (its process crashed): the response is cut short, as in Node.
-        if (!res.complete && !res.destroyed) this.abortResponse(res);
+        // The server went away (its process crashed, it reset the connection): before a response, the
+        // request fails; else the response in flight is cut short, as in Node.
+        if (!res) return this.#reset(Object.assign(new Error(message), { code }));
+        if (!res.complete && !res.destroyed) this.#reset();
       },
+      consumed: (n: number) => this.#consumed(n),
+      idle: this.#idle,
     };
-    const headers: [string, string][] = Object.entries(this.headers);
-    if (!('host' in this.headers)) headers.push(['host', this.host || 'localhost']);
     const server = servers.get(this.target!);
     if (server) {
-      let abort: (() => void) | null = null;
+      // As over a connection: the server sees the request, and each chunk of its body, a little later.
+      let dispatched: Dispatched | null = null;
       queueMicrotask(() => {
-        if (!this.destroyed) abort = server.dispatch(this.method, this.path, headers, body, bridge);
+        if (!this.destroyed) dispatched = server.dispatch(this.method, this.path, headers, STREAMED, bridge);
       });
-      this.#cancelServer = () => abort?.();
-      return true;
+      return {
+        write: (chunk) => queueMicrotask(() => dispatched?.write(chunk)),
+        end: () => queueMicrotask(() => dispatched?.end()),
+        cancel: () => dispatched?.abort(),
+      };
     }
-    const cancel = loopback.route?.(this.target!, this.method, this.path, headers, body, bridge);
-    if (!cancel) return false;
-    this.#cancelServer = cancel;
-    return true;
+    return loopback.route?.(this.target!, this.method, this.path, headers, STREAMED, bridge) ?? false;
   }
-  _final(cb: () => void) {
-    this.#body = { data: this.chunks.length ? Buffer.concat(this.chunks) : undefined };
-    if (this.#hasSocket) this.#send(this.#body.data);
-    cb();
-  }
-  #send(body: ReturnType<typeof Buffer.concat> | undefined) {
-    if (this.target !== null && this.local(body ?? null)) return;
+  /** To a server elsewhere: through fetch(), with its whole body. */
+  #fetch() {
+    const body = this.#pending.length ? Buffer.concat(this.#pending) : undefined;
+    this.#pending = [];
     fetch(this.url, { method: this.method, headers: this.headers, body: this.method === 'GET' || this.method === 'HEAD' ? undefined : body, signal: this.controller.signal, redirect: 'manual' })
       .then(
         async (r) => {
@@ -766,7 +1131,7 @@ class ClientRequest extends Writable {
             }
           } catch {
             // Cut short (the connection broke, or the program destroyed it: then it is aborted already).
-            if (!msg.complete && !msg.destroyed) this.abortResponse(msg);
+            if (!msg.complete && !msg.destroyed) this.#reset();
             return;
           }
           // Read to its end: complete (else, destroyed as it ends, it would be 'aborted').
@@ -774,7 +1139,9 @@ class ClientRequest extends Writable {
           msg.push(null);
         },
         // Not when the program destroyed it (destroy() says how it failed).
-        (e) => this.finish(Object.assign(new Error((e as Error)?.message ?? String(e), { cause: e }), { code: 'ECONNREFUSED' })),
+        (e) => {
+          if (!this.destroyed) this.#reset(Object.assign(new Error((e as Error)?.message ?? String(e), { cause: e }), { code: 'ECONNREFUSED' }));
+        },
       );
   }
 }
@@ -796,7 +1163,7 @@ function makeClient(defaultProtocol: 'http:' | 'https:') {
       const host = (o.hostname as string) ?? (o.host as string) ?? 'localhost';
       url = `${protocol}//${host}${o.port ? `:${o.port}` : ''}${(o.path as string) ?? '/'}`;
     }
-    const req = new ClientRequest(url, ((o.method as string) ?? 'GET').toUpperCase(), (o.headers as Record<string, string>) ?? {}, cb, typeof o.socketPath === 'string' ? o.socketPath : undefined, o.agent instanceof Agent ? o.agent : undefined);
+    const req = new ClientRequest(url, ((o.method as string) ?? 'GET').toUpperCase(), (o.headers as Record<string, string>) ?? {}, cb, typeof o.socketPath === 'string' ? o.socketPath : undefined, o.agent instanceof Agent || o.agent === false ? o.agent : undefined);
     if (typeof o.timeout === 'number') req.setTimeout(o.timeout);
     return req;
   }
