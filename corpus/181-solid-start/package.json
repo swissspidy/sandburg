@@ -1,0 +1,19 @@
+{
+  "name": "corpus-181-solid-start",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "vite preview"
+  },
+  "dependencies": {
+    "@solidjs/meta": "^0.29.4",
+    "@solidjs/router": "^1.0.0",
+    "@solidjs/start": "2.1.0",
+    "solid-js": "1.9.17",
+    "vite": "^8.3.5"
+  },
+  "devDependencies": {}
+}

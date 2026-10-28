@@ -1,0 +1,12 @@
+{
+  "name": "pnpm-lock-app",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@acme/util": "workspace:*",
+    "local-lib": "link:./lib",
+    "ms": "^2.0.0"
+  }
+}

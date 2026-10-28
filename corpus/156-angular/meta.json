@@ -1,0 +1,15 @@
+{
+  "id": "156-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "todo",
+    "tabs",
+    "dates"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

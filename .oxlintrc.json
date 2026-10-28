@@ -118,6 +118,7 @@
         "src/adapters/node/install.ts",
         "src/adapters/node/package-store.ts",
         "src/adapters/node/resolver.ts",
+        "src/orchestrator/memory.ts",
         "src/reference/docker.ts",
         "scripts/**",
         "test/**",
@@ -175,6 +176,8 @@
         "src/transfer-trace.ts",
         "src/file-channel.ts",
         "src/framework.ts",
+        "src/workspaces.ts",
+        "src/yaml-lite.ts",
         "src/bundle-format.ts"
       ],
       "rules": {

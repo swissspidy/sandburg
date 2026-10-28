@@ -1,0 +1,14 @@
+{
+  "id": "172-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "search",
+    "converter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

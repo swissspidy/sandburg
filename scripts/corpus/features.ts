@@ -462,7 +462,7 @@ export default function Products({ source }: { source: string }) {
 `,
     check: `const region = app.getByRole('region', { name: 'Products' });
     await expect(region.getByRole('listitem')).toHaveText(['Lamp — $25', 'Chair — $80', 'Desk — $150']);`,
-    files: (framework) => {
+    files: (framework): Record<string, string> => {
       const data = JSON.stringify({ products: [{ id: 1, name: 'Lamp', price: 25 }, { id: 2, name: 'Chair', price: 80 }, { id: 3, name: 'Desk', price: 150 }] }, null, 2);
       if (framework === 'next-app') {
         return { 'app/api/products/route.ts': `import { NextResponse } from 'next/server';\n\nconst DATA = ${data};\n\nexport async function GET() {\n  return NextResponse.json(DATA);\n}\n` };

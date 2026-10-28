@@ -32,7 +32,7 @@ window.prefetch = (url) => {
 };
 window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
-  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null, listening: [], ends: [] };
+  const out = { stdout: '', stderr: '', responses: [], whole: [], fatal: null, exit: null, listening: [], ends: [], stray: [] };
   const bodies = new Map();
   let pending = requests.length;
   const finish = () => { w.terminate(); resolve(out); };
@@ -48,6 +48,8 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
   window.current = { out, finish };
   w.onmessage = (e) => {
     const m = e.data;
+    // A response for a request the page did not make (or of the runtimes': their ids are negative).
+    if (m.type.startsWith('response-') && !(m.id >= 0 && m.id < requests.length)) return void out.stray.push([m.type, m.id]);
     if (m.type === 'ready') w.postMessage({ type: 'run', main });
     else if (m.type === 'log') out[m.stream] += m.text;
     else if (m.type === 'fatal') { out.fatal = m.stack || m.message; finish(); }
@@ -268,6 +270,17 @@ export class RuntimeHarness {
         res.writeHead(200, { 'content-type': 'application/wasm' });
         return res.end(await readFile(SQLITE_WASM));
       }
+      // A response from another origin (fetch.localhost:<port>), for a program's http.get that goes through fetch().
+      if (url.pathname === '/__test/remote') {
+        res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+        return res.end('remote');
+      }
+      // A response that starts and is never ended: `asked` says when the client went away.
+      if (url.pathname === '/__test/hold') {
+        res.on('close', () => this.asked.push('hold closed'));
+        res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+        return void res.write('a');
+      }
       if (url.pathname === '/__sandburg/tla-scan') {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
@@ -349,7 +362,12 @@ export class RuntimeHarness {
     return run;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number } = {}) {
+  /** The port the harness serves on (127.0.0.1, and *.localhost for another origin). */
+  get port(): number {
+    return (this.server.address() as AddressInfo).port;
+  }
+
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string>; /** As runInstalled's. */ prepare?: number; helperDelay?: number } = {}) {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();
@@ -364,6 +382,8 @@ export class RuntimeHarness {
       listening: (number | string)[];
       /** Each message that ended a request ([type, id]) or the program (['exit', code]), in order. */
       ends: [string, number][];
+      /** The responses for requests the page did not make ([type, id]). */
+      stray: [string, number][];
     }>, until);
   }
 

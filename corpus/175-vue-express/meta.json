@@ -1,0 +1,15 @@
+{
+  "id": "175-vue-express",
+  "target": "vue-express",
+  "framework": "express-sqlite",
+  "features": [
+    "fetch",
+    "todo",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

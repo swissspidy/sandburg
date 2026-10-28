@@ -582,14 +582,21 @@ export class Session {
             return watch(host('install', hostData));
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
+          run.appStarted(url);
           const app = await run.phase('ready', timeouts.ready, async () => {
-            await host('ready', url, navigate ?? true);
+            // The host page's frame for the app, there before the app loads into it.
             const frame = await appFrame(page);
             // A dev server that answers 503 while it builds (Nuxt's "Dev server is loading...") shows a loading page.
             const loading = () => run.documents.filter((d) => d.frame === frame).at(-1)?.status === 503;
             const loadingPage = async () => loading() || (await frame.evaluate(() => document.documentElement.outerHTML.includes('__NUXT_LOADING__')).catch(() => false));
             const rendered = () => host('rendered', options.readySelector ?? null) as Promise<boolean>;
-            await failFastOnAppError(waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered), run, loadingPage);
+            // Watched from the first load on: a dev server that never answers the page's request (Angular's,
+            // after its dependency optimizer crashed) never fires its load event, and reports the error meanwhile.
+            const render = (async () => {
+              await host('ready', url, navigate ?? true);
+              await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
+            })();
+            await failFastOnAppError(render, run, loadingPage, frame);
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been
@@ -601,7 +608,7 @@ export class Session {
             const q = await app.evaluate((h) => window.__sandburgQuiet?.(h) ?? null, remainingMs);
             return !!q && q.quiet && q.sinceChangeMs >= APP_IDLE_MS;
           };
-          const appSettled = () => host('settled', SETTLE_QUIET_MS, SETTLE_LONG_MS, SETTLE_MAX_MS);
+          const appSettled = () => host('settled', SETTLE_QUIET_MS, SETTLE_LONG_MS, SETTLE_MAX_MS, SETTLE_HYDRATE_MAX_MS);
           await runChecksPhase(run, page, app, checks, timeouts, outDir, options.failFastChecks === false ? undefined : appIdle, origin, appSettled, tab?.code);
         };
         await steps().catch(() => {}); // failures are recorded per phase
@@ -663,7 +670,7 @@ export class Session {
       });
       const app = await run.phase('ready', timeouts.ready, async () => {
         await page.goto(origin + '/', { waitUntil: 'load', timeout: timeouts.ready });
-        await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run);
+        await failFastOnAppError(waitForRender(page.mainFrame(), options.readySelector), run, undefined, page.mainFrame());
         return page.mainFrame();
       });
       await runChecksPhase(run, page, app, checks, timeouts, outDir);
@@ -767,6 +774,11 @@ export const PAGE_QUIET_SCRIPT = `(() => {
 const SETTLE_QUIET_MS = 100;
 const SETTLE_LONG_MS = 1_000;
 const SETTLE_MAX_MS = 3_000;
+/**
+ * While the app's framework says it has not hydrated yet (host/settle.ts' inputSafe), up to this long
+ * instead: a cold SolidStart page hydrated after more than 3 s, and a fill() before then was lost.
+ */
+const SETTLE_HYDRATE_MAX_MS = 10_000;
 
 /** How long each of a run's isolates has to answer a garbage collection (a blocked worker answers nothing). */
 const GC_TIMEOUT_MS = 2_000;

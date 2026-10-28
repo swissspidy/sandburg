@@ -1,0 +1,14 @@
+{
+  "id": "116-react-router",
+  "target": "react-router",
+  "framework": "react-router",
+  "features": [
+    "counter",
+    "search"
+  ],
+  "tailwind": false,
+  "react": "19.3.1",
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

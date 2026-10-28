@@ -26,10 +26,10 @@ test('every module runs in an environment, or is imported only for its types', (
 });
 
 test("the entries are the bundles' own: the host page and each adapter's browser half, its assets, the compile worker, the page checks", async () => {
-  const { relative } = await import('node:path');
+  const { relative, sep } = await import('node:path');
   const { adapterNames, getAdapter } = await import('../../src/adapters.ts');
   const { COMPILE_WORKER } = await import('../../src/adapters/node/compile-wasm-bundle.ts');
-  const rel = (p: string) => relative(process.cwd(), p);
+  const rel = (p: string) => relative(process.cwd(), p).split(sep).join('/');
   const adapters = adapterNames.map(getAdapter);
   assert.deepEqual(ENVIRONMENTS.page.entries, ['src/host/host.ts', ...adapters.map((a) => rel(a.browserEntry))]);
   assert.deepEqual(ENVIRONMENTS['service-worker'].entries, adapters.flatMap((a) => Object.values(a.assets).map(rel)));

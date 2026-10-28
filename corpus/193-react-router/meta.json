@@ -1,0 +1,16 @@
+{
+  "id": "193-react-router",
+  "target": "react-router",
+  "framework": "react-router",
+  "features": [
+    "icons",
+    "converter",
+    "todo",
+    "store"
+  ],
+  "tailwind": false,
+  "react": "19.3.1",
+  "fault": "crash",
+  "buggyFeature": null,
+  "expected": "fail"
+}

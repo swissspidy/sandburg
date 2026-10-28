@@ -1,0 +1,14 @@
+{
+  "id": "216-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "form",
+    "tabs"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "syntax",
+  "buggyFeature": null,
+  "expected": "fail"
+}

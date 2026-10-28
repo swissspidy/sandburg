@@ -1,0 +1,15 @@
+{
+  "id": "190-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "search",
+    "dates",
+    "form"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

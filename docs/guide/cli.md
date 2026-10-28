@@ -34,6 +34,11 @@ sandburg open <project>                                 # load it in a visible t
 - a **JSON file tree**: `{ "path": "contents" }`;
 - **`snapshot:<id>`**, or a prefix of the id, from the snapshot store.
 
+A workspace package's directory runs in its monorepo: when a directory above `apps/web` declares
+workspaces (npm, pnpm or yarn) that name it, `sandburg run mono/apps/web` loads all of the monorepo's
+files and runs `apps/web`'s `dev` (or `start`) script in its directory. A directory that no workspace
+pattern names is loaded alone ([ADR 0064](../adr/0064-monorepos-and-local-packages.md)).
+
 What is never part of the app's sources is left out at any depth (installs such as `node_modules`,
 `.git`, tools' caches and output), and build output is left out at the project's root only
 ([`src/project.ts`](../../src/project.ts)).

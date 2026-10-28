@@ -68,3 +68,20 @@ test('a runtime that fails after its program exited answers new requests with an
   assert.deepEqual(ask(), ["error: the app crashed: the page's compiler failed: worker error", 'closed']);
   assert.equal(proc.activity().inflight, 0);
 });
+
+test("a response for a request the page does not wait for (another runtime's, or one answered already) sets no cookie", (t) => {
+  const { from, ask } = start(t);
+  const doc = globalThis as unknown as { document: { cookie: string } };
+  doc.document.cookie = '';
+  from({ type: 'listening', port: 3000 });
+  for (const id of [-42, 2]) {
+    from({ type: 'response-start', id, status: 200, statusText: 'OK', headers: [['set-cookie', 'stray=1']] });
+    from({ type: 'response-full', id, status: 200, statusText: 'OK', headers: [['set-cookie', 'stray=1']], body: new ArrayBuffer(0) });
+  }
+  assert.equal(doc.document.cookie, '');
+  // The page's own request's still does.
+  const got = ask();
+  from({ type: 'response-full', id: 1, status: 200, statusText: 'OK', headers: [['set-cookie', 'mine=1; HttpOnly']], body: new ArrayBuffer(0) });
+  assert.deepEqual(got, ['full', 'closed']);
+  assert.equal(doc.document.cookie, 'mine=1');
+});

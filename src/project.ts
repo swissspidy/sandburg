@@ -3,11 +3,12 @@
  * snapshot ("snapshot:<id or prefix>").
  */
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { isText, manifestOf, snapshotId, type SnapshotStore } from './store.ts';
 import type { FileTree, PackageJson, Project } from './types.ts';
 import { detectFramework } from './framework.ts';
 import { readZip, stripCommonRoot } from './zip.ts';
+import { isWorkspace, workspacePatterns } from './workspaces.ts';
 
 export { detectFramework };
 
@@ -33,6 +34,12 @@ export async function loadProject(path: string, store?: SnapshotStore): Promise<
   let files: FileTree;
   let name: string;
   if (info.isDirectory()) {
+    // A package of a monorepo runs in its monorepo, whose workspaces it uses (ADR 0064).
+    const root = await workspaceRoot(abs);
+    if (root) {
+      const project = projectFromFiles(await readDirectory(root), { name: basename(abs), path: root });
+      return { ...project, name: basename(abs), app: relative(root, abs).split(sep).join('/') };
+    }
     files = await readDirectory(abs);
     name = basename(abs);
   } else if (abs.endsWith('.json')) {
@@ -47,8 +54,45 @@ export async function loadProject(path: string, store?: SnapshotStore): Promise<
   return projectFromFiles(files, { name, path: abs });
 }
 
+/**
+ * The monorepo `dir` is a workspace package of: the nearest directory above it with workspaces
+ * (package.json `workspaces`, pnpm-workspace.yaml), if they name `dir`. Null for anything else,
+ * `dir` itself being a monorepo's root included.
+ */
+async function workspaceRoot(dir: string): Promise<string | null> {
+  if (await workspaceManifest(dir)) return null;
+  for (let up = dirname(dir); ; up = dirname(up)) {
+    const found = await workspaceManifest(up);
+    if (found) {
+      const rel = relative(up, dir).split(sep).join('/');
+      return isWorkspace(rel, found) && (await stat(join(dir, 'package.json')).then((s) => s.isFile(), () => false)) ? up : null;
+    }
+    if (up === dirname(up)) return null;
+  }
+}
+
+/** The workspace patterns of a directory's package.json or pnpm-workspace.yaml, or null if it declares none. */
+async function workspaceManifest(dir: string): Promise<string[] | null> {
+  const files: FileTree = {};
+  for (const file of ['package.json', 'pnpm-workspace.yaml']) {
+    const text = await readFile(join(dir, file), 'utf8').catch(() => null);
+    if (text !== null) files[file] = text;
+  }
+  let pkg: PackageJson | null = null;
+  try {
+    pkg = typeof files['package.json'] === 'string' ? (JSON.parse(files['package.json']) as PackageJson) : null;
+  } catch {
+    pkg = null;
+  }
+  return workspacePatterns(files, pkg);
+}
+
 /** A project from a file tree in memory: its package.json, framework and snapshot id. */
 export function projectFromFiles(files: FileTree, meta: { name: string; path: string }): Project {
+  // Sandburg's own directory is never the project's, however the project came (a JSON tree, a
+  // snapshot, the API): the disk and zip loaders leave it out as they read; here for the rest. The
+  // runtime reads the links of local packages from it (.sandburg/workspace.json).
+  if (Object.keys(files).some((p) => p.split('/').includes('.sandburg'))) files = Object.fromEntries(Object.entries(files).filter(([p]) => !p.split('/').includes('.sandburg')));
   let packageJson: PackageJson | null = null;
   const pkgSource = files['package.json'];
   if (typeof pkgSource === 'string') {

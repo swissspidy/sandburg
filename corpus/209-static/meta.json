@@ -1,0 +1,16 @@
+{
+  "id": "209-static",
+  "target": "static",
+  "framework": "static",
+  "features": [
+    "converter",
+    "counter",
+    "search",
+    "fetch"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

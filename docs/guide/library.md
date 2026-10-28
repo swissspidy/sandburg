@@ -139,7 +139,7 @@ reported them.
 
 | Class | Means | Rules |
 |---|---|---|
-| `app-bug` | The app is wrong; it would fail the same way anywhere. | `blocking-check-failed`, `compile-error`, `undeclared-import`, `unresolvable-dependency`, `app-error-before-ready`, `adapter-code:APP`, `project-load` (a project that is there but does not load) |
+| `app-bug` | The app is wrong; it would fail the same way anywhere. | `blocking-check-failed`, `compile-error`, `undeclared-import`, `unresolvable-dependency`, `app-error-before-ready`, `server-render-error`, `adapter-code:APP` (also a local package or workspace that is not there), `project-load` (a project that is there but does not load) |
 | `runtime-unsupported` | The app needs something the in-browser runtime does not do. | `probe-unsupported`, `adapter-code:UNSUPPORTED`, `signature:*` (`bare-specifier`, `native-addon`, `stubbed-builtin`, `missing-builtin`, `node-version`, `esbuild-wasm`, `runtime-worker`, `wasm-thread-crash`, `wasm-trap`) |
 | `timeout` | A phase ran out of time with no better explanation. | `phase-deadline` |
 | `infra` | Sandburg's own machinery or the network failed (retried `infraRetries` times). | `runtime-boot-fetch`, `signature:download-failed`, `infra-error` |

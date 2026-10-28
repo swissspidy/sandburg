@@ -1,0 +1,16 @@
+{
+  "id": "134-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "counter",
+    "form",
+    "fetch",
+    "converter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

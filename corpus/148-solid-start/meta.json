@@ -1,0 +1,14 @@
+{
+  "id": "148-solid-start",
+  "target": "solid-start",
+  "framework": "solid-start",
+  "features": [
+    "converter",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "syntax",
+  "buggyFeature": null,
+  "expected": "fail"
+}

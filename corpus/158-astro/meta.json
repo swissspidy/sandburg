@@ -1,0 +1,16 @@
+{
+  "id": "158-astro",
+  "target": "astro",
+  "framework": "astro",
+  "features": [
+    "counter",
+    "converter",
+    "form",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "form",
+  "expected": "fail"
+}

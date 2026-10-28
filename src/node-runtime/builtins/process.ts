@@ -196,6 +196,19 @@ export interface ProcessOptions {
   write(stream: 'stdout' | 'stderr', text: string): void;
   /** When set, the process has an IPC channel (process.send), as a child forked with one does. */
   send?(message: unknown): void;
+  /** What stdin reads (a synchronous child process's `input`); otherwise it is empty. */
+  stdin?: Uint8Array;
+}
+
+function stdinStream(input?: Uint8Array): Readable {
+  let left = input?.length ? Buffer.from(input) : null;
+  return new Readable({
+    read() {
+      if (left) this.push(left);
+      left = null;
+      this.push(null);
+    },
+  });
 }
 
 export function createProcess(opts: ProcessOptions) {
@@ -252,7 +265,7 @@ export function createProcess(opts: ProcessOptions) {
     allowedNodeEnvironmentFlags: new Set<string>(),
     stdout: out('stdout'),
     stderr: out('stderr'),
-    stdin: Object.assign(new Readable({ read() { this.push(null); } }), { isTTY: false, fd: 0, setRawMode() {} }),
+    stdin: Object.assign(stdinStream(opts.stdin), { isTTY: false, fd: 0, setRawMode() {} }),
     cwd: () => cwd,
     chdir: (dir: string) => {
       cwd = dir.startsWith('/') ? dir : `${cwd}/${dir}`;

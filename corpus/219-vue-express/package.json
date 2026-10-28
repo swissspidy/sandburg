@@ -1,0 +1,24 @@
+{
+  "name": "corpus-219-vue-express",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:server\" \"npm:client\"",
+    "server": "node --watch server/index.js",
+    "client": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.0",
+    "express": "^5.2.0",
+    "vue": "3.5.44"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "concurrently": "^10.0.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.1.0"
+  }
+}

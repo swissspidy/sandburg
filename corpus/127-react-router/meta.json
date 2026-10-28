@@ -1,0 +1,15 @@
+{
+  "id": "127-react-router",
+  "target": "react-router",
+  "framework": "react-router",
+  "features": [
+    "todo",
+    "persist",
+    "store"
+  ],
+  "tailwind": false,
+  "react": "19.3.1",
+  "fault": "bad-version",
+  "buggyFeature": null,
+  "expected": "fail"
+}

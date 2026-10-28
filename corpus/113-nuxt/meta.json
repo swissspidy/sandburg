@@ -1,0 +1,16 @@
+{
+  "id": "113-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "dates",
+    "tabs",
+    "counter",
+    "form"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

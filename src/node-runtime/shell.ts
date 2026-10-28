@@ -3,13 +3,15 @@
  * start (`vite`, `concurrently "npm:server" "npm:client"`, `cd server && npm run dev`,
  * `PORT=4000 tsx watch src/index.ts`). Every program it runs is a Node program: `node`, a package
  * binary (node_modules/.bin, from the install's .sandburg-bins.json), or an npm/pnpm/yarn script,
- * which it expands. There are no other programs in the browser; a command it cannot run exits with
- * 127, as `sh` does for a command it cannot find.
+ * which it expands (in a workspace package too: `npm -w`, `pnpm --filter`, `yarn workspace`). There
+ * are no other programs in the browser; a command it cannot run exits with 127, as `sh` does for a
+ * command it cannot find.
  *
  * Supported: `&&`, `||`, `;`, `&` (background), `$VAR`/`${VAR}`, quotes, `NAME=value cmd`, `cd`,
  * `export`, `echo`, `true`, `false`, `exit`, `sleep`, `cross-env`, `env`, `sh -c`/`bash -c`.
  * Pipes and redirections are not: the left-hand command runs and the rest is dropped (with a note).
  */
+import { parseWorkspace, WORKSPACE_FILE } from './links.ts';
 
 export interface ShellHost {
   /** Starts a Node program; `onExit` runs once when it ends. */
@@ -23,6 +25,11 @@ export interface ShellHost {
    * start (`tsc && node server.js` while tsc runs; `sleep 2 && vite`), see process-tree.ts.
    */
   stepsAhead?(delta: 1 | -1): void;
+  /**
+   * Runs the script synchronously (execSync): `node` calls onExit before it returns, and the shell
+   * waits with `sleep` instead of a timer. Otherwise a builtin's end is a microtask, sleep a timer.
+   */
+  sync?: { sleep(ms: number): void };
 }
 
 type Token = { op: '&&' | '||' | ';' | '&' | '|' | '>' } | { word: string; assign?: boolean };
@@ -163,7 +170,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
   };
 
   /** The script a package manager command runs, or null. */
-  const packageScript = (words: string[], dir: string): { script: string; cwd: string; name: string } | null => {
+  const packageScript = (words: string[], dir: string): { script: string; cwd: string; name: string } | { error: string } | null => {
     const [runner, ...rest] = words;
     let args = [...rest];
     let target = dir;
@@ -185,6 +192,35 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       }
     };
     take(runner === 'npm' ? ['--prefix', '-C'] : runner === 'pnpm' ? ['--dir', '-C', '--prefix'] : ['--cwd', '--prefix']);
+    // Every workspace (`npm run dev --workspaces`, `pnpm -r dev`) is not one script: not run here
+    // (running the root's own script instead would start it again, and again).
+    // The package manager's own arguments: those after `--` are the script's.
+    const own = args.indexOf('--') < 0 ? args.length : args.indexOf('--');
+    if (args.slice(0, own).some((a) => /^(--workspaces|-ws|-r|--recursive)$/.test(a))) return null;
+    // A workspace by name or path: `npm -w web run dev`, `pnpm --filter web dev`, `yarn workspace web dev`.
+    const flags = runner === 'npm' ? ['--workspace', '-w'] : runner === 'pnpm' ? ['--filter', '-F'] : [];
+    // A script in several workspaces (`--filter web --filter api`) is not one script: not run here.
+    const selectors: string[] = [];
+    for (let i = 0; i < own; i++) {
+      if (flags.includes(args[i])) selectors.push(`${args[i]} ${args[++i] ?? ''}`.trim());
+      else if (flags.some((f) => args[i].startsWith(`${f}=`))) selectors.push(args[i]);
+    }
+    if (selectors.length > 1) return { error: `${runner} ${selectors.join(' ')}: several ${flags[0]} selectors are not supported in the browser runtime` };
+    for (let i = 0; i < own; i++) {
+      const a = args[i];
+      const flag = flags.find((f) => a === f || a.startsWith(`${f}=`));
+      const value = flag ? (a === flag ? args[i + 1] : a.slice(flag.length + 1)) : runner === 'yarn' && a === 'workspace' && i === 0 ? args[1] : undefined;
+      if (value === undefined) continue;
+      const as = `${runner} ${flag ?? 'workspace'} ${value}`;
+      // pnpm's selectors beyond a name or a directory (`web...`, `./apps/*`, `@scope/*`, `!web`) pick
+      // packages by the dependency graph or a pattern: not run here.
+      if (runner === 'pnpm' && /\.\.\.|[*!^[\]]/.test(value)) return { error: `${as}: selectors other than a package name or a directory are not supported in the browser runtime` };
+      const ws = workspace(value, target);
+      if (!ws) return { error: `${as}: no workspace package "${value}"` };
+      target = ws;
+      args.splice(i, a === flag || a === 'workspace' ? 2 : 1);
+      break;
+    }
     args = args.filter((a) => !/^(--silent|-s|--if-present|--no-color|--loglevel=.*)$/.test(a));
     let name: string | undefined;
     if (args[0] === 'run' || args[0] === 'run-script') name = args[1];
@@ -201,11 +237,28 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     } catch {
       return null;
     }
-    const body = scripts[name] ?? (name === 'start' ? 'node server.js' : undefined);
+    const body = Object.hasOwn(scripts, name) ? scripts[name] : name === 'start' ? 'node server.js' : undefined;
     if (!body) return null;
     const pre = scripts[`pre${name}`];
     const withArgs = extra.length ? `${body} ${extra.map(quote).join(' ')}` : body;
     return { script: pre ? `${pre} && ${withArgs}` : withArgs, cwd: target, name };
+  };
+
+  /**
+   * A workspace package's directory, by name (the project's workspace packages: links.ts'
+   * WORKSPACE_FILE, from `dir` upwards) or by path; null if there is none.
+   */
+  const workspace = (value: string, dir: string): string | null => {
+    for (let d = dir; ; d = d.slice(0, d.lastIndexOf('/')) || '/') {
+      const info = parseWorkspace(host.readFile(`${d === '/' ? '' : d}/${WORKSPACE_FILE}`));
+      // Its own entries only: `-w constructor` is not Object's.
+      const rel = info && Object.hasOwn(info.packages, value) ? info.packages[value] : undefined;
+      if (typeof rel === 'string') return join(d, rel);
+      if (info) break;
+      if (d === '/') break;
+    }
+    const path = join(dir, value.replace(/^\{(.*)\}$/, '$1'));
+    return host.readFile(`${path}/package.json`) !== null ? path : null;
   };
 
   /** node_modules/.bin/<name>, searched from `dir` upwards. */
@@ -214,7 +267,8 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       const index = host.readFile(`${d === '/' ? '' : d}/node_modules/.sandburg-bins.json`);
       if (index) {
         try {
-          const rel = (JSON.parse(index) as Record<string, string>)[name];
+          const bins = JSON.parse(index) as Record<string, string>;
+          const rel = Object.hasOwn(bins, name) ? bins[name] : undefined;
           if (rel) return `${d === '/' ? '' : d}/${rel}`;
         } catch {
           // a broken index: keep looking
@@ -237,7 +291,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       return done(0);
     }
     const [cmd, ...args] = words;
-    const later = (code: number, newDir?: string) => queueMicrotask(() => done(code, newDir));
+    const later = (code: number, newDir?: string) => (host.sync ? done(code, newDir) : queueMicrotask(() => done(code, newDir)));
     switch (cmd) {
       case 'cd': {
         const to = join(dir, args[0] ?? env.HOME ?? '/');
@@ -260,8 +314,20 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         return later(1);
       case 'exit':
         return later(Number(args[0] ?? 0));
-      case 'sleep':
-        return void setTimeout(() => done(0), Number(args[0] ?? 0) * 1000);
+      case 'sleep': {
+        const seconds = sleepSeconds(args);
+        if (typeof seconds === 'string') {
+          host.write(2, `sleep: ${seconds}\nTry 'sleep --help' for more information.\n`);
+          return later(1);
+        }
+        if (host.sync) {
+          host.sync.sleep(seconds * 1000);
+          return done(0);
+        }
+        // Past setTimeout's range (sleep inf): never.
+        if (seconds * 1000 > 2 ** 31 - 1) return;
+        return void setTimeout(() => done(0), seconds * 1000);
+      }
       case 'cross-env':
       case 'env':
         return command(args, dir, localEnv, done);
@@ -276,6 +342,10 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       if (cmd === 'npm' && args[0] === 'exec') return command(args.slice(1).filter((a) => a !== '--' && !/^(-y|--yes)$/.test(a)), dir, localEnv, done);
       if ((cmd === 'pnpm' || cmd === 'yarn') && (args[0] === 'exec' || args[0] === 'dlx')) return command(args.slice(1), dir, localEnv, done);
       const target = packageScript(words, dir);
+      if (target && 'error' in target) {
+        host.write(2, `sh: ${target.error}\n`);
+        return later(1);
+      }
       if (target) {
         const npmEnv = { ...localEnv, npm_lifecycle_event: target.name, INIT_CWD: localEnv.INIT_CWD ?? dir };
         return sequence(target.script, target.cwd, npmEnv, (code) => done(code));
@@ -302,16 +372,20 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       host.write(2, `sh: ${cmd}: not found (only Node programs run in the browser runtime)\n`);
       return later(127);
     }
-    const handle = host.node(argv, {
+    // Ended already when node() returns, if the shell runs synchronously.
+    let ended = false;
+    let handle: { kill(): void } | undefined;
+    handle = host.node(argv, {
       cwd: dir,
       env: localEnv,
       write: (fd, text) => host.write(fd, text),
       onExit: (code) => {
-        running.delete(handle);
+        ended = true;
+        if (handle) running.delete(handle);
         done(code);
       },
     });
-    running.add(handle);
+    if (!ended) running.add(handle);
   };
 
   /** Runs a whole script; `done` gets the last foreground command's code. */
@@ -366,6 +440,30 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       for (const r of running) r.kill();
     },
   };
+}
+
+/**
+ * How long `sleep` waits, in seconds, as GNU sleep reads its arguments (the sum of each, a number with
+ * an optional s, m, h or d), or the error it reports.
+ */
+function sleepSeconds(args: string[]): number | string {
+  if (!args.length) return 'missing operand';
+  let total = 0;
+  for (const a of args) {
+    // Units in lower case only; inf in any case; hexadecimal (fractions, binary exponents) as strtod reads it.
+    const m = /^\+?(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?|0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)(?:[pP][+-]?\d+)?|[iI][nN][fF](?:[iI][nN][iI][tT][yY])?)([smhd]?)$/.exec(a);
+    if (!m) return `invalid time interval '${a}'`;
+    total += number(m[1]) * { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2] as '' | 's' | 'm' | 'h' | 'd'];
+  }
+  return total;
+}
+
+/** A number as strtod reads sleep's: decimal, inf, or hexadecimal with a fraction and a binary exponent (0x1.8p-1). */
+function number(text: string): number {
+  if (/^inf/i.test(text)) return Infinity;
+  const hex = /^0[xX]([0-9a-fA-F]*)\.?([0-9a-fA-F]*)(?:[pP]([+-]?\d+))?$/.exec(text);
+  if (!hex) return Number(text);
+  return parseInt(`${hex[1]}${hex[2]}` || '0', 16) * 2 ** (Number(hex[3] ?? 0) - 4 * hex[2].length);
 }
 
 function quote(word: string): string {

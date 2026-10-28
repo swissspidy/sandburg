@@ -1,0 +1,16 @@
+{
+  "id": "194-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "dates",
+    "search",
+    "modal",
+    "todo"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "bad-version",
+  "buggyFeature": null,
+  "expected": "fail"
+}

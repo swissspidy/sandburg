@@ -17,12 +17,15 @@
  *   node scripts/architecture.ts --update   # rewrite the layers' and environments' tables in docs/architecture.md
  */
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const DOC = join(ROOT, 'docs/architecture.md');
+
+/** A repo-relative path with forward slashes, as the rules and the docs name modules on every OS. */
+const repoPath = (file: string) => relative(ROOT, file).split(sep).join('/');
 
 /** One import of a module: `to` is a repo-relative path for a relative specifier, else the specifier. */
 export interface Import {
@@ -70,10 +73,10 @@ export function importGraph(dir = join(ROOT, 'src')): Graph {
   const imports: Import[] = [];
   for (const file of files) {
     const code = readFileSync(file, 'utf8');
-    const from = relative(ROOT, file);
+    const from = repoPath(file);
     const lineAt = (offset: number) => code.slice(0, offset).split('\n').length;
     const add = (specifier: string, typeOnly: boolean, dynamic: boolean, offset: number) => {
-      const to = specifier.startsWith('.') ? relative(ROOT, resolve(dirname(file), specifier)) : specifier;
+      const to = specifier.startsWith('.') ? repoPath(resolve(dirname(file), specifier)) : specifier;
       imports.push({ from, to, typeOnly, dynamic, line: lineAt(offset) });
     };
     const r = parseSync(file, code);
@@ -98,7 +101,7 @@ export function importGraph(dir = join(ROOT, 'src')): Graph {
       }
     });
   }
-  return { modules: files.map((f) => relative(ROOT, f)), imports };
+  return { modules: files.map(repoPath), imports };
 }
 
 export type Environment = 'host' | 'page' | 'runtime' | 'compile-worker' | 'service-worker' | 'app-frame';

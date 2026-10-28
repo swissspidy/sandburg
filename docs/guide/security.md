@@ -28,9 +28,12 @@ prove it ([ADR 0001](../adr/0001-runtime-adapters-serving-results.md),
 - **The egress proxy** is the context's proxy for what the gateway cannot see. It refuses plain HTTP
   and, for intercepted contexts, every tunnel.
 - **`--offline`** answers every request from the cache and fails on a miss.
-- **Installs.** The host runs npm with `--ignore-scripts`, and installs registry dependencies only: a
-  git, directory, URL, `file:`, `link:` or `workspace:` dependency fails the install as unsupported,
-  also when a registry package pulls one in. A lockfile's tarball URLs must be on npm's registry.
+- **Installs.** The host runs npm with `--ignore-scripts`, and npm gets registry dependencies only.
+  Workspaces and `file:`, `link:` and `workspace:` packages inside the project never reach npm: they
+  are the project's own files, linked. A git or URL dependency, a local tarball or a path outside the
+  project fails the run before anything is installed, as unsupported, also when a registry package
+  pulls one in ([ADR 0064](../adr/0064-monorepos-and-local-packages.md)). A lockfile's tarball URLs
+  must be on npm's registry.
 - **Caches shared across runs** take writes only with the run's capability token, from its own
   sandbox ([ADR 0040](../adr/0040-security-fixes.md)).
 

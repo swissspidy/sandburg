@@ -1,0 +1,14 @@
+{
+  "id": "177-sveltekit",
+  "target": "sveltekit",
+  "framework": "sveltekit",
+  "features": [
+    "form",
+    "todo"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "crash",
+  "buggyFeature": null,
+  "expected": "fail"
+}

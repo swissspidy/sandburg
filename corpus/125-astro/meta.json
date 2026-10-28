@@ -1,0 +1,14 @@
+{
+  "id": "125-astro",
+  "target": "astro",
+  "framework": "astro",
+  "features": [
+    "todo",
+    "fetch"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "bad-version",
+  "buggyFeature": null,
+  "expected": "fail"
+}

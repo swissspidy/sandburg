@@ -51,9 +51,9 @@ What runs is in the README's [What runs](../../README.md#what-runs). What does n
 | Not supported | What you see |
 |---|---|
 | Native addons without a WebAssembly build | `error`, `runtime-unsupported`, rule `signature:native-addon` (a `.node` file that cannot load, `node-gyp`, `NODE_MODULE_VERSION`). |
-| Synchronous child processes (`execSync`, `spawnSync`, …) | The call throws `running "<command>" synchronously is not available in the browser runtime` (`ENOSYS`); the phase that ran it fails (often `start`). Asynchronous child processes of Node programs work. |
-| Programs other than Node (`git`, `python`, …) | They exit with 127 (command not found), as in a shell without them. A dev script that needs one fails at `start`. |
-| Dependencies that are not npm registry versions: git, URL, `file:`, `link:`, `workspace:`, `user/repo` shorthands | The install fails, before any package is unpacked (`error` in `install`). Also when a registry package pulls one in. |
+| Programs other than Node (`git`, `python`, …) | They exit with 127 (command not found), as in a shell without them, also under `execSync` and `spawnSync` ([ADR 0063](../adr/0063-synchronous-child-processes.md)). A dev script that needs one fails at `start`. |
+| A server started synchronously (`execSync('npm run dev')`) | The call blocks its caller for good (until its own `timeout` option), and nothing can reach the server: the run waits until a phase runs out of time. Start servers with `spawn`. Synchronous child processes that end (`execSync('node build.js')`) work. |
+| Dependencies that are neither npm registry versions nor packages inside the project: git, URL, `user/repo` shorthands, local tarballs (`file:x.tgz`), paths outside the project | The run fails before anything is installed: `runtime-unsupported`, rule `probe-unsupported`, naming the dependency (`…: it points outside the project; only packages inside the project are linked`). Also when a registry package pulls one in. Workspaces and `file:`, `link:` and `workspace:` packages inside the project are linked ([ADR 0064](../adr/0064-monorepos-and-local-packages.md)). |
 | A Node.js built-in the runtime does not implement | `runtime-unsupported`, rule `signature:missing-builtin` (`Cannot find module 'node:…'`) or `signature:stubbed-builtin` (`… not supported`). |
 | A framework that requires a newer Node.js than the runtime's (Node 24) | `runtime-unsupported`, rule `signature:node-version`. |
 | A WebAssembly build that traps (a native tool's port) | `runtime-unsupported`, rule `signature:wasm-trap` or `signature:wasm-thread-crash`. Running it again sometimes passes; report it. |
@@ -74,7 +74,9 @@ rule that decided it ([`src/classify.ts`](../../src/classify.ts)). The CLI's sum
 - **`app-bug`**: the app is wrong; it would fail the same way anywhere. The message points at the
   file and line where the dev server reported it (`compile-error`), names the package the project
   imports but does not declare (`undeclared-import`) or that the registry does not have
-  (`unresolvable-dependency`), or lists the failed checks (`blocking-check-failed`).
+  (`unresolvable-dependency`), says the server could not render the app's page (`server-render-error`), says
+  a local package or workspace it names is not there (`adapter-code:APP`), or lists the failed checks
+  (`blocking-check-failed`).
 - **`runtime-unsupported`**: see [above](#what-is-not-supported).
 - **`timeout`** (`phase-deadline`): a phase ran out of time, with no compile error or other cause
   found. `ready` is the usual one: the dev server started but the page never rendered. Try `sandburg

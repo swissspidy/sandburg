@@ -233,6 +233,12 @@ test("the esbuild shim asks the runtime's hook first, and its own esbuild for an
   let answer: (input: string) => Promise<unknown> | null = () => null;
   const hook = Symbol.for('sandburg.esbuildTransform');
   Object.defineProperty(globalThis, hook, { configurable: true, value: (...args: unknown[]) => (asked.push(args), answer(args[1] as string)) });
+  // The shim runs in the browser runtime, whose file system has no C:\: esbuild-wasm takes paths for
+  // Windows' when `C:\` exists (fs.CheckIfWindows stats it), and then refuses its browser build's
+  // "/" as the working directory. On a Windows host the test's fs has it: answered as the runtime's.
+  const fs = createRequire(import.meta.url)('node:fs') as { stat: (path: string, ...rest: unknown[]) => void };
+  const stat = fs.stat;
+  fs.stat = (path, ...rest) => (path === 'C:\\' ? (rest.at(-1) as (e: Error) => void)(Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' })) : stat(path, ...rest));
   try {
     const shim = createRequire(import.meta.url)(join(pkg, 'lib', 'main.js')) as typeof esbuild;
     answer = () => Promise.resolve({ code: 'from the host', map: '', warnings: [] });
@@ -252,6 +258,7 @@ test("the esbuild shim asks the runtime's hook first, and its own esbuild for an
     assert.equal(asked.length, 4);
     await shim.stop();
   } finally {
+    fs.stat = stat;
     Reflect.deleteProperty(globalThis, hook);
     rmSync(root, { recursive: true, force: true });
   }

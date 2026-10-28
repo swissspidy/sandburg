@@ -1,0 +1,16 @@
+{
+  "id": "117-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "dates",
+    "converter",
+    "form",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "form",
+  "expected": "fail"
+}

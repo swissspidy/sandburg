@@ -1,0 +1,7 @@
+<div data-feature="fetch"></div>
+
+<script>
+  import { mount } from '../features/fetch';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="fetch"]')) mount(el);
+</script>

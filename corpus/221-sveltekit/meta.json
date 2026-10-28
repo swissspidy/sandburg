@@ -1,0 +1,14 @@
+{
+  "id": "221-sveltekit",
+  "target": "sveltekit",
+  "framework": "sveltekit",
+  "features": [
+    "converter",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "syntax",
+  "buggyFeature": null,
+  "expected": "fail"
+}

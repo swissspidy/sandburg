@@ -1,0 +1,14 @@
+{
+  "id": "139-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "form",
+    "search"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "crash",
+  "buggyFeature": null,
+  "expected": "fail"
+}

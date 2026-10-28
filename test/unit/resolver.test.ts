@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cachedBody, PackumentCache, revalidates, trimPackument } from '../../src/adapters/node/resolver.ts';
+import { npmCliScript, npmCommand } from '../../src/adapters/node/npm-cli.ts';
 import { tempDir } from './temp-dir.ts';
 
 test('the resolver keeps packuments by their size, least recently used out first', () => {
@@ -110,7 +111,7 @@ test('the resolver writes the lockfile npm does, and reads ahead only what npm r
     }
     // Another app had heavy: npm's cache has its packument, which this resolution does not need.
     await writeFile(join(dirs.other, 'package.json'), JSON.stringify({ name: 'other', private: true, dependencies: { heavy: '1' } }));
-    const npm = (dir: string) => promisify(execFile)('npm', ['install', ...flags, '--no-update-notifier'], { cwd: dir, env: process.env });
+    const npm = (dir: string) => promisify(execFile)(...npmCommand(['install', ...flags, '--no-update-notifier']), { cwd: dir, env: process.env });
     await npm(dirs.other);
     reg.asked.splice(0);
     await npm(dirs.cli);
@@ -128,6 +129,54 @@ test('the resolver writes the lockfile npm does, and reads ahead only what npm r
     assert.equal(await readFile(join(dirs.again, 'package-lock.json'), 'utf8'), expected);
     // Kept in the resolver: read once.
     assert.deepEqual(reg.asked, []);
+    // A directory reached through a link (macOS's temporary directory is under /var, a link to
+    // /private/var) has the same lockfile.
+    const real = join(root, 'linked-real');
+    await mkdir(real);
+    await writeFile(join(real, 'package.json'), manifest);
+    const { symlink } = await import('node:fs/promises');
+    await symlink(real, join(root, 'linked'), 'junction');
+    assert.equal(await resolver.resolve(join(root, 'linked'), () => {}), true);
+    assert.equal(await readFile(join(real, 'package-lock.json'), 'utf8'), expected);
+  } finally {
+    Object.assign(process.env, env);
+    for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
+    await reg.close();
+  }
+});
+
+test('a directory that is gone fails its resolution, and only its own: the next ones resolve and read ahead as before', async () => {
+  const { mkdir, writeFile, readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { Resolver } = await import('../../src/adapters/node/resolver.ts');
+  const reg = await registry();
+  const env = { npm_config_registry: process.env.npm_config_registry, npm_config_cache: process.env.npm_config_cache };
+  try {
+    const root = tempDir('sandburg-gone-');
+    process.env.npm_config_registry = reg.url;
+    process.env.npm_config_cache = join(root, 'npm-cache');
+    const flags = ['--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error'];
+    const manifest = JSON.stringify({ name: 'sandburg-install', private: true, dependencies: { app: '^1.0.0', tool: '^3.0.0' }, devDependencies: { lib: '1' } });
+    const resolver = new Resolver(join(root, 'resolver'), flags);
+    const picked: string[] = [];
+    resolver.onPicked = ({ name }) => void picked.push(name);
+    // A lockfile's packages are what the read-ahead skips (ReadAhead.start), until a resolution alone
+    // starts it afresh.
+    const locked = join(root, 'locked');
+    await mkdir(locked);
+    await writeFile(join(locked, 'package.json'), manifest);
+    assert.equal(await resolver.resolve(locked, () => {}), true);
+    assert.equal(await resolver.resolve(locked, () => {}), true);
+    // A directory removed before its resolution starts fails it.
+    assert.equal(await resolver.resolve(join(root, 'gone'), () => {}), false);
+    // A new directory: its packages are picked as npm resolves them, and its lockfile is npm's.
+    const fresh = join(root, 'fresh');
+    await mkdir(fresh);
+    await writeFile(join(fresh, 'package.json'), manifest);
+    picked.splice(0);
+    assert.equal(await resolver.resolve(fresh, () => {}), true);
+    assert.deepEqual([...new Set(picked)].sort(), ['app', 'leaf', 'lib', 'tool']);
+    assert.equal(await readFile(join(fresh, 'package-lock.json'), 'utf8'), await readFile(join(locked, 'package-lock.json'), 'utf8'));
   } finally {
     Object.assign(process.env, env);
     for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
@@ -162,7 +211,9 @@ test('packuments are trimmed into npm\'s cache; a later resolution reads them, a
   const { createRequire } = await import('node:module');
   const { realpathSync } = await import('node:fs');
   const { Resolver } = await import('../../src/adapters/node/resolver.ts');
-  const cacache = createRequire(join(dirname(dirname(realpathSync(execFileSync('sh', ['-c', 'command -v npm'], { encoding: 'utf8' }).trim()))), 'package.json'))('cacache') as {
+  // npm's own package: on Windows its npm-cli.js (`npm` there is a batch file), else the CLI on PATH.
+  const npmRoot = dirname(dirname(process.platform === 'win32' ? npmCliScript()! : realpathSync(execFileSync('sh', ['-c', 'command -v npm'], { encoding: 'utf8' }).trim())));
+  const cacache = createRequire(join(npmRoot, 'package.json'))('cacache') as {
     ls(cache: string): Promise<Record<string, { integrity: string; metadata?: { source?: string } }>>;
     put(cache: string, key: string, data: string, o: object): Promise<unknown>;
     get(cache: string, key: string): Promise<{ data: Buffer; metadata: { source: string } }>;
@@ -188,7 +239,7 @@ test('packuments are trimmed into npm\'s cache; a later resolution reads them, a
       return readFile(join(d, 'package-lock.json'), 'utf8');
     };
     const cli = await dir('cli');
-    await promisify(execFile)('npm', ['install', ...flags, '--no-update-notifier'], { cwd: cli, env: process.env });
+    await promisify(execFile)(...npmCommand(['install', ...flags, '--no-update-notifier']), { cwd: cli, env: process.env });
     const expected = await readFile(join(cli, 'package-lock.json'), 'utf8');
     const key = `sandburg:packument-trim:1:make-fetch-happen:request-cache:${reg.url}lib`;
     // The first resolution reads the full packument (the CLI cached it) and trims it on the side.

@@ -1,0 +1,14 @@
+{
+  "id": "230-react-express",
+  "target": "react-express",
+  "framework": "express-sqlite",
+  "features": [
+    "fetch",
+    "store"
+  ],
+  "tailwind": false,
+  "react": "19.3.1",
+  "fault": "logic",
+  "buggyFeature": "fetch",
+  "expected": "fail"
+}

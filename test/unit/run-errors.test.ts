@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { RunState, unwrap } from '../../src/orchestrator/run-state.ts';
 import { AdapterError } from '../../src/host/types.ts';
 import { projectFromFiles } from '../../src/project.ts';
@@ -58,4 +61,30 @@ test("the browser's failures are infra; the remaining phases are skipped, in ord
     r.phases.map((p) => [p.name, p.status]),
     [['probe', 'ok'], ['load', 'failed'], ['mount', 'skipped'], ['install', 'skipped'], ['start', 'skipped'], ['ready', 'skipped'], ['checks', 'skipped'], ['dispose', 'skipped']],
   );
+});
+
+test("a server render error is the dev server's report on the page the run loads: the start's '/' (as the node runtime answers), with or without a trailing slash", async () => {
+  const out = await mkdtemp(join(tmpdir(), 'sandburg-run-'));
+  try {
+    /** A run whose app started at `url`, then failed ready while its dev server logged `lines`. */
+    const failure = async (url: string, lines: string[]) => {
+      const r = run();
+      r.appStarted(url);
+      await assert.rejects(
+        r.phase('ready', 1000, async () => {
+          for (const line of lines) r.console.push({ source: 'host', type: 'log', text: `[runtime:stdout] ${line}` });
+          throw new Error('app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Server Error)');
+        }),
+      );
+      const { failure } = await r.finish(out);
+      return [failure?.class, failure?.rule];
+    };
+    const report = (path: string) => [`[request error] [GET] ${path}`, '  ✖ TypeError (500): Cannot read properties of undefined'];
+    assert.deepEqual(await failure('/', report('/')), ['app-bug', 'server-render-error']);
+    assert.deepEqual(await failure('/', report('/api/items')), ['unknown', 'unmatched']);
+    assert.deepEqual(await failure('http://localhost:3000/app', report('/app/')), ['app-bug', 'server-render-error']);
+    assert.deepEqual(await failure('/app/', report('/app?tab=2')), ['app-bug', 'server-render-error']);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
 });
