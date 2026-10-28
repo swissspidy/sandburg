@@ -60,7 +60,7 @@ export interface Outgoing {
  * Body bytes a client sends before its server has read them, at most: then its writes wait (and
  * write() returns false), as a socket's do once the connection's buffers are full.
  */
-export const BODY_WINDOW = 64 * 1024;
+const BODY_WINDOW = 64 * 1024;
 
 /** Listening servers by port, or by path for servers on a local socket; the runtime's request dispatcher reads this. */
 export const servers = new Map<number | string, Server>();
@@ -627,8 +627,8 @@ export class Server extends EventEmitter {
       const keepAlive = Number.isFinite(this.keepAliveTimeout) && this.keepAliveTimeout >= 0 ? this.keepAliveTimeout : 0;
       const buffer = Number.isFinite(this.keepAliveTimeoutBuffer) && this.keepAliveTimeoutBuffer >= 0 ? this.keepAliveTimeoutBuffer : 1000;
       const client = bridge.idle === undefined ? null : clientIdle(bridge.idle, keepAlive);
-      if (client === 0 || !keepAlive || /^close$/i.test(String(req.headers.connection ?? ''))) return void socket.destroy();
-      socket.setTimeout(keepAlive + buffer);
+      if (client === 0 || /^close$/i.test(String(req.headers.connection ?? ''))) return void socket.destroy();
+      if (keepAlive) socket.setTimeout(keepAlive + buffer);
       if (client !== null) timers.setTimeout(() => socket.destroy(), client).unref();
     });
     const expire = () => {
@@ -701,10 +701,11 @@ export class Server extends EventEmitter {
  */
 function clientIdle(idle: number | null, keepAliveTimeout: number): number | null {
   if (idle === 0) return 0;
+  // No hint without a keepAliveTimeout; a hint of none closes it; it only shortens the agent's own timeout.
   if (!keepAliveTimeout) return idle;
   const hint = Math.floor(keepAliveTimeout / 1000) * 1000 - 1000;
   if (hint <= 0) return 0;
-  return idle === null || hint < idle ? hint : idle;
+  return idle !== null && hint < idle ? hint : idle;
 }
 
 /**
