@@ -3,23 +3,26 @@ import { dirname, resolve } from 'node:path';
 import { Session, type RunOptions, type SessionOptions } from '../orchestrator/session.ts';
 import type { BatchItem } from '../orchestrator/batch.ts';
 import { NO_SANDBOX } from '../orchestrator/launch.ts';
-import { dockerReference } from '../reference/docker.ts';
+import { dockerReference, type DockerReferenceFactory } from '../reference/docker.ts';
 import { compare, type CompareReport } from './compare.ts';
 import { renderReport } from './report.ts';
 
 const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
-/** `sandburg compare`: runs `items` in the browser and in the Docker reference and writes the report (exit code: compareExitCode). */
+/**
+ * `sandburg compare`: runs `items` in the browser and in the Docker reference and writes the report
+ * (exit code: compareExitCode). `reference` is for tests (a fake docker CLI): the CLI's is dockerReference().
+ */
 export async function compareCommand(
   items: BatchItem[],
   values: { report?: string; json?: boolean; parallel: number; prewarm?: boolean; [k: string]: unknown },
   sessionOptions: SessionOptions,
   runOptions: RunOptions,
+  reference: DockerReferenceFactory = dockerReference(),
 ): Promise<number> {
   const session = new Session(sessionOptions);
   await session.open();
   if (!session.browserSandbox) console.error(`warning: ${NO_SANDBOX}`);
-  const reference = dockerReference();
   // Ctrl-C (or a kill) removes the reference's containers and project copies and closes the browser,
   // then exits 130 (143 for SIGTERM). Playwright's own handlers (close the browser, exit at once) wait
   // meanwhile: a second Ctrl-C gets them.

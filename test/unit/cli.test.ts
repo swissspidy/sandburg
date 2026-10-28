@@ -1,7 +1,10 @@
 /** The command line's options as the session gets them (src/cli.ts). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, readdirSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main, parseCommandLine, sessionOptions } from '../../src/cli.ts';
@@ -85,3 +88,63 @@ test('compare exits 2 when nothing could be compared, else 0 whatever the apps d
   assert.equal(compareExitCode(report(2, [pair('error', 'passed'), pair('error', 'failed')])), 2, 'no browser run reached its checks');
   assert.equal(compareExitCode(report(2, [pair('passed', 'error'), pair('failed', 'error')])), 2, 'no reference run reached its checks');
 });
+
+/**
+ * `sandburg compare` in a process of its own, its Docker reference on a docker CLI that never answers
+ * an image inspect: the reference's run hangs as it mounts. Says "hanging" (stderr) once it does.
+ */
+const HANGING_COMPARE = `
+  import { compareCommand } from ${JSON.stringify(new URL('../../src/compare/cli.ts', import.meta.url).href)};
+  import { dockerReference } from ${JSON.stringify(new URL('../../src/reference/docker.ts', import.meta.url).href)};
+  const { app, report, store, work } = JSON.parse(process.env.COMPARE_TEST);
+  const docker = (args) => {
+    console.error('docker ' + args.slice(0, 3).join(' '));
+    if (args[0] !== 'image') return Promise.resolve('');
+    console.error('hanging');
+    return new Promise(() => {});
+  };
+  const reference = dockerReference({ docker, workDir: work });
+  const disposeAll = reference.disposeAll;
+  reference.disposeAll = async () => {
+    console.error('disposeAll');
+    await disposeAll();
+    console.error('disposed');
+  };
+  await compareCommand([{ project: app, label: 'app' }], { report, parallel: 1, prewarm: false }, { storeDir: store }, {}, reference);
+  console.error('compare returned');
+`;
+
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
+  test(`compare cut short by ${signal} removes the reference's runs, writes no report and exits ${code}`, { timeout: 120_000 }, async (t) => {
+    const dir = tempDir('sandburg-compare-signal-');
+    const app = join(dir, 'app');
+    await mkdir(app);
+    await writeFile(join(app, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js' } }));
+    // A Vite app as far as the reference's probe goes (by its config file), with nothing to install.
+    await writeFile(join(app, 'vite.config.js'), 'export default {};');
+    await writeFile(join(app, 'server.js'), `require('http').createServer((req, res) => res.end('<p>hi</p>')).listen(process.env.PORT || 3000);`);
+    const report = join(dir, 'reports', 'fidelity');
+    const work = join(dir, 'work');
+    const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_COMPARE], {
+      cwd: dir,
+      env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, store: join(dir, 'store'), work }) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    // Not left running (with its browser) by a test that fails waiting for it.
+    t.after(() => child.kill('SIGKILL'));
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => {
+      const was = stderr;
+      stderr += d.toString();
+      if (!was.includes('hanging\n') && stderr.includes('hanging\n')) child.kill(signal);
+    });
+    const [exit] = (await once(child, 'exit')) as [number | null];
+    assert.equal(exit, code, stderr);
+    assert.match(stderr, new RegExp(`${signal}: removing the reference's containers\\ndisposeAll\\n`));
+    // Its run was disposed: its containers looked up by its label (and none found to remove).
+    assert.match(stderr.slice(stderr.indexOf('disposeAll')), /docker ps -aq --filter\ndisposed\n/);
+    assert.ok(!stderr.includes('compare returned'), stderr);
+    assert.equal(existsSync(join(dir, 'reports')), false);
+    assert.deepEqual(existsSync(work) ? readdirSync(work) : [], []);
+  });
+}

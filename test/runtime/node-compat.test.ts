@@ -352,6 +352,124 @@ test("http: process.exit() in a handler of a child process's request ends the pr
   assert.deepEqual(out.stdout.trim().split('\n'), ['parent exit 5', 'child got ECONNRESET socket hang up']);
 });
 
+test("http: a child process's request is reset when its parent's handler destroys the response, and answered when it ends it", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const serving = globalThis[Symbol.for('sandburg.servingLoopback')];
+        require('http').createServer((req, res) => {
+          if (req.url === '/destroy') res.destroy();
+          else if (req.url === '/socket') {
+            res.writeHead(200);
+            res.write('part');
+            setTimeout(() => req.socket.destroy(), 10);
+          } else if (req.url === '/end-then-close') {
+            res.write('all ');
+            res.end('sent');
+            req.socket.destroy();
+          } else res.end('whole');
+        }).listen(3000, () => {
+          const child = require('child_process').fork(require('path').join(__dirname, 'child.js'));
+          child.on('message', (m) => {
+            console.log(m);
+            if (m === 'done') setTimeout(() => console.log('serving', serving()), 50);
+          });
+        });`,
+      'child.js': `
+        const http = require('http');
+        const get = (path) => new Promise((resolve) => {
+          const log = [path];
+          http.get('http://localhost:3000' + path, (res) => {
+            log.push(res.statusCode);
+            // The body whole, however it was cut in chunks.
+            let body = '';
+            res.on('data', (d) => (body += d));
+            res.on('aborted', () => log.push(body, 'aborted'));
+            res.on('error', (e) => log.push('res error ' + e.code));
+            res.on('end', () => log.push(body, 'end'));
+            res.on('close', () => resolve(log.join(' ')));
+          }).on('error', (e) => resolve(log.concat('error', e.code, e.message).join(' ')));
+        });
+        (async () => {
+          for (const path of ['/destroy', '/socket', '/end-then-close', '/ok']) process.send(await get(path));
+          process.send('done');
+        })();`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { linger: 10_000, until: ({ stdout }) => stdout.includes('serving') },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), [
+    '/destroy error ECONNRESET socket hang up',
+    '/socket 200 part aborted res error ECONNRESET',
+    '/end-then-close 200 all sent end',
+    '/ok 200 whole end',
+    'done',
+    // What the parent's servers answer for its child is answered, and forgotten.
+    'serving 0',
+  ]);
+});
+
+test("http: a child process that dies mid-request aborts its request in the parent's server", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const serving = globalThis[Symbol.for('sandburg.servingLoopback')];
+        const { fork } = require('child_process');
+        const path = require('path');
+        let child;
+        require('http').createServer((req, res) => {
+          const log = [req.url];
+          req.on('aborted', () => log.push('aborted ' + req.aborted));
+          req.on('close', () => log.push('req close'));
+          res.on('close', () => {
+            log.push('res close');
+            setTimeout(() => {
+              console.log(log.join(', '), '| serving', serving());
+              // The child that exits on its own next.
+              if (req.url === '/killed') child = fork(path.join(__dirname, 'child.js'), ['/exits']);
+            }, 20);
+          });
+          if (req.url === '/killed') child.kill();
+          else child.send('exit');
+        }).listen(3000, () => (child = fork(path.join(__dirname, 'child.js'), ['/killed'])));`,
+      'child.js': `
+        process.on('message', () => process.exit(0));
+        require('http').get('http://localhost:3000' + process.argv[2], () => console.log('answered'));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { linger: 10_000, until: ({ stdout }) => stdout.split('serving').length === 3 },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), [
+    '/killed, aborted true, req close, res close | serving 0',
+    '/exits, aborted true, req close, res close | serving 0',
+  ]);
+});
+
+test('http: a response its handler destroys is reset, not left waiting', { timeout: 30_000 }, async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        require('http').createServer((req, res) => {
+          if (req.url === '/destroy') return res.destroy();
+          res.writeHead(200);
+          res.write('part');
+          setTimeout(() => res.destroy(), 10);
+        }).listen(3000);`,
+    },
+    '/app/main.js',
+    [{ url: '/destroy' }, { url: '/part' }],
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.ends, [['response-error', 0], ['response-error', 1]]);
+  assert.deepEqual(out.responses.map((r) => [r.status, r.body]), [[0, 'socket hang up'], [200, 'part']]);
+});
+
 test('timers: nothing set after process.exit(), or in an exit listener, runs', async () => {
   const out = await h.run(
     {

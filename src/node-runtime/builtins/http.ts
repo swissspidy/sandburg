@@ -22,6 +22,8 @@ export interface BridgeResponse {
   start(status: number, statusText: string, headers: [string, string][]): void;
   chunk(data: Uint8Array): void;
   end(): void;
+  /** The connection was reset before the response ended (res.destroy(), its socket closed): Node's client sees ECONNRESET. */
+  error?(message: string, code?: string): void;
 }
 
 /** Listening servers by port, or by path for servers on a local socket; the runtime's request dispatcher reads this. */
@@ -195,6 +197,10 @@ export class ServerResponse extends Writable {
     this.req = req;
     this.bridge = bridge;
     this.socket = this.connection = req.socket as FakeSocket;
+    // The connection closing before the response ended (req.socket.destroy()) resets it, as in Node.
+    this.socket.once('close', () => {
+      if (!this.finished && !this.destroyed) this.destroy();
+    });
   }
   setHeader(name: string, value: string | number | readonly string[]) {
     if (this.headersSent) throw Object.assign(new Error('Cannot set headers after they are sent to the client'), { code: 'ERR_HTTP_HEADERS_SENT' });
@@ -262,6 +268,15 @@ export class ServerResponse extends Writable {
     this.bridge.end();
     cb();
     queueMicrotask(() => this.emit('close'));
+  }
+  _destroy(err: Error | null, cb: (e?: Error | null) => void) {
+    if (!this.finished) {
+      // Destroyed before it ended: the connection is reset, and the client's request fails ("socket hang up").
+      this.bridge.error?.('socket hang up', 'ECONNRESET');
+      if (!this.socket.destroyed) this.socket.destroy();
+    }
+    // As Node: an error is not emitted on the response (its socket's goes to the server's 'clientError').
+    cb(this.listenerCount('error') ? err : null);
   }
   // Node's res.end(data, encoding, cb) also accepts (cb) and (data, cb).
   end(...args: unknown[]) {
@@ -339,8 +354,11 @@ export class Server extends EventEmitter {
   unref() { return this; }
   getConnections(cb: (e: null, n: number) => void) { cb(null, 0); }
 
-  /** Called by the runtime for each bridged request. */
-  dispatch(method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse) {
+  /**
+   * Called by the runtime for each bridged request. Returns what aborts it: the client went away
+   * before the response ended (its process died), so `req` emits 'aborted' and 'close', as in Node.
+   */
+  dispatch(method: string, url: string, headers: [string, string][], body: Uint8Array | null, bridge: BridgeResponse): () => void {
     // Requests surfaced in a service worker carry no Content-Length; a real connection would.
     // Body parsers (e.g. Express') use it to decide whether a request has a body.
     if (body && !headers.some(([k]) => /^(content-length|transfer-encoding)$/i.test(k))) headers = [...headers, ['content-length', String(body.length)]];
@@ -351,6 +369,13 @@ export class Server extends EventEmitter {
     req.push(null);
     req.complete = true;
     this.emit('request', req, res);
+    return () => {
+      if (res.finished || res.destroyed) return;
+      req.aborted = true;
+      req.emit('aborted');
+      req.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
+      res.destroy();
+    };
   }
 
   /**
