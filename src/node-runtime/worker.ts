@@ -787,6 +787,12 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
         answer({ type: 'response-end', id });
         inflight.delete(id);
       },
+      // Reset before it ended (res.destroy()): what was held is dropped, as a real connection's would be.
+      error: (message, code) => {
+        held = null;
+        answer({ type: 'response-error', id, message, code });
+        inflight.delete(id);
+      },
     });
   } catch (e) {
     // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
