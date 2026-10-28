@@ -121,3 +121,8 @@ test('isRegistrySpec never accepts a spec npm-package-arg calls non-registry (fu
     assert.ok(ok, `isRegistrySpec accepted ${JSON.stringify(spec)} but npa calls it ${type}${sub ? `/${sub}` : ''}`);
   }
 });
+
+test('a path written with backslashes is named a local directory dependency', async () => {
+  const { unsupportedDependency } = await import('../../src/adapters/node/spec-guard.ts');
+  for (const spec of ['..\\lib', '.\\lib', '~\\x', '\\abs']) assert.match(unsupportedDependency('x', spec).message, /a local directory dependency/, spec);
+});

@@ -56,11 +56,13 @@ class LocalPackageError extends Error {
 /** A path inside the project, from `dir` (project-relative) and a relative path; null if it leaves the project. */
 function inside(dir: string, path: string): string | null {
   // A Windows path (`file:..\lib`) is written with backslashes: the same path. A drive (`C:\x`,
-  // `C:x`), an absolute or UNC path, or one from home is outside the project.
+  // `C:x`, or one further in, `./C:/x`), an absolute or UNC path, or one from home is outside the
+  // project: no segment of a path inside it has a `:`.
   const rel = path.replace(/\\/g, '/');
-  if (rel.startsWith('/') || rel.startsWith('~') || /^[a-zA-Z]:/.test(rel)) return null;
+  if (rel.startsWith('/') || rel.startsWith('~')) return null;
   const parts = dir ? dir.split('/') : [];
   for (const p of rel.split('/')) {
+    if (p.includes(':')) return null;
     if (!p || p === '.') continue;
     if (p === '..') {
       if (!parts.length) return null;

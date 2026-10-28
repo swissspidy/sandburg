@@ -79,7 +79,7 @@ function specKind(spec: string): string {
   if (/^(git\+|git:)/.test(s) || /^(github|gitlab|bitbucket|gist):/.test(s) || /\.git(#.*)?$/.test(s) || /^[\w.-]+@[\w.-]+:/.test(s)) return 'a git repository dependency';
   if (/^https?:/.test(s)) return 'a URL dependency';
   if (TARBALL.test(s)) return 'a local tarball dependency';
-  if (/^(file|link):/.test(s) || /^(\.{1,2}|~)?\//.test(s) || s === '.' || s === '..') return 'a local directory dependency';
+  if (/^(file|link):/.test(s) || /^(\.{1,2}|~)?[\\/]/.test(s) || s === '.' || s === '..') return 'a local directory dependency';
   if (/^[\w.-]+\/[\w.-]+(#.*)?$/.test(s)) return 'a GitHub repository (user/repo) dependency';
   return 'not a registry version';
 }

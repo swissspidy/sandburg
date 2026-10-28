@@ -362,3 +362,9 @@ test('a local dependency written with Windows separators is the same path; a dri
     assert.equal(code(() => plan({ '': { dependencies: { x: spec } }, lib: { name: 'lib' } })), 'UNSUPPORTED', spec);
   }
 });
+
+test('a drive anywhere in a local path is outside the project', () => {
+  for (const spec of ['file:./C:/x', 'file:lib/../C:/x', 'file:.\\C:\\x', 'link:a/b:c']) {
+    assert.equal(code(() => plan({ '': { dependencies: { x: spec } }, lib: { name: 'lib' } })), 'UNSUPPORTED', spec);
+  }
+});
