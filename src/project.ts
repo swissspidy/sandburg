@@ -3,11 +3,12 @@
  * snapshot ("snapshot:<id or prefix>").
  */
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { isText, manifestOf, snapshotId, type SnapshotStore } from './store.ts';
 import type { FileTree, PackageJson, Project } from './types.ts';
 import { detectFramework } from './framework.ts';
 import { readZip, stripCommonRoot } from './zip.ts';
+import { isWorkspace, workspacePatterns } from './workspaces.ts';
 
 export { detectFramework };
 
@@ -33,6 +34,12 @@ export async function loadProject(path: string, store?: SnapshotStore): Promise<
   let files: FileTree;
   let name: string;
   if (info.isDirectory()) {
+    // A package of a monorepo runs in its monorepo, whose workspaces it uses (ADR 0063).
+    const root = await workspaceRoot(abs);
+    if (root) {
+      const project = projectFromFiles(await readDirectory(root), { name: basename(abs), path: root });
+      return { ...project, name: basename(abs), app: relative(root, abs).split(sep).join('/') };
+    }
     files = await readDirectory(abs);
     name = basename(abs);
   } else if (abs.endsWith('.json')) {
@@ -45,6 +52,39 @@ export async function loadProject(path: string, store?: SnapshotStore): Promise<
     throw new Error(`unsupported project input: ${path} (expected a directory, a .zip, or a .json file tree)`);
   }
   return projectFromFiles(files, { name, path: abs });
+}
+
+/**
+ * The monorepo `dir` is a workspace package of: the nearest directory above it with workspaces
+ * (package.json `workspaces`, pnpm-workspace.yaml), if they name `dir`. Null for anything else,
+ * `dir` itself being a monorepo's root included.
+ */
+async function workspaceRoot(dir: string): Promise<string | null> {
+  if (await workspaceManifest(dir)) return null;
+  for (let up = dirname(dir); ; up = dirname(up)) {
+    const found = await workspaceManifest(up);
+    if (found) {
+      const rel = relative(up, dir).split(sep).join('/');
+      return isWorkspace(rel, found) && (await stat(join(dir, 'package.json')).then((s) => s.isFile(), () => false)) ? up : null;
+    }
+    if (up === dirname(up)) return null;
+  }
+}
+
+/** The workspace patterns of a directory's package.json or pnpm-workspace.yaml, or null if it declares none. */
+async function workspaceManifest(dir: string): Promise<string[] | null> {
+  const files: FileTree = {};
+  for (const file of ['package.json', 'pnpm-workspace.yaml']) {
+    const text = await readFile(join(dir, file), 'utf8').catch(() => null);
+    if (text !== null) files[file] = text;
+  }
+  let pkg: PackageJson | null = null;
+  try {
+    pkg = typeof files['package.json'] === 'string' ? (JSON.parse(files['package.json']) as PackageJson) : null;
+  } catch {
+    pkg = null;
+  }
+  return workspacePatterns(files, pkg);
 }
 
 /** A project from a file tree in memory: its package.json, framework and snapshot id. */

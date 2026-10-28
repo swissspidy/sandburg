@@ -124,3 +124,29 @@ test('a command that is not a Node program exits with 127, as sh does for one it
   assert.match(s.err.join(''), /sh: python3: not found/);
   assert.equal(await run('make').exit, 127);
 });
+
+test('a workspace package\'s script runs in its directory: npm -w, pnpm --filter, yarn workspace (by name from the workspace file, or by path)', async () => {
+  const files = {
+    '/app/package.json': JSON.stringify({ scripts: { dev: 'npm run dev --workspace=web' } }),
+    '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web', '@acme/api': 'services/api' } }),
+    '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }),
+    '/app/services/api/package.json': JSON.stringify({ scripts: { start: 'node api.js' } }),
+  };
+  for (const script of ['npm run dev', 'npm run dev -w web', 'npm -w apps/web run dev', 'pnpm --filter web dev', 'pnpm -F ./apps/web dev', 'yarn workspace web dev']) {
+    const s = run(script, { files });
+    assert.equal(await s.exit, 0, script);
+    assert.deepEqual(s.ran.map((r) => [r.argv.slice(1).join(' '), r.cwd]), [['web.js', '/app/apps/web']], script);
+  }
+  const api = run('npm start -w @acme/api', { files });
+  assert.equal(await api.exit, 0);
+  assert.deepEqual(api.ran.map((r) => r.cwd), ['/app/services/api']);
+});
+
+test('every workspace\'s script (npm --workspaces, pnpm -r) is not run, and does not run the root\'s again', async () => {
+  const files = { '/app/package.json': JSON.stringify({ scripts: { dev: 'npm run dev --workspaces' } }) };
+  const s = run('npm run dev', { files });
+  assert.equal(await s.exit, 127);
+  assert.deepEqual(s.ran, []);
+  assert.equal(await run('pnpm -r dev', { files }).exit, 127);
+  assert.equal(await run('npm run dev -w missing', { files }).exit, 127);
+});

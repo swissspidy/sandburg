@@ -1,0 +1,39 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@acme/util':
+        specifier: workspace:*
+        version: link:packages/util
+      local-lib:
+        specifier: link:./lib
+        version: link:lib
+      ms:
+        specifier: ^2.0.0
+        version: 2.0.0
+
+  packages/util:
+    dependencies:
+      escape-html:
+        specifier: ^1.0.0
+        version: 1.0.2
+
+packages:
+
+  escape-html@1.0.2:
+    resolution: {integrity: sha512-J5ahyCRC4liskWVAfkmosNWfG0eHQxI0W+Ko7k3cZaYVMfgt05dwZ68vw6S/TZM1BPvuTv3kq6CRCb7WWtBUVA==}
+
+  ms@2.0.0:
+    resolution: {integrity: sha512-Tpp60P6IUJDTuOq/5Z8cdskzJujfwqfOTkrwIwj7IRISpnkJnT6SyJ4PCPnGMoFjC9ddhal5KVIYtAt97ix05A==}
+
+snapshots:
+
+  escape-html@1.0.2: {}
+
+  ms@2.0.0: {}

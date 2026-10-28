@@ -21,6 +21,11 @@ export interface Project {
   framework: Framework;
   /** Content-addressed id of the file tree (see src/store.ts). */
   snapshotId: string;
+  /**
+   * The workspace package that runs, for a monorepo loaded from one of its packages (`sandburg run
+   * monorepo/apps/web` loads the monorepo and runs apps/web): its directory, relative to the root.
+   */
+  app?: string;
 }
 
 /** The fields of a project's package.json that Sandburg reads; the rest as they are. */

@@ -1,6 +1,6 @@
 # ADR 0018: npm install in the browser (opt-in)
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0063](0063-monorepos-and-local-packages.md) (workspaces and `file:`/`link:` packages inside the project are installed, pnpm and yarn lockfiles pin versions)
 - Date: 2026-10-01
 
 ## Context

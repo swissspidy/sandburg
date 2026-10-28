@@ -1,0 +1,12 @@
+{
+  "name": "web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@acme/greet": "^1.0.0",
+    "@acme/format": "file:../../shared/format"
+  }
+}

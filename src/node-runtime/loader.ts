@@ -12,6 +12,7 @@
  */
 import type { Vfs } from './vfs.ts';
 import { ESM_MARKER, IMPORT_CONDITIONS as BASE_IMPORT_CONDITIONS, REQUIRE_CONDITIONS as BASE_REQUIRE_CONDITIONS } from './names.ts';
+import { realpath } from './links.ts';
 
 export interface LoaderHost {
   vfs: Vfs;
@@ -241,7 +242,8 @@ export function createModuleSystem(host: LoaderHost) {
     const previous = conditions;
     conditions = parent?.esm ? IMPORT_CONDITIONS : REQUIRE_CONDITIONS;
     try {
-      return resolveFilename(request, parent, isMain, options);
+      // A linked local package's files resolve to its own directory, as through npm's symlink (links.ts).
+      return realpath(resolveFilename(request, parent, isMain, options));
     } finally {
       conditions = previous;
     }

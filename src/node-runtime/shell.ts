@@ -3,13 +3,15 @@
  * start (`vite`, `concurrently "npm:server" "npm:client"`, `cd server && npm run dev`,
  * `PORT=4000 tsx watch src/index.ts`). Every program it runs is a Node program: `node`, a package
  * binary (node_modules/.bin, from the install's .sandburg-bins.json), or an npm/pnpm/yarn script,
- * which it expands. There are no other programs in the browser; a command it cannot run exits with
- * 127, as `sh` does for a command it cannot find.
+ * which it expands (in a workspace package too: `npm -w`, `pnpm --filter`, `yarn workspace`). There
+ * are no other programs in the browser; a command it cannot run exits with 127, as `sh` does for a
+ * command it cannot find.
  *
  * Supported: `&&`, `||`, `;`, `&` (background), `$VAR`/`${VAR}`, quotes, `NAME=value cmd`, `cd`,
  * `export`, `echo`, `true`, `false`, `exit`, `sleep`, `cross-env`, `env`, `sh -c`/`bash -c`.
  * Pipes and redirections are not: the left-hand command runs and the rest is dropped (with a note).
  */
+import { parseWorkspace, WORKSPACE_FILE } from './links.ts';
 
 export interface ShellHost {
   /** Starts a Node program; `onExit` runs once when it ends. */
@@ -185,6 +187,22 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       }
     };
     take(runner === 'npm' ? ['--prefix', '-C'] : runner === 'pnpm' ? ['--dir', '-C', '--prefix'] : ['--cwd', '--prefix']);
+    // Every workspace (`npm run dev --workspaces`, `pnpm -r dev`) is not one script: not run here
+    // (running the root's own script instead would start it again, and again).
+    if (args.some((a) => /^(--workspaces|-ws|-r|--recursive)$/.test(a))) return null;
+    // A workspace by name or path: `npm -w web run dev`, `pnpm --filter web dev`, `yarn workspace web dev`.
+    const flags = runner === 'npm' ? ['--workspace', '-w'] : runner === 'pnpm' ? ['--filter', '-F'] : [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      const flag = flags.find((f) => a === f || a.startsWith(`${f}=`));
+      const value = flag ? (a === flag ? args[i + 1] : a.slice(flag.length + 1)) : runner === 'yarn' && a === 'workspace' && i === 0 ? args[1] : undefined;
+      if (value === undefined) continue;
+      const ws = workspace(value, target);
+      if (!ws) return null;
+      target = ws;
+      args.splice(i, a === flag || a === 'workspace' ? 2 : 1);
+      break;
+    }
     args = args.filter((a) => !/^(--silent|-s|--if-present|--no-color|--loglevel=.*)$/.test(a));
     let name: string | undefined;
     if (args[0] === 'run' || args[0] === 'run-script') name = args[1];
@@ -206,6 +224,22 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     const pre = scripts[`pre${name}`];
     const withArgs = extra.length ? `${body} ${extra.map(quote).join(' ')}` : body;
     return { script: pre ? `${pre} && ${withArgs}` : withArgs, cwd: target, name };
+  };
+
+  /**
+   * A workspace package's directory, by name (the project's workspace packages: links.ts'
+   * WORKSPACE_FILE, from `dir` upwards) or by path; null if there is none.
+   */
+  const workspace = (value: string, dir: string): string | null => {
+    for (let d = dir; ; d = d.slice(0, d.lastIndexOf('/')) || '/') {
+      const info = parseWorkspace(host.readFile(`${d === '/' ? '' : d}/${WORKSPACE_FILE}`));
+      const rel = info?.packages[value];
+      if (rel !== undefined) return join(d, rel);
+      if (info) break;
+      if (d === '/') break;
+    }
+    const path = join(dir, value.replace(/^\{(.*)\}$/, '$1'));
+    return host.readFile(`${path}/package.json`) !== null ? path : null;
   };
 
   /** node_modules/.bin/<name>, searched from `dir` upwards. */
