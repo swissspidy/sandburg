@@ -212,6 +212,49 @@ require('http').createServer((req, res) => {
   assert.ok(ready.durationMs < 30_000, `ready took ${ready.durationMs} ms`);
 });
 
+test("the source check fails a page that hangs with what it found, and leaves an app that is still compiling to render", async () => {
+  // Both servers import, only when a route asks for it, a file with an undeclared import or a syntax
+  // error: reachable from the app's entry (the dev script's file), never run.
+  const app = (name: string, server: string, lazy: string) =>
+    projectFromFiles(
+      { 'package.json': JSON.stringify({ name, private: true, scripts: { dev: 'node server.js' } }), 'server.js': server, 'lib/report.js': lazy },
+      { name, path: `${fixtureDir}#${name}` },
+    );
+  const page = '<!doctype html><html><body><h1>The page</h1></body></html>';
+  // `next dev` says it is compiling once, then nothing until it answers, here after 28 s.
+  const slow = app(
+    'slow-compile',
+    `console.log(' ○ Compiling / ...');
+const ready = Date.now() + 28_000;
+require('http').createServer(async (req, res) => {
+  if (req.url === '/report') return void (await import('./lib/report.js'));
+  await new Promise((r) => setTimeout(r, Math.max(0, ready - Date.now())));
+  res.setHeader('content-type', 'text/html');
+  res.end(${JSON.stringify(page)});
+}).listen(3000);`,
+    "import { faker } from '@faker-js/faker';\nexport default faker;\n",
+  );
+  const healthy = await session.run(slow, { outDir, timeouts: { ready: 60_000 } });
+  const ready = healthy.phases.find((p) => p.name === 'ready');
+  assert.equal(ready?.status, 'ok', JSON.stringify(healthy.failure));
+  assert.ok(ready.durationMs > 25_000, `ready took ${ready.durationMs} ms`);
+  // SolidStart's way: the page answers 200, streams its start and never ends, and nothing is logged.
+  const hang = app(
+    'streams-forever',
+    `require('http').createServer(async (req, res) => {
+  if (req.url === '/report') return void (await import('./lib/report.js'));
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.write('<!doctype html><html><head><title>x</title></head><body>');
+}).listen(3000);`,
+    'export const broken = ;\n',
+  );
+  const hung = await session.run(hang, { outDir, timeouts: { ready: 60_000 } });
+  const failed = hung.phases.find((p) => p.name === 'ready');
+  assert.equal(failed?.status, 'failed', JSON.stringify(hung.failure));
+  assert.deepEqual([hung.failure?.class, hung.failure?.rule, hung.failure?.message], ['app-bug', 'compile-error', 'lib/report.js:1:23: Unexpected ";"']);
+  assert.ok(failed.durationMs < 40_000, `ready took ${failed.durationMs} ms`);
+});
+
 test('a ready deadline produces a timeout', async () => {
   const result = await session.run(counter, { outDir, readySelector: '#never', timeouts: { ready: 3000 } });
   assert.equal(result.status, 'error');

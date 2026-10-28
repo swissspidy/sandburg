@@ -48,12 +48,17 @@ export function recordRequestFailures(context: BrowserContext, run: RunState): v
   });
 }
 
-/** The status of each document the app's frames load (a server-rendered error page is a 5xx). */
+/** The status of each document the app's frames load (a server-rendered error page is a 5xx), and whether its body has ended. */
 export function recordDocuments(context: BrowserContext, run: RunState): void {
   context.on('response', (res) => {
     const req = res.request();
     if (!req.isNavigationRequest() || run.documents.length >= 200) return;
-    run.documents.push({ frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers() });
+    const doc: RunState['documents'][number] = { frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers(), ended: false };
+    run.documents.push(doc);
+    void res.finished().then(
+      () => void (doc.ended = true),
+      () => void (doc.ended = true),
+    );
   });
 }
 
@@ -65,7 +70,8 @@ export class RunState {
   network: EgressStats | null = null;
   console: ConsoleEntry[] = [];
   pageErrors: PageError[] = [];
-  documents: { frame: Frame; url: string; status: number; csp?: boolean }[] = [];
+  /** `ended`: the document's body has been read to its end (a page a server streams and never ends has not). */
+  documents: { frame: Frame; url: string; status: number; csp?: boolean; ended?: boolean }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
   /** The run's project or checks file did not load (failSetup). */
   setupError: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null = null;

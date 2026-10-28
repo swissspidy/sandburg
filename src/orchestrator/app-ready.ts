@@ -188,14 +188,17 @@ const SOURCE_QUIET_MS = 10_000;
 const active = (c: ConsoleEntry) => (c.source === 'host' && c.text.startsWith('[runtime:')) || (c.source === 'app' && c.type === 'error');
 
 /**
- * Rejects when the app has not rendered after 20 s, its dev server and page have said nothing for
- * 10 s, and its sources have a syntax error or import a package it does not declare (`check`,
- * source-check.ts): some dev servers report neither, and hang (SolidStart 2.1.0 streams the page
- * and never ends it). The sources are checked once, at 20 s, so a run whose app renders sooner
- * never pays for it; what was found is kept for classification (`run.sourceFindings`), also
- * when the phase times out instead. `signal` stops the watch.
+ * Rejects when the app has not rendered after 20 s, its sources have a syntax error or import a
+ * package it does not declare (`check`, source-check.ts), and the page hangs: its document answered
+ * 2xx and is still streaming (`hanging`: not a loading page), and its dev server and page have said
+ * nothing for 10 s. Some dev servers report neither fault and hang so (SolidStart 2.1.0 streams the
+ * page and never ends it). An app whose page has not been answered yet is compiling (`next dev`
+ * says so once, then nothing until it answers): it runs to the phase's deadline, and what was found
+ * classifies a timeout. The sources are checked once, at 20 s, so a run whose app renders sooner
+ * never pays for it; what was found is kept for classification (`run.sourceFindings`). `signal`
+ * stops the watch.
  */
-export async function failOnSourceStall(render: Promise<void>, run: RunState, check: () => Promise<SourceFinding[]>, signal?: AbortSignal): Promise<void> {
+export async function failOnSourceStall(render: Promise<void>, run: RunState, check: () => Promise<SourceFinding[]>, hanging: () => Promise<boolean>, signal?: AbortSignal): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   let done = false;
   // The phase ended otherwise (the app-error watch failed it): stop watching.
@@ -212,7 +215,7 @@ export async function failOnSourceStall(render: Promise<void>, run: RunState, ch
     let quietSince = start;
     let [consoleSeen, errorsSeen] = [run.console.length, run.pageErrors.length];
     let checked = false;
-    const poll = () => {
+    const poll = async () => {
       if (done) return;
       const now = Date.now();
       if (run.pageErrors.length > errorsSeen || run.console.slice(consoleSeen).some(active)) quietSince = now;
@@ -225,13 +228,13 @@ export async function failOnSourceStall(render: Promise<void>, run: RunState, ch
         );
       }
       const found = run.sourceFindings?.[0];
-      if (found && now - quietSince >= SOURCE_QUIET_MS) {
+      if (found && now - quietSince >= SOURCE_QUIET_MS && (await hanging().catch(() => false)) && !done) {
         reject(new Error(`${SOURCE_STALL}${describeFinding(found)}`));
         return;
       }
-      timer = setTimeout(poll, 200);
+      if (!done) timer = setTimeout(() => void poll(), 200);
     };
-    poll();
+    void poll();
   });
   try {
     await Promise.race([render, watch]);

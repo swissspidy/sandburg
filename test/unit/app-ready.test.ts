@@ -233,12 +233,34 @@ test("without the app's frame, the host page's documents are left out", async (t
   assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });
 
+/** The page hangs (its document answered 2xx and is still streaming), as SolidStart's does. */
+const hanging = async () => true;
+
+test("what the source check found fails the phase only while the page hangs: not while the app's page is still to be answered (compiling) or is a loading page", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const found: SourceFinding = { rule: 'undeclared-import', file: 'src/a.ts', line: 1, message: 'dayjs' };
+  // `next dev` says "Compiling / ..." once, then nothing until it answers the page, after 28 s.
+  let state: 'compiling' | 'loading page' | 'hanging' = 'compiling';
+  const phase = watched(failOnSourceStall(new Promise(() => {}), asRun(run), async () => [found], async () => state === 'hanging'));
+  run.console.push({ source: 'host', type: 'log', text: '[runtime:stdout]  ○ Compiling / ...' });
+  await advance(t, 40_000);
+  assert.deepEqual([phase.settled, run.sourceFindings], ['pending', [found]]);
+  state = 'loading page';
+  await advance(t, 20_000);
+  assert.equal(phase.settled, 'pending');
+  // The page streams and never ends, and nothing is said: what was found fails the phase.
+  state = 'hanging';
+  await advance(t, 300);
+  assert.equal(phase.error?.message, 'app did not render, and its sources have an error: imports undeclared package "dayjs" (src/a.ts:1)');
+});
+
 test('an app that has not rendered after 20 s has its sources checked; what they have fails the phase once the dev server and page have been quiet for 10 s', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const run = runState();
   let checks = 0;
   const syntax: SourceFinding = { rule: 'compile-error', file: 'src/components/ConverterFeature.tsx', line: 3, column: 16, message: 'Unexpected ";"' };
-  const phase = watched(failOnSourceStall(new Promise(() => {}), asRun(run), async () => (checks++, [syntax])));
+  const phase = watched(failOnSourceStall(new Promise(() => {}), asRun(run), async () => (checks++, [syntax]), hanging));
   // The dev server logs as it compiles; the page logs what is not an error (Vite's client connecting).
   for (let s = 0; s < 25; s++) {
     run.console.push({ source: 'host', type: 'log', text: `[runtime:stdout] compiled ${s}` }, { source: 'app', type: 'debug', text: '[vite] connected.' });
@@ -263,25 +285,25 @@ test('an app that renders within 20 s never has its sources checked; sources wit
   const check = async () => (checks++, [] as SourceFinding[]);
   // Renders at 19 s.
   let rendered!: () => void;
-  const quick = watched(failOnSourceStall(new Promise<void>((r) => (rendered = r)), asRun(runState()), check));
+  const quick = watched(failOnSourceStall(new Promise<void>((r) => (rendered = r)), asRun(runState()), check, hanging));
   await advance(t, 19_000);
   rendered();
   await advance(t, 30_000);
   assert.deepEqual([quick.settled, checks], ['resolved', 0]);
   // Nothing found: the phase runs to its deadline.
   const clean = runState();
-  const nothing = watched(failOnSourceStall(new Promise(() => {}), asRun(clean), check));
+  const nothing = watched(failOnSourceStall(new Promise(() => {}), asRun(clean), check, hanging));
   await advance(t, 60_000);
   assert.deepEqual([nothing.settled, checks, clean.sourceFindings], ['pending', 1, []]);
   // The check fails: the same.
   const failing = runState();
-  const broken = watched(failOnSourceStall(new Promise(() => {}), asRun(failing), () => Promise.reject(new Error('esbuild'))));
+  const broken = watched(failOnSourceStall(new Promise(() => {}), asRun(failing), () => Promise.reject(new Error('esbuild')), hanging));
   await advance(t, 60_000);
   assert.deepEqual([broken.settled, failing.sourceFindings], ['pending', []]);
   // An error in the page at 15 s: quiet from then on, 10 s later (at 25 s, not at 20 s, when the check finds something).
   const erring = runState();
   const undeclared: SourceFinding = { rule: 'undeclared-import', file: 'src/a.ts', line: 1, message: 'dayjs' };
-  const phase = watched(failOnSourceStall(new Promise(() => {}), asRun(erring), async () => [undeclared]));
+  const phase = watched(failOnSourceStall(new Promise(() => {}), asRun(erring), async () => [undeclared], hanging));
   await advance(t, 15_000);
   erring.pageErrors.push({ source: 'app', message: 'x' });
   await advance(t, 9_800);
@@ -292,7 +314,7 @@ test('an app that renders within 20 s never has its sources checked; sources wit
   const ended = runState();
   const stop = new AbortController();
   let late = 0;
-  const stopped = watched(failOnSourceStall(new Promise(() => {}), asRun(ended), async () => (late++, [undeclared]), stop.signal));
+  const stopped = watched(failOnSourceStall(new Promise(() => {}), asRun(ended), async () => (late++, [undeclared]), hanging, stop.signal));
   await advance(t, 10_000);
   stop.abort();
   await advance(t, 60_000);

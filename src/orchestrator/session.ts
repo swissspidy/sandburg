@@ -597,8 +597,14 @@ export class Session {
               await host('ready', url, navigate ?? true);
               await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
             })();
+            // The page hangs: its document answered 2xx and has not ended, and it is not a loading page.
+            const hanging = async () => {
+              const doc = run.documents.filter((d) => d.frame === frame).at(-1);
+              return !!doc && doc.status >= 200 && doc.status < 300 && !doc.ended && !(await loadingPage());
+            };
             const stall = new AbortController();
-            await failFastOnAppError(failOnSourceStall(render, run, () => checkSources(project.files), stall.signal), run, loadingPage, frame).finally(() => stall.abort());
+            const sources = failOnSourceStall(render, run, () => checkSources(project.files, { app: project.app }), hanging, stall.signal);
+            await failFastOnAppError(sources, run, loadingPage, frame).finally(() => stall.abort());
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been

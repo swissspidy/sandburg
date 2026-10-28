@@ -25,25 +25,27 @@ test('corpus/ is the generator\'s output, byte for byte, and nothing else', asyn
 });
 
 test("the source check (src/source-check.ts) flags each corpus app's seeded syntax error and undeclared import, at its line, and nothing else", async () => {
-  const { checkSources } = await import('../../src/source-check.ts');
+  const { checkSourcesHere } = await import('../../src/source-check.ts');
   const { loadProject } = await import('../../src/project.ts');
+  const { UNDECLARED } = await import('../../scripts/corpus/stacks.ts');
   const index = JSON.parse(await readFile(join(corpus, '_corpus.json'), 'utf8')) as { apps: AppMeta[] };
   const flagged: string[] = [];
   const expected: string[] = [];
-  for (const meta of index.apps) {
-    const project = await loadProject(join(corpus, meta.id));
-    for (const f of await checkSources(project.files)) {
-      const source = project.files[f.file] as string;
-      // The seeded line itself: `const broken = ;` (a syntax error's column is past its `=`), or the import.
-      const line = source.split('\n')[f.line - 1].trim();
-      flagged.push(`${meta.id} ${f.rule} ${f.rule === 'compile-error' ? line : `${f.message}: ${line}`}`);
-    }
-    if (meta.fault === 'syntax') expected.push(`${meta.id} compile-error const broken = ;`);
-    // v6's nanoid (vite-react, next-app, vite-vanilla), v7's dayjs: neither is declared.
-    if (meta.fault === 'undeclared-import') {
-      const pkg = /^0[0-9]{2}-(?:vite-react|next-app|vite-vanilla|next-pages)$/.test(meta.id) && Number(meta.id.slice(0, 3)) < 100 ? 'nanoid' : 'dayjs';
-      expected.push(`${meta.id} undeclared-import ${pkg}: import ${pkg === 'nanoid' ? "{ nanoid } from 'nanoid'" : "dayjs from 'dayjs'"};`);
+  for (const { id } of index.apps) {
+    const meta = JSON.parse(await readFile(join(corpus, id, 'meta.json'), 'utf8')) as AppMeta;
+    const project = await loadProject(join(corpus, id));
+    for (const f of await checkSourcesHere(project.files)) flagged.push(`${id} ${f.rule} ${f.file}:${f.line}${f.rule === 'undeclared-import' ? ` ${f.message}` : ''}`);
+    // Where the generator seeded the app's fault: the line it wrote (v6's nanoid, v7's dayjs).
+    const seeded = meta.fault === 'syntax' ? /^\s*const broken = ;$/ : meta.fault === 'undeclared-import' ? new RegExp(`^\\s*import .* from '(nanoid|${UNDECLARED})';$`) : null;
+    if (!seeded) continue;
+    for (const [file, content] of Object.entries(project.files).sort(([a], [b]) => (a < b ? -1 : 1))) {
+      if (typeof content !== 'string' || file === 'checks.spec.ts') continue;
+      content.split('\n').forEach((line, i) => {
+        const m = seeded.exec(line);
+        if (m) expected.push(`${id} ${meta.fault === 'syntax' ? 'compile-error' : 'undeclared-import'} ${file}:${i + 1}${m[1] ? ` ${m[1]}` : ''}`);
+      });
     }
   }
+  assert.equal(expected.length, index.apps.filter((a) => a.fault === 'syntax' || a.fault === 'undeclared-import').length, 'one seeded line per such app');
   assert.deepEqual(flagged, expected);
 });
