@@ -41,9 +41,9 @@ test('Solid: not until it has claimed every server-rendered element (its replay 
   assert.equal(await safe(), false);
   await page.evaluate(() => (window as unknown as { _$HY: { completed: WeakSet<Element> } })._$HY.completed.add(document.querySelector('input')!));
   assert.equal(await safe(), true);
-  // Done: Solid clears what it recorded.
-  await load('<script>window._$HY = { events: null, completed: null, r: {} }</script><main data-hk="0"></main>');
-  assert.equal(await safe(), true);
+  // Solid dropped its claims (done, after replaying an event): it says nothing, and the servers decide.
+  await load('<script>window._$HY = { events: null, completed: null, r: {}, done: true }</script><main data-hk="0"></main>');
+  assert.equal(await safe(), undefined);
 });
 
 test("Solid: `done` alone is not hydrated (an event on a claimed element sets it while a lazy route's are not claimed); every element is looked at", async () => {

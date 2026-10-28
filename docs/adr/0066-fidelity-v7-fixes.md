@@ -59,10 +59,12 @@ apps right cold and 226 warm. All 93 seeded faults were caught. Its 8 false alar
   and its shadow roots, with tree walkers that stop there (a blank page of 100,000 elements is not
   listed whole). Closed shadow roots cannot be read; such an app can pass `--ready`.
 - **Solid is hydrated when every server-rendered element (`[data-hk]`, all of them in the body) is
-  in `_$HY.completed`**, which Solid fills as it claims each element. It is also hydrated once Solid
-  clears `completed`, which it does once it is done and has replayed its recorded events. `done`
-  alone does not count (above). A lazy route's elements are claimed when its chunk has loaded, so
-  a check waits for those too.
+  in `_$HY.completed`**, which Solid fills as it claims each element. `done` does not count (above).
+  Once `done`, Solid drops `completed` after replaying its recorded events, without looking at
+  what is still unclaimed, so the claims can no longer be read: Solid then says nothing, and the
+  app's servers being quiet decides, as for frameworks that say nothing (a lazy route's chunk is a
+  request). A lazy route's elements are claimed when its chunk has loaded, so a check waits for
+  those too.
 - **A framework that says it has not hydrated yet is waited for up to 10 s** (`SETTLE_HYDRATE_MAX_MS`)
   before the checks start. When the framework says nothing, the app's servers going quiet decides,
   with the 3 s limit as before. This applies to Solid, Nuxt and SvelteKit, which can say "not yet".
