@@ -44,16 +44,27 @@ The runtime's immediates (`builtins/process.ts`) are now a turn of the loop in t
 callbacks, immediates and close callbacks. Each step runs the callbacks queued when it began; those
 queued meanwhile wait for the next turn.
 
-- **A turn is one task.** Its callbacks run back to back. After each one the turn waits four
-  microtask hops (`SETTLE_HOPS`), so what the callback queued with `process.nextTick` or promises
-  (and what that queued, four deep) runs before the next callback, as in Node.
-- **Timers wait for the turn.** A timer that comes due during a turn waits for its end, as Node's
-  wait for the next timers phase. Inside an I/O callback, every immediate queued there runs before a
-  `setTimeout(0)`. A turn that has run for more than 100 ms (`TURN_BUDGET_MS`) lets the browser in
-  between two callbacks; timers that come due then still wait for the turn.
+- **Each callback is a task of its own.** After a callback, the turn ends its task (a message on its
+  own channel) before the next one. A browser drains its microtasks only between tasks, so everything
+  the callback queued with `process.nextTick` or promises runs first, at any depth, as in Node:
+  `await` chains, nested async functions, `for await` over a stream, Koa-style middleware. This is
+  a decision for correctness over speed. A program cannot see from JavaScript when the microtask
+  queue is empty: there is no PromiseHook, a native `await` bypasses a patched `then`, and a sentinel
+  does not see jobs queued after it. So a fixed number of microtask hops (tried in review) was wrong
+  for ordinary async code. The cost: 100k immediates queued at once take about 0.8 s, against
+  0.1 s for the hops and 0.05–0.07 s in Node. No real program queues that many at once, and main's
+  chained case is about 0.5 s.
+- **Timers wait for the turn.** A timer that comes due while a turn is posted waits for it, as
+  Node's wait for the next timers phase. At the turn's end the timers phase runs every timer due by
+  then, in the order they came due. That includes those whose browser timer has not fired yet:
+  the turn runs them itself and cancels theirs, since the next turn's task would beat them. Inside
+  an I/O callback, every immediate queued there runs before a `setTimeout(0)`. A timer set during
+  the timers phase runs on a later one, as in Node.
 - **A turn runs into the next iteration.** When it has more to run and no timer is due, it goes
-  straight on for up to 4 ms (`TURN_CONTINUE_MS`), so a reply to a connection in the same runtime
-  costs no extra task.
+  straight on.
+- **File system callbacks are I/O callbacks** of the loop's next iteration (`onLaterIo`), after
+  the immediates queued with the call, where they were immediates before. A `readFile` callback runs
+  in the poll phase, as in Node.
 - **A turn keeps the process alive** while it is posted or running (`timersActive`), so a process
   no longer exits in the middle of a batch of immediates.
 - **Close callbacks run last-in first-out.** `onClosePhase(fn)` queues one.
@@ -123,7 +134,8 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
 
 - **A server tracks its connections.** It emits `'connection'` with each, and `getConnections()`
   counts them. As in Node 19 and later, `close()` closes the idle ones and calls back (with
-  `'close'`) once the last one closed. `closeIdleConnections()` and `closeAllConnections()` do what
+  `'close'`) once the last one closed, as that socket is destroyed (before its `'close'`). Open
+  connections keep the process alive, closed server or not, as Node's sockets do. `closeIdleConnections()` and `closeAllConnections()` do what
   they say.
 - **`ref()` and `unref()`:** an unref'd server does not keep the process alive.
 - **`Expect: 100-continue`** goes to a `'checkContinue'` listener, or is answered with `100 Continue`
@@ -170,8 +182,6 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
 
 ## What is still different
 
-- **Microtask depth.** A callback's microtasks run before the next callback only to four hops deep.
-  A longer chain (an async function awaiting more than that) goes on after the next callback starts.
 - **'connection' comes with its request.** Node emits it as the connection is accepted, so with two
   requests at once its two 'connection' events come before either 'request'. The test counts them
   instead.
@@ -187,10 +197,9 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
   writes for `requestTimeout` only once the server's side of the connection has closed. The runtime
   ends it as it arrives. The test asserts the 408 and the server's events, not where `'end'` falls
   among them.
-- **Messages during a long turn.** Timers wait for a turn to end. A message from another runtime or
-  the page can still be handled while a turn longer than 100 ms lets the browser in, which Node would
-  leave to the next poll phase. A turn going on into the next iteration also holds messages for up to
-  4 ms.
+- **Messages between callbacks.** A message from another runtime or the page can be handled
+  between two callbacks of a turn (each ends its task), which Node would leave to the next poll
+  phase.
 - **Between runtimes**, the order of one process's events against another's is not Node's to
   promise either; it is not modelled beyond the order of each connection's own messages.
 
@@ -204,8 +213,13 @@ output of its `fixtures/http` program:
 - A server's own destroys (`server-destroy.cjs`), and which end hears first (`which-side.cjs`).
 - The loop's steps: ticks between immediates and between close callbacks, close callbacks
   last-closed first, and immediates queued in them (`loop-phases.cjs`).
-- The loop under load in child processes (`loop-busy.cjs`): every immediate runs before exit, 100k
-  of them in under 1 s, and an I/O callback's immediates run before its timer.
+- The loop under load in child processes (`loop-busy.cjs`): every one of 100 slow immediates runs
+  before exit, 100k of them in under 5 s, and an I/O callback's 20,000 immediates run before its
+  timer.
+- What an immediate queued, at any depth, before the next one; and a timer due during an immediate
+  before the next iteration's (`microtasks.cjs`).
+- `server.close(cb)` with a connection that outlives a response (`close-waits.cjs`).
+- Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`).
 - A server's action from an I/O callback (an IPC message) reaches its client after its own side
   closed (`from-io.cjs`).
 - A server's connections (`server-close.cjs`), Expect and informational responses (`expect.cjs`,
