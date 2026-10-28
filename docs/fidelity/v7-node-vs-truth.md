@@ -3,7 +3,8 @@
 Run 2026-10-28 at 0403c34, after the speed work in ADRs 0017–0062, on a 4-vCPU (Intel Xeon,
 2.1 GHz), 16 GB Linux machine with Node.js 24.22.1 and npm 11, 3 tabs at a time. As in v4–v6 the
 answers are compared with the corpus's ground truth (`meta.expected`), not with a reference run.
-Data: [`v7-node-vs-truth.json`](v7-node-vs-truth.json) (the cold pass).
+Data: [`v7-node-vs-truth.json`](v7-node-vs-truth.json) (the cold pass) and
+[`v7-node-vs-truth-warm.json`](v7-node-vs-truth-warm.json) (the warm pass), each with its batch's wall time.
 
 The corpus grew from 100 to 232 apps. Apps 000–099 are v1–v6's apps, unchanged except for three
 labels (below). Apps 100–231 add 12 apps each for the 11 frameworks the README lists that had no
@@ -39,7 +40,8 @@ of v1–v6 were all right in both passes.
 
 **Lit's number is not a measure of Lit support.** Every Lit app that renders timed out (below). Its
 6 right answers are the 6 faulty apps, and two of those (the logic bugs, 174 and 196) were "caught"
-only by the same timeout.
+only by the same timeout. With the fix in ADR 0066, the six pass and 174 and 196 fail on their
+logic bugs.
 
 On v6's 100 apps the answer is now 100/100: the three apps v6 missed (054, 078, 084) were
 mislabelled, and their labels are fixed (below). Under v6's labels, v7 gets the same 97/100 as
@@ -47,13 +49,13 @@ v1–v6.
 
 ## False alarms (Sandburg bugs)
 
-Not fixed in this study; each is a separate fix.
+Not fixed in this study; each is fixed separately, in [ADR 0066](../adr/0066-fidelity-v7-fixes.md) (the rolldown trap is found to be Sandburg's there, and not yet fixed).
 
 | Apps | Expected | Got | Passes | Root cause (best guess) |
 |---|---|---|---|---|
-| 130, 141, 152, 185, 218, 229 (Lit) | pass | error, `timeout: phase-deadline` after 240 s in `ready` | cold and warm | The ready check (`waitForRender`, `src/orchestrator/app-ready.ts`) looks for content in `#root`, `#app` or `#__next`, else `document.body.innerText`. A Lit app whose root element (`<app-root>`) renders only into its shadow root has no light-DOM text, so it is never "rendered". `fixtures/lit-vite` passes only because its `<h1>` is slotted light DOM. Real npm with the same checks passes all six. |
-| 134 (Angular) | pass | error, `timeout: phase-deadline` after 240 s in `ready` | cold only | Angular's dev server pre-bundles dependencies with Vite, and rolldown's WebAssembly build crashed (`Error during dependency optimization: … memory access out of bounds`). The run then waited out the ready deadline instead of failing fast on that page error. The same app passed in the warm pass and in an earlier smoke run, so the crash is intermittent. |
-| 214 (SolidStart) | pass | failed, `blocking-check-failed` (converter: "32.0 °F", expected "212.0 °F") | cold only | The first check typed into the server-rendered input before Solid had hydrated it, and the input never reached the handler. `src/host/settle.ts` does not wait for Solid's hydration: it relies on Solid replaying events recorded before hydration, which covers clicks but evidently not this `fill()` (`input` event). |
+| 130, 141, 152, 185, 218, 229 (Lit) | pass | fail (`failureClass` `timeout`, rule `phase-deadline`): 240 s in `ready` | cold and warm | The ready check (`waitForRender`, `src/orchestrator/app-ready.ts`) looks for content in `#root`, `#app` or `#__next`, else `document.body.innerText`. A Lit app whose root element (`<app-root>`) renders only into its shadow root has no light-DOM text, so it is never "rendered". `fixtures/lit-vite` passes only because its `<h1>` is slotted light DOM. Real npm with the same checks passes all six. |
+| 134 (Angular) | pass | fail (`failureClass` `timeout`, rule `phase-deadline`): 240 s in `ready` | cold only | Angular's dev server pre-bundles dependencies with Vite, and rolldown's WebAssembly build trapped (`Error during dependency optimization: … memory access out of bounds`). The dev server logged the error, and Vite's client reported it to the page (the run's page errors). The page's load event never came, and the ready phase waited for it before it watched for errors, so the run waited out the deadline. The same app passed in the warm pass and in an earlier smoke run, so the crash is intermittent. |
+| 214 (SolidStart) | pass | fail (`failureClass` `app-bug`, rule `blocking-check-failed`): converter showed "32.0 °F", expected "212.0 °F" | cold only | The first check typed into the server-rendered input before Solid had hydrated it. `src/host/settle.ts` took `_$HY`, which the server-rendered page sets before hydration starts, to mean the page had hydrated. Solid records events before hydration, but its replay of a recorded event walks `composedPath()`, which is empty once the event has finished dispatching, so the typed value never reached the handler. `_$HY.done` alone is no signal either: Solid sets it when it handles its first event after hydrating, not when hydration ends. |
 
 ## Misses
 
@@ -101,9 +103,10 @@ TypeScript, so it has 7 none instead. That makes the new apps half faulty, again
 v1–v6, so that every fault is tried on every framework. The labels follow v1–v6's rule, with one
 exception: Angular type-checks as it serves, so its type-error app is expected to fail.
 
-The labels were checked against real npm before the study. Every app was installed with
-`npm install` and started with its own dev script on this machine's Node.js 24 (a throwaway harness,
-not part of Sandburg), then checked with the same checks:
+The labels were checked against real npm before the study, on this machine's Node.js 24 with a
+throwaway harness (not part of Sandburg). Every app with a package.json was installed with
+`npm install` and started with its own dev script; the 12 static apps, which have none, were served
+as files. Each was then checked with the same checks:
 
 - 220 of 232 apps matched their label at once, including the Angular type error and the three
   relabelled apps.
@@ -115,6 +118,13 @@ not part of Sandburg), then checked with the same checks:
 
 Docker was available, but the Docker reference runs only Next.js, Angular and Vite dev servers, so
 it could not check most of the new frameworks.
+
+That harness ran `npm install` as is, with the packages' and the projects' lifecycle scripts: Nuxt's
+`postinstall: nuxt prepare`, SvelteKit's `prepare: svelte-kit sync`, better-sqlite3's install of its
+native build. It ran them on the host, outside any sandbox. That is fine for this generated corpus,
+but a check of other apps' labels this way should run with `npm install --ignore-scripts` where the
+app still starts without them (SvelteKit and Nuxt regenerate what `prepare` makes when their dev
+server starts; better-sqlite3 needs its install script), or in a container.
 
 ## Time
 

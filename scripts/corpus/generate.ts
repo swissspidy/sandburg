@@ -167,7 +167,7 @@ function shuffle<T>(xs: T[], r: () => number): T[] {
   return out;
 }
 
-function fetchSource(target: Target): string {
+function fetchSource(target: AppMeta['target']): string {
   return target === 'vite-react' ? '/data/products.json' : '/api/products';
 }
 

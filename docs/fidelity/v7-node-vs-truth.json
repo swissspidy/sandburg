@@ -2,6 +2,9 @@
   "generated": "2026-10-28",
   "runtime": "node",
   "reference": "ground truth (meta.expected)",
+  "pass": "cold",
+  "parallel": 3,
+  "wallMs": 1775661,
   "apps": [
     {
       "app": "000-vite-react",
