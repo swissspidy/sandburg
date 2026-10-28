@@ -480,17 +480,19 @@ export class NodeProcess {
         break;
       case 'response-start':
       case 'response-full': {
+        // Only for a request of the page's: not one the page no longer waits for (nor another runtime's).
+        const reply = this.pending.get(m.id);
+        if (!reply) break;
         for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
         // A redirect to the server's own address (built from Host, now localhost) stays on the page's origin.
         const headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v) : v]);
-        const reply = this.pending.get(m.id);
         if (m.type === 'response-start') {
-          reply?.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
+          reply.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
           break;
         }
         // The whole response at once (see request() in worker.ts).
-        reply?.postMessage({ type: 'full', status: m.status, statusText: m.statusText, headers, body: m.body }, [m.body]);
-        reply?.close();
+        reply.postMessage({ type: 'full', status: m.status, statusText: m.statusText, headers, body: m.body }, [m.body]);
+        reply.close();
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         break;
