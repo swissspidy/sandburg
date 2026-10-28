@@ -52,7 +52,8 @@ test('a batch starts its next app when one reaches its checks, with at most twic
   } as unknown as Session;
   try {
     const items: BatchItem[] = ['slow', 'a', 'b', 'c', 'd', 'e'].map((p) => ({ project: p }));
-    const { summary, results } = await runBatch(session, items, { parallel: 2, prewarm: false, batchDir: dir });
+    // Memory to spare, whatever the machine has (the memory guard has tests of its own below).
+    const { summary, results } = await runBatch(session, items, { parallel: 2, prewarm: false, batchDir: dir, availableMemory: () => 64 * 2 ** 30 });
     assert.deepEqual(results.map((r) => r.project.name), ['slow', 'a', 'b', 'c', 'd', 'e']);
     assert.equal(summary.totals.passed, 6);
     // The summary says when the session's browser ran without its OS sandbox.

@@ -49,6 +49,49 @@ jobs:
       - uses: $/.github/actions/setup-chromium
       - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/runtime/*.test.ts
 
+  # macOS and Windows: the unit and runtime suites and one end-to-end run, not the whole e2e matrix
+  # (ADR 0065). Each suite runs whatever the one before it did, so that one job shows every failure.
+  platforms:
+    name: ${{ matrix.os == 'macos-latest' && 'macOS' || 'Windows' }} (unit, runtime, e2e run)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - id: install
+        run: npm ci
+      - run: npm run typecheck
+      - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/unit/*.test.ts
+      - id: chromium
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        uses: $/.github/actions/setup-chromium
+      - if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/runtime/*.test.ts
+      # A test that hangs fails at 5 min (each takes seconds on Linux), with what it was waiting for.
+      - if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout --test-concurrency=1 --test-timeout=300000 test/e2e/run.test.ts
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: platforms-${{ matrix.os }}-runs
+          path: |
+            .sandburg/runs
+            .sandburg/test-runs
+          retention-days: 7
+
   pack:
     name: Package (packed and installed)
     runs-on: ubuntu-latest

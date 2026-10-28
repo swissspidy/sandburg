@@ -272,7 +272,7 @@ test('the directory of project copies must be a directory of this user\'s, not a
   assert.ok(existsSync(join(target, leftover)));
 });
 
-test('as a user other than root, containers run as that user, with npm\'s home and its own cache volume under /tmp', async (t) => {
+test('as a user other than root, containers run as that user, with npm\'s home and its own cache volume under /tmp', { skip: process.platform === 'win32' && 'Windows has no POSIX user ids (process.getuid), so containers run as the image\'s user' }, async (t) => {
   const workDir = tempDir('sandburg-ref-');
   // As root, the test plays uid 1000 (the directory of copies must be its).
   const uid = process.getuid!() || 1000;

@@ -93,13 +93,16 @@ test('compare exits 2 when nothing could be compared, else 0 whatever the apps d
  * `sandburg compare` in a process of its own, without a browser or Docker: its session's browser runs
  * pass at once, and its reference's run mounts and installs (as Session.run does) on a docker CLI that
  * never answers `hang` (an image inspect: before anything exists; an exec, npm's install: once the
- * container and the project copy do), so it hangs. Says "hanging" (stderr) once it does.
+ * container and the project copy do), so it hangs. Says "hanging" (stderr) once it does. On Windows,
+ * where a process cannot signal another (kill() ends it without running its handlers), the test
+ * names the signal on its stdin and it is raised here, to the listeners compare installed.
  */
 const HANGING_COMPARE = `
   import { compareCommand } from ${JSON.stringify(new URL('../../src/compare/cli.ts', import.meta.url).href)};
   import { dockerReference } from ${JSON.stringify(new URL('../../src/reference/docker.ts', import.meta.url).href)};
   import { loadProject } from ${JSON.stringify(new URL('../../src/project.ts', import.meta.url).href)};
   const { app, report, work, hang } = JSON.parse(process.env.COMPARE_TEST);
+  if (process.platform === 'win32') process.stdin.on('data', (d) => { const signal = String(d).trim(); process.emit(signal, signal); });
   /** The run's container (docker run -d), found by its label (ps -aq) until it is removed (rm -f). */
   let container = false;
   const docker = (args) => {
@@ -144,6 +147,7 @@ const HANGING_COMPARE = `
   console.error('compare returned');
 `;
 
+const windows = process.platform === 'win32';
 for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, 'image'], ['SIGINT', 130, 'exec']] as const) {
   test(`compare cut short by ${signal} (at docker ${hang}) removes the reference's runs, writes no report and exits ${code}`, { timeout: 120_000 }, async (t) => {
     const dir = tempDir('sandburg-compare-signal-');
@@ -158,7 +162,7 @@ for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, '
     const child = spawn(process.execPath, ['--input-type=module', '-e', HANGING_COMPARE], {
       cwd: dir,
       env: { ...process.env, COMPARE_TEST: JSON.stringify({ app, report, work, hang }) },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     // Not left running (with its browser) by a test that fails waiting for it.
     t.after(() => child.kill('SIGKILL'));
@@ -170,7 +174,9 @@ for (const [signal, code, hang] of [['SIGINT', 130, 'image'], ['SIGTERM', 143, '
       stderr += d.toString();
       if (!was.includes('hanging\n') && stderr.includes('hanging\n')) {
         copies = existsSync(work) ? readdirSync(work) : [];
-        child.kill(signal);
+        // Windows: the child raises it (see HANGING_COMPARE).
+        if (windows) child.stdin.write(`${signal}\n`);
+        else child.kill(signal);
       }
     });
     const [exit] = (await once(child, 'exit')) as [number | null];
