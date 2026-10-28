@@ -62,9 +62,10 @@ deploying, for a pull request that changes the demos, `src/` or the packages.
 ## CI
 
 CI runs on every pull request and push to `main`. It runs typecheck, lint and unit tests on Node 24 (LTS),
-the runtime tests in Chromium, the packed package, the GitHub Action (`uses: $/`, with the package packed from the
-same commit, on `fixtures/vite-react-counter`), and each e2e file as its own job; the Docker reference tests run there too. Each
-job reports its tests' times, with a warning annotation for a file over its budget in `test/budgets.json`.
+the runtime tests in Chromium, the packed package, the GitHub Action (`uses: $/`, with the package
+packed from the same commit, on `fixtures/vite-react-counter`), and each e2e file as its own job; the
+Docker reference tests run there too. Each job reports its tests' times, with a warning annotation for
+a file over its budget in `test/budgets.json`.
 A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, the unit tests with timing assertions,
 `package-lock.json` or the perf workflow is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
 That job fails only when a median is more than 30% slower, or when a side has no result; it also runs
@@ -83,7 +84,8 @@ publishing (no npm token in the repository) and provenance, tags it and creates 
 version goes public once a maintainer approves the staged publish on npmjs.com.
 
 The GitHub Action ([`action.yml`](../action.yml)) installs the package version its ref's
-`package.json` names. `uses: swissspidy/sandburg@v0` needs a `v0` tag that a maintainer moves to each
-0.x release by hand, after it is public ([Agents and CI](guide/agents-and-ci.md#the-v0-tag)).
+`package.json` names. It ships with the first release after it was added: no earlier tag has it.
+Nothing moves a `v0` major tag; a maintainer moves it at a release, after the version is public
+([Agents and CI](guide/agents-and-ci.md#versions-and-tags)).
 
 Networks that re-terminate TLS are covered in [Security](guide/security.md#networks-that-re-terminate-tls).

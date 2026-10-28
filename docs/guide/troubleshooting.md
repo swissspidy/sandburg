@@ -13,8 +13,8 @@ error: Chromium for Playwright 1.64.1 is not installed. Run: npx playwright@1.64
   libraries (that runs apt, with `sudo`).
 - `SANDBURG_CHROMIUM=/path/to/chrome` uses another Chromium instead (`executablePath` in
   `SessionOptions`).
-- From a checkout, `npx playwright install chromium` installs the one the checkout pins
-  ([ADR 0018](../adr/0018-browser-install.md) is about installing packages in the browser, not the browser itself).
+- From a checkout, `npx playwright install chromium` installs the Chromium of the Playwright version
+  the checkout pins.
 
 ## The browser sandbox
 

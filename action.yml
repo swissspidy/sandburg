@@ -1,12 +1,12 @@
 # Run a project in Sandburg and check it (docs/guide/agents-and-ci.md#github-action):
 #
-#   - uses: swissspidy/sandburg@v0
+#   - uses: swissspidy/sandburg@<commit sha>
 #     with:
 #       project: ./my-app
 #       checks: ./my-app/checks.spec.ts
 #
 # It installs the sandburg package from npm, not this checkout: by default the version this ref's
-# package.json names, so a tag of the action runs the package release it was tagged with.
+# package.json names. The first release after the action was added is the first tag that has it.
 name: Sandburg
 description: Run and test a generated web app in the browser with Sandburg.
 author: swissspidy
@@ -29,9 +29,16 @@ inputs:
     default: "24"
   sandburg-version:
     description: >-
-      The sandburg package to install: a version, range or dist-tag (0.2.0, ^0.2, latest), or an npm
-      spec such as a path to a packed .tgz. Default: the version in this action ref's package.json.
+      The sandburg package to install: a version, range or dist-tag (0.2.0, ^0.2, latest), a path (starting
+      with ./, ../, / or ~/, or ending in .tgz; relative to the workspace) or another npm spec.
+      Default: the version in this action ref's package.json.
     default: ""
+  allow-chromium-sandbox:
+    description: >-
+      Lift Ubuntu's AppArmor restriction on unprivileged user namespaces (a sysctl, for the whole host) so
+      that Chromium's OS sandbox can start. "false" leaves the host as it is: on a self-hosted runner that
+      restricts them, Sandburg then stops and says what to change.
+    default: "true"
   artifact-name:
     description: The name of the uploaded artifact with .sandburg/runs. Set it per job in a matrix.
     default: sandburg-runs
@@ -65,24 +72,27 @@ runs:
         if [ -z "$spec" ]; then
           spec="$(node -p 'require(process.argv[1]).version' "$GITHUB_ACTION_PATH/package.json")"
         fi
-        # A version, range or dist-tag is the sandburg package's; anything else is an npm spec.
+        # A path (a packed .tgz, a directory) is resolved against the workspace; a version, range or
+        # dist-tag is the sandburg package's; anything else is an npm spec as it is.
         version='^[-A-Za-z0-9.^~<>=*| ]+$'
-        if [[ "$spec" =~ $version ]]; then
+        if [[ "$spec" == ./* || "$spec" == ../* || "$spec" == /* || "$spec" == "~/"* || "$spec" == *.tgz ]]; then
+          spec="${spec/#\~\//$HOME/}"
+          spec="$(realpath -m -- "$spec")"
+        elif [[ "$spec" =~ $version ]]; then
           spec="sandburg@$spec"
-        elif [[ "$spec" == ./* || "$spec" == ../* ]]; then
-          spec="$(realpath "$spec")"
         fi
         prefix="$RUNNER_TEMP/sandburg"
         mkdir -p "$prefix"
         echo '{"private":true}' > "$prefix/package.json"
-        npm install --prefix "$prefix" --no-audit --no-fund "$spec"
+        # After --, a spec that starts with - is a package, not an npm option.
+        npm install --prefix "$prefix" --no-audit --no-fund -- "$spec"
         echo "bin=$prefix/node_modules/.bin" >> "$GITHUB_OUTPUT"
         echo "playwright=$(node -p 'require(process.argv[1]).version' "$prefix/node_modules/playwright-core/package.json")" >> "$GITHUB_OUTPUT"
 
     # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later restrict them
     # with AppArmor. Lifting the restriction keeps the sandbox on (docs/guide/troubleshooting.md).
     - name: Allow Chromium's sandbox
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.allow-chromium-sandbox == 'true'
       shell: bash
       run: |
         if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] && command -v sudo >/dev/null; then

@@ -40,15 +40,17 @@ an assertion or a wait is `failed`; any other error it throws is `error`. Both b
 
 A failing assertion stops waiting once the app is idle, after at least 5 s, rather than waiting its whole
 timeout ([ADR 0016](../adr/0016-faster-batches.md)); `failFastChecks: false` in the library's
-`RunOptions` turns that off. An assertion's own timeout (`timeouts.expect`) is 20 s in the node runtime
-(Playwright's 5 s in the Docker reference).
+`RunOptions` turns that off. An assertion's own timeout (`timeouts.expect`) is 20 s in the node runtime,
+because routes compile on their first request (`next dev`), which is slower in the browser; it is
+Playwright's 5 s in the Docker reference.
 
 ## Time limits
 
 Each check has a time limit (`timeouts.check` in the library's [`RunOptions`](library.md#timeouts)),
 and all of them together have the checks phase's (180 s; `timeouts.checks`). The per-check limit is 60 s
-in the node runtime, which raises `DEFAULT_TIMEOUTS`' 30 s (Next.js compiles a route on its first
-request), and 30 s in the Docker reference.
+in the node runtime, which raises `DEFAULT_TIMEOUTS`' 30 s along with its install, start and ready
+limits (a cold npm install of a Next.js app and its first webpack compile take a while;
+[`src/adapters/node/index.ts`](../../src/adapters/node/index.ts)), and 30 s in the Docker reference.
 
 A check that runs out of time is stopped, not left running beside the next one:
 
@@ -62,14 +64,27 @@ A check that runs out of time is stopped, not left running beside the next one:
 The app is then loaded again at the URL it first loaded at; its result (failed) says so.
 
 A check also gets `signal`, an `AbortSignal` that aborts when it is stopped: pass it to waits of its
-own (a timer, a `fetch`), which Sandburg cannot stop.
+own (a timer, a `fetch` of another service), which Sandburg cannot stop. A check run on the host is
+Node.js code, so a timer is `node:timers/promises`' (a checks file that runs in the page cannot import
+it):
 
 ```ts
-'the API answers': async ({ app, expect, appUrl, signal }) => {
-  const res = await fetch(appUrl('/api/health'), { signal });
-  expect(res.ok).toBe(true);
-},
+import { setTimeout } from 'node:timers/promises';
+import type { Checks } from 'sandburg';
+
+export default {
+  'the notice goes away on its own': async ({ app, expect, signal }) => {
+    await app.getByRole('button', { name: 'Save' }).click();
+    await expect(app.getByRole('status')).toHaveText('Saved');
+    // Stopped with the check: the timer rejects when signal aborts.
+    await setTimeout(3_000, undefined, { signal });
+    await expect(app.getByRole('status')).toBeHidden();
+  },
+} satisfies Checks;
 ```
+
+To reach the app's own routes, go through the app: `app.goto(appUrl('/api/health'))`, or a `fetch` in
+the app's frame (`app.evaluate`). Sandburg's host does not answer them to a request from Node.
 
 When the checks phase runs out of time, the checks that finished and the artifacts already taken are
 kept: the check that was running fails, and those that had not started are reported as skipped
@@ -168,7 +183,8 @@ Data that survives a reload (a backend with SQLite):
 },
 ```
 
-The fixtures each have a checks file of their own: [`fixtures/vite-react-counter/checks.spec.ts`](../../fixtures/vite-react-counter/checks.spec.ts)
+The fixtures each have a checks file of their own:
+[`fixtures/vite-react-counter/checks.spec.ts`](../../fixtures/vite-react-counter/checks.spec.ts)
 is the one the quick start runs.
 
 In `batch` and `compare`, a project's own `checks.spec.ts` (or `app.checks.spec.ts` next to `app.zip`)

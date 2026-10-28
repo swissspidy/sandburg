@@ -1,9 +1,10 @@
 /**
- * Checks the relative links in the README and docs/: each must name a file or directory that is
- * there and, with a #fragment into a Markdown file, one of its headings (as GitHub makes their
- * anchors). Links to other sites are not fetched. test/unit/doc-links.test.ts runs it.
+ * Checks the relative links in the README, the other community files (CONTRIBUTING.md, SECURITY.md,
+ * CODE_OF_CONDUCT.md) and docs/: each must name a file or directory that is there and, with a
+ * #fragment into a Markdown file, one of its headings (as GitHub makes their anchors). Links to other
+ * sites are not fetched. test/unit/doc-links.test.ts runs it.
  *
- *   node scripts/doc-links.ts [file.md …]   # default: README.md and docs/**\/*.md
+ *   node scripts/doc-links.ts [file.md …]   # default: those files, where they exist, and docs/**\/*.md
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -14,7 +15,8 @@ const ROOT = resolve(import.meta.dirname, '..');
 export function docFiles(): string[] {
   const walk = (dir: string): string[] =>
     readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.md') ? [join(dir, e.name)] : []));
-  return ['README.md', ...walk('docs')];
+  const root = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md'].filter((f) => existsSync(join(ROOT, f)));
+  return [...root, ...walk('docs')];
 }
 
 /** GitHub's anchor for a heading: lower case, punctuation but `-` and `_` dropped, spaces to `-`. */

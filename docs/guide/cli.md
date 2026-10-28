@@ -85,8 +85,10 @@ failure.
 
 `--install-in browser` (opt-in) has the page install the packages from the npm registry and compile
 modules itself: the host only serves static files ([ADR 0018](../adr/0018-browser-install.md),
-[ADR 0020](../adr/0020-compile-in-the-page.md)). It is what the [demo generator](https://swissspidy.github.io/sandburg/generate/)
-does, and what the fenced Harbor integration uses ([Agents and CI](agents-and-ci.md#harbor)).
+[ADR 0020](../adr/0020-compile-in-the-page.md)). The
+[demo generator](https://swissspidy.github.io/sandburg/generate/) installs this way, and so does the
+`sandburg` that Harbor's trials may run, which is limited to `sandburg run`
+([Agents and CI](agents-and-ci.md#harbor)).
 
 ### `--save-files`
 

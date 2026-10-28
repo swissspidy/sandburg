@@ -84,16 +84,22 @@ sandburg open <project>                                 # load it in a visible t
 
 `<project>` is a directory, a `.zip`, a JSON file tree or `snapshot:<id>`. Every run has built-in checks (a
 server error or an uncaught error fails it); a checks file adds named checks with Playwright's `expect`.
-Exit codes: `0` passed, `1` a check failed, `2` the run did not reach the checks, `64` a usage error.
+Exit codes: `0` passed, `1` a blocking check failed, `2` the run did not reach the checks, `64` a usage
+error.
 
 ## Guides
 
-- [Writing checks](docs/guide/writing-checks.md): the Checks API, time limits, what is reset between checks, `--checks-in page`, the built-in checks.
-- [CLI](docs/guide/cli.md): every command and option, project inputs, snapshots, `--offline`, `--install-in browser`, `--save-files`, exit codes.
+- [Writing checks](docs/guide/writing-checks.md): the Checks API, time limits, what is reset between
+  checks, `--checks-in page`, the built-in checks.
+- [CLI](docs/guide/cli.md): every command and option, project inputs, snapshots, `--offline`,
+  `--install-in browser`, `--save-files`, exit codes.
 - [Library](docs/guide/library.md): `Session`, `RunOptions`, `result.json` and the failure classes.
-- [Agents and CI](docs/guide/agents-and-ci.md): calling Sandburg from a coding agent, the GitHub Action (`uses: swissspidy/sandburg@v0`), reading results.
-- [Troubleshooting](docs/guide/troubleshooting.md): installing Chromium, the browser sandbox, what is not supported, reading a failure.
-- [Security](docs/guide/security.md): the sandbox's layers, the egress model, checks files and the Docker reference.
+- [Agents and CI](docs/guide/agents-and-ci.md): calling Sandburg from a coding agent, the GitHub Action,
+  reading results.
+- [Troubleshooting](docs/guide/troubleshooting.md): installing Chromium, the browser sandbox, what is
+  not supported, reading a failure.
+- [Security](docs/guide/security.md): the sandbox's layers, the egress model, checks files and the
+  Docker reference.
 
 ## What runs
 
@@ -111,7 +117,8 @@ The host (Node.js) installs the project's packages with npm and serves them to t
 Node.js 24 in a Web Worker, and runs the project's dev script. A service worker gives the app its origin
 and routes its requests to the servers in the runtime. Playwright runs the checks in the app's frame.
 The map of the code is [`docs/architecture.md`](docs/architecture.md), and the design decisions are in
-[`docs/adr`](docs/adr/README.md). The study method and every report are in [`docs/fidelity`](docs/fidelity/README.md).
+[`docs/adr`](docs/adr/README.md). The study method and every report are in
+[`docs/fidelity`](docs/fidelity/README.md).
 
 ## Security
 

@@ -4,10 +4,12 @@
  *
  *   node scripts/action-result.ts <stdout file> <sandburg's exit code>
  *
- * It runs from the action's own ref, where nothing is installed: Node's built-ins only.
+ * It runs from the action's own ref, where nothing is installed, on the Node.js the action set up (24
+ * or later): Node's built-ins only.
  */
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { RunResult } from '../src/types.ts';
 
 /** The result in what `run --json` printed: the whole of it, or from its first line that opens an object. */
@@ -46,4 +48,5 @@ function main([file, code]: string[]): void {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary(result, exitCode));
 }
 
-if (import.meta.main) main(process.argv.slice(2));
+// Not import.meta.main: the action may run on any Node.js 24, and that needs 24.2.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) main(process.argv.slice(2));

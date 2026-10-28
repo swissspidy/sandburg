@@ -75,7 +75,9 @@ yourself (a verifier's) on the host, and the agent's in the page.
 
 ## GitHub Action
 
-The repository is a composite action ([`action.yml`](../../action.yml)) that runs one project:
+The repository is a composite action ([`action.yml`](../../action.yml)) that runs one project. It ships
+with the first release after it was added: no tag before that has `action.yml`. Until then, pin it to a
+commit of `main` (or use `@main`, which moves):
 
 ```yaml
 jobs:
@@ -88,7 +90,7 @@ jobs:
         with:
           persist-credentials: false
       - id: sandburg
-        uses: swissspidy/sandburg@v0
+        uses: swissspidy/sandburg@<commit sha> # main
         with:
           project: ./my-app
           checks: ./my-app/checks.spec.ts
@@ -100,14 +102,24 @@ jobs:
           RESULT: ${{ steps.sandburg.outputs.result-path }}
 ```
 
-Pin the action to a commit (`swissspidy/sandburg@<sha> # v0.2.0`) as you pin others.
+Once a release has it, pin to that release's commit, as you pin other actions
+([Versions and tags](#versions-and-tags)).
 
-It sets up Node.js, installs the `sandburg` package from npm into the runner's temp directory (not
-the project), installs Playwright's Chromium (cached, with its system libraries only if it does not
-start without them), lifts Ubuntu's AppArmor restriction on user namespaces so that Chromium's sandbox
-can start, runs `sandburg run --json`, writes the checks to the job summary and uploads
-`.sandburg/runs` as an artifact, also when the run failed. The step fails when `sandburg` exits
-non-zero. It runs on Linux runners (`ubuntu-latest`), where this repository's CI tests it.
+What it does:
+
+1. Sets up Node.js (`node-version`) with `actions/setup-node`. That Node.js stays on the `PATH` for the
+   job's later steps too: set up your own after it if they need another version.
+2. Installs the `sandburg` package from npm into the runner's temp directory, not the project.
+3. Lifts Ubuntu's AppArmor restriction on unprivileged user namespaces, so that Chromium's OS sandbox
+   can start (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`). That changes the host
+   until it reboots: on a GitHub-hosted runner the VM is gone after the job, but on a self-hosted
+   runner it stays changed for every later job. `allow-chromium-sandbox: false` skips it.
+4. Installs Playwright's Chromium, cached, with its system libraries only if it does not start without
+   them.
+5. Runs `sandburg run --json`, writes the checks to the job summary, and uploads `.sandburg/runs` as an
+   artifact, also when the run failed. The step fails when `sandburg` exits non-zero.
+
+It runs on Linux runners (`ubuntu-latest`), where this repository's CI tests it.
 
 | Input | Default | What it is |
 |---|---|---|
@@ -115,7 +127,8 @@ non-zero. It runs on Linux runners (`ubuntu-latest`), where this repository's CI
 | `checks` | | A checks file (`--checks`). Empty: only the built-in checks. |
 | `args` | | More options for `sandburg run`, split on whitespace (no quoting), e.g. `--checks-in page --ready main`. Results always go to `.sandburg/runs`: do not pass `--out`. |
 | `node-version` | `24` | The Node.js version to set up (24 or later). |
-| `sandburg-version` | the action ref's version | A version, range or dist-tag of the `sandburg` package (`0.2.0`, `^0.2`, `latest`), or an npm spec such as a path to a packed `.tgz` (starting with `./` or `/`). By default, the version in the action ref's `package.json`: `@v0.2.0` runs sandburg 0.2.0, and `@v0` the release it points at. |
+| `sandburg-version` | the action ref's version | See [below](#which-sandburg-it-installs). |
+| `allow-chromium-sandbox` | `true` | Lift the AppArmor restriction (step 3). `false` leaves the host as it is: where the restriction is on, Sandburg then stops and says what to change. |
 | `artifact-name` | `sandburg-runs` | The uploaded artifact's name. Set it per job in a matrix: two jobs cannot upload the same name. |
 
 | Output | What it is |
@@ -126,18 +139,31 @@ non-zero. It runs on Linux runners (`ubuntu-latest`), where this repository's CI
 To run more than one project, use a matrix over `project` (with `artifact-name`), or call
 `npx sandburg batch` in a step of your own.
 
-This repository's CI runs the action from its checkout (`uses: $/`, the self-repository form of `./`) on
-[`fixtures/vite-react-counter`](../../fixtures/vite-react-counter), with the package packed from the
-same commit, so it keeps working (the `action` job in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)).
+### Which sandburg it installs
 
-### The `v0` tag
+By default, the version in the `package.json` of the action's ref: the latest release when that ref is
+`main` between releases, and the release itself when it is a release's commit. `sandburg-version` takes:
 
-`uses: swissspidy/sandburg@v0` needs a `v0` tag that moves to each 0.x release. The Release workflow
-creates the version's own tag (`v0.2.0`) and its GitHub release, and does not move `v0`. Until that is
-automated, a maintainer moves it after a release:
+- **a version, range or dist-tag** of the `sandburg` package: `0.2.0`, `^0.2`, `latest`;
+- **a path**, starting with `./`, `../`, `/` or `~/`, or ending in `.tgz`, relative to the workspace:
+  a packed package (`npm pack`) or a directory;
+- **any other npm spec**, passed to `npm install` as it is. It comes after `--`, so a value that starts
+  with `-` is a package name, never an npm option.
+
+This repository's CI runs the action from its checkout (`uses: $/`, the self-repository form of `./`)
+on [`fixtures/vite-react-counter`](../../fixtures/vite-react-counter), with the package packed from the
+same commit, so it keeps working (the `action` job in
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)).
+
+### Versions and tags
+
+The Release workflow tags each version (`vX.Y.Z`) and creates its GitHub release; a release's tag is the
+ref to use for the action from then on, pinned to its commit. Nothing creates or moves a `v0` major tag.
+If the project offers `@v0`, a maintainer moves it at each 0.x release, once the version is public on
+npm:
 
 ```sh
-git tag -f v0 v0.2.0 && git push -f origin v0
+git tag -f v0 vX.Y.Z && git push -f origin v0
 ```
 
 ## In CI without the action

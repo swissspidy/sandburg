@@ -78,9 +78,10 @@ A run goes through these phases: `probe`, `load`, `mount`, `install`, `start`, `
 
 A runtime raises some of them, and `timeouts` in `RunOptions` overrides both. The node runtime (the
 default) uses `install` 600 000, `start` 180 000, `ready` 240 000, `check` 60 000, `expect` 20 000 and
-`dispose` 60 000 (a cold Next.js install and its first compile take a while;
-[`src/adapters/node/index.ts`](../../src/adapters/node/index.ts)). The Docker reference raises `mount`
-(the image pull) and `dispose`.
+`dispose` 60 000 ([`src/adapters/node/index.ts`](../../src/adapters/node/index.ts)): a cold npm install
+of a Next.js app and its first webpack compile take a while; `expect`, because routes compile on their
+first request (`next dev`), which is slower in the browser; `dispose`, because a seed run waits for
+webpack to store its cache. The Docker reference raises `mount` (the image pull) and `dispose`.
 
 ```ts
 await session.run('./project', { checks: './checks.spec.ts', timeouts: { check: 60_000, checks: 300_000 } });
