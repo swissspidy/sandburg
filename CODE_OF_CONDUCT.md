@@ -61,8 +61,12 @@ representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement: the project's
 maintainer, Pascal Birchler ([@swissspidy](https://github.com/swissspidy) on
-GitHub). Contact them privately through the contact details on their GitHub
-profile; do not report conduct in a public issue.
+GitHub), through the same private channel as security reports: GitHub's private
+vulnerability reporting
+(<https://github.com/swissspidy/sandburg/security/advisories/new>). The form is
+labelled for vulnerabilities, but conduct reports are welcome through it, and
+they stay private between you and the maintainer. Do not report conduct in a
+public issue.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
