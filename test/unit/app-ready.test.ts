@@ -192,16 +192,35 @@ test("after a cold start's 500, the app's own request to its page's URL that ans
   // What Chromium 153 logs, in this order (Playwright's response and console events): the frame's page
   // answers 500, then 200 when loaded again, whose script then fetches the same URL with POST and gets a 500.
   const failedLoad = () => run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)', url: 'http://app.test/' });
-  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app, at: Date.now() });
   failedLoad();
   await advance(t, 1_000);
-  run.documents.push({ url: 'http://app.test/', status: 200, frame: app });
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app, at: Date.now() });
   await advance(t, 1_000);
   failedLoad();
   await advance(t, 7_900);
   assert.equal(phase.settled, 'pending');
   await advance(t, 300);
   assert.equal(phase.error?.message, 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Internal Server Error) (http://app.test/)');
+});
+
+test("after a cold start's 500, an error the 500 page logged itself gets its grace from the recheck, as the page is another one by then", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app, at: Date.now() });
+  // The error page's own script logs an error a second later, while the 500 waits to be checked
+  // again; then the page loads again and answers 200 (at 6 s).
+  await advance(t, 1_000);
+  run.console.push({ source: 'app', type: 'error', text: 'Hydration failed: the error page', url: 'http://app.test/' });
+  await advance(t, 5_000);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app, at: Date.now() });
+  // The recheck at 8 s finds the page recovered: the error's grace runs from then (16 s), not from 0 s.
+  await advance(t, 7_900);
+  assert.equal(phase.settled, 'pending');
+  await advance(t, 2_400);
+  assert.equal(phase.error?.message, 'app did not render after a console error: Hydration failed: the error page (http://app.test/)');
 });
 
 test("each of the page's own 5xx loads accounts for one of Chromium's console errors for its URL, no more", async (t) => {

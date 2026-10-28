@@ -114,8 +114,8 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
     let reason = '';
     /** For a deadline set on the page's answer: whether the page still answers a server error (it may have recovered). */
     let still: (() => boolean) | null = null;
-    /** An error of the app's own seen while such a deadline is pending: its deadline and reason. */
-    let next: [number, string] | null = null;
+    /** When each of the app's errors was first seen (looked for while a page's server error waits to be checked again too). */
+    const firstSeen = new Map<object, number>();
     // The app's page: its frame's documents (not the host page's, nor those of frames the app embeds).
     const pageDocuments = () => (frame ? run.documents.filter((d) => d.frame === frame) : run.documents.filter((d) => !d.url.includes('/__sandburg/')));
     const pageDocument = () => pageDocuments().at(-1);
@@ -127,9 +127,9 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
       if (!deadline && loadingPage && (await loadingPage())) [seenErrors, seenConsole] = [run.pageErrors.length, run.console.length];
       if (done) return;
       // While a page's server error waits to be checked again, the app's own errors are still looked
-      // for: they fail the phase in their own time if the page has recovered by then.
-      if (!deadline || (still && !next)) {
-        const err = run.pageErrors.slice(seenErrors).find((e) => e.source === 'app');
+      // for: if the page has recovered by then, they fail the phase in their own time (below).
+      if (!deadline || still) {
+        const errs = run.pageErrors.slice(seenErrors).filter((e) => e.source === 'app');
         // The page's own 503 is a dev server still loading (see waitForRender), not the app failing. A
         // later error for the same page is not: Nuxt answers 503 while it builds, then 500 for a page
         // it cannot render (and that error page refuses to be framed, so the frame shows the browser's).
@@ -145,22 +145,32 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
           const upTo = run.console.slice(0, run.console.indexOf(c) + 1).filter((e) => e.source === 'app' && e.url === c.url && FAILED_LOAD_5XX.test(e.text)).length;
           return upTo <= loads;
         };
-        const logged = run.console.slice(seenConsole).find((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`) && !loading503(c) && !pageLoad(c));
-        let found: [number, string] | null = null;
-        if (err) found = [Date.now() + RENDER_GRACE_MS, `app threw before rendering: ${err.message}`];
-        else if (logged) found = [Date.now() + CONSOLE_GRACE_MS, `app did not render after a console error: ${logged.text}${logged.url ? ` (${logged.url})` : ''}`];
-        // The app's page itself answered a server error (not a dev server's 503 loading page).
-        const page = deadline ? null : serverError();
-        if (deadline) next = found;
-        else if (found) [deadline, reason] = found;
-        else if (page) [deadline, reason, still] = [Date.now() + CONSOLE_GRACE_MS, `app did not render: its page answered HTTP ${page.status} (${page.url})`, () => !!serverError()];
+        const logs = run.console.slice(seenConsole).filter((c) => c.source === 'app' && c.type === 'error' && !BENIGN_CONSOLE.test(`${c.text} ${c.url ?? ''}`) && !loading503(c) && !pageLoad(c));
+        const now = Date.now();
+        for (const e of [...errs, ...logs]) if (!firstSeen.has(e)) firstSeen.set(e, now);
+        if (!deadline) {
+          // An error first seen after the page's latest document came keeps that time (the app's POST to
+          // its page, after a cold start's 500 and then a 200); one from before (the error page's own)
+          // has its grace from now, as the page is another one now.
+          const pageAt = pageDocument()?.at;
+          const since = (e: object) => {
+            const seen = firstSeen.get(e)!;
+            return pageAt !== undefined && seen >= pageAt ? seen : now;
+          };
+          const failing = [
+            ...errs.map((e): [number, string] => [since(e) + RENDER_GRACE_MS, `app threw before rendering: ${e.message}`]),
+            ...logs.map((c): [number, string] => [since(c) + CONSOLE_GRACE_MS, `app did not render after a console error: ${c.text}${c.url ? ` (${c.url})` : ''}`]),
+          ].sort((a, b) => a[0] - b[0])[0];
+          // The app's page itself answered a server error (not a dev server's 503 loading page).
+          const page = serverError();
+          if (failing) [deadline, reason] = failing;
+          else if (page) [deadline, reason, still] = [now + CONSOLE_GRACE_MS, `app did not render: its page answered HTTP ${page.status} (${page.url})`, () => !!serverError()];
+        }
       }
       if (deadline && Date.now() >= deadline) {
         // A server error the page has since recovered from (a cold start's 500, then a 200) is not the app failing.
-        if (still && !still()) {
-          [deadline, reason] = next ?? [0, ''];
-          [still, next] = [null, null];
-        } else {
+        if (still && !still()) [deadline, still] = [0, null];
+        else {
           reject(new Error(reason));
           return;
         }
