@@ -275,6 +275,7 @@ interface SessionOptions {
     browserSandbox?: boolean;
     extraCaCerts?: string | null;
     spareTab?: boolean;
+    handleSignals?: boolean;
 }
 
 // page-checks/index.ts
