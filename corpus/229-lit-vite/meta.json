@@ -1,0 +1,15 @@
+{
+  "id": "229-lit-vite",
+  "target": "lit-vite",
+  "framework": "lit",
+  "features": [
+    "form",
+    "todo",
+    "tabs"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

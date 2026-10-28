@@ -1,0 +1,15 @@
+{
+  "id": "211-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "dates",
+    "counter",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "type-error",
+  "buggyFeature": null,
+  "expected": "fail"
+}

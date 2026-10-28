@@ -1,0 +1,7 @@
+<div data-feature="persist"></div>
+
+<script>
+  import { mount } from '../features/persist';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="persist"]')) mount(el);
+</script>

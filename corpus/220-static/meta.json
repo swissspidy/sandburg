@@ -1,0 +1,15 @@
+{
+  "id": "220-static",
+  "target": "static",
+  "framework": "static",
+  "features": [
+    "persist",
+    "form",
+    "todo"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "syntax",
+  "buggyFeature": null,
+  "expected": "fail"
+}

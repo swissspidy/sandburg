@@ -1,0 +1,15 @@
+{
+  "id": "135-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "persist",
+    "dates",
+    "todo"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "dates",
+  "expected": "fail"
+}

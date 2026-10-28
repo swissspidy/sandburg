@@ -1,0 +1,14 @@
+{
+  "id": "181-solid-start",
+  "target": "solid-start",
+  "framework": "solid-start",
+  "features": [
+    "todo",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

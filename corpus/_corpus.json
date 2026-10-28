@@ -1,6 +1,6 @@
 {
   "seed": 1,
-  "count": 100,
+  "count": 232,
   "apps": [
     {
       "id": "000-vite-react",
@@ -835,7 +835,7 @@
       "react": "19.1.0",
       "fault": "undeclared-import",
       "buggyFeature": null,
-      "expected": "fail"
+      "expected": "pass"
     },
     {
       "id": "055-next-app",
@@ -1205,7 +1205,7 @@
       "react": "19.1.0",
       "fault": "undeclared-import",
       "buggyFeature": null,
-      "expected": "fail"
+      "expected": "pass"
     },
     {
       "id": "079-next-app",
@@ -1293,7 +1293,7 @@
       "react": "18.3.1",
       "fault": "undeclared-import",
       "buggyFeature": null,
-      "expected": "fail"
+      "expected": "pass"
     },
     {
       "id": "085-next-app",
@@ -1518,6 +1518,1977 @@
       ],
       "tailwind": false,
       "react": "19.1.0",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "100-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "fetch",
+        "converter",
+        "counter",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "101-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "converter",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "dates",
+      "expected": "fail"
+    },
+    {
+      "id": "102-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "fetch",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "103-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "todo",
+        "counter",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "104-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "counter",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "105-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "modal",
+        "dates",
+        "form"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "logic",
+      "buggyFeature": "form",
+      "expected": "fail"
+    },
+    {
+      "id": "106-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "converter",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "107-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "converter",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "108-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "search",
+        "persist",
+        "dates",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "109-vue-express",
+      "target": "vue-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "fetch",
+      "expected": "fail"
+    },
+    {
+      "id": "110-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "converter",
+        "tabs",
+        "fetch",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "111-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "dates",
+        "search",
+        "persist",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "persist",
+      "expected": "fail"
+    },
+    {
+      "id": "112-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "dates",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "todo",
+      "expected": "fail"
+    },
+    {
+      "id": "113-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "dates",
+        "tabs",
+        "counter",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "114-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "modal",
+        "search",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "modal",
+      "expected": "fail"
+    },
+    {
+      "id": "115-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "persist",
+        "todo",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "116-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "counter",
+        "search"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "117-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "dates",
+        "converter",
+        "form",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "form",
+      "expected": "fail"
+    },
+    {
+      "id": "118-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "form",
+        "search",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "119-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "form",
+        "fetch",
+        "todo",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "120-react-express",
+      "target": "react-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "dates",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "121-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "tabs",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "122-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "modal",
+        "counter",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "123-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "counter",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "124-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "modal",
+        "todo",
+        "counter",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "125-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "todo",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "126-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "search",
+        "tabs",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "127-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "todo",
+        "persist",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "128-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "converter",
+        "persist",
+        "search",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "dates",
+      "expected": "fail"
+    },
+    {
+      "id": "129-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "search",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "130-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "form",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "131-vue-express",
+      "target": "vue-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "todo",
+        "converter",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "132-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "form",
+        "tabs",
+        "todo",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "133-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "modal",
+        "dates",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "134-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "counter",
+        "form",
+        "fetch",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "135-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "persist",
+        "dates",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "dates",
+      "expected": "fail"
+    },
+    {
+      "id": "136-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "counter",
+        "form",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "137-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "dates",
+        "form",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "138-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "todo",
+        "tabs",
+        "converter",
+        "form"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "139-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "form",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "140-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "form",
+        "dates",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "141-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "search",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "142-react-express",
+      "target": "react-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "143-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "search",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "144-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "counter",
+        "converter",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "145-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "counter",
+        "search",
+        "converter",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "146-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "persist",
+        "form",
+        "dates",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "147-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "dates",
+        "form",
+        "modal",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "148-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "converter",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "149-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "todo",
+        "icons",
+        "fetch",
+        "form"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "logic",
+      "buggyFeature": "icons",
+      "expected": "fail"
+    },
+    {
+      "id": "150-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "search",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "151-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "search",
+        "persist",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "152-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "counter",
+        "todo",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "153-vue-express",
+      "target": "vue-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "todo",
+        "search",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "154-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "modal",
+        "tabs",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "155-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "tabs",
+        "counter",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "156-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "todo",
+        "tabs",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "157-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "tabs",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "158-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "counter",
+        "converter",
+        "form",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "form",
+      "expected": "fail"
+    },
+    {
+      "id": "159-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "form",
+        "persist",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "160-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "store",
+        "persist",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "161-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "converter",
+        "counter",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "162-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "modal",
+        "fetch",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "modal",
+      "expected": "fail"
+    },
+    {
+      "id": "163-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "converter",
+        "modal",
+        "form",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "164-react-express",
+      "target": "react-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "tabs",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "165-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "tabs",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "166-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "converter",
+        "counter",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "167-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "tabs",
+        "counter",
+        "modal",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "168-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "modal",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "modal",
+      "expected": "fail"
+    },
+    {
+      "id": "169-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "modal",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "170-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "modal",
+        "todo",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "modal",
+      "expected": "fail"
+    },
+    {
+      "id": "171-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "converter",
+        "fetch",
+        "form",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "172-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "search",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "173-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "tabs",
+        "converter",
+        "search",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "174-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "form",
+        "search",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "fetch",
+      "expected": "fail"
+    },
+    {
+      "id": "175-vue-express",
+      "target": "vue-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "todo",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "176-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "persist",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "modal",
+      "expected": "fail"
+    },
+    {
+      "id": "177-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "form",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "178-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "dates",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "179-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "dates",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "180-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "tabs",
+        "fetch",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "181-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "todo",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "182-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "counter",
+        "form",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "183-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "persist",
+        "tabs",
+        "counter",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "184-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "search",
+        "counter",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "search",
+      "expected": "fail"
+    },
+    {
+      "id": "185-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "form",
+        "converter",
+        "persist",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "186-react-express",
+      "target": "react-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "search",
+        "icons",
+        "form"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "187-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "form",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "form",
+      "expected": "fail"
+    },
+    {
+      "id": "188-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "modal",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "modal",
+      "expected": "fail"
+    },
+    {
+      "id": "189-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "todo",
+        "modal",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "190-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "search",
+        "dates",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "191-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "todo",
+        "persist",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "192-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "tabs",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "tabs",
+      "expected": "fail"
+    },
+    {
+      "id": "193-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "icons",
+        "converter",
+        "todo",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "194-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "dates",
+        "search",
+        "modal",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "195-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "dates",
+        "todo",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "196-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "modal",
+        "fetch",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "logic",
+      "buggyFeature": "modal",
+      "expected": "fail"
+    },
+    {
+      "id": "197-vue-express",
+      "target": "vue-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "198-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "todo",
+        "converter",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "199-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "counter",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "200-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "form",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "201-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "modal",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "202-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "converter",
+        "counter",
+        "persist",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "203-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "counter",
+        "form",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "204-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "fetch",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "205-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "modal",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "206-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "modal",
+        "tabs",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "207-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "search",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "208-react-express",
+      "target": "react-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "dates",
+        "tabs",
+        "converter"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "209-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "converter",
+        "counter",
+        "search",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "undeclared-import",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "210-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "dates",
+        "converter",
+        "form"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "211-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "dates",
+        "counter",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "212-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "tabs",
+        "persist",
+        "dates",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "213-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "search",
+        "fetch",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "214-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "converter",
+        "dates"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "215-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "converter",
+        "persist",
+        "modal",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "216-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "form",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "217-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "dates",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "218-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "todo",
+        "fetch",
+        "modal"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "219-vue-express",
+      "target": "vue-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "search",
+        "form",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "220-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "persist",
+        "form",
+        "todo"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "221-sveltekit",
+      "target": "sveltekit",
+      "framework": "sveltekit",
+      "features": [
+        "converter",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "syntax",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "222-angular",
+      "target": "angular",
+      "framework": "angular",
+      "features": [
+        "todo",
+        "tabs",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "crash",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "223-nuxt",
+      "target": "nuxt",
+      "framework": "nuxt",
+      "features": [
+        "tabs",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "224-astro",
+      "target": "astro",
+      "framework": "astro",
+      "features": [
+        "dates",
+        "fetch",
+        "todo",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "225-solid-start",
+      "target": "solid-start",
+      "framework": "solid-start",
+      "features": [
+        "persist",
+        "fetch",
+        "todo",
+        "search"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "bad-version",
+      "buggyFeature": null,
+      "expected": "fail"
+    },
+    {
+      "id": "226-react-router",
+      "target": "react-router",
+      "framework": "react-router",
+      "features": [
+        "store",
+        "search",
+        "persist"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "227-vue-vite",
+      "target": "vue-vite",
+      "framework": "vue",
+      "features": [
+        "modal",
+        "search",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "type-error",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "228-svelte-vite",
+      "target": "svelte-vite",
+      "framework": "svelte",
+      "features": [
+        "converter",
+        "todo",
+        "counter"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "229-lit-vite",
+      "target": "lit-vite",
+      "framework": "lit",
+      "features": [
+        "form",
+        "todo",
+        "tabs"
+      ],
+      "tailwind": false,
+      "react": null,
+      "fault": "none",
+      "buggyFeature": null,
+      "expected": "pass"
+    },
+    {
+      "id": "230-react-express",
+      "target": "react-express",
+      "framework": "express-sqlite",
+      "features": [
+        "fetch",
+        "store"
+      ],
+      "tailwind": false,
+      "react": "19.3.1",
+      "fault": "logic",
+      "buggyFeature": "fetch",
+      "expected": "fail"
+    },
+    {
+      "id": "231-static",
+      "target": "static",
+      "framework": "static",
+      "features": [
+        "persist",
+        "modal",
+        "fetch"
+      ],
+      "tailwind": false,
+      "react": null,
       "fault": "none",
       "buggyFeature": null,
       "expected": "pass"

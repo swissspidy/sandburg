@@ -1,0 +1,16 @@
+{
+  "id": "128-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "converter",
+    "persist",
+    "search",
+    "dates"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "dates",
+  "expected": "fail"
+}

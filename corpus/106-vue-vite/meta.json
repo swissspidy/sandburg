@@ -1,0 +1,14 @@
+{
+  "id": "106-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "converter",
+    "search"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

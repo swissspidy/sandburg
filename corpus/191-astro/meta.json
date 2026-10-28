@@ -1,0 +1,15 @@
+{
+  "id": "191-astro",
+  "target": "astro",
+  "framework": "astro",
+  "features": [
+    "todo",
+    "persist",
+    "tabs"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

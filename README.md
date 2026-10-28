@@ -21,25 +21,26 @@ runs it on its own dev server. Later requests change the running app, and errors
 
 - **The project's own tools.** `next dev`, Vite 5–8 with its plugins, `ng serve`, `nuxt dev`, `astro dev`,
   Express, and a dev script as written (`concurrently "vite" "node server"`). There is no reimplementation of a framework's build.
-- **Correct answers.** Tested on 100 generated apps with known faults (study v6), it gets 97 right, with no false
-  alarms. The three misses are mislabelled apps. `sandburg compare` measures agreement with a Docker
-  reference.
+- **Correct answers.** Tested on 232 generated apps in 14 frameworks with known faults (study v7), it gets 224
+  right and catches every fault. The 8 false alarms are Sandburg bugs, 6 of them Lit apps that render only
+  into a shadow root. `sandburg compare` measures agreement with a Docker reference.
 - **Fast after the first run.** Installs, compiled modules, and dev-server caches carry over between
   runs and between projects that share packages.
 - **Contained.** A sandbox reaches the network only through a caching gateway and a per-sandbox
   allowlist, and tests prove it.
 
-| 100-app study ([v6](docs/fidelity/v6-node-vs-truth.md), 2026-09-30, 4 vCPU, 3 tabs at a time) | Median run, cold | Median run, warm |
+| 232-app study ([v7](docs/fidelity/v7-node-vs-truth.md), 2026-10-28, 4 vCPU, 3 tabs at a time) | Median run, cold | Median run, warm |
 |---|---|---|
-| Vite, vanilla (33 apps) | 3.4 s | 3.2 s |
-| Vite + React (34) | 16.1 s | 5.9 s |
-| Next.js 15 (33) | 14.4 s | 13.0 s |
-| All 100 | 13.2 s | 6.5 s |
-| Whole corpus, 3 tabs | 533 s | 289 s |
+| Vite, vanilla (33 apps) | 3.9 s | 3.9 s |
+| Vite + React (34) | 12.6 s | 4.4 s |
+| Next.js 15 (33) | 11.9 s | 11.0 s |
+| 11 more frameworks (12 apps each; per framework in the study) | 9.3 s | 9.3 s |
+| All 232 | 9.6 s | 8.2 s |
+| Whole corpus, 3 tabs | 1,776 s | 1,497 s |
 
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
-from empty Sandburg caches (npm's own cache warm). The study predates the speed work in ADRs
-0017–0059. The fixtures on 2026-10-26, at 8dda85e: a one-off run of `node scripts/bench.ts` on a
+from empty Sandburg caches (npm's own cache warm). More than half the corpus's run time went to runs
+that waited out a 240 s deadline (see the study). The fixtures on 2026-10-26, at 8dda85e: a one-off run of `node scripts/bench.ts` on a
 4-core, 15 GB Linux machine, 3 rounds ([command, setup and every run](docs/bench/2026-10-26.md)):
 
 | Fixture | Cold run | Warm run |

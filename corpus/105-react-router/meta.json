@@ -1,0 +1,15 @@
+{
+  "id": "105-react-router",
+  "target": "react-router",
+  "framework": "react-router",
+  "features": [
+    "modal",
+    "dates",
+    "form"
+  ],
+  "tailwind": false,
+  "react": "19.3.1",
+  "fault": "logic",
+  "buggyFeature": "form",
+  "expected": "fail"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "118-svelte-vite",
+  "target": "svelte-vite",
+  "framework": "svelte",
+  "features": [
+    "form",
+    "search",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "type-error",
+  "buggyFeature": null,
+  "expected": "pass"
+}

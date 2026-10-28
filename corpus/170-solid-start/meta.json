@@ -1,0 +1,15 @@
+{
+  "id": "170-solid-start",
+  "target": "solid-start",
+  "framework": "solid-start",
+  "features": [
+    "modal",
+    "todo",
+    "tabs"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "modal",
+  "expected": "fail"
+}

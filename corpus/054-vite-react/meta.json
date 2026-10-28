@@ -12,5 +12,5 @@
   "react": "19.1.0",
   "fault": "undeclared-import",
   "buggyFeature": null,
-  "expected": "fail"
+  "expected": "pass"
 }

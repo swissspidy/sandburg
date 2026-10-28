@@ -1,0 +1,14 @@
+{
+  "id": "123-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "counter",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "syntax",
+  "buggyFeature": null,
+  "expected": "fail"
+}

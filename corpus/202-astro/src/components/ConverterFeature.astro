@@ -1,0 +1,7 @@
+<div data-feature="converter"></div>
+
+<script>
+  import { mount } from '../features/converter';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="converter"]')) mount(el);
+</script>

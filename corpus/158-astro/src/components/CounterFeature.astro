@@ -1,0 +1,7 @@
+<div data-feature="counter"></div>
+
+<script>
+  import { mount } from '../features/counter';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="counter"]')) mount(el);
+</script>

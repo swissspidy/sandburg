@@ -1,0 +1,7 @@
+<div data-feature="search"></div>
+
+<script>
+  import { mount } from '../features/search';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="search"]')) mount(el);
+</script>

@@ -1,0 +1,16 @@
+{
+  "id": "225-solid-start",
+  "target": "solid-start",
+  "framework": "solid-start",
+  "features": [
+    "persist",
+    "fetch",
+    "todo",
+    "search"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "bad-version",
+  "buggyFeature": null,
+  "expected": "fail"
+}

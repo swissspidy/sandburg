@@ -1,0 +1,7 @@
+<div data-feature="modal"></div>
+
+<script>
+  import { mount } from '../features/modal';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="modal"]')) mount(el);
+</script>

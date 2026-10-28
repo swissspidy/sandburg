@@ -1,0 +1,14 @@
+{
+  "id": "101-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "converter",
+    "dates"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "dates",
+  "expected": "fail"
+}

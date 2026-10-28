@@ -1,0 +1,14 @@
+{
+  "id": "187-static",
+  "target": "static",
+  "framework": "static",
+  "features": [
+    "form",
+    "tabs"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "form",
+  "expected": "fail"
+}

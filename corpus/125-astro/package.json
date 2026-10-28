@@ -1,0 +1,17 @@
+{
+  "name": "corpus-125-astro",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "astro": "7.4.2",
+    "canvas-confetti": "^99.0.0"
+  },
+  "devDependencies": {}
+}

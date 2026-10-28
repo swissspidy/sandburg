@@ -1,0 +1,14 @@
+{
+  "id": "178-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "dates",
+    "search"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}
