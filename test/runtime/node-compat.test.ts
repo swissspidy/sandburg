@@ -497,18 +497,22 @@ test('http: res.destroy() for a client in the same process closes the connection
           res.on('error', (e) => log.push('res error ' + e.message));
           res.destroy();
           log.push('socket destroyed ' + req.socket.destroyed);
-        }).listen(3002, () => require('http').get('http://localhost:3002/').on('error', (e) => {
-          log.push('client error ' + e.code + ' ' + e.message);
-          setTimeout(() => {
-            console.log(log.join(', '));
-            process.exit(0);
-          }, 50);
-        }));`,
+        }).listen(3002, () => {
+          const c = require('http').get('http://localhost:3002/');
+          c.on('error', (e) => log.push('client error ' + e.code + ' ' + e.message));
+          c.on('close', () => {
+            log.push('client close destroyed=' + c.destroyed);
+            setTimeout(() => {
+              console.log(log.join(', '));
+              process.exit(0);
+            }, 50);
+          });
+        });`,
     },
     '/app/main.js',
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
-  assert.equal(out.stdout, 'socket destroyed true, res close, req close, client error ECONNRESET socket hang up\n');
+  assert.equal(out.stdout, 'socket destroyed true, res close, req close, client error ECONNRESET socket hang up, client close destroyed=true\n');
 });
 
 test("http: process.exit() in a request's 'aborted' listener ends the process when its client, a child process, dies", async () => {
@@ -653,6 +657,150 @@ test("http: a response that came through fetch() and was read to its end is comp
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout, 'data remote, end, close, aborted false, complete true\n');
+});
+
+/**
+ * A program's requests to a server of its own (3005: through the runtime) and, with REMOTE, to another
+ * origin's (through fetch()): /ok answers, /hold starts a response and never ends it. Logs each case on a line.
+ */
+const clientCases = (cases: string) => `
+  const http = require('http');
+  const local = 'http://localhost:3005';
+  const remote = process.env.REMOTE;
+  const lines = [];
+  const server = http.createServer((req, res) => {
+    if (req.url === '/hold') {
+      res.writeHead(200);
+      res.write('a');
+    } else res.end('ok');
+  }).listen(3005, async () => {
+    const steps = [${cases}];
+    for (const step of steps) lines.push(await new Promise((resolve) => step(resolve)));
+    console.log(lines.join('\\n'));
+    process.exit(0);
+  });`;
+
+test('http: a request closes (destroyed) once its response ended, or once it failed, as in Node', async () => {
+  const out = await h.run(
+    {
+      'main.js': clientCases(`
+        ...[local + '/ok', remote + '/__test/remote'].map((url) => (done) => {
+          const log = [];
+          const req = http.get(url, (res) => {
+            res.resume();
+            res.on('end', () => log.push('res end destroyed=' + req.destroyed));
+            res.on('close', () => log.push('res close'));
+          });
+          req.on('close', () => {
+            log.push('req close');
+            setTimeout(() => done(log.join(' | ')), 20);
+          });
+        }),
+        (done) => {
+          const log = [];
+          const req = http.get('http://fetch.localhost:1/');
+          req.on('error', (e) => log.push('req error ' + e.code));
+          req.on('close', () => {
+            log.push('req close destroyed=' + req.destroyed);
+            setTimeout(() => done(log.join(' | ')), 20);
+          });
+        },`),
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { env: { REMOTE: `http://fetch.localhost:${h.port}` } },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['res end destroyed=true | req close | res close', 'res end destroyed=true | req close | res close', 'req error ECONNREFUSED | req close destroyed=true']);
+});
+
+test('http: destroying a request whose response is in flight aborts the response; destroying the response closes the request', async () => {
+  const out = await h.run(
+    {
+      'main.js': clientCases(`
+        ...[local + '/hold', remote + '/__test/hold'].flatMap((url) => ['req', 'res'].map((which) => (done) => {
+          const log = [];
+          const req = http.get(url, (res) => {
+            log.push('response');
+            res.on('aborted', () => log.push('res aborted'));
+            res.on('error', (e) => log.push('res error ' + e.code));
+            res.on('close', () => log.push('res close destroyed=' + req.destroyed));
+            (which === 'req' ? req : res).destroy();
+          });
+          req.on('error', (e) => log.push('req error ' + e.code + ' ' + e.message));
+          req.on('close', () => log.push('req close'));
+          setTimeout(() => done(log.join(' | ')), 200);
+        })),
+        // Destroyed before its response: it failed ("socket hang up").
+        ...[local + '/ok', remote + '/__test/remote'].map((url) => (done) => {
+          const log = [];
+          const req = http.get(url, () => log.push('response'));
+          req.on('error', (e) => log.push('req error ' + e.code + ' ' + e.message));
+          req.on('close', () => log.push('req close destroyed=' + req.destroyed));
+          req.destroy();
+          setTimeout(() => done(log.join(' | ')), 200);
+        }),`),
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { env: { REMOTE: `http://fetch.localhost:${h.port}` } },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const inFlight = ['response | res aborted | req close | res error ECONNRESET | res close destroyed=true', 'response | res aborted | res close destroyed=false | req close'];
+  const before = 'req error ECONNRESET socket hang up | req close destroyed=true';
+  assert.deepEqual(out.stdout.trim().split('\n'), [...inFlight, ...inFlight, before, before]);
+  // What was still coming from the other origin is not read: its two responses' connections closed.
+  assert.deepEqual(h.asked.filter((a) => a === 'hold closed'), ['hold closed', 'hold closed']);
+});
+
+test("http: what an 'aborted' listener throws is the request's error; the process goes on", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const s = require('http').createServer((req, res) => {
+          req.on('aborted', () => {
+            console.log('aborted');
+            throw new Error('boom');
+          });
+          req.on('error', (e) => console.log('req error ' + e.message));
+          res.destroy();
+        }).listen(3006, () => require('http').get('http://localhost:3006/').on('error', () => {}));
+        setTimeout(() => {
+          console.log('still alive');
+          process.exit(0);
+        }, 300);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual([out.stdout, out.exit], ['aborted\nreq error boom\nstill alive\n', 0]);
+});
+
+test("http: 'clientError' comes after res.destroy(err) returns; what its listener throws is uncaught, not the handler's", async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        process.on('uncaughtException', (e) => console.log('uncaught ' + e.message));
+        const s = require('http').createServer((req, res) => {
+          s.on('clientError', (e) => {
+            console.log('clientError ' + e.message);
+            throw new Error('thrown');
+          });
+          try {
+            res.destroy(new Error('x'));
+            console.log('after destroy');
+          } catch (e) {
+            console.log('caught in handler ' + e.message);
+          }
+        }).listen(3007, () => require('http').get('http://localhost:3007/').on('error', () => {}));
+        setTimeout(() => process.exit(0), 300);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'after destroy\nclientError x\nuncaught thrown\n');
 });
 
 test('http: a response its handler destroys is reset, not left waiting', { timeout: 30_000 }, async () => {

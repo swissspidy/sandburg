@@ -273,6 +273,12 @@ export class RuntimeHarness {
         res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
         return res.end('remote');
       }
+      // A response that starts and is never ended: `asked` says when the client went away.
+      if (url.pathname === '/__test/hold') {
+        res.on('close', () => this.asked.push('hold closed'));
+        res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+        return void res.write('a');
+      }
       if (url.pathname === '/__sandburg/tla-scan') {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
