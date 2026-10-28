@@ -1047,8 +1047,9 @@ test("http: req.setTimeout(ms, cb) and the timeout option emit 'timeout' once th
 
 test("http: a request's timeout counts idle time: not while its response keeps coming, nor once it completed", async () => {
   const out = await h.run({ 'main.js': `
-        // The timeout counts idle time only: a response that keeps coming (each 30 ms, timeout 60) is not timed out,
-        // and a request that completed is not timed out after.
+        // The timeout counts idle time only: a response that keeps coming (a chunk each 50 ms for 500 ms,
+        // timeout 200) is not timed out, and a request that completed is not timed out after. Each case is
+        // reported once its request closed and twice the timeout went by, whatever the machine's speed.
         const http = require('http');
         const lines = [];
         http.createServer((req, res) => {
@@ -1057,11 +1058,11 @@ test("http: a request's timeout counts idle time: not while its response keeps c
           res.writeHead(200);
           const tick = setInterval(() => {
             res.write('x');
-            if (++n === 6) {
+            if (++n === 10) {
               clearInterval(tick);
               res.end();
             }
-          }, 30);
+          }, 50);
         }).listen(3017, async () => {
           for (const path of ['/trickle', '/quick']) {
             lines.push(await new Promise((done) => {
@@ -1071,16 +1072,18 @@ test("http: a request's timeout counts idle time: not while its response keeps c
                 res.on('data', (d) => (body += d));
                 res.on('end', () => log.push('end ' + body));
               });
-              req.setTimeout(60, () => log.push('timeout'));
-              req.on('close', () => log.push('req close'));
-              setTimeout(() => done(log.join(' | ')), 400);
+              req.setTimeout(200, () => log.push('timeout'));
+              req.on('close', () => {
+                log.push('req close');
+                setTimeout(() => done(log.join(' | ')), 400);
+              });
             }));
           }
           console.log(lines.join('\\n'));
           process.exit(0);
         });` }, '/app/main.js');
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
-  assert.deepEqual(out.stdout.trim().split('\n'), ['/trickle | end xxxxxx | req close', '/quick | end done | req close']);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['/trickle | end xxxxxxxxxx | req close', '/quick | end done | req close']);
 });
 
 test("http: a response's start is activity for its request's timeout", async () => {
