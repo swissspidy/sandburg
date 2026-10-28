@@ -38,7 +38,10 @@ and 25 on Windows, and every e2e `run` test on Windows.
 - **npm could not be started on Windows.** `npm` is `npm.cmd` there, a batch file, which Node spawns
   only through a shell (CVE-2024-27980): every install failed with `spawn npm ENOENT`. npm is now
   spawned as its `npm-cli.js` on the running Node (`src/adapters/node/npm-cli.ts`), and the
-  in-process resolver, which had no npm to load on Windows, finds it the same way.
+  in-process resolver, which had no npm to load on Windows, finds it the same way. That npm is the
+  one that started the process (`npm_execpath`, under `npm run` or `npm test`), else the one bundled
+  beside `node.exe`: after `npm i -g npm@X`, the `npm` on PATH can be another version, which a
+  process started outside npm (`node bin/sandburg.js`) does not use.
 - **The resolver wrote a wrong lockfile through a symlink.** Arborist was given the install
   directory as named; npm's CLI gives it its working directory, a real path. Through a link
   (macOS's `/var` is `/private/var`, where its temporary directory is) the lockfile named the
@@ -49,7 +52,8 @@ and 25 on Windows, and every e2e `run` test on Windows.
   keeps those low by caching files in the rest. The test now gives the batch memory to spare, as the
   file's other batch tests do, since it checks parallelism, not the machine. Available memory on macOS is now free
   plus inactive pages (`vm_stat`), as psutil counts it. `memory.ts` joins the reviewed list of host
-  files that start a process (`.oxlintrc.json`): it runs `vm_stat`, with no arguments, on macOS.
+  files that start a process (`.oxlintrc.json`): it runs `/usr/bin/vm_stat` (by its path, with no
+  arguments) on macOS, at most once a second (the batch asks on each look while it waits).
 - **A preload list could lose another process's entries on Windows.** There a rename over a file
   that another handle has open fails (EPERM, EACCES, EBUSY), and the list's write, from a timer,
   dropped the error and what this process had recorded. It is retried as the app files' rename

@@ -82,12 +82,13 @@ async function serve({ npmRoot, configDir, flags }: Init): Promise<void> {
         const version = await pacote.manifest(view, { ...flat, fullMetadata: true, packumentCache: cache }).then((m) => String(m.version), () => null);
         return parentPort!.postMessage({ id, version });
       }
-      ahead.start(dir, !active++);
       // As lib/commands/install.js runs it, with this worker's packuments. Its path is the real one,
       // as npm's prefix is (process.cwd()): Arborist reads the tree at its real path, and from a
       // path through a symlink (macOS's /var is /private/var) wrote the lockfile's packages under
-      // `../../../private/var/...` and the root's version as a file: link.
+      // `../../../private/var/...` and the root's version as a file: link. Taken before the
+      // resolution counts as running: a directory that is gone fails here, and only this one.
       const opts = { ...flat, ...(force ? { force: true } : {}), npmCommand: 'install', auditLevel: null, path: realpathSync(dir), add: [], workspaces: undefined, packumentCache: cache };
+      ahead.start(opts.path, !active++);
       try {
         await new Arborist(opts).reify(opts);
       } finally {

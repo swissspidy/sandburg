@@ -47,8 +47,7 @@
     "npm-registry-fetch"
   ],
   "ignoreBinaries": [
-    "openssl",
-    "vm_stat"
+    "openssl"
   ],
   "ignoreUnresolved": [
     "./lib/npm.js"

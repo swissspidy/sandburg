@@ -25,12 +25,23 @@ export function availableMemory(): number {
  * rest (on the CI's macOS runner, a batch of two at a time opened one app at a time).
  */
 function darwinAvailable(): number | null {
+  // A batch short of memory asks on each look: one vm_stat (a few ms, on the main thread) a second.
+  const now = performance.now();
+  if (vmStat && now - vmStat.at < VM_STAT_TTL_MS) return vmStat.bytes;
+  let bytes: number | null = null;
   try {
-    return parseVmStat(execFileSync('vm_stat', { encoding: 'utf8', timeout: 2000 }));
+    bytes = parseVmStat(execFileSync(VM_STAT, { encoding: 'utf8', timeout: 2000 }));
   } catch {
-    return null;
+    // none: os.freemem()
   }
+  vmStat = { at: now, bytes };
+  return bytes;
 }
+
+/** By its path, not looked up on PATH. */
+export const VM_STAT = '/usr/bin/vm_stat';
+const VM_STAT_TTL_MS = 1000;
+let vmStat: { at: number; bytes: number | null } | null = null;
 
 /** Bytes free or inactive in vm_stat's output; null if it does not have them. */
 export function parseVmStat(out: string): number | null {

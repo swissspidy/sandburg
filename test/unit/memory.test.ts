@@ -1,15 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { freemem, totalmem } from 'node:os';
-import { availableMemory, parseVmStat } from '../../src/orchestrator/memory.ts';
+import { execFileSync } from 'node:child_process';
+import { totalmem } from 'node:os';
+import { availableMemory, parseVmStat, VM_STAT } from '../../src/orchestrator/memory.ts';
 
 test('available memory is a positive number of bytes no larger than the machine has', () => {
   const free = availableMemory();
   assert.ok(Number.isFinite(free) && free > 0 && free <= totalmem(), String(free));
 });
 
-test('macOS: free and inactive pages from vm_stat, not only the free ones os.freemem() counts', { skip: process.platform !== 'darwin' && 'vm_stat is macOS' }, () => {
-  assert.ok(availableMemory() >= freemem() * 0.9, `${availableMemory()} available, ${freemem()} free`);
+test("macOS: this machine's vm_stat output is read", { skip: process.platform !== 'darwin' && 'vm_stat is macOS' }, () => {
+  // One reading, parsed (two readings, as availableMemory() against os.freemem(), can differ).
+  const bytes = parseVmStat(execFileSync(VM_STAT, { encoding: 'utf8' }));
+  assert.ok(bytes !== null && bytes > 0 && bytes <= totalmem(), String(bytes));
 });
 
 test('vm_stat\'s output is read as free plus inactive pages, in its page size', () => {
