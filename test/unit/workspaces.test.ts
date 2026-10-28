@@ -67,6 +67,10 @@ test('workspace globs: * is one directory, ** any number, ! leaves out', () => {
   assert.ok(!isWorkspace('tools', patterns));
   assert.ok(!isWorkspace('apps/node_modules', patterns));
   assert.ok(!isWorkspace('', ['*']));
+  // `**/` in the middle: any number of directories, none included.
+  assert.ok(isWorkspace('apps/web', ['apps/**/web']));
+  assert.ok(isWorkspace('apps/a/b/web', ['apps/**/web']));
+  assert.ok(!isWorkspace('apps/a/webx', ['apps/**/web']));
   const files = { 'package.json': '{}', 'apps/web/package.json': '{}', 'apps/README.md': '', 'apps/docs/index.md': '', 'apps/node_modules/x/package.json': '{}' };
   assert.deepEqual(workspaceDirs(files, { workspaces: ['apps/*'] }), ['apps/web']);
   assert.deepEqual(workspaceDirs(files, null), []);

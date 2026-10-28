@@ -131,6 +131,7 @@ test('git, URL and user/repo dependencies are refused as unsupported, early, wit
     ['git+https://github.com/a/b.git', /a git repository dependency/],
     ['github:a/b', /a git repository dependency/],
     ['git@github.com:a/b.git', /a git repository dependency/],
+    ['git@github.com:a/b', /a git repository dependency/],
     ['https://example.com/x.tgz', /a URL dependency/],
     ['user/repo', /a GitHub repository \(user\/repo\) dependency/],
     ['user/repo#main', /a GitHub repository \(user\/repo\) dependency/],
@@ -162,6 +163,11 @@ test("a monorepo's package-lock.json loses its local packages' entries and passe
   assert.deepEqual(Object.keys(packages), ['', 'node_modules/ms']);
   assert.equal(packages['node_modules/ms'].version, '2.1.2');
   assert.deepEqual(p.links, { 'node_modules/web': 'apps/web', 'node_modules/@acme/greet': 'packages/greet', 'node_modules/@acme/format': 'shared/format' });
+  // A v2 lockfile's back-compat tree records workspaces as file: versions: it goes too.
+  const v2 = { ...JSON.parse(lock), lockfileVersion: 2, dependencies: { web: { version: 'file:apps/web' }, ms: { version: '2.1.2' } } };
+  const fromV2 = installPlan({ ...project.files, 'package-lock.json': JSON.stringify(v2) }, project.packageJson);
+  assert.doesNotThrow(() => assertRegistryLockfile(fromV2.lockfile!));
+  assert.equal(JSON.parse(fromV2.lockfile!).dependencies, undefined);
   // A link the project's lockfile points outside the project keeps it refused.
   const outside = JSON.parse(lock);
   outside.packages['node_modules/evil'] = { resolved: '../evil', link: true };
