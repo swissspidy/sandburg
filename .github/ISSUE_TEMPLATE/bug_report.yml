@@ -1,0 +1,81 @@
+name: Bug report
+description: A run that gives the wrong result, fails, hangs or crashes.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A security issue (an app reaching the host, the network or another sandbox) is not a bug report: report it privately, see [SECURITY.md](https://github.com/swissspidy/sandburg/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+      description: The result you got, and the one the app should have had (for example, passed in the Docker reference or with `npm run dev`).
+    validations:
+      required: true
+  - type: input
+    id: sandburg-version
+    attributes:
+      label: Sandburg version
+      description: "`npm ls sandburg`, or the commit of a checkout."
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: "`node --version`. Sandburg needs 24 or later."
+      placeholder: v24.11.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      description: Name, version and architecture; say if it is a container or CI runner.
+      placeholder: Ubuntu 24.04, x64, as a normal user
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command (or `Session` options) you ran, with every flag.
+      render: sh
+      placeholder: npx sandburg run ./my-app --checks checks.spec.ts
+    validations:
+      required: true
+  - type: dropdown
+    id: browser-sandbox
+    attributes:
+      label: Was the browser sandbox off?
+      description: "`--no-browser-sandbox`, `SANDBURG_NO_BROWSER_SANDBOX=1` or `browserSandbox: false`. `result.json` records it as `environment.browserSandbox`."
+      options:
+        - "No: the sandbox was on (the default)"
+        - "Yes: --no-browser-sandbox, SANDBURG_NO_BROWSER_SANDBOX=1 or browserSandbox: false"
+        - Don't know
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: result.json
+      description: |
+        From `.sandburg/runs/<runId>/result.json`. At least the run's status, its failure's class (`app-bug`, `runtime-unsupported`, `timeout`, `infra`, `unknown`) and the rule that decided it, and the failing check's message. Remove anything private first. Enter `not generated` if Sandburg stopped before creating the file.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: project
+    attributes:
+      label: Minimal project
+      description: |
+        The smallest project (and checks file) that shows the problem: a link to a repository or gist, an attached `.zip`, or the files inline (a JSON file tree `{ "path": "contents" }` works too). A project from a public template, with the commands that created it, is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: CLI output, a screenshot, whether it happens every time or only under load, what you already tried.
