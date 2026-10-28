@@ -193,6 +193,25 @@ export default defineConfig({
   assert.ok(ready.durationMs < 30_000, `ready took ${ready.durationMs} ms`);
 });
 
+test("after a cold start's 500, the app's own POST to its page's URL that answers 500 fails the ready phase fast", async () => {
+  // The page answers 500 once (a cold start), then a blank page whose script posts to its own URL
+  // (as a server action, htmx or Turbo does), which answers 500: Chromium logs "Failed to load
+  // resource: … 500" for the page's load and again for the POST, both with the page's URL.
+  const server = `let gets = 0;
+require('http').createServer((req, res) => {
+  res.setHeader('content-type', 'text/html');
+  if (req.method === 'POST') { res.statusCode = 500; return res.end(''); }
+  if (++gets === 1) { res.statusCode = 500; return res.end(''); }
+  res.end('<!doctype html><html><body><script>fetch(location.href, { method: "POST" })</script></body></html>');
+}).listen(3000);`;
+  const files = { 'package.json': JSON.stringify({ name: 'post-500', private: true, scripts: { dev: 'node server.js' } }), 'server.js': server };
+  const result = await session.run(projectFromFiles(files, { name: 'post-500', path: `${fixtureDir}#post-500` }), { outDir, timeouts: { ready: 60_000 } });
+  const ready = result.phases.find((p) => p.name === 'ready');
+  assert.equal(ready?.status, 'failed', JSON.stringify(result.failure));
+  assert.match(result.failure?.message ?? '', /^app did not render after a console error: Failed to load resource: the server responded with a status of 500 /);
+  assert.ok(ready.durationMs < 30_000, `ready took ${ready.durationMs} ms`);
+});
+
 test('a ready deadline produces a timeout', async () => {
   const result = await session.run(counter, { outDir, readySelector: '#never', timeouts: { ready: 3000 } });
   assert.equal(result.status, 'error');

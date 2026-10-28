@@ -182,6 +182,46 @@ test("only the app's frame's page counts: not a frame the app embeds, nor the ho
   assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });
 
+test("after a cold start's 500, the app's own request to its page's URL that answers 500 still fails the phase (a POST: a server action, htmx, Turbo)", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  // What Chromium 149 logs, in this order (Playwright's response and console events): the frame's page
+  // answers 500, then 200 when loaded again, whose script then fetches the same URL with POST and gets a 500.
+  const failedLoad = () => run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)', url: 'http://app.test/' });
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  failedLoad();
+  await advance(t, 1_000);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app });
+  await advance(t, 1_000);
+  failedLoad();
+  await advance(t, 7_900);
+  assert.equal(phase.settled, 'pending');
+  await advance(t, 300);
+  assert.equal(phase.error?.message, 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Internal Server Error) (http://app.test/)');
+});
+
+test("each of the page's own 5xx loads accounts for one of Chromium's console errors for its URL, no more", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  const failedLoad = (status: number) => run.console.push({ source: 'app', type: 'error', text: `Failed to load resource: the server responded with a status of ${status} (x)`, url: 'http://app.test/' });
+  // Two cold-start 5xx loads, then a 200: their two console errors are the page's.
+  run.documents.push({ url: 'http://app.test/', status: 502, frame: app });
+  failedLoad(502);
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  failedLoad(500);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app });
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  // A third is not.
+  failedLoad(500);
+  await advance(t, 8_200);
+  assert.match(phase.error?.message ?? '', /^app did not render after a console error: Failed to load resource: .* 500 /);
+});
+
 test("without the app's frame, the host page's documents are left out", async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const run = runState();
