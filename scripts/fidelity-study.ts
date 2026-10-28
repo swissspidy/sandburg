@@ -14,6 +14,8 @@
  * - --rounds n runs n cold/warm pairs, one after the other (cold, warm, cold, warm, ...), so that drift
  *   in the machine's load falls on both; an app's time is its median over the rounds, its answer
  *   the first round's (each round's is in `rounds`).
+ * - With --out, each pass is kept as it ends (<out>-passes.jsonl): the same command again goes on
+ *   from the first pass it does not have.
  * - --only: the apps whose framework (meta.json) matches, e.g. 'vue|static|lit'.
  * - --out: writes <out>.json (cold) and <out>-warm.json (warm), each app with its phases, when it
  *   started and ended (ms from its pass's start), `neighbours`: the mean number of other runs open
@@ -25,7 +27,7 @@
  * Set SANDBURG_CHROMIUM to use a Chromium other than Playwright's.
  */
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -159,10 +161,21 @@ if (args.pass) {
   process.exit(0);
 }
 
+// With --out, each pass is kept as it ends (<out>-passes.jsonl), and a study run again with the same
+// arguments goes on from the first pass it does not have (a warm pass on the stores its cold pass left).
+const kept = args.out ? `${args.out}-passes.jsonl` : null;
+const done = kept
+  ? (await readFile(kept, 'utf8').catch(() => ''))
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { round: number; mode: 'cold' | 'warm'; pass: Pass })
+  : [];
 const passes = { cold: [] as Pass[], warm: [] as Pass[] };
 for (let round = 1; round <= rounds; round++) {
   for (const mode of ['cold', 'warm'] as const) {
-    const p = await pass(mode);
+    const earlier = done.find((d) => d.round === round && d.mode === mode && d.pass.runs.length === items.length);
+    const p = earlier?.pass ?? (await pass(mode));
+    if (kept && !earlier) await appendFile(kept, JSON.stringify({ round, mode, pass: p }) + '\n');
     passes[mode].push(p);
     const passed = p.runs.filter((r) => r.result === 'pass').length;
     console.error(`round ${round} ${mode}: ${(p.wallMs / 1000).toFixed(1)} s, ${passed}/${p.runs.length} passed`);
