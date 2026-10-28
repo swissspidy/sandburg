@@ -50,6 +50,8 @@ add('setTimeout(0) clears', (s) => s.on('request', (req, res) => { watch(req, re
 add('requestTimeout', (s) => { s.requestTimeout = 300 * U; s.headersTimeout = 300 * U; s.on('request', watch); }, get('POST', (r) => r.write('a'), false));
 add('requestTimeout clientError', (s) => { s.requestTimeout = 300 * U; s.headersTimeout = 300 * U; s.on('clientError', (e, sock) => { log.push(`clientError ${e.code} ${e.message}`); sock.destroy(); }); s.on('request', watch); }, get('POST', (r) => r.write('a')));
 add('requestTimeout clientError response', (s) => { s.requestTimeout = 300 * U; s.headersTimeout = 300 * U; s.on('clientError', (e, sock) => sock.end('HTTP/1.1 408 Too Slow\r\nX-Why: ' + e.code + '\r\n\r\nslow')); s.on('request', watch); }, get('POST', (r) => r.write('a')));
+// As measured: a request with its headers expires after the longer of requestTimeout and headersTimeout.
+add('requestTimeout, headersTimeout longer', (s) => { s.requestTimeout = 300 * U; s.headersTimeout = 600 * U; s.on('request', watch); }, get('POST', (r) => r.write('a'), false));
 add('requestTimeout complete', (s) => { s.requestTimeout = 300 * U; s.headersTimeout = 300 * U; s.on('request', (req, res) => { watch(req, res); setTimeout(() => res.end('ok'), 600 * U); }); }, get());
 
 async function main() {

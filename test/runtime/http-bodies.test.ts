@@ -89,6 +89,7 @@ test('http: idle time starts over with what is read or written; requestTimeout f
     'requestTimeout: >50, >150, >250, client response 408, aborted, res close, >350, >450, >550, >650, >750, >950',
     'requestTimeout clientError: >50, >150, >250, clientError ERR_HTTP_REQUEST_TIMEOUT Request timeout, client error socket hang up, aborted, res close, >350, >450, >550, >650, >750, >950',
     'requestTimeout clientError response: >50, >150, >250, client response 408, client end "slow", aborted, res close, >350, >450, >550, >650, >750, >950',
+    'requestTimeout, headersTimeout longer: >50, >150, >250, >350, >450, >550, client response 408, aborted, res close, >650, >750, >950',
     'requestTimeout complete: >50, >150, >250, >350, >450, >550, res close, client response 200, client end "ok", >650, >750, >950',
   ]);
 });
