@@ -237,11 +237,12 @@ const stackOf = (e: PageError) => e.stack ?? (thrown(e.message) && /\n\s+at /.te
  * Whether a console error reports a thrown error: its first line names one ("TypeError: …", Angular's
  * "ERROR TypeError: …", "Uncaught (in promise) TypeError: …", Nuxt's "[nuxt] error caught during app
  * initialization TypeError: …", "DOMException: …"). Not a warning that carries a component stack
- * (React's "Warning: Each child in a list …", or the same without "Warning:" in React 19).
+ * (React's "Warning: Each child in a list …", or the same without "Warning:" in React 19), nor a path
+ * whose last segment is named like one ("Loaded module src/components/Error: ok").
  */
 function thrown(text: string): boolean {
   const first = text.split('\n', 1)[0];
-  return !/^Warning:/.test(first) && /\b\w*(?:Error|Exception)\b:/.test(first);
+  return !/^Warning:/.test(first) && /(?<![/\\])\b\w*(?:Error|Exception)\b:/.test(first);
 }
 
 function hasProjectStack(errors: PageError[]): boolean {

@@ -303,6 +303,12 @@ test('a console error that names a thrown error counts, however it is introduced
   for (const warning of ['Warning: Each child in a list should have a unique "key" prop.', 'Each child in a list should have a unique "key" prop.', 'Warning: a TypeError: in a warning is still a warning']) {
     assert.equal(rule(warning), 'unmatched', warning);
   }
+  // A path segment named like an error, followed by a colon, is a path.
+  for (const path of ['Loaded module src/components/Error: ok', 'Loaded module src\\components\\Error: ok', 'Rendered /app/src/routes/NotFoundException: done', 'Loaded src/AppError:12']) {
+    assert.equal(rule(path), 'unmatched', path);
+  }
+  // A namespaced error is still one.
+  assert.equal(rule('Prisma.PrismaClientKnownRequestError: x'), 'app-error-before-ready');
 });
 
 test("dependencies and generated code are not the project's: node_modules at any depth, .nuxt, .svelte-kit and the like", () => {
