@@ -6,9 +6,8 @@ import type { Frame, Page } from 'playwright-core';
 import type { ConsoleEntry } from '../types.ts';
 import { RunState } from './run-state.ts';
 import { appRendered } from '../host/rendered.ts';
-import { describeFinding, type SourceFinding } from '../source-check.ts';
+import type { SourceFinding } from '../source-check.ts';
 import type { ProjectReads } from '../host/types.ts';
-import { SOURCE_STALL } from '../classify.ts';
 
 /** Grace period after a runtime asset fails before the phase gives up (the runtime may retry). */
 const RUNTIME_FETCH_GRACE_MS = 3_000;
@@ -190,26 +189,10 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
   }
 }
 
-/** How long the ready phase waits for the app before it checks the project's sources (failOnSourceStall). */
+/** How long the ready phase waits for the app before it checks the project's sources (watchSources). */
 const SOURCE_CHECK_AFTER_MS = 20_000;
 
-/** How long the dev server and the page must have been quiet before what the source check found fails the phase. */
-const SOURCE_QUIET_MS = 10_000;
-
-/** Whether a console entry says the app is still getting somewhere: the runtime's output, or the page's error (the app-error watch's to judge). */
-const active = (c: ConsoleEntry) => (c.source === 'host' && c.text.startsWith('[runtime:')) || (c.source === 'app' && c.type === 'error');
-
-/**
- * Whether the app's page hangs (`docs`: its frame's documents, in order): its latest answered 2xx and
- * has streamed for at least SOURCE_QUIET_MS without ending (SolidStart's on a fault). Not a page
- * not answered yet (compiling), nor one that just came and is still being read, nor an error page.
- */
-export function pageHangs(docs: { status: number; ended?: boolean; at?: number }[], now = Date.now()): boolean {
-  const doc = docs.at(-1);
-  return !!doc && doc.status >= 200 && doc.status < 300 && doc.ended === false && doc.at !== undefined && now - doc.at >= SOURCE_QUIET_MS;
-}
-
-/** How often what the source check found is matched again with what the app's processes have read (failOnSourceStall). */
+/** How often what the source check found is matched again with what the app's processes have read (watchSources). */
 const SOURCE_RELEVANCE_MS = 2_000;
 
 /**
@@ -230,74 +213,22 @@ export function relevantFindings(found: SourceFinding[], answer: ProjectReads | 
 }
 
 /**
- * Rejects when the app has not rendered after 20 s, its sources have a syntax error or import a
- * package it does not declare (`check`, source-check.ts) in a file its processes have read
- * (`relevant`, relevantFindings), and the page hangs: its document answered 2xx and is still
- * streaming (`hanging`: not a loading page), and its dev server and page have said nothing for 10 s.
- * Some dev servers report neither fault and hang so (SolidStart 2.1.0 streams the page and never
- * ends it). An app whose page has not been answered yet is compiling (`next dev` says so once, then
- * nothing until it answers), and a page that streams slowly has read no broken file: they run to the
- * phase's deadline, and what was found classifies a timeout. The sources are checked once, at 20 s,
- * so a run whose app renders sooner never pays for it; what bears on the app is kept for
- * classification (`run.sourceFindings`), matched again every 2 s. `signal` stops the watch.
+ * Checks the project's sources (`check`, source-check.ts) once the ready phase has run 20 s without
+ * the app rendering, and keeps what bears on the app (`relevant`, relevantFindings) in
+ * `run.sourceFindings`, matched again every 2 s, until `signal` (the phase is over). It never fails
+ * the phase: a ready phase that times out is classified by it (classify.ts). Some dev servers report
+ * neither a syntax error nor an undeclared import, and hang (SolidStart 2.1.0 streams the page and
+ * never ends it); no signal tells such a hang from a slow page in time (ADR 0067). A run whose app
+ * renders within 20 s never checks its sources.
  */
-export async function failOnSourceStall(
-  render: Promise<void>,
-  run: RunState,
-  check: () => Promise<SourceFinding[]>,
-  hanging: () => Promise<boolean>,
-  relevant: (found: SourceFinding[]) => Promise<SourceFinding[]> = async (found) => found,
-  signal?: AbortSignal,
-): Promise<void> {
-  let timer: NodeJS.Timeout | undefined;
-  let done = false;
-  // The phase ended otherwise (the app-error watch failed it): stop watching.
-  signal?.addEventListener(
-    'abort',
-    () => {
-      done = true;
-      clearTimeout(timer);
-    },
-    { once: true },
-  );
-  const watch = new Promise<never>((_, reject) => {
-    const start = Date.now();
-    let quietSince = start;
-    let [consoleSeen, errorsSeen] = [run.console.length, run.pageErrors.length];
-    let checked = false;
-    /** What the check found (null until it is done), and when it was last matched with what the app read. */
-    let found: SourceFinding[] | null = null;
-    let matchedAt = 0;
-    const poll = async () => {
-      if (done) return;
-      const now = Date.now();
-      if (run.pageErrors.length > errorsSeen || run.console.slice(consoleSeen).some(active)) quietSince = now;
-      [consoleSeen, errorsSeen] = [run.console.length, run.pageErrors.length];
-      if (!checked && now - start >= SOURCE_CHECK_AFTER_MS) {
-        checked = true;
-        void check().then(
-          (f) => void (found = f),
-          () => void (found = []),
-        );
-      }
-      if (found && (found.length || !run.sourceFindings) && now - matchedAt >= SOURCE_RELEVANCE_MS) {
-        matchedAt = now;
-        run.sourceFindings = found.length ? await relevant(found).catch(() => []) : [];
-        if (done) return;
-      }
-      const first = run.sourceFindings?.[0];
-      if (first && Date.now() - quietSince >= SOURCE_QUIET_MS && (await hanging().catch(() => false)) && !done) {
-        reject(new Error(`${SOURCE_STALL}${describeFinding(first)}`));
-        return;
-      }
-      if (!done) timer = setTimeout(() => void poll(), 200);
-    };
-    void poll();
-  });
-  try {
-    await Promise.race([render, watch]);
-  } finally {
-    done = true;
-    clearTimeout(timer);
-  }
+export function watchSources(run: RunState, check: () => Promise<SourceFinding[]>, relevant: (found: SourceFinding[]) => Promise<SourceFinding[]>, signal: AbortSignal): void {
+  let found: SourceFinding[] | null = null;
+  const tick = async () => {
+    found ??= await check().catch(() => []);
+    if (signal.aborted) return;
+    run.sourceFindings = found.length ? await relevant(found).catch(() => []) : [];
+    if (found.length && !signal.aborted) timer = setTimeout(() => void tick(), SOURCE_RELEVANCE_MS);
+  };
+  let timer = setTimeout(() => void tick(), SOURCE_CHECK_AFTER_MS);
+  signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
 }

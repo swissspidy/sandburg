@@ -44,9 +44,6 @@ const WASM_TRAP = /\b(?:memory access out of bounds|unreachable(?: code should n
 
 const RUNTIME_BOOT_FETCH = /Failed to fetch dynamically imported module|WebWorker failed to load|Failed to register a ServiceWorker/i;
 
-/** How the ready phase reports what the source check found (orchestrator/app-ready.ts, failOnSourceStall). */
-export const SOURCE_STALL = 'app did not render, and its sources have an error: ';
-
 /** Compile errors reported by dev servers and esbuild for the project's sources. */
 const COMPILE_ERROR = /Module build failed|Failed to compile|Transform failed with \d+ error|\[plugin:vite:[a-z-]+\]|Expected [^\n]{1,40} but found|Unexpected token|Unterminated (string|template)/i;
 
@@ -98,14 +95,11 @@ export function classify(input: ClassifyInput): Failure | null {
   if (failedPhase?.status === 'timeout' && devError && !matchSignature([devError])) {
     return failure('app-bug', failedPhase.name, 'compile-error', devError, [devError]);
   }
-  // The app's own sources do not parse, or import a package it does not declare, and the dev server
-  // said nothing (SolidStart hangs): what the source check found, in the ready phase only, and not
-  // when Sandburg's own machinery or download failed (those win).
-  const source = failedPhase?.name === 'ready' ? input.sourceFindings?.[0] : undefined;
-  const infra = !!input.infraError || [failedPhase?.error?.message ?? '', ...(input.runtimeErrors ?? [])].some((t) => INFRA_SIGNATURE.test(t));
-  if (source && !infra && (failedPhase!.status === 'timeout' || failedPhase!.error?.message.startsWith(SOURCE_STALL))) {
-    return failure('app-bug', 'ready', source.rule, describeFinding(source), [failedPhase!.error?.message ?? '', ...appErrors]);
-  }
+  // A ready phase that timed out with nothing better to say: what the source check found in the app's
+  // files (one it read does not parse, or imports a package neither declared nor installed), as
+  // SolidStart hangs on either and says nothing. Not when Sandburg's own machinery or download failed.
+  const source = sourceFailure(failedPhase, input);
+  if (source && failedPhase?.status === 'timeout') return source;
   if (failedPhase?.status === 'timeout') {
     return failure('timeout', failedPhase.name, 'phase-deadline', failedPhase.error?.message ?? `${failedPhase.name} timed out`, []);
   }
@@ -157,6 +151,8 @@ export function classify(input: ClassifyInput): Failure | null {
     // The dev server could not render the app's page on the server: the error page (a 500) is all the page shows.
     const ssr = failedPhase.name === 'ready' ? serverRenderError(output.slice(input.readyOutputFrom ?? 0), input.appPath ?? null) : null;
     if (ssr) return failure('app-bug', 'ready', ssr.rule, ssr.message, [ssr.message, ...evidence]);
+    // As for a timeout: what the source check found, before nothing.
+    if (source) return source;
     return failure('unknown', failedPhase.name, 'unmatched', message, evidence);
   }
 
@@ -164,6 +160,21 @@ export function classify(input: ClassifyInput): Failure | null {
   const sig = matchSignature(appErrors);
   if (sig) return failure('runtime-unsupported', 'checks', sig, failedChecks[0].message ?? 'check failed', evidence);
   return failure('app-bug', 'checks', 'blocking-check-failed', `${failedChecks.length} blocking check(s) failed`, evidence);
+}
+
+/**
+ * The ready phase's failure as what the source check found in a file the app read (ADR 0067), with
+ * evidence that says so: the phase's own error, then what the app read. Null for another phase, with
+ * nothing found, or when Sandburg's own machinery or download failed (an infra error wins).
+ */
+function sourceFailure(failedPhase: PhaseRecord | undefined, input: ClassifyInput): Failure | null {
+  const found = failedPhase?.name === 'ready' ? input.sourceFindings?.[0] : undefined;
+  if (!found) return null;
+  const infra = !!input.infraError || [failedPhase!.error?.message ?? '', ...(input.runtimeErrors ?? [])].some((t) => INFRA_SIGNATURE.test(t));
+  if (infra) return null;
+  const what = found.rule === 'compile-error' ? `which does not parse: ${describeFinding(found)}` : `which imports "${found.message}", a package it neither declares nor has installed (${found.file}:${found.line})`;
+  const phase = failedPhase!.status === 'timeout' ? 'ready timed out' : `ready failed (${(failedPhase!.error?.message ?? '').split('\n')[0]})`;
+  return failure('app-bug', 'ready', found.rule, describeFinding(found), [`${phase}; the app read ${found.file}, ${what}`, ...input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message)]);
 }
 
 /** How the browser, esbuild, Vite and Node report an import that resolves to nothing. */

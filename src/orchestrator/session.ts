@@ -24,7 +24,7 @@ import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
 import { recordRequestFailures, recordDocuments, RunState, unwrap } from './run-state.ts';
-import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, failOnSourceStall, pageHangs, relevantFindings } from './app-ready.ts';
+import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, relevantFindings, watchSources } from './app-ready.ts';
 import { checkSources, type SourceFinding } from '../source-check.ts';
 import { appFilesFrom } from './app-files.ts';
 
@@ -584,7 +584,7 @@ export class Session {
           })) as InstallReport;
           const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
           run.appStarted(url);
-          const app = await run.phase('ready', timeouts.ready, async () => {
+          const app = await run.phase('ready', timeouts.ready, async (deadline) => {
             // The host page's frame for the app, there before the app loads into it.
             const frame = await appFrame(page);
             // A dev server that answers 503 while it builds (Nuxt's "Dev server is loading...") shows a loading page.
@@ -597,17 +597,17 @@ export class Session {
               await host('ready', url, navigate ?? true);
               await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
             })();
-            // The page hangs (pageHangs), and it is not a loading page.
-            const hanging = async () => pageHangs(run.documents.filter((d) => d.frame === frame)) && !(await loadingPage());
             // What the app's processes read, and whether undeclared packages are installed after all (relevantFindings).
             const relevant = async (found: SourceFinding[]) => {
               const packages = found.filter((f) => f.rule === 'undeclared-import').map((f) => ({ name: f.message, from: f.file }));
               const answer = (await Promise.race([host('projectReads', packages), sleep(PROJECT_READS_MS).then(() => null)])) as ProjectReads | null;
               return relevantFindings(found, answer);
             };
-            const stall = new AbortController();
-            const sources = failOnSourceStall(render, run, () => checkSources(project.files, { app: project.app }), hanging, relevant, stall.signal);
-            await failFastOnAppError(sources, run, loadingPage, frame).finally(() => stall.abort());
+            // The project's sources, checked if the app has not rendered after 20 s: what classifies the phase if it times out.
+            const over = new AbortController();
+            deadline.addEventListener('abort', () => over.abort(), { once: true });
+            watchSources(run, () => checkSources(project.files, { app: project.app }), relevant, over.signal);
+            await failFastOnAppError(render, run, loadingPage, frame).finally(() => over.abort());
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been
@@ -801,7 +801,7 @@ const RENDERER_LOCATE_MS = 250;
 /** How long the runtime must have been quiet, with no request in flight, for the app to count as idle. */
 const APP_IDLE_MS = 1_500;
 
-/** How long the source check waits for the runtime to say what the app read (failOnSourceStall's `relevant`): nothing bears on the app without an answer. */
+/** How long the source check waits for the runtime to say what the app read (watchSources' `relevant`): nothing bears on the app without an answer. */
 const PROJECT_READS_MS = 3_000;
 
 /** Convenience: open a session, run one project, close. */

@@ -48,17 +48,12 @@ export function recordRequestFailures(context: BrowserContext, run: RunState): v
   });
 }
 
-/** The status of each document the app's frames load (a server-rendered error page is a 5xx), and whether its body has ended. */
+/** The status of each document the app's frames load (a server-rendered error page is a 5xx), and when it came. */
 export function recordDocuments(context: BrowserContext, run: RunState): void {
   context.on('response', (res) => {
     const req = res.request();
     if (!req.isNavigationRequest() || run.documents.length >= 200) return;
-    const doc: RunState['documents'][number] = { frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers(), ended: false, at: Date.now() };
-    run.documents.push(doc);
-    void res.finished().then(
-      () => void (doc.ended = true),
-      () => void (doc.ended = true),
-    );
+    run.documents.push({ frame: res.frame(), url: res.url(), status: res.status(), csp: 'content-security-policy' in res.headers(), at: Date.now() });
   });
 }
 
@@ -70,14 +65,14 @@ export class RunState {
   network: EgressStats | null = null;
   console: ConsoleEntry[] = [];
   pageErrors: PageError[] = [];
-  /** `ended`: the document's body has been read to its end (a page a server streams and never ends has not); `at`: when its response came (Date.now()). */
-  documents: { frame: Frame; url: string; status: number; csp?: boolean; ended?: boolean; at?: number }[] = [];
+  /** `at`: when its response came (Date.now()). */
+  documents: { frame: Frame; url: string; status: number; csp?: boolean; at?: number }[] = [];
   infraError: { phase: PhaseName; message: string } | null = null;
   /** The run's project or checks file did not load (failSetup). */
   setupError: { rule: 'project-load' | 'checks-load'; class: 'app-bug' | 'unknown'; message: string } | null = null;
   /** Where the console stood when the ready phase began (what the dev server logged while it served the app's page follows). */
   private readyConsoleFrom: number | null = null;
-  /** What checking the project's sources found, when the ready phase had it checked (failOnSourceStall). */
+  /** What checking the project's sources found that bears on the app, when the ready phase had it checked (watchSources). */
   sourceFindings: SourceFinding[] | null = null;
   /** The path of the app's page, once its dev server has started (classification evidence; appStarted). */
   appPath: string | null = null;

@@ -222,7 +222,7 @@ const PAGE = '<!doctype html><html><body><h1>The page</h1></body></html>';
 const UNREAD = { 'lib/report.js': "import { faker } from '@faker-js/faker';\nexport default faker;\n" };
 const REPORT_ROUTE = "if (req.url === '/report') return void (await import('./lib/report.js'));";
 
-test('the source check leaves a slow app to render: one still compiling its page, one whose page streams slowly', async () => {
+test('the source check never fails a slow app: one still compiling its page, one whose page streams slowly, one whose tools read broken files they do not run', async () => {
   // `next dev` says it is compiling once, then nothing until it answers, here after 28 s.
   const compiling = serverApp(
     'slow-compile',
@@ -237,18 +237,27 @@ require('http').createServer(async (req, res) => {
     UNREAD,
   );
   // A server render that streams the page's start at once and the rest when its data comes, 28 s later.
-  const streaming = serverApp(
-    'slow-stream',
-    `require('http').createServer(async (req, res) => {
+  const slowStream = (name: string, before: string, files: Record<string, string>) =>
+    serverApp(
+      name,
+      `${before}require('http').createServer(async (req, res) => {
   ${REPORT_ROUTE}
   res.writeHead(200, { 'content-type': 'text/html' });
   res.write('<!doctype html><html><body>');
   await new Promise((r) => setTimeout(r, 28_000));
   res.end('<h1>The page</h1></body></html>');
 }).listen(3000);`,
-    UNREAD,
-  );
-  for (const project of [compiling, streaming]) {
+      files,
+    );
+  // As Tailwind's content scan or a dependency optimizer's crawl: every file of lib/ read as text, none run.
+  const scan = "const { readdirSync, readFileSync } = require('fs');\nfor (const f of readdirSync('lib')) readFileSync(`lib/${f}`, 'utf8');\n";
+  const projects = [
+    compiling,
+    slowStream('slow-stream', '', UNREAD),
+    slowStream('scanned-undeclared', scan, UNREAD),
+    slowStream('scanned-syntax', scan, { 'lib/report.js': 'export const broken = ;\n' }),
+  ];
+  for (const project of projects) {
     const result = await session.run(project, { outDir, timeouts: { ready: 60_000 } });
     const ready = result.phases.find((p) => p.name === 'ready');
     assert.equal(ready?.status, 'ok', `${project.name}: ${JSON.stringify(result.failure)}`);
@@ -256,7 +265,7 @@ require('http').createServer(async (req, res) => {
   }
 });
 
-test('the source check fails a page that hangs on a file its server read; an undeclared package npm installed anyway is not the fault', async () => {
+test('a page that hangs on a file its server read times out, classified by the source check; an undeclared package npm installed anyway is not the fault', async () => {
   // SolidStart's way: the page answers 200, streams its start, renders with a module that does not
   // parse (the error swallowed), never ends, and nothing is logged.
   const hang = serverApp(
@@ -268,13 +277,12 @@ test('the source check fails a page that hangs on a file its server read; an und
 }).listen(3000);`,
     { 'lib/render.js': 'export const broken = ;\n' },
   );
-  const hung = await session.run(hang, { outDir, timeouts: { ready: 60_000 } });
-  const failed = hung.phases.find((p) => p.name === 'ready');
-  assert.equal(failed?.status, 'failed', JSON.stringify(hung.failure));
+  const hung = await session.run(hang, { outDir, timeouts: { ready: 30_000 } });
+  assert.equal(hung.phases.find((p) => p.name === 'ready')?.status, 'timeout', JSON.stringify(hung.failure));
   assert.deepEqual([hung.failure?.class, hung.failure?.rule, hung.failure?.message], ['app-bug', 'compile-error', 'lib/render.js:1:23: Unexpected ";"']);
-  assert.ok(failed.durationMs < 40_000, `ready took ${failed.durationMs} ms`);
+  assert.equal(hung.failure?.evidence[0], 'ready timed out; the app read lib/render.js, which does not parse: lib/render.js:1:23: Unexpected ";"');
   // Its server imports ms, which it does not declare: debug, which it does, depends on it, and npm
-  // hoists it (as Nuxt's h3). The page hangs as above: the phase runs to its deadline, a timeout.
+  // hoists it (as Nuxt's h3). The page hangs as above: a timeout, and only that.
   const phantom = serverApp(
     'hoisted-import',
     `import ms from 'ms';
