@@ -104,6 +104,14 @@ export async function checkSources(files: FileTree, options: SourceCheckOptions 
 
 const TAG = 'sandburg-source-check';
 
+/**
+ * A text's size in bytes, as UTF-8, or `cap + 1` once it is surely over `cap`: a UTF-16 code unit is
+ * at least one byte, so a text longer than `cap` is over it without being measured.
+ */
+function bytes(content: string, cap: number): number {
+  return content.length > cap ? cap + 1 : Buffer.byteLength(content, 'utf8');
+}
+
 /** The files the check reads, as text, each within its cap and all within MAX_TOTAL_BYTES (sources first). */
 function readable(files: FileTree): FileTree {
   const out: FileTree = {};
@@ -111,9 +119,11 @@ function readable(files: FileTree): FileTree {
   let sources = 0;
   const take = (path: string, cap: number) => {
     const content = files[path];
-    if (typeof content !== 'string' || content.length > cap || total + content.length > MAX_TOTAL_BYTES) return false;
+    if (typeof content !== 'string') return false;
+    const size = bytes(content, cap);
+    if (size > cap || total + size > MAX_TOTAL_BYTES) return false;
     out[path] = content;
-    total += content.length;
+    total += size;
     return true;
   };
   const paths = Object.keys(files).sort();
@@ -646,7 +656,7 @@ const STRICT_ONLY = /output format due to strict mode|cannot be used in strict m
 export async function checkSourcesHere(files: FileTree, options: SourceCheckOptions = {}): Promise<SourceFinding[]> {
   const app = options.app ? `${options.app.replace(/\/+$/, '')}/` : '';
   const sources = Object.keys(files)
-    .filter((p) => (MODULE.test(p) || COMPONENT.test(p)) && !SKIPPED.test(p) && text(files, p) !== null && text(files, p)!.length <= MAX_BYTES)
+    .filter((p) => (MODULE.test(p) || COMPONENT.test(p)) && !SKIPPED.test(p) && text(files, p) !== null && bytes(text(files, p)!, MAX_BYTES) <= MAX_BYTES)
     .sort()
     .slice(0, MAX_FILES);
   const tsconfigFor = tsconfigs(files);

@@ -207,3 +207,14 @@ test("pathological files cost little: an unclosed script per 8 bytes, a page of 
   assert.deepEqual(await checkSourcesHere(big), [{ rule: 'compile-error', file: 'src/entry.ts', line: 1, column: 16, message: 'Unexpected ";"' }]);
   assert.deepEqual(await checkSources(big), []);
 });
+
+test('the size caps are in bytes, as UTF-8: a file of multi-byte characters under 512 K code units but over 512 KB is not read', async () => {
+  // '€' is one UTF-16 code unit and three bytes: 175,000 of them are 525,000 bytes (over 524,288), 174,000 are 522,000.
+  const source = (euros: number) => ({ 'index.html': page('/src/entry.ts'), 'src/entry.ts': `const broken = ;\n// ${'€'.repeat(euros)}\n` });
+  assert.deepEqual(await check(source(175_000)), []);
+  assert.deepEqual(await check(source(174_000)), ['src/entry.ts:1:16: Unexpected ";"']);
+  // A page over the cap is not sent to the check's thread: the entry only it names is not the app's.
+  const html = (euros: number) => ({ 'index.html': `${page('/src/entry.ts')}<!-- ${'€'.repeat(euros)} -->\n`, 'src/entry.ts': 'const broken = ;\n' });
+  assert.deepEqual(await checkSources(html(175_000)), []);
+  assert.deepEqual((await checkSources(html(174_000))).map(describeFinding), ['src/entry.ts:1:16: Unexpected ";"']);
+});
