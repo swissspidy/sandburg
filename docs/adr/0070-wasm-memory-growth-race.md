@@ -95,7 +95,12 @@ Plain loads and stores are left as they are (guard pages see growth).
   `0xFC` or `0xFE` byte (72 % of rolldown's, 46 % of its code) are copied without decoding. Each
   guarded operation costs a comparison with `memory.size`. App 134 cold, alone, three runs each:
   10.36 s with the guard and 10.25 s without (mean total; the start phase, where rolldown is
-  compiled and runs, 6.62 s and 6.22 s).
+  compiled and runs, 6.62 s and 6.22 s). The rewrite is paid once per runtime that compiles the
+  bytes, never per thread of a module it receives compiled. In a cold 134 run that was rolldown
+  once (134 ms, the main runtime) and oxc-parser in two thread runtimes that load it themselves
+  (about 62 ms each, cold). So guarded modules are not cached: a cache across runtimes would need a
+  hash and a synchronous lookup through the host or a parent that may be blocked, to save about
+  50 ms per such runtime.
 
 ## Results
 
