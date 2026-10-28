@@ -8,12 +8,16 @@ import { extraDependencies } from './install-rules.ts';
 import { detectFramework } from '../../framework.ts';
 import type { Project } from '../../types.ts';
 import type { HostInstall } from './browser.ts';
+import { planOf, type InstallPlan } from './local-packages.ts';
+import { workspacePatterns } from '../../workspaces.ts';
 
 /**
  * How the project's dev (or start) script starts it: `node <file>` (or tsx/nodemon …), or a
  * package's CLI (vite, astro, …), following npm run / concurrently like a shell would.
  */
 export function startCommand(project: Project): { file?: string; bin?: string; argv: string[]; command: string; tsRunner: boolean } | null {
+  // A workspace package runs from its own directory, through the shell (devScript).
+  if (project.app) return null;
   const scripts = project.packageJson?.scripts ?? {};
   const script = scripts.dev ?? scripts.start;
   if (script) {
@@ -48,6 +52,15 @@ export function subProject(project: Project, dir: string): Project {
 }
 
 export function devScript(project: Project): string | null {
+  if (project.app) {
+    // A workspace package (Project.app): its own dev or start script, in its directory.
+    const app = subProject(project, project.app);
+    const scripts = app.packageJson?.scripts ?? {};
+    const name = scripts.dev !== undefined ? 'dev' : scripts.start !== undefined ? 'start' : null;
+    const dir = /\s/.test(project.app) ? JSON.stringify(project.app) : project.app;
+    if (name) return `npm --prefix ${dir} run ${name}`;
+    return typeof app.packageJson?.main === 'string' ? `cd ${dir} && node ${app.packageJson.main}` : null;
+  }
   const scripts = project.packageJson?.scripts ?? {};
   return scripts.dev ?? scripts.start ?? null;
 }
@@ -62,13 +75,41 @@ export function isSimple(project: Project, script: string): boolean {
   return leaves.length === 1 && leaves[0].dir === '' && !/(^|\s)[A-Za-z_][A-Za-z0-9_]*=|\$/.test(script) && !/^(concurrently|npm-run-all|run-p|run-s)\b/.test(script.trim());
 }
 
-/** Directories (one level down) with a package.json of their own, unless the root's npm workspaces install them. */
-export function packageDirs(project: Project): string[] {
-  if (project.packageJson && 'workspaces' in project.packageJson) return [];
+/**
+ * Directories (one level down) with a package.json of their own, installed as projects of their own:
+ * not in a monorepo (its workspaces are installed with its root), and not a local package the root
+ * links (`local`, installPlan's).
+ */
+export function packageDirs(project: Project, local: string[] = []): string[] {
+  if (workspacePatterns(project.files, project.packageJson)) return [];
   return Object.keys(project.files)
     .map((p) => /^([^/]+)\/package\.json$/.exec(p)?.[1])
-    .filter((d): d is string => !!d && d !== 'node_modules' && !d.startsWith('.'))
+    .filter((d): d is string => !!d && d !== 'node_modules' && !d.startsWith('.') && !local.includes(d))
     .sort();
+}
+
+/**
+ * The project as npm installs it at its root (installPlan, local-packages.ts): its registry
+ * dependencies and its local packages', and its package-lock.json without their entries.
+ */
+export function rootInstall(project: Project, plan: InstallPlan): Project {
+  const files: Project['files'] = plan.lockfile === null ? {} : { 'package-lock.json': plan.lockfile };
+  return { ...project, files, packageJson: { ...project.packageJson, ...plan.root } };
+}
+
+/** A local package's own install (InstallPlan's nested): its dependencies, and its package-lock entries if the project has them. */
+export function nestedInstall(dependencies: Record<string, string>, lockfile: string | null): Pick<Project, 'files' | 'packageJson'> {
+  return { files: lockfile === null ? {} : { 'package-lock.json': lockfile }, packageJson: { dependencies } };
+}
+
+/** What the runtime needs to know of a project's local packages (links.ts' WORKSPACE_FILE), or nothing when it has none. */
+export function workspaceInfo(plan: InstallPlan): Pick<HostInstall, 'links' | 'workspaces'> {
+  return Object.keys(plan.links).length || Object.keys(plan.workspaces).length ? { links: plan.links, workspaces: plan.workspaces } : {};
+}
+
+/** A line for the run's log about the versions a pnpm-lock.yaml or yarn.lock decided, or null. */
+export function pinnedNote(plan: InstallPlan): string | null {
+  return plan.pinned ? `${plan.pinned}: dependencies installed at the versions it locks (no package-lock.json)` : null;
 }
 
 /**
@@ -76,14 +117,16 @@ export function packageDirs(project: Project): string[] {
  * package of the project, and how to start it. Package binaries are found after the install.
  */
 export function browserInstall(project: Project): HostInstall {
-  const part = (dir: string, p: Project) => ({
+  const part = (dir: string, p: Pick<Project, 'files' | 'packageJson'>) => ({
     dir,
     packageJson: { dependencies: p.packageJson?.dependencies, devDependencies: p.packageJson?.devDependencies, overrides: p.packageJson?.overrides as Record<string, unknown> | undefined },
     lockfile: typeof p.files['package-lock.json'] === 'string' ? p.files['package-lock.json'] : null,
     extra: dir ? {} : extraDependencies(p),
   });
-  const parts = [part('', project)];
-  for (const dir of packageDirs(project)) {
+  const plan = planOf(project);
+  const parts = [part('', rootInstall(project, plan))];
+  for (const { dir, dependencies, lockfile } of plan.nested) parts.push(part(dir, nestedInstall(dependencies, lockfile)));
+  for (const dir of packageDirs(project, plan.local)) {
     const sub = subProject(project, dir);
     if (Object.keys({ ...sub.packageJson?.dependencies, ...sub.packageJson?.devDependencies }).length) parts.push(part(dir, sub));
   }
@@ -95,8 +138,9 @@ export function browserInstall(project: Project): HostInstall {
     else if (script) start = { shell: script, command: script, tsRunner: false };
   }
   const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
-  // lockfile: set by the install in the page, to whether the lockfile decided the tree.
-  return { key: '', index: {}, resolved: {}, lockfile: false, start, proxy, browserInstall: parts };
+  // lockfile: set by the install in the page, to whether the lockfile decided the tree (or, here,
+  // whether a pnpm-lock.yaml or yarn.lock pinned the versions).
+  return { key: '', index: {}, resolved: {}, lockfile: plan.pinned !== null, start, proxy, browserInstall: parts, ...workspaceInfo(plan) };
 }
 
 /** A static site (index.html, no package.json): no packages, a file server (see browser.ts). */

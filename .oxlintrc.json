@@ -176,6 +176,8 @@
         "src/transfer-trace.ts",
         "src/file-channel.ts",
         "src/framework.ts",
+        "src/workspaces.ts",
+        "src/yaml-lite.ts",
         "src/bundle-format.ts"
       ],
       "rules": {
