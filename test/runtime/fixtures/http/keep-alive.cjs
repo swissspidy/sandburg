@@ -18,7 +18,7 @@ const run = (name, agent, listen) => new Promise((done) => {
     setTimeout(() => { marks.forEach(clearTimeout); lines.push(`${name}: ${log.join(', ')}`); s.close(); done(); }, 3700);
   });
 });
-(async () => {
+void (async () => {
   await run('global agent', undefined, false);
   await run('new Agent()', new http.Agent(), false);
   await run('agent: false', false, false);

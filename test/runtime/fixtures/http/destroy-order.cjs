@@ -58,7 +58,7 @@ function run(c) {
       process.nextTick(() => push('tick'));
       // (Not for a response destroyed by the program: its 'close' comes between process.nextTick's and
       // promises' in Node, which the runtime's process.nextTick, a microtask, cannot tell apart.)
-      if (h !== 'res.destroy') Promise.resolve().then(() => push('promise'));
+      if (h !== 'res.destroy') void Promise.resolve().then(() => push('promise'));
       setImmediate(() => push('immediate'));
     }
     if (c.opts.when === 'sync') act();

@@ -4,8 +4,6 @@ let PORT = Number(process.env.PORT || 3040);
 // The time unit (ms per 100): wide enough apart for a loaded machine.
 const U = 2;
 let log;
-// What happened when: '>' marks, half-way between the 100 ms the cases do things on.
-const at = () => '';
 const cases = [];
 const add = (name, setup, client) => cases.push({ name, setup, client });
 // Its 'timeout' events (listening for them keeps the socket), and its end.
@@ -64,6 +62,7 @@ async function main() {
     const s = http.createServer({ connectionsCheckingInterval: 20 });
     c.setup(s);
     await new Promise((r) => s.listen(port, r));
+    // What happened when: '>' marks, half-way between the 100 ms (times U) the cases do things on.
     const marks = [50, 150, 250, 350, 450, 550, 650, 750, 950].map((ms) => setTimeout(() => log.push('>' + ms), ms * U));
     c.client(port);
     await new Promise((r) => setTimeout(r, 1000 * U));
@@ -78,4 +77,4 @@ async function main() {
   console.log(lines.join('\n'));
   process.exit(0);
 }
-main();
+void main();

@@ -19,7 +19,7 @@ http.createServer(() => {}).listen(3080, () => {
     setImmediate(() => {
       log.push('immediate 1');
       process.nextTick(() => log.push('tick after immediate 1'));
-      Promise.resolve().then(() => log.push('promise after immediate 1'));
+      void Promise.resolve().then(() => log.push('promise after immediate 1'));
       setImmediate(() => log.push('immediate from immediate 1'));
     });
     setImmediate(() => log.push('immediate 2'));

@@ -51,7 +51,7 @@ async function client() {
 }
 const topology = process.env.TOPOLOGY ?? 'here';
 if (role === 'server') serve((m) => process.send(m));
-else if (role === 'client') client().then((out) => process.send(out));
+else if (role === 'client') void client().then((out) => process.send(out));
 else {
   const server = [];
   const print = (out) => console.log(out + '\n' + server.map((s) => 'server ' + s).join('\n'));

@@ -6,7 +6,7 @@ http.createServer((req, res) => {
   req.on('aborted', () => log.push('server aborted'));
   req.on('close', () => log.push('server req close'));
   res.on('close', () => log.push('server res close'));
-  const act = () => { log.push('act'); how.startsWith('res') ? res.destroy() : req.socket.destroy(); };
+  const act = () => { log.push('act'); if (how.startsWith('res')) res.destroy(); else req.socket.destroy(); };
   if (how.endsWith('later')) setTimeout(act, 20); else act();
 }).listen(3097, async () => {
   const lines = [];
