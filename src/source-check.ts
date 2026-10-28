@@ -19,11 +19,14 @@
  *   (types, and imports nothing uses) do not count, as they do not reach the dev server.
  * - Single-file components (.vue, .svelte, .astro) are checked by their scripts, each a module of its own.
  *
- * The check runs on a thread of its own, with a time budget, and every file it reads is size-capped:
- * the project's files cannot hold up the host's event loop.
+ * The check runs in a process of its own (checkSources), with esbuild's in its process group, a
+ * time budget and lowered priority, and every file it reads is size-capped: the project's files
+ * cannot hold up the host's event loop, and what the check starts ends with it.
  */
+import { spawn, type ChildProcess } from 'node:child_process';
 import { builtinModules } from 'node:module';
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+import { setPriority } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import type { FileTree } from './types.ts';
 
@@ -60,7 +63,9 @@ const SKIPPED =
 const MAX_FILES = 2_000;
 const MAX_BYTES = 512 * 1024;
 const MAX_LOCKFILE_BYTES = 16 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 24 * 1024 * 1024;
+/** Brackets nested deeper than this (a crafted file) make esbuild's parser run out of stack: such a file is not parsed. */
+const MAX_DEPTH = 1_000;
 /** A component's scripts looked at (Vue and Svelte have two at most). */
 const MAX_SCRIPTS = 16;
 /** How long the check may take before it is given up (nothing found). */
@@ -76,33 +81,97 @@ const LOADERS: Record<string, esbuild.Loader> = { ts: 'ts', mts: 'ts', cts: 'ts'
 const LOCKFILE = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock)$/;
 const CONFIG = /(?:^|\/)(?:package\.json|[tj]sconfig(?:\.[\w-]+)?\.json|[^/]*\.html?|[^/]*config\.[cm]?[jt]s|\.babelrc[^/]*)$/;
 
+/** The argument that runs this module as the check's process (checkSources). */
+const CHILD_FLAG = '--sandburg-source-check';
+
 /**
- * Checks the project's sources on a thread of its own: what checkSourcesHere finds, or nothing when
- * the check fails or takes longer than `budgetMs`. Only the files it reads are sent, size-capped.
+ * Checks the project's sources in a process of its own: what checkSourcesHere finds, or nothing when
+ * the check fails or takes longer than `budgetMs` (then it is killed, with the esbuild it started).
+ * Only the files it reads are sent, size-capped, one at a time. The process runs at a lower
+ * priority, its JavaScript heap and esbuild's memory are limited, and its output on stderr is
+ * dropped (esbuild's crash reports). `onSpawn` is told its process id (tests).
  */
-export async function checkSources(files: FileTree, options: SourceCheckOptions = {}, budgetMs = SOURCE_CHECK_BUDGET_MS): Promise<SourceFinding[]> {
+export async function checkSources(files: FileTree, options: SourceCheckOptions = {}, budgetMs = SOURCE_CHECK_BUDGET_MS, onSpawn?: (pid: number) => void): Promise<SourceFinding[]> {
   const sent = readable(files);
-  return new Promise((resolve) => {
-    let worker: Worker;
+  let child: ChildProcess;
+  try {
+    // Its own process group (POSIX), so that esbuild's service, its child, is killed with it.
+    child = spawn(process.execPath, ['--max-old-space-size=1024', fileURLToPath(import.meta.url), CHILD_FLAG, String(budgetMs)], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+      detached: process.platform !== 'win32',
+      windowsHide: true,
+      env: { ...process.env, GOMEMLIMIT: '1GiB', NODE_OPTIONS: '' },
+    });
+  } catch (e) {
+    warn(e);
+    return [];
+  }
+  if (child.pid !== undefined) {
+    onSpawn?.(child.pid);
     try {
-      worker = new Worker(new URL(import.meta.url), { workerData: { tag: TAG, files: sent, options } });
+      setPriority(child.pid, 10);
     } catch {
-      resolve([]);
-      return;
+      // Not allowed here: it runs at the host's priority.
     }
-    const timer = setTimeout(() => finish([]), budgetMs);
-    function finish(found: SourceFinding[]) {
+  }
+  return new Promise((resolve) => {
+    let out = '';
+    let settled = false;
+    const finish = (found: SourceFinding[] | null, why?: unknown) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      resolve(found);
-      void worker.terminate();
-    }
-    worker.once('message', (found: SourceFinding[] | null) => finish(found ?? []));
-    worker.once('error', () => finish([]));
-    worker.once('exit', () => finish([]));
+      if (found === null) warn(why);
+      resolve(found ?? []);
+      kill(child);
+    };
+    const timer = setTimeout(() => finish(null, `it took longer than ${budgetMs} ms`), budgetMs);
+    child.stdout!.setEncoding('utf8').on('data', (d: string) => (out += d));
+    child.once('error', (e) => finish(null, e));
+    child.once('exit', (code) => {
+      try {
+        finish(code === 0 ? (JSON.parse(out) as SourceFinding[]) : null, `it exited with code ${code}`);
+      } catch (e) {
+        finish(null, e);
+      }
+    });
+    child.stdin!.on('error', () => {}); // a process that ends before it has read everything
+    void send(child, sent, options);
   });
 }
 
-const TAG = 'sandburg-source-check';
+/** The check's input: its options, then one file per line, waiting while the pipe is full (no long stall of the host's thread). */
+async function send(child: ChildProcess, files: FileTree, options: SourceCheckOptions): Promise<void> {
+  const stdin = child.stdin!;
+  const exited = new Promise((r) => child.once('exit', r));
+  const write = async (line: string) => {
+    if (!stdin.writable) return false;
+    if (!stdin.write(`${line}\n`)) await Promise.race([new Promise((r) => stdin.once('drain', r)), exited]);
+    return true;
+  };
+  if (!(await write(JSON.stringify(options)))) return;
+  for (const [path, content] of Object.entries(files)) if (!(await write(JSON.stringify([path, content])))) return;
+  stdin.end();
+}
+
+/** Ends the check's process and what it started: its process group (POSIX), its process tree (Windows). */
+function kill(child: ChildProcess): void {
+  if (child.pid === undefined) return;
+  try {
+    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {});
+    else process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    // Already gone.
+  }
+}
+
+let warned = false;
+/** Warns once per host process that a source check failed and its findings are left out. */
+function warn(why: unknown): void {
+  if (warned) return;
+  warned = true;
+  process.emitWarning(`sandburg: a check of a project's sources failed (${why instanceof Error ? why.message : String(why)}); its findings are left out`);
+}
 
 /**
  * A text's size in bytes, as UTF-8, or `cap + 1` once it is surely over `cap`: a UTF-16 code unit is
@@ -649,6 +718,19 @@ async function parse(modules: Map<string, Module>, tsconfigRaw: string): Promise
   return { errors, imports };
 }
 
+/** Whether brackets nest deeper than MAX_DEPTH anywhere in `code` (counted as written, strings and comments too: one pass). */
+function nestedTooDeep(code: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < code.length; i++) {
+    const c = code.charCodeAt(i);
+    // ( [ {  and  ) ] }
+    if (c === 40 || c === 91 || c === 123) {
+      if (++depth > MAX_DEPTH) return true;
+    } else if ((c === 41 || c === 93 || c === 125) && depth > 0) depth--;
+  }
+  return false;
+}
+
 /** Errors that only the ESM output's strict mode makes (a classic script's `with`): parsed again as a script, they may be none. */
 const STRICT_ONLY = /output format due to strict mode|cannot be used in strict mode|in strict mode code/;
 
@@ -668,6 +750,7 @@ export async function checkSourcesHere(files: FileTree, options: SourceCheckOpti
   const groups = new Map<string, Map<string, Module>>();
   for (const file of sources) {
     const code = text(files, file)!;
+    if (nestedTooDeep(code)) continue;
     // A component's compiler keeps the imports its template uses, which TypeScript would elide from its script.
     const raw = JSON.stringify({ compilerOptions: { ...tsconfigFor(file).esbuild, ...(COMPONENT.test(file) ? { verbatimModuleSyntax: true } : {}) } });
     const group = groups.get(raw) ?? new Map<string, Module>();
@@ -725,10 +808,25 @@ export async function checkSourcesHere(files: FileTree, options: SourceCheckOpti
   return findings.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line));
 }
 
-if (!isMainThread && (workerData as { tag?: string } | null)?.tag === TAG) {
-  const { files, options } = workerData as { files: FileTree; options: SourceCheckOptions };
-  checkSourcesHere(files, options).then(
-    (found) => parentPort!.postMessage(found),
-    () => parentPort!.postMessage(null),
-  );
+/** The check's process: reads its input (send), checks, stops esbuild, writes what it found, exits; on its own after its budget. */
+async function child(budgetMs: number): Promise<void> {
+  setTimeout(() => process.exit(3), budgetMs + 1_000).unref();
+  let text = '';
+  process.stdin.setEncoding('utf8');
+  for await (const chunk of process.stdin) text += chunk as string;
+  const [first, ...rest] = text.split('\n').filter(Boolean);
+  const files: FileTree = {};
+  for (const line of rest) {
+    const [path, content] = JSON.parse(line) as [string, string];
+    files[path] = content;
+  }
+  const found = await checkSourcesHere(files, JSON.parse(first) as SourceCheckOptions);
+  // esbuild's service ends once stopped; this process waits for it (and so reaps it) before it ends.
+  await esbuild.stop();
+  await new Promise((r) => setTimeout(r, 100));
+  process.stdout.write(JSON.stringify(found), () => process.exit(0));
+}
+
+if (process.argv[2] === CHILD_FLAG && process.argv[1] === fileURLToPath(import.meta.url)) {
+  child(Number(process.argv[3])).catch(() => process.exit(1));
 }

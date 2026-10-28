@@ -1,12 +1,17 @@
 /** The project's sources checked without running them (src/source-check.ts): syntax errors and undeclared imports in the app's files. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { checkSources, checkSourcesHere, describeFinding } from '../../src/source-check.ts';
 
 const pkg = (deps: Record<string, string> = {}, extra: object = {}) => JSON.stringify({ name: 'app', dependencies: deps, ...extra });
 /** A Vite app's page, whose script is the app's entry. */
 const page = (src = '/src/main.ts') => `<!doctype html>\n<div id="app"></div>\n<script type="module" src="${src}"></script>\n`;
 const check = async (files: Record<string, string>, app?: string) => (await checkSourcesHere(files, { app })).map(describeFinding);
+/** The process's warnings (a check that fails says so, once). */
+const warnings: string[] = [];
+process.on('warning', (w) => warnings.push(w.message));
 
 test("a syntax error is reported at its file, line and column, and an undeclared import at its line, in the app's files", async () => {
   const findings = await check({
@@ -187,6 +192,8 @@ test('the check runs on a thread of its own, with a time budget: the same findin
   const start = performance.now();
   assert.deepEqual(await checkSources(files, {}, 1), []);
   assert.ok(performance.now() - start < 1_000);
+  await sleep(0);
+  assert.deepEqual(warnings.filter((w) => w.includes('source')), ["sandburg: a check of a project's sources failed (it took longer than 1 ms); its findings are left out"]);
 });
 
 test("pathological files cost little: an unclosed script per 8 bytes, a page of import maps, oversized files are not read", async () => {
@@ -217,4 +224,52 @@ test('the size caps are in bytes, as UTF-8: a file of multi-byte characters unde
   const html = (euros: number) => ({ 'index.html': `${page('/src/entry.ts')}<!-- ${'€'.repeat(euros)} -->\n`, 'src/entry.ts': 'const broken = ;\n' });
   assert.deepEqual(await checkSources(html(175_000)), []);
   assert.deepEqual((await checkSources(html(174_000))).map(describeFinding), ['src/entry.ts:1:16: Unexpected ";"']);
+});
+
+/** esbuild's processes: their pid, parent's pid and (POSIX) process group. */
+function esbuildProcesses(): { pid: number; ppid: number; pgid: number | null; zombie?: boolean }[] {
+  if (process.platform === 'win32') {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name like 'esbuild%'\" | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"], { encoding: 'utf8' });
+    return out.split(/\r?\n/).filter(Boolean).map((l) => l.trim().split(/\s+/).map(Number)).map(([pid, ppid]) => ({ pid, ppid, pgid: null }));
+  }
+  const out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,pgid=,stat=,comm='], { encoding: 'utf8' });
+  return out
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/))
+    .filter((f) => f.length >= 5 && /esbuild/.test(f.slice(4).join(' ')))
+    .map(([pid, ppid, pgid, stat]) => ({ pid: Number(pid), ppid: Number(ppid), pgid: Number(pgid), zombie: stat.startsWith('Z') }));
+}
+
+test('a check leaves no process behind: not its own, nor the esbuild it started, whether it finished or ran out of its budget', async () => {
+  // This process's own esbuild (checkSourcesHere above) is there before and after.
+  await checkSourcesHere({ 'src/main.ts': 'export {};\n' });
+  const before = new Set(esbuildProcesses().map((p) => p.pid));
+  const checks: number[] = [];
+  const onSpawn = (pid: number) => checks.push(pid);
+  const files: Record<string, string> = { 'package.json': pkg(), 'index.html': page(), 'src/main.ts': 'const broken = ;\n' };
+  assert.deepEqual((await checkSources(files, {}, undefined, onSpawn)).map(describeFinding), ['src/main.ts:1:16: Unexpected ";"']);
+  // About half a second of work (48 files of 500 KB), stopped before esbuild starts, while it parses, and after.
+  const unit = `${'['.repeat(900)}1${']'.repeat(900)},\n`;
+  for (let i = 0; i < 48; i++) files[`src/f${i}.ts`] = `export const a = [\n${unit.repeat(Math.floor(500_000 / unit.length))}];\n`;
+  for (const budget of [150, 300, 450]) assert.deepEqual(await checkSources(files, {}, budget, onSpawn), [], `budget ${budget} ms`);
+  await sleep(1_000);
+  // Running ones of a check's, wherever they are, and unreaped ones of this process's or a check's.
+  // (A killed check's esbuild is its init's to reap, as any orphan is: dead, it is not left running.)
+  const ours = (p: { ppid: number; pgid: number | null }) => p.ppid === process.pid || checks.includes(p.ppid) || (p.pgid !== null && checks.includes(p.pgid));
+  const left = esbuildProcesses().filter((p) => !before.has(p.pid) && (p.zombie ? p.ppid !== 1 && ours(p) : ours(p) || p.ppid === 1));
+  assert.deepEqual(left, [], 'an esbuild process of a check is still there');
+  for (const pid of checks) assert.throws(() => process.kill(pid, 0), `the check's process ${pid} is still there`);
+});
+
+test('a file nested too deep for the parser is not parsed (no crash, at once); the other files are', async () => {
+  const start = performance.now();
+  const findings = await check({
+    'package.json': pkg(),
+    'index.html': page(),
+    'src/main.ts': "import './deep';\nimport './deeper';\nconst broken = ;\n",
+    'src/deep.ts': `export const a = ${'['.repeat(500_000)};\n`,
+    'src/deeper.ts': `export const b = ${'{'.repeat(500_000)};\n`,
+  });
+  assert.deepEqual(findings, ['src/main.ts:3:16: Unexpected ";"']);
+  assert.ok(performance.now() - start < 2_000, `took ${Math.round(performance.now() - start)} ms`);
 });
