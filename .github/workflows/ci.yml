@@ -50,7 +50,7 @@ jobs:
       - run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-times.ts --test-reporter-destination=stdout test/runtime/*.test.ts
 
   # macOS and Windows: the unit and runtime suites and one end-to-end run, not the whole e2e matrix
-  # (ADR 0063). Each suite runs whatever the one before it did, so that one job shows every failure.
+  # (ADR 0065). Each suite runs whatever the one before it did, so that one job shows every failure.
   platforms:
     name: ${{ matrix.os == 'macos-latest' && 'macOS' || 'Windows' }} (unit, runtime, e2e run)
     runs-on: ${{ matrix.os }}

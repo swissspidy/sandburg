@@ -1,4 +1,4 @@
-# ADR 0063: CI on macOS and Windows
+# ADR 0065: CI on macOS and Windows
 
 - Status: Accepted
 - Date: 2026-10-28
