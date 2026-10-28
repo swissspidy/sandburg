@@ -273,3 +273,31 @@ test('a file nested too deep for the parser is not parsed (no crash, at once); t
   assert.deepEqual(findings, ['src/main.ts:3:16: Unexpected ";"']);
   assert.ok(performance.now() - start < 2_000, `took ${Math.round(performance.now() - start)} ms`);
 });
+
+test("a solution-style tsconfig.json's referenced config that covers the file decides its options (Vite's layout); one extending a package's config may enable legacy decorators", async () => {
+  const service = "import { inject, injectable } from 'tsyringe';\n@injectable()\nexport class S {\n  constructor(@inject('T') private t: string) {}\n}\n";
+  const app = (configs: Record<string, string>) => ({ 'package.json': pkg({ tsyringe: '^4.0.0' }), 'index.html': page(), 'src/main.ts': "import './service';\n", 'src/service.ts': service, ...configs });
+  const solution = {
+    'tsconfig.json': '{ "files": [], "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.app.json" }] }',
+    'tsconfig.node.json': '{ "include": ["vite.config.ts"] }',
+    'tsconfig.app.json': '{ "compilerOptions": { "experimentalDecorators": true }, "include": ["src"] }',
+  };
+  assert.deepEqual(await check(app(solution)), []);
+  // The referenced config that covers the file is the one that counts: here not the app's.
+  assert.deepEqual(await check(app({ ...solution, 'tsconfig.app.json': '{ "compilerOptions": { "experimentalDecorators": true }, "include": ["other"] }' })), ['src/service.ts:4:15: Parameter decorators only work when experimental decorators are enabled']);
+  // A package's config (not in the project) may set it: given the benefit of the doubt.
+  assert.deepEqual(await check(app({ 'tsconfig.json': '{ "extends": "@tsconfig/strictest/tsconfig.json" }' })), []);
+});
+
+test('a commented-out script is not a script; main.* is an entry at the root or in src/ only; pnpm v5 lockfiles; type-only imports in components; a `---` line in a frontmatter string', async () => {
+  const findings = await check({
+    'package.json': pkg({ vue: '^3.5.0', astro: '^5.0.0' }),
+    'pnpm-lock.yaml': "lockfileVersion: 5.4\n\nspecifiers:\n  vue: ^3.3.0\n\npackages:\n\n  /h3/1.8.0:\n    resolution: {integrity: x}\n\n  /@vue/shared/3.3.0:\n    resolution: {integrity: x}\n",
+    'index.html': page(),
+    'src/main.ts': "import A from './A.vue';\nimport { defineEventHandler } from 'h3';\nimport { toDisplayString } from '@vue/shared';\nexport default [A, defineEventHandler, toDisplayString];\n",
+    'src/A.vue': '<template>\n  <!-- <script>const x = ;</script> -->\n  <p />\n</template>\n<script setup lang="ts">\nimport { type Properties } from \'csstype\';\nconst p: Properties = {};\n</script>\n',
+    'examples/demo/main.ts': 'const broken = ;\n',
+    'src/pages/index.astro': "---\nconst md = `\n---\ntitle: x\n---\n`;\nimport dayjs from 'dayjs';\nconst d = dayjs();\n---\n<p>{md}{d}</p>\n",
+  });
+  assert.deepEqual(findings, ['imports undeclared package "dayjs" (src/pages/index.astro:7)']);
+});

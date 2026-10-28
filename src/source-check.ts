@@ -26,6 +26,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { setPriority } from 'node:os';
+import { matchesGlob } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import type { FileTree } from './types.ts';
@@ -247,9 +248,24 @@ function scriptTags(code: string, start = 0, max = Infinity): ScriptTag[] {
   const tags: ScriptTag[] = [];
   const lower = code.toLowerCase();
   let at = start;
+  // The next `<script` and `<!--` from `at`, found again only once passed (one pass over the file).
+  let open = -1;
+  let comment = -1;
+  const next = (needle: string) => {
+    const found = lower.indexOf(needle, at);
+    return found < 0 ? Infinity : found;
+  };
   while (tags.length < max) {
-    const open = lower.indexOf('<script', at);
-    if (open < 0) break;
+    if (open < at) open = next('<script');
+    if (comment < at) comment = next('<!--');
+    if (open === Infinity) break;
+    // A commented-out script is not one (`<!-- <script>…</script> -->`).
+    if (comment < open) {
+      const end = lower.indexOf('-->', comment + 4);
+      if (end < 0) break;
+      at = end + 3;
+      continue;
+    }
     let i = open + 7;
     if (i < code.length && !/[\s/>]/.test(code[i])) {
       at = i;
@@ -297,14 +313,48 @@ function processed(tag: ScriptTag): boolean {
   return !type || /^(?:module|text\/(?:java|type)script|application\/javascript)$/i.test(type);
 }
 
-/** Astro's frontmatter: from the first line, `---`, to the next line that is `---`. */
+/**
+ * Astro's frontmatter: from the first line, `---`, to the next line that is `---` outside a string,
+ * a template literal (its `${…}` too) or a comment, in one pass.
+ */
 function frontmatter(code: string): { from: number; to: number; end: number } | null {
-  const first = /^﻿?\s*---[ \t]*\r?\n/.exec(code);
+  const first = /^\uFEFF?\s*---[ \t]*\r?\n/.exec(code);
   if (!first) return null;
   const from = first[0].length;
-  const close = /^---[ \t]*$/m.exec(code.slice(from));
-  if (!close) return null;
-  return { from, to: from + close.index, end: from + close.index + close[0].length };
+  // '`' inside a template literal, '{' inside one's `${…}` (or a brace in it).
+  const stack: string[] = [];
+  let lineStart = true;
+  for (let i = from; i < code.length; ) {
+    const c = code[i];
+    if (stack.at(-1) === '`') {
+      if (c === '`') stack.pop();
+      else if (c === '$' && code[i + 1] === '{') stack.push('{');
+      i += c === '\\' || (c === '$' && code[i + 1] === '{') ? 2 : 1;
+      continue;
+    }
+    if (lineStart && !stack.length) {
+      const close = /^---[ \t]*(?=\r?\n|$)/.exec(code.slice(i, i + 64));
+      if (close) return { from, to: i, end: i + close[0].length };
+    }
+    lineStart = c === '\n';
+    if (c === '"' || c === "'") {
+      // To its closing quote, or the line's end (an unclosed one).
+      for (i++; i < code.length && code[i] !== c && code[i] !== '\n'; i++) if (code[i] === '\\') i++;
+      i++;
+    } else if (c === '/' && code[i + 1] === '/') {
+      const end = code.indexOf('\n', i);
+      i = end < 0 ? code.length : end;
+    } else if (c === '/' && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      i = end < 0 ? code.length : end + 2;
+    } else {
+      if (c === '`') stack.push('`');
+      else if (c === '{' && stack.length) stack.push('{');
+      else if (c === '}' && stack.at(-1) === '{') stack.pop();
+      i++;
+    }
+  }
+  return null;
 }
 
 /** The file with everything outside [from, to) blanked (newlines kept), so a line and column in it are the file's. */
@@ -361,30 +411,37 @@ interface TsConfig {
   baseUrl: string | null;
   /** `paths`: a pattern (`@/*`) and its first target (`src/*`), relative to the project. */
   paths: [string, string][];
+  /** It extends a config that is not in the project (a package's): its options are not all known. */
+  unresolved?: true;
 }
 
 const ESBUILD_OPTIONS = ['experimentalDecorators', 'emitDecoratorMetadata', 'useDefineForClassFields', 'verbatimModuleSyntax', 'preserveValueImports', 'importsNotUsedAsValues', 'jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource', 'target'];
 
 /** The tsconfig.json (or jsconfig.json) nearest a file, read with what it extends within the project. */
 function tsconfigs(files: FileTree): (file: string) => TsConfig {
+  type Json = { extends?: string | string[]; compilerOptions?: Record<string, unknown>; references?: { path?: unknown }[]; include?: unknown; files?: unknown };
   const cache = new Map<string, TsConfig>();
+  const json = (path: string) => parseJsonc(text(files, path) ?? '') as Json | null;
+  /** A config a path names: the file, with `.json`, or a directory's tsconfig.json. */
+  const named = (target: string | null) => (target === null ? null : ([target, `${target}.json`, `${target}/tsconfig.json`].find((p) => text(files, p) !== null) ?? null));
   const read = (path: string, depth: number): TsConfig => {
-    const empty: TsConfig = { esbuild: {}, baseUrl: null, paths: [] };
-    const json = depth > 8 ? null : (parseJsonc(text(files, path) ?? '') as { extends?: string | string[]; compilerOptions?: Record<string, unknown> } | null);
-    if (!json) return empty;
-    let config = empty;
-    for (const base of [json.extends ?? []].flat()) {
-      if (typeof base !== 'string' || !base.startsWith('.')) continue; // a package's config (`@tsconfig/svelte`) is not in the project
-      const target = normalize(dirOf(path) + base);
-      const file = target === null ? null : [target, `${target}.json`, `${target}/tsconfig.json`].find((p) => text(files, p) !== null);
-      if (file) config = read(file, depth + 1);
+    const config = depth > 8 ? null : json(path);
+    if (!config) return { esbuild: {}, baseUrl: null, paths: [], unresolved: true };
+    let base: TsConfig = { esbuild: {}, baseUrl: null, paths: [] };
+    for (const extended of [config.extends ?? []].flat()) {
+      if (typeof extended !== 'string') continue;
+      // A package's config (`@tsconfig/svelte`), or one not in the project: what it sets is not known.
+      const file = extended.startsWith('.') ? named(normalize(dirOf(path) + extended)) : null;
+      const unresolved = base.unresolved;
+      base = file ? read(file, depth + 1) : { ...base, unresolved: true };
+      if (unresolved) base = { ...base, unresolved };
     }
-    const options = json.compilerOptions ?? {};
+    const options = config.compilerOptions ?? {};
     const dir = dirOf(path);
-    const esbuildOptions = { ...config.esbuild };
+    const esbuildOptions = { ...base.esbuild };
     for (const key of ESBUILD_OPTIONS) if (key in options) esbuildOptions[key] = options[key];
-    const baseUrl = typeof options.baseUrl === 'string' ? normalize(dir + options.baseUrl) : config.baseUrl;
-    let paths = config.paths;
+    const baseUrl = typeof options.baseUrl === 'string' ? normalize(dir + options.baseUrl) : base.baseUrl;
+    let paths = base.paths;
     if (options.paths && typeof options.paths === 'object') {
       // Targets are relative to baseUrl, else to the config's directory.
       const root = baseUrl ?? dir;
@@ -393,16 +450,42 @@ function tsconfigs(files: FileTree): (file: string) => TsConfig {
         return target === null ? [] : [[pattern, target] as [string, string]];
       });
     }
-    return { esbuild: esbuildOptions, baseUrl, paths };
+    return { esbuild: esbuildOptions, baseUrl, paths, ...(base.unresolved ? { unresolved: true } : {}) };
+  };
+  const cached = (path: string) => {
+    let config = cache.get(path);
+    if (!config) cache.set(path, (config = read(path, 0)));
+    return config;
+  };
+  /** Whether a config's `files` or `include` (default: everything under it) covers a file, as tsc reads them. */
+  const covers = (path: string, file: string) => {
+    const config = json(path);
+    const dir = dirOf(path);
+    if (!file.startsWith(dir)) return false;
+    const rel = file.slice(dir.length);
+    if (Array.isArray(config?.files) && config.files.some((f) => typeof f === 'string' && normalize(dir + f) === file)) return true;
+    const include = Array.isArray(config?.include) ? config.include : config?.files ? [] : ['**/*'];
+    return include.some((pattern) => {
+      if (typeof pattern !== 'string') return false;
+      const glob = normalize(pattern) ?? '';
+      // A directory (no wildcard, no extension) means everything under it.
+      return /[*?]/.test(glob) || /\.[^/]+$/.test(glob) ? matchesGlob(rel, glob) || matchesGlob(rel, glob.replace(/\/\*$/, '/**/*')) : rel.startsWith(`${glob}/`) || glob === '';
+    });
   };
   return (file) => {
     for (let dir = dirOf(file); ; dir = dirOf(dir.slice(0, -1))) {
       for (const name of ['tsconfig.json', 'jsconfig.json']) {
         const path = dir + name;
         if (text(files, path) === null) continue;
-        let config = cache.get(path);
-        if (!config) cache.set(path, (config = read(path, 0)));
-        return config;
+        // A solution-style config (Vite's): the referenced config that covers the file.
+        const references = json(path)?.references;
+        if (Array.isArray(references)) {
+          for (const ref of references) {
+            const referenced = typeof ref?.path === 'string' ? named(normalize(dir + ref.path)) : null;
+            if (referenced && covers(referenced, file)) return cached(referenced);
+          }
+        }
+        return cached(path);
       }
       if (!dir) return { esbuild: {}, baseUrl: null, paths: [] };
     }
@@ -444,7 +527,8 @@ function installedPackages(files: FileTree): (file: string) => Set<string> {
       let inPackages = false;
       for (const line of source.split('\n')) {
         if (/^\S/.test(line)) inPackages = /^(?:packages|snapshots):/.test(line);
-        const m = inPackages ? /^ {2}'?\/?((?:@[^/@'\s]+\/)?[^/@'\s(]+)@/.exec(line) : null;
+        // `name@1.0.0:` (lockfile v6 and later), `/name/1.0.0:` (v5).
+        const m = inPackages ? (/^ {2}'?\/?((?:@[^/@'\s]+\/)?[^/@'\s(]+)@/.exec(line) ?? /^ {2}'?\/((?:@[^/@'\s]+\/)?[^/@'\s(]+)\/\d/.exec(line)) : null;
         if (m) everywhere.add(m[1]);
       }
     } else {
@@ -549,10 +633,9 @@ function roots(files: FileTree, sources: string[], app: string): Set<string> {
   for (const file of sources) {
     if (!file.startsWith(app)) continue;
     const rel = file.slice(app.length);
-    const base = rel.split('/').at(-1)!;
     if (
       dirs.some((d) => rel.startsWith(d)) ||
-      /^main\.[^.]+$/.test(base) ||
+      /^(?:src\/)?main\.[^./]+$/.test(rel) ||
       /^(?:src\/)?(?:index|entry-client|entry-server|app|hooks(?:\.server|\.client)?|middleware|server)\.[cm]?[jt]sx?$/.test(rel) ||
       /^(?:app\/)?(?:app|error)\.vue$/.test(rel)
     )
@@ -731,6 +814,12 @@ function nestedTooDeep(code: string): boolean {
   return false;
 }
 
+/** esbuild's errors for legacy (experimentalDecorators) decorators. */
+const LEGACY_DECORATORS = /^(?:Parameter decorators only work when experimental decorators are enabled|Decorators are not valid here)/;
+
+/** Whether a module parses on its own with these options (and as a script: no ESM output). */
+const parses = (module: Module, options: esbuild.TransformOptions) => esbuild.transform(module.code, { loader: module.loader, logLevel: 'silent', ...options }).then(() => true, () => false);
+
 /** Errors that only the ESM output's strict mode makes (a classic script's `with`): parsed again as a script, they may be none. */
 const STRICT_ONLY = /output format due to strict mode|cannot be used in strict mode|in strict mode code/;
 
@@ -752,7 +841,8 @@ export async function checkSourcesHere(files: FileTree, options: SourceCheckOpti
     const code = text(files, file)!;
     if (nestedTooDeep(code)) continue;
     // A component's compiler keeps the imports its template uses, which TypeScript would elide from its script.
-    const raw = JSON.stringify({ compilerOptions: { ...tsconfigFor(file).esbuild, ...(COMPONENT.test(file) ? { verbatimModuleSyntax: true } : {}) } });
+    // (preserveValueImports keeps every value import and drops those of types only: `import { type X } from 'csstype'`.)
+    const raw = JSON.stringify({ compilerOptions: { ...tsconfigFor(file).esbuild, ...(COMPONENT.test(file) ? { verbatimModuleSyntax: false, preserveValueImports: true } : {}) } });
     const group = groups.get(raw) ?? new Map<string, Module>();
     groups.set(raw, group);
     if (MODULE.test(file)) group.set(file, { file, code, loader: LOADERS[file.split('.').at(-1)!] });
@@ -793,7 +883,9 @@ export async function checkSourcesHere(files: FileTree, options: SourceCheckOpti
   for (const { module, error } of errors) {
     if (!reachable.has(module.file) || broken.has(module.file)) continue;
     // A classic script's sloppy-mode code: parsed as a script, it may have no error.
-    if (STRICT_ONLY.test(error.text) && (await esbuild.transform(module.code, { loader: module.loader, logLevel: 'silent' }).then(() => true, () => false))) continue;
+    if (STRICT_ONLY.test(error.text) && (await parses(module, {}))) continue;
+    // Legacy decorators, in a project whose config extends one not in it (a package's), which may turn them on.
+    if (LEGACY_DECORATORS.test(error.text) && tsconfigFor(module.file).unresolved && (await parses(module, { tsconfigRaw: { compilerOptions: { experimentalDecorators: true } } }))) continue;
     broken.add(module.file);
     findings.push({ rule: 'compile-error', file: module.file, line: error.location!.line, column: error.location!.column + 1, message: error.text });
   }
