@@ -32,10 +32,12 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
 - **Each of the page's own 5xx loads accounts for one console error for its URL.** Chromium's
   "Failed to load resource: … 5xx" entry for URL X is the page's load only while the number of the
   app's such entries for X so far (not the host page's), that one included, is no more than the
-  number of the app frame's 5xx documents for X. A later one is the app's own request failing, and fails the phase after the
-  console-error grace period (8 s). An app error seen while the page's server error waits to be
-  checked again is kept: if the page has recovered at that check, the app error's own deadline
-  applies (the run above fails 8 s after the POST's error, not 8 s after the recheck).
+  number of the app frame's 5xx documents for X. A later one is the app's own request failing, and
+  fails the phase after the console-error grace period (8 s). The app's errors are looked for while
+  the page's server error waits to be checked again too, and when each was first seen is kept: if
+  the page has recovered at that check, an error first seen after the page's latest document came
+  keeps that time (the run above fails 8 s after the POST's error, not 8 s after the recheck), and
+  one from before it, which the error page itself logged, has its grace from the recheck, as before.
 - **An `Error` or `Exception` token right after `/` or `\` is a path, not a thrown error.** `Error:
   x`, `Uncaught (in promise) TypeError: …`, `[nuxt] error caught during app initialization
   TypeError: …`, `DOMException: …`, `ERROR TypeError: …` and a namespaced
@@ -57,51 +59,78 @@ ADR 0066 left three gaps in how the ready phase fails fast and how a failure is 
     A script (`scripts/seed.ts`), an example, a file nothing imports, `node_modules`, dot
     directories, `dist`, `build`, `out`, `coverage`, `public`, `static`, tests, test setup files
     (`test-setup.*`, `setup-tests.*`, `setupTests.*`, `vitest.setup.*`, `jest.setup.*`), stories and
-    `.d.ts` files are not looked at. For a monorepo the entries are the running package's
-    (`Project.app`).
+    `.d.ts` files are not looked at, nor `main.*` elsewhere (`examples/demo/main.ts`). For a monorepo
+    the entries are the running package's (`Project.app`).
   - *Parsing.* One esbuild build per TypeScript configuration (the native esbuild Sandburg already
-    uses on the host), every import external, nothing written. Each file is parsed with its nearest
+    uses on the host), every import external, nothing written. Each file is parsed with its
     tsconfig.json's (or jsconfig.json's) `experimentalDecorators`, `useDefineForClassFields`,
-    `verbatimModuleSyntax` and JSX options, with what it `extends` within the project: Angular's and
-    Nest's parameter decorators and Lit's `@property() declare foo` need `experimentalDecorators`.
-    Components' scripts (Vue's and Svelte's `<script>` blocks, Astro's frontmatter and its processed
-    `<script>`s, each a module of its own, blanked around so lines and columns are the file's) keep
-    every import, as their compilers keep what the template uses. `<script>` start tags are read in
-    one pass that skips quoted values and `{…}` expressions (Vue's `generic="T extends Record<string,
-    unknown>"`, Svelte's `generics`, Astro's `define:vars={{ b: a > 0 }}`); a self-closing `<script
-    … />` has no content; Astro's frontmatter runs from its first line to the next line that is
-    `---`, and its top-level `return`s are rewritten to `if(1) ` (the same length) so it parses as a
-    module. An error that only ESM's strict mode makes (a classic script's `with`) is checked again
-    with the file parsed as a script.
+    `verbatimModuleSyntax` and JSX options, with what it `extends` within the project: the nearest
+    one, or for a solution-style one (Vite's: `files: []` and `references`) the referenced config
+    whose `files` or `include` cover the file, as tsc and tsconfck choose. Angular's, Nest's and
+    tsyringe's parameter decorators and Lit's `@property() declare foo` need `experimentalDecorators`;
+    a file whose config extends one not in the project (a package's, `@tsconfig/…`), whose options are
+    not all known, is parsed again with it before a decorator error counts. Components' scripts (Vue's
+    and Svelte's `<script>` blocks, Astro's frontmatter and its processed `<script>`s, each a module
+    of its own, blanked around so lines and columns are the file's) keep every value import, as their
+    compilers keep what the template uses (`preserveValueImports`; an import of types only, `import {
+    type X } from 'csstype'`, is not one). `<script>` start tags are read in one pass that skips quoted
+    values, `{…}` expressions (Vue's `generic="T extends Record<string, unknown>"`, Svelte's
+    `generics`, Astro's `define:vars={{ b: a > 0 }}`) and HTML comments (`<!-- <script>…</script>
+    -->`); a self-closing `<script … />` has no content. Astro's frontmatter runs from its first line
+    to the next line that is `---` outside a string, a template literal or a comment, and its
+    top-level `return`s are rewritten to `if(1) ` (the same length) so it parses as a module. An
+    error that only ESM's strict mode makes (a classic script's `with`) is checked again with the
+    file parsed as a script. A file whose brackets nest deeper than 1,000 (counted in one pass) is not
+    parsed: esbuild's parser would run out of stack.
   - *Findings.* A reachable file that does not parse is a `compile-error` at its first error's file,
     line and column. A reachable file's static import (`import … from`, `export … from`; not
     `import()` or `require()`, which an app may guard) of a package is an `undeclared-import`, at the
     import's line, unless: a package.json from the file's directory up declares it (all four
     dependency fields), it is a workspace package, a lockfile lists it as installed where the file
     can import it (`node_modules/<name>` at the root or the file's workspace in package-lock.json,
-    any package in yarn.lock, pnpm-lock.yaml or bun.lock: npm hoists what dependencies need, ADR
-    0004's phantom dependencies), an import map or the build tools' configs name it (a quoted name or
+    any package in yarn.lock, pnpm-lock.yaml (lockfile v5's `/name/1.0.0` keys too) or bun.lock: npm
+    hoists what dependencies need, ADR 0004's phantom dependencies), an import map or the build tools' configs name it (a quoted name or
     a key in `vite.config.ts`), or it is not a package: a Node built-in, a relative or absolute path,
     a scheme (`node:`, `virtual:`, `astro:`, URLs), an alias above, a `baseUrl` directory
     (`components/…`), or an asset (`.css` and other non-script extensions, a `?raw` query: `uno.css`,
     `@unocss/reset/tailwind.css`). TypeScript's elided imports (types, and imports nothing uses) do
     not count. Next.js's `server-only`, `client-only` and `styled-jsx` are provided by Next.js.
-  - *Cost.* The check runs on a worker thread, with a 10 s budget (nothing found when it is spent),
-    and only on the files it reads, each size-capped on the host's thread before they are sent:
-    source, page, config and manifest files 512 KB each, lockfiles 16 MB, 2,000 source files and
-    64 MB in all. Its scans are linear (a `<script` tag's end is found with `indexOf`), and a
-    component's scripts are at most 16.
+  - *Cost and containment.* The check runs in a child process (a worker thread's termination left
+    the esbuild service it had started running, and each finished check left an unreaped esbuild
+    process), in its own process group on POSIX, at a lower priority, with a 1 GB JavaScript heap and
+    `GOMEMLIMIT=1GiB` for esbuild, and its stderr dropped (esbuild's crash reports do not reach the
+    host's). It has a 10 s budget: then, and after every check, its process group (Windows: its
+    process tree, `taskkill /T`) is killed, esbuild's service with it, and nothing is found; it
+    exits on its own a second later too. It stops esbuild and waits for it before it exits, so it
+    reaps it. It reads only the files it is sent, each size-capped in UTF-8 bytes on the host's
+    thread and sent one at a time: source, page, config and manifest files 512 KB each, lockfiles
+    16 MB, 2,000 source files and 24 MB in all. Its scans are linear, and a component's scripts are
+    at most 16. A check that fails emits one process warning. `src/source-check.ts` is one of the
+    files allowed to start processes (`.oxlintrc.json`); it starts Node on its own module, which runs
+    no project code: esbuild only parses it.
+  - *What bears on the app.* Of what the check found, only what the running app touched counts
+    (`relevantFindings`): a finding in a file the app's processes have read, and an undeclared import
+    only of a package that is not installed where its file imports it from. The runtime records the
+    project files its processes read (`Vfs.trackReads`: the main runtime's file system, which its
+    threads' and child processes' reads reach) and answers whether `node_modules/<name>/package.json`
+    is there from the file's directory up (`installedFrom`), through a host call (`projectReads`);
+    without an answer within 3 s, or from a runtime that does not record reads, nothing counts. A
+    file only another route imports was not read: a slow page that streams has read no broken file.
+    A package npm installed anyway (Nuxt's `h3` and `vue-router`, a Next app's
+    `@tanstack/query-core`, as dependencies' dependencies, with no lockfile in the project) resolves,
+    as it does under npm.
   - *When it fails the phase.* The sources are checked once the ready phase has run 20 s without
-    the app rendering: a run whose app renders sooner never checks them. What is found fails the
-    phase only while the page hangs: the app frame's latest document answered 2xx and its body has
-    not ended (SolidStart streams the page and never ends it), it is not a loading page (Nuxt's
-    503), and the dev server (the runtime's output) and the page (its errors) have said nothing for
-    10 s. An app whose page has not been answered yet is still compiling (`next dev` says
-    "Compiling / ..." once, then nothing until it answers): it runs to the phase's deadline. The
-    message is "app did not render, and its sources have an error: <file:line:column: message>" or
-    "…: imports undeclared package "<name>" (<file:line>)".
+    the app rendering: a run whose app renders sooner never checks them. What bears on the app is
+    matched again every 2 s, and fails the phase only while the page hangs: the app frame's latest
+    document answered 2xx and has streamed for at least 10 s without ending (SolidStart streams the
+    page and never ends it; a page whose response just came, still being read, is not one), it is
+    not a loading page (Nuxt's 503), and the dev server (the runtime's output) and the page (its
+    errors) have said nothing for 10 s. An app whose page has not been answered yet is still
+    compiling (`next dev` says "Compiling / ..." once, then nothing until it answers): it runs to the
+    phase's deadline. The message is "app did not render, and its sources have an error:
+    <file:line:column: message>" or "…: imports undeclared package "<name>" (<file:line>)".
   - *Classification.* A ready phase that failed that way, or timed out after the check found
-    something, is `app-bug` with the finding's rule (`compile-error` or `undeclared-import`) and
+    something that bears on the app, is `app-bug` with the finding's rule (`compile-error` or `undeclared-import`) and
     `<file:line:column>: <message>` or `imports undeclared package "<name>" (<file:line>)`, unless
     Sandburg's own machinery failed (an infra error, a broken download): then the findings change
     nothing. Rules that read the dev server's own report come first.
