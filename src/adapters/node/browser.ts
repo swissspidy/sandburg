@@ -9,6 +9,7 @@ import { frameworkInfo } from '../../framework.ts';
 import { connectServiceWorker, registerServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort, type CacheSnapshot } from './process.ts';
 import type { CacheEntry } from '../../node-runtime/cache-tree.ts';
+import { WORKSPACE_FILE, type WorkspaceInfo } from '../../node-runtime/links.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-npm/install.ts';
 import { Registry } from './browser-npm/registry.ts';
@@ -47,6 +48,10 @@ export interface HostInstall {
   start?: ({ main: string; argv: string[] } | { bin: string; argv: string[] } | { shell: string }) & { command: string; tsRunner: boolean } | null;
   /** Install in the page (opt-in): what each package of the project needs (see npm/install.ts). */
   browserInstall?: BrowserInstallPart[];
+  /** Where each local package (a workspace, a file: or link: dependency) appears in node_modules → its directory (local-packages.ts). */
+  links?: Record<string, string>;
+  /** Workspace packages: name → directory. */
+  workspaces?: Record<string, string>;
 }
 
 const START = '.sandburg/start.js';
@@ -245,6 +250,10 @@ export function createAdapter(): RuntimeAdapter {
       proxy = host.proxy ?? [];
       devCache = host.devCache ?? null;
       Object.assign(files, devCache?.files);
+      // The runtime links the local packages and finds workspace packages by name (node-runtime/links.ts).
+      // Only the host's: a project's own .sandburg/ never reaches the runtime.
+      if (host.links || host.workspaces) files[WORKSPACE_FILE] = JSON.stringify({ links: host.links ?? {}, packages: host.workspaces ?? {} } satisfies WorkspaceInfo);
+      else delete files[WORKSPACE_FILE];
       let nodeModules = host.index;
       let pack: ReturnType<typeof packFiles> | null = null;
       let resolved = host.resolved;
@@ -273,7 +282,8 @@ export function createAdapter(): RuntimeAdapter {
         pack = packFiles(result.files);
         nodeModules = Object.fromEntries(Object.entries(pack.index).map(([path, [, length]]) => [path, length]));
         resolved = result.resolved;
-        host.lockfile = result.lockfile;
+        // Whether the lockfile decided the tree, or a pnpm-lock.yaml or yarn.lock pinned its versions (plan.ts).
+        host.lockfile = result.lockfile || host.lockfile;
         const index = result.files.get('node_modules/.sandburg-bins.json');
         if (index) bins = JSON.parse(new TextDecoder().decode(index)) as Record<string, string>;
       }
@@ -316,7 +326,8 @@ export function createAdapter(): RuntimeAdapter {
       });
       await proc.started();
       return {
-        resolution: host.lockfile ? 'lockfile' : Object.keys(ctx.packageJson?.dependencies ?? {}).length ? 'range' : 'none',
+        // (A monorepo's root may declare none itself: its workspaces' are installed with it.)
+        resolution: host.lockfile ? 'lockfile' : Object.keys({ ...ctx.packageJson?.dependencies, ...resolved }).length ? 'range' : 'none',
         lockfileHonored: host.lockfile,
         dependencies: resolved,
         buildMs: null,

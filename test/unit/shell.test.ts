@@ -124,3 +124,87 @@ test('a command that is not a Node program exits with 127, as sh does for one it
   assert.match(s.err.join(''), /sh: python3: not found/);
   assert.equal(await run('make').exit, 127);
 });
+
+test('a workspace package\'s script runs in its directory: npm -w, pnpm --filter, yarn workspace (by name from the workspace file, or by path)', async () => {
+  const files = {
+    '/app/package.json': JSON.stringify({ scripts: { dev: 'npm run dev --workspace=web' } }),
+    '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web', '@acme/api': 'services/api' } }),
+    '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }),
+    '/app/services/api/package.json': JSON.stringify({ scripts: { start: 'node api.js' } }),
+  };
+  for (const script of ['npm run dev', 'npm run dev -w web', 'npm -w apps/web run dev', 'pnpm --filter web dev', 'pnpm -F ./apps/web dev', 'yarn workspace web dev']) {
+    const s = run(script, { files });
+    assert.equal(await s.exit, 0, script);
+    assert.deepEqual(s.ran.map((r) => [r.argv.slice(1).join(' '), r.cwd]), [['web.js', '/app/apps/web']], script);
+  }
+  const api = run('npm start -w @acme/api', { files });
+  assert.equal(await api.exit, 0);
+  assert.deepEqual(api.ran.map((r) => r.cwd), ['/app/services/api']);
+});
+
+test('every workspace\'s script (npm --workspaces, pnpm -r) is not run, and does not run the root\'s again', async () => {
+  const files = { '/app/package.json': JSON.stringify({ scripts: { dev: 'npm run dev --workspaces' } }) };
+  const s = run('npm run dev', { files });
+  assert.equal(await s.exit, 127);
+  assert.deepEqual(s.ran, []);
+  assert.equal(await run('pnpm -r dev', { files }).exit, 127);
+  assert.equal(await run('npm run dev -w missing', { files }).exit, 1);
+});
+
+test('a pnpm --filter selector other than a name or a directory is said to be unsupported, by name', async () => {
+  const files = { '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web' } }), '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }) };
+  for (const selector of ['web...', './apps/*', '@scope/*', '...^web', '!web']) {
+    const s = run(`pnpm --filter ${selector} dev`, { files });
+    assert.equal(await s.exit, 1, selector);
+    assert.match(s.err.join(''), new RegExp(`--filter ${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: .*not supported`), selector);
+  }
+  const missing = run('npm run dev -w nope', { files });
+  assert.equal(await missing.exit, 1);
+  assert.match(missing.err.join(''), /no workspace package "nope"/);
+});
+
+test('workspace names an object has from its prototype are not workspaces; several --filter are said to be unsupported', async () => {
+  const files = { '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web' } }), '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }) };
+  for (const name of ['constructor', '__proto__', 'toString']) {
+    const s = run(`npm run dev -w ${name}`, { files });
+    assert.equal(await s.exit, 1, name);
+    assert.match(s.err.join(''), new RegExp(`no workspace package "${name}"`));
+  }
+  const two = run('pnpm --filter web --filter api dev', { files });
+  assert.equal(await two.exit, 1);
+  assert.match(two.err.join(''), /several --filter .*not supported/);
+});
+
+test('selectors after -- are the script\'s arguments; several selectors are named with their values', async () => {
+  const files = {
+    '/app/.sandburg/workspace.json': JSON.stringify({ links: {}, packages: { web: 'apps/web', api: 'apps/api' } }),
+    '/app/apps/web/package.json': JSON.stringify({ scripts: { dev: 'node web.js' } }),
+  };
+  const npm = run('npm run dev -w web -- -w foo', { files });
+  assert.equal(await npm.exit, 0);
+  assert.deepEqual(npm.argv(), ['web.js -w foo']);
+  const pnpm = run('pnpm --filter web dev -- --filter x', { files });
+  assert.equal(await pnpm.exit, 0);
+  assert.deepEqual(pnpm.argv(), ['web.js --filter x']);
+  const two = run('npm run dev -w web -w api', { files });
+  assert.equal(await two.exit, 1);
+  assert.match(two.err.join(''), /npm -w web -w api: several/);
+  const eq = run('pnpm --filter=web --filter api dev', { files });
+  assert.match(eq.err.join(''), /pnpm --filter=web --filter api: several/);
+});
+
+test("scripts and binaries an object has from its prototype are not a package's", async () => {
+  const files = { '/app/package.json': JSON.stringify({ scripts: { dev: 'node a.js' } }), '/app/node_modules/.sandburg-bins.json': JSON.stringify({ vite: 'node_modules/vite/bin/vite.js' }) };
+  for (const script of ['npm run constructor', 'npm run toString', 'hasOwnProperty', 'toString --x']) {
+    const s = run(script, { files });
+    assert.equal(await s.exit, 127, script);
+    assert.deepEqual(s.ran, [], script);
+  }
+});
+
+test("a script's own arguments after -- may look like the package manager's (-r, --workspaces)", async () => {
+  const files = { '/app/package.json': JSON.stringify({ scripts: { test: 'node t.js' } }) };
+  const s = run('npm test -- -r dotenv/config --workspaces', { files });
+  assert.equal(await s.exit, 0);
+  assert.deepEqual(s.argv(), ['t.js -r dotenv/config --workspaces']);
+});

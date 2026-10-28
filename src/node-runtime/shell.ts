@@ -3,13 +3,15 @@
  * start (`vite`, `concurrently "npm:server" "npm:client"`, `cd server && npm run dev`,
  * `PORT=4000 tsx watch src/index.ts`). Every program it runs is a Node program: `node`, a package
  * binary (node_modules/.bin, from the install's .sandburg-bins.json), or an npm/pnpm/yarn script,
- * which it expands. There are no other programs in the browser; a command it cannot run exits with
- * 127, as `sh` does for a command it cannot find.
+ * which it expands (in a workspace package too: `npm -w`, `pnpm --filter`, `yarn workspace`). There
+ * are no other programs in the browser; a command it cannot run exits with 127, as `sh` does for a
+ * command it cannot find.
  *
  * Supported: `&&`, `||`, `;`, `&` (background), `$VAR`/`${VAR}`, quotes, `NAME=value cmd`, `cd`,
  * `export`, `echo`, `true`, `false`, `exit`, `sleep`, `cross-env`, `env`, `sh -c`/`bash -c`.
  * Pipes and redirections are not: the left-hand command runs and the rest is dropped (with a note).
  */
+import { parseWorkspace, WORKSPACE_FILE } from './links.ts';
 
 export interface ShellHost {
   /** Starts a Node program; `onExit` runs once when it ends. */
@@ -168,7 +170,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
   };
 
   /** The script a package manager command runs, or null. */
-  const packageScript = (words: string[], dir: string): { script: string; cwd: string; name: string } | null => {
+  const packageScript = (words: string[], dir: string): { script: string; cwd: string; name: string } | { error: string } | null => {
     const [runner, ...rest] = words;
     let args = [...rest];
     let target = dir;
@@ -190,6 +192,35 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       }
     };
     take(runner === 'npm' ? ['--prefix', '-C'] : runner === 'pnpm' ? ['--dir', '-C', '--prefix'] : ['--cwd', '--prefix']);
+    // Every workspace (`npm run dev --workspaces`, `pnpm -r dev`) is not one script: not run here
+    // (running the root's own script instead would start it again, and again).
+    // The package manager's own arguments: those after `--` are the script's.
+    const own = args.indexOf('--') < 0 ? args.length : args.indexOf('--');
+    if (args.slice(0, own).some((a) => /^(--workspaces|-ws|-r|--recursive)$/.test(a))) return null;
+    // A workspace by name or path: `npm -w web run dev`, `pnpm --filter web dev`, `yarn workspace web dev`.
+    const flags = runner === 'npm' ? ['--workspace', '-w'] : runner === 'pnpm' ? ['--filter', '-F'] : [];
+    // A script in several workspaces (`--filter web --filter api`) is not one script: not run here.
+    const selectors: string[] = [];
+    for (let i = 0; i < own; i++) {
+      if (flags.includes(args[i])) selectors.push(`${args[i]} ${args[++i] ?? ''}`.trim());
+      else if (flags.some((f) => args[i].startsWith(`${f}=`))) selectors.push(args[i]);
+    }
+    if (selectors.length > 1) return { error: `${runner} ${selectors.join(' ')}: several ${flags[0]} selectors are not supported in the browser runtime` };
+    for (let i = 0; i < own; i++) {
+      const a = args[i];
+      const flag = flags.find((f) => a === f || a.startsWith(`${f}=`));
+      const value = flag ? (a === flag ? args[i + 1] : a.slice(flag.length + 1)) : runner === 'yarn' && a === 'workspace' && i === 0 ? args[1] : undefined;
+      if (value === undefined) continue;
+      const as = `${runner} ${flag ?? 'workspace'} ${value}`;
+      // pnpm's selectors beyond a name or a directory (`web...`, `./apps/*`, `@scope/*`, `!web`) pick
+      // packages by the dependency graph or a pattern: not run here.
+      if (runner === 'pnpm' && /\.\.\.|[*!^[\]]/.test(value)) return { error: `${as}: selectors other than a package name or a directory are not supported in the browser runtime` };
+      const ws = workspace(value, target);
+      if (!ws) return { error: `${as}: no workspace package "${value}"` };
+      target = ws;
+      args.splice(i, a === flag || a === 'workspace' ? 2 : 1);
+      break;
+    }
     args = args.filter((a) => !/^(--silent|-s|--if-present|--no-color|--loglevel=.*)$/.test(a));
     let name: string | undefined;
     if (args[0] === 'run' || args[0] === 'run-script') name = args[1];
@@ -206,11 +237,28 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     } catch {
       return null;
     }
-    const body = scripts[name] ?? (name === 'start' ? 'node server.js' : undefined);
+    const body = Object.hasOwn(scripts, name) ? scripts[name] : name === 'start' ? 'node server.js' : undefined;
     if (!body) return null;
     const pre = scripts[`pre${name}`];
     const withArgs = extra.length ? `${body} ${extra.map(quote).join(' ')}` : body;
     return { script: pre ? `${pre} && ${withArgs}` : withArgs, cwd: target, name };
+  };
+
+  /**
+   * A workspace package's directory, by name (the project's workspace packages: links.ts'
+   * WORKSPACE_FILE, from `dir` upwards) or by path; null if there is none.
+   */
+  const workspace = (value: string, dir: string): string | null => {
+    for (let d = dir; ; d = d.slice(0, d.lastIndexOf('/')) || '/') {
+      const info = parseWorkspace(host.readFile(`${d === '/' ? '' : d}/${WORKSPACE_FILE}`));
+      // Its own entries only: `-w constructor` is not Object's.
+      const rel = info && Object.hasOwn(info.packages, value) ? info.packages[value] : undefined;
+      if (typeof rel === 'string') return join(d, rel);
+      if (info) break;
+      if (d === '/') break;
+    }
+    const path = join(dir, value.replace(/^\{(.*)\}$/, '$1'));
+    return host.readFile(`${path}/package.json`) !== null ? path : null;
   };
 
   /** node_modules/.bin/<name>, searched from `dir` upwards. */
@@ -219,7 +267,8 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       const index = host.readFile(`${d === '/' ? '' : d}/node_modules/.sandburg-bins.json`);
       if (index) {
         try {
-          const rel = (JSON.parse(index) as Record<string, string>)[name];
+          const bins = JSON.parse(index) as Record<string, string>;
+          const rel = Object.hasOwn(bins, name) ? bins[name] : undefined;
           if (rel) return `${d === '/' ? '' : d}/${rel}`;
         } catch {
           // a broken index: keep looking
@@ -293,6 +342,10 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       if (cmd === 'npm' && args[0] === 'exec') return command(args.slice(1).filter((a) => a !== '--' && !/^(-y|--yes)$/.test(a)), dir, localEnv, done);
       if ((cmd === 'pnpm' || cmd === 'yarn') && (args[0] === 'exec' || args[0] === 'dlx')) return command(args.slice(1), dir, localEnv, done);
       const target = packageScript(words, dir);
+      if (target && 'error' in target) {
+        host.write(2, `sh: ${target.error}\n`);
+        return later(1);
+      }
       if (target) {
         const npmEnv = { ...localEnv, npm_lifecycle_event: target.name, INIT_CWD: localEnv.INIT_CWD ?? dir };
         return sequence(target.script, target.cwd, npmEnv, (code) => done(code));

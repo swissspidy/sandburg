@@ -26,6 +26,7 @@ import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
+import { parseWorkspace, safeLinks, setLinks, WORKSPACE_FILE } from './links.ts';
 import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
 import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
 import { CONFIG_BUNDLES, createConfigBundles } from './config-bundles.ts';
@@ -237,6 +238,24 @@ const WASI_WORKER = /\/node_modules\/(?:@[^/]+\/)?[^/]+-wasm32-wasi\/wasi-worker
 /** Runtime workers booted ahead of time for threads (see threads.ts). */
 export const WARM_RUNTIMES = Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4));
 
+/**
+ * Puts each local package's files where it is linked (`links`: node_modules path → its directory,
+ * project-relative), as npm's symlink shows them; module resolution and fs.realpath give the
+ * package's own directory (links.ts). The package's own node_modules stays where it is.
+ */
+function linkLocalPackages(links: Record<string, string>, files: string[], cwd: string): void {
+  for (const [at, dir] of Object.entries(links)) {
+    for (const path of files) {
+      if (!path.startsWith(`${dir}/`)) continue;
+      const rest = path.slice(dir.length + 1);
+      if (rest.startsWith('node_modules/') || rest.includes('/node_modules/')) continue;
+      const to = `${cwd}/${at}/${rest}`;
+      vfs.mkdir(to.slice(0, to.lastIndexOf('/')), true);
+      vfs.write(to, vfs.read(`${cwd}/${path}`));
+    }
+  }
+}
+
 function init(msg: Extract<ToWorker, { type: 'init' }>) {
   base = msg.base;
   installKey = msg.installKey;
@@ -279,6 +298,14 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       // Files are not kept in shared memory (decoders do not read it).
       vfs.write(abs, bytes.buffer instanceof SharedArrayBuffer ? bytes.slice() : bytes);
     }
+  }
+  // Local packages (workspaces, file: and link: dependencies) appear in node_modules (links.ts).
+  const workspaceFile = `${msg.cwd}/${WORKSPACE_FILE}`;
+  const workspace = parseWorkspace(vfs.kind(workspaceFile) === 'file' ? new TextDecoder().decode(vfs.read(workspaceFile)) : null);
+  if (workspace) {
+    const links = safeLinks(workspace.links);
+    setLinks(links, msg.cwd);
+    if (!thread) linkLocalPackages(links, Object.keys(msg.files), msg.cwd);
   }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
