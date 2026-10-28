@@ -145,10 +145,12 @@ By default, the version in the `package.json` of the action's ref: the latest re
 `main` between releases, and the release itself when it is a release's commit. `sandburg-version` takes:
 
 - **a version, range or dist-tag** of the `sandburg` package: `0.2.0`, `^0.2`, `latest`;
-- **a path**, starting with `./`, `../`, `/` or `~/`, or ending in `.tgz`, relative to the workspace:
-  a packed package (`npm pack`) or a directory;
-- **any other npm spec**, passed to `npm install` as it is. It comes after `--`, so a value that starts
-  with `-` is a package name, never an npm option.
+- **the path of a packed package** (`npm pack`), relative to the workspace: a value with no `:` that
+  starts with `./`, `../`, `/` or `~/`, or ends in `.tgz`. A directory does not work: npm links it
+  without installing its dependencies, and the action then stops, with Playwright missing;
+- **any other npm spec**, a URL or `file:…` say, passed to `npm install` as it is (after `--`).
+
+A value that starts with `-` is refused, so it never reaches npm as an option.
 
 This repository's CI runs the action from its checkout (`uses: $/`, the self-repository form of `./`)
 on [`fixtures/vite-react-counter`](../../fixtures/vite-react-counter), with the package packed from the

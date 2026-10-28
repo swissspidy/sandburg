@@ -29,8 +29,9 @@ inputs:
     default: "24"
   sandburg-version:
     description: >-
-      The sandburg package to install: a version, range or dist-tag (0.2.0, ^0.2, latest), a path (starting
-      with ./, ../, / or ~/, or ending in .tgz; relative to the workspace) or another npm spec.
+      The sandburg package to install: a version, range or dist-tag (0.2.0, ^0.2, latest), the path of a
+      packed .tgz (no ":"; starting with ./, ../, / or ~/, or ending in .tgz; relative to the workspace),
+      or another npm spec (a URL, file:…), passed to npm as it is. A value starting with - is refused.
       Default: the version in this action ref's package.json.
     default: ""
   allow-chromium-sandbox:
@@ -72,10 +73,14 @@ runs:
         if [ -z "$spec" ]; then
           spec="$(node -p 'require(process.argv[1]).version' "$GITHUB_ACTION_PATH/package.json")"
         fi
-        # A path (a packed .tgz, a directory) is resolved against the workspace; a version, range or
-        # dist-tag is the sandburg package's; anything else is an npm spec as it is.
+        # A path to a packed .tgz (no ":") is resolved against the workspace; a version, range or
+        # dist-tag is the sandburg package's; anything else (a URL, file:…) goes to npm as it is.
+        if [[ "$spec" == -* ]]; then
+          echo "::error title=sandburg-version::\"$spec\" starts with -: give a version, a path or an npm spec"
+          exit 1
+        fi
         version='^[-A-Za-z0-9.^~<>=*| ]+$'
-        if [[ "$spec" == ./* || "$spec" == ../* || "$spec" == /* || "$spec" == "~/"* || "$spec" == *.tgz ]]; then
+        if [[ "$spec" != *:* && ( "$spec" == ./* || "$spec" == ../* || "$spec" == /* || "$spec" == "~/"* || "$spec" == *.tgz ) ]]; then
           spec="${spec/#\~\//$HOME/}"
           spec="$(realpath -m -- "$spec")"
         elif [[ "$spec" =~ $version ]]; then
@@ -84,10 +89,16 @@ runs:
         prefix="$RUNNER_TEMP/sandburg"
         mkdir -p "$prefix"
         echo '{"private":true}' > "$prefix/package.json"
-        # After --, a spec that starts with - is a package, not an npm option.
+        # After --, the spec is never taken as an npm option.
         npm install --prefix "$prefix" --no-audit --no-fund -- "$spec"
+        # The Chromium cache's key: without it, the package did not install with its dependencies.
+        playwright="$(node -p 'require(process.argv[1]).version' "$prefix/node_modules/playwright-core/package.json" 2>/dev/null)" || true
+        if [ -z "$playwright" ]; then
+          echo "::error title=sandburg-version::$spec installed without playwright-core: give a version, or a packed .tgz (npm pack)"
+          exit 1
+        fi
         echo "bin=$prefix/node_modules/.bin" >> "$GITHUB_OUTPUT"
-        echo "playwright=$(node -p 'require(process.argv[1]).version' "$prefix/node_modules/playwright-core/package.json")" >> "$GITHUB_OUTPUT"
+        echo "playwright=$playwright" >> "$GITHUB_OUTPUT"
 
     # Chromium's OS sandbox needs unprivileged user namespaces; Ubuntu 23.10 and later restrict them
     # with AppArmor. Lifting the restriction keeps the sandbox on (docs/guide/troubleshooting.md).
