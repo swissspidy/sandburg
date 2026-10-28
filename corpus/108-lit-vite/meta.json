@@ -1,0 +1,16 @@
+{
+  "id": "108-lit-vite",
+  "target": "lit-vite",
+  "framework": "lit",
+  "features": [
+    "search",
+    "persist",
+    "dates",
+    "tabs"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

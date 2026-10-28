@@ -1,0 +1,16 @@
+{
+  "id": "212-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "tabs",
+    "persist",
+    "dates",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "crash",
+  "buggyFeature": null,
+  "expected": "fail"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "155-sveltekit",
+  "target": "sveltekit",
+  "framework": "sveltekit",
+  "features": [
+    "tabs",
+    "counter",
+    "form"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

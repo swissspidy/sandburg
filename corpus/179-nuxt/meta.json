@@ -1,0 +1,14 @@
+{
+  "id": "179-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "dates",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

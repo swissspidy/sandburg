@@ -1,0 +1,16 @@
+{
+  "id": "145-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "counter",
+    "search",
+    "converter",
+    "persist"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

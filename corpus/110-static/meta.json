@@ -1,0 +1,16 @@
+{
+  "id": "110-static",
+  "target": "static",
+  "framework": "static",
+  "features": [
+    "converter",
+    "tabs",
+    "fetch",
+    "todo"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

@@ -1,0 +1,7 @@
+<div data-feature="form"></div>
+
+<script>
+  import { mount } from '../features/form';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="form"]')) mount(el);
+</script>

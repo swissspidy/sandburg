@@ -6,17 +6,23 @@
  * dependencies, optional Tailwind, and in about a third of apps one seeded
  * fault with a known expected outcome. meta.json records all of it, so the
  * study can split agreement by framework, feature, dependency and fault.
+ *
+ * Apps 0–99 are the corpus of studies v1–v6, unchanged. From app 100 on (study v7), the
+ * frameworks added since take turns, 12 apps each (stacks.ts): each framework's apps carry every
+ * fault that applies to it, so each is measured against every kind of fault.
  */
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { FEATURES, type Target } from './features.ts';
+import { CORE } from './components.ts';
+import { componentName, pkg, stackFiles, type Stack } from './stacks.ts';
 
 export type Fault = 'none' | 'logic' | 'crash' | 'undeclared-import' | 'bad-version' | 'syntax' | 'type-error';
 
 export interface AppMeta {
   id: string;
-  target: Target;
-  framework: 'vite-react' | 'nextjs' | 'vite-vanilla';
+  target: Target | Stack;
+  framework: 'vite-react' | 'nextjs' | 'vite-vanilla' | (typeof STACK_FRAMEWORKS)[number];
   features: string[];
   tailwind: boolean;
   react: string | null;
@@ -26,6 +32,32 @@ export interface AppMeta {
   /** Ground truth: should a correct environment pass this app's checks? */
   expected: 'pass' | 'fail';
 }
+
+/** The v1–v6 corpus: apps 0 to 99. */
+const V6_APPS = 100;
+
+/** The frameworks added in v7, in the order their apps take turns, and the stacks that make each. */
+const STACK_FRAMEWORKS = ['sveltekit', 'angular', 'nuxt', 'astro', 'solid-start', 'react-router', 'vue', 'svelte', 'lit', 'express-sqlite', 'static'] as const;
+const STACKS: Record<(typeof STACK_FRAMEWORKS)[number], Stack[]> = {
+  sveltekit: ['sveltekit'],
+  angular: ['angular'],
+  nuxt: ['nuxt'],
+  astro: ['astro'],
+  'solid-start': ['solid-start'],
+  'react-router': ['react-router'],
+  vue: ['vue-vite'],
+  svelte: ['svelte-vite'],
+  lit: ['lit-vite'],
+  'express-sqlite': ['vue-express', 'react-express'],
+  static: ['static'],
+};
+
+/**
+ * Each framework's 12 faults, in an order shuffled per framework: about half its apps are faulty
+ * (a third in v1–v6), so that every fault is measured on every framework. A static site has no
+ * package.json and no TypeScript, so no bad-version or type-error faults.
+ */
+const STACK_FAULTS: Fault[] = ['none', 'none', 'none', 'none', 'none', 'logic', 'logic', 'crash', 'undeclared-import', 'bad-version', 'syntax', 'type-error'];
 
 const TITLES = ['Habit', 'Budget', 'Recipe', 'Workout', 'Reading', 'Travel', 'Garden', 'Pantry', 'Study', 'Movie', 'Chore', 'Music'];
 
@@ -41,6 +73,7 @@ function rng(seed: number): () => number {
 }
 
 export function generateApp(index: number, seed: number): { meta: AppMeta; files: Record<string, string> } {
+  if (index >= V6_APPS) return stackApp(index, seed);
   const r = rng(seed * 1000 + index);
   const pick = <T>(xs: T[]): T => xs[Math.floor(r() * xs.length)];
   const target: Target = index % 3 === 0 ? 'vite-react' : index % 3 === 1 ? (r() < 0.67 ? 'next-app' : 'next-pages') : 'vite-vanilla';
@@ -64,7 +97,9 @@ export function generateApp(index: number, seed: number): { meta: AppMeta; files
   const fault: Fault =
     roll < 0.65 ? 'none' : roll < 0.78 ? 'logic' : roll < 0.83 ? 'crash' : roll < 0.87 ? 'undeclared-import' : roll < 0.91 ? 'bad-version' : roll < 0.95 ? 'syntax' : 'type-error';
   const buggyFeature = fault === 'logic' ? pick(features) : null;
-  const expected = fault === 'none' || fault === 'type-error' ? 'pass' : 'fail';
+  // The undeclared import is nanoid, which npm hoists from Vite's and Next.js's own dependencies (postcss):
+  // it resolves, and the app passes. Labelled "fail" until v7 (ADR 0004, "Phantom dependencies").
+  const expected = fault === 'none' || fault === 'type-error' || fault === 'undeclared-import' ? 'pass' : 'fail';
 
   const title = `${pick(TITLES)} Tracker`;
   const id = `${String(index).padStart(3, '0')}-${target}`;
@@ -85,11 +120,54 @@ export function generateApp(index: number, seed: number): { meta: AppMeta; files
   return { meta, files };
 }
 
-function componentName(feature: string): string {
-  return feature.split('-').map((p) => p[0].toUpperCase() + p.slice(1)).join('') + 'Feature';
+function stackApp(index: number, seed: number): { meta: AppMeta; files: Record<string, string> } {
+  const r = rng(seed * 1000 + index);
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)];
+  const turn = index - V6_APPS;
+  const slot = turn % STACK_FRAMEWORKS.length;
+  const framework = STACK_FRAMEWORKS[slot];
+  const round = Math.floor(turn / STACK_FRAMEWORKS.length);
+  const stacks = STACKS[framework];
+  const target = stacks[round % stacks.length];
+  const react = target === 'react-router' || target === 'react-express';
+
+  const eligible: string[] = [...CORE].filter((f) => target !== 'static' || f !== 'dates');
+  if (react) eligible.push('store', 'icons');
+  const count = 2 + Math.floor(r() * 3);
+  // The full-stack apps always load their data from the server.
+  const features: string[] = framework === 'express-sqlite' ? ['fetch'] : [];
+  while (features.length < count) {
+    const f = pick(eligible);
+    if (!features.includes(f)) features.push(f);
+  }
+
+  const faults = shuffle(
+    STACK_FAULTS.map((f) => (target === 'static' && (f === 'bad-version' || f === 'type-error') ? 'none' : f)),
+    rng(seed * 1000 + 900 + slot),
+  );
+  const fault = faults[round % faults.length];
+  const buggyFeature = fault === 'logic' ? pick(features) : null;
+  // Angular type-checks as it serves: a type error fails its build. The other dev servers strip types.
+  const expected = fault === 'none' || (fault === 'type-error' && target !== 'angular') ? 'pass' : 'fail';
+
+  const title = `${pick(TITLES)} Tracker`;
+  const meta: AppMeta = { id: `${String(index).padStart(3, '0')}-${target}`, target, framework, features, tailwind: false, react: react ? '19.3.1' : null, fault, buggyFeature, expected };
+  const files = stackFiles(meta, title);
+  files['checks.spec.ts'] = checksFile(meta, title);
+  files['meta.json'] = JSON.stringify(meta, null, 2) + '\n';
+  return { meta, files };
 }
 
-function fetchSource(target: Target): string {
+function shuffle<T>(xs: T[], r: () => number): T[] {
+  const out = [...xs];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(r() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function fetchSource(target: AppMeta['target']): string {
   return target === 'vite-react' ? '/data/products.json' : '/api/products';
 }
 
@@ -181,20 +259,6 @@ function vanillaApp(meta: AppMeta, title: string): Record<string, string> {
   files['src/style.css'] = `body {\n  font-family: system-ui, sans-serif;\n  margin: 0;\n}\n\nmain {\n  max-width: 40rem;\n  margin: 2rem auto;\n  padding: 0 1rem;\n}\n`;
   files['tsconfig.json'] = JSON.stringify({ compilerOptions: { target: 'ES2020', lib: ['ES2020', 'DOM', 'DOM.Iterable'], module: 'ESNext', moduleResolution: 'bundler', strict: true, noEmit: true, skipLibCheck: true }, include: ['src'] }, null, 2) + '\n';
   return files;
-}
-
-function pkg(name: string, scripts: Record<string, string>, deps: Record<string, string>, devDeps: Record<string, string>, module: boolean): string {
-  return (
-    JSON.stringify(
-      { name: `corpus-${name}`, private: true, version: '0.0.0', ...(module ? { type: 'module' } : {}), scripts, dependencies: sortKeys(deps), devDependencies: sortKeys(devDeps) },
-      null,
-      2,
-    ) + '\n'
-  );
-}
-
-function sortKeys(o: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function checksFile(meta: AppMeta, title: string): string {

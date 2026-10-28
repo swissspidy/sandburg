@@ -1,0 +1,15 @@
+{
+  "id": "213-astro",
+  "target": "astro",
+  "framework": "astro",
+  "features": [
+    "search",
+    "fetch",
+    "dates"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

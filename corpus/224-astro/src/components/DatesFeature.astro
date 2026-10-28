@@ -1,0 +1,7 @@
+<div data-feature="dates"></div>
+
+<script>
+  import { mount } from '../features/dates';
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-feature="dates"]')) mount(el);
+</script>

@@ -1,0 +1,14 @@
+{
+  "id": "205-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "modal",
+    "fetch"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

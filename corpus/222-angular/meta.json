@@ -1,0 +1,15 @@
+{
+  "id": "222-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "todo",
+    "tabs",
+    "search"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "crash",
+  "buggyFeature": null,
+  "expected": "fail"
+}

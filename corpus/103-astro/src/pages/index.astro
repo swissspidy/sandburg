@@ -1,0 +1,18 @@
+---
+import Layout from '../layouts/Layout.astro';
+import TodoFeature from '../components/TodoFeature.astro';
+import CounterFeature from '../components/CounterFeature.astro';
+import TabsFeature from '../components/TabsFeature.astro';
+
+const settings = (globalThis as any).__APP_SETTINGS__;
+const theme = settings.theme;
+---
+
+<Layout title="Budget Tracker">
+  <main data-theme={theme}>
+    <h1>Budget Tracker</h1>
+    <TodoFeature />
+    <CounterFeature />
+    <TabsFeature />
+  </main>
+</Layout>

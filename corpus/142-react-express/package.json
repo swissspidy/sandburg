@@ -1,0 +1,26 @@
+{
+  "name": "corpus-142-react-express",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:server\" \"npm:client\"",
+    "server": "node --watch server/index.js",
+    "client": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.0",
+    "express": "^5.2.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.5"
+  }
+}

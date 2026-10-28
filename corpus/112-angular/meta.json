@@ -1,0 +1,14 @@
+{
+  "id": "112-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "dates",
+    "todo"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "todo",
+  "expected": "fail"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "102-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "fetch",
+    "converter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

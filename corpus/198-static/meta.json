@@ -1,0 +1,15 @@
+{
+  "id": "198-static",
+  "target": "static",
+  "framework": "static",
+  "features": [
+    "todo",
+    "converter",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

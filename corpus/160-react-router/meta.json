@@ -1,0 +1,15 @@
+{
+  "id": "160-react-router",
+  "target": "react-router",
+  "framework": "react-router",
+  "features": [
+    "store",
+    "persist",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": "19.3.1",
+  "fault": "type-error",
+  "buggyFeature": null,
+  "expected": "pass"
+}

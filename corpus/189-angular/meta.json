@@ -1,0 +1,15 @@
+{
+  "id": "189-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "todo",
+    "modal",
+    "fetch"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

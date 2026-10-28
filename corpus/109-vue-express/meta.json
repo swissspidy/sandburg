@@ -1,0 +1,14 @@
+{
+  "id": "109-vue-express",
+  "target": "vue-express",
+  "framework": "express-sqlite",
+  "features": [
+    "fetch",
+    "form"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "fetch",
+  "expected": "fail"
+}

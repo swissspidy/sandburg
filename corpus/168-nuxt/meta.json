@@ -1,0 +1,14 @@
+{
+  "id": "168-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "modal",
+    "converter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "modal",
+  "expected": "fail"
+}

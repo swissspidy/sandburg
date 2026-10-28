@@ -1,0 +1,15 @@
+{
+  "id": "114-astro",
+  "target": "astro",
+  "framework": "astro",
+  "features": [
+    "modal",
+    "search",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "modal",
+  "expected": "fail"
+}

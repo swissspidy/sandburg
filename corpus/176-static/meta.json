@@ -1,0 +1,14 @@
+{
+  "id": "176-static",
+  "target": "static",
+  "framework": "static",
+  "features": [
+    "persist",
+    "modal"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "modal",
+  "expected": "fail"
+}

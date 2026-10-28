@@ -1,0 +1,15 @@
+{
+  "id": "120-react-express",
+  "target": "react-express",
+  "framework": "express-sqlite",
+  "features": [
+    "fetch",
+    "dates",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": "19.3.1",
+  "fault": "syntax",
+  "buggyFeature": null,
+  "expected": "fail"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "corpus-139-vue-vite",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "3.5.44"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.1.0"
+  }
+}

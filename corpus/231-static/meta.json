@@ -1,0 +1,15 @@
+{
+  "id": "231-static",
+  "target": "static",
+  "framework": "static",
+  "features": [
+    "persist",
+    "modal",
+    "fetch"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

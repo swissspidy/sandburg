@@ -1,0 +1,15 @@
+{
+  "id": "161-vue-vite",
+  "target": "vue-vite",
+  "framework": "vue",
+  "features": [
+    "converter",
+    "counter",
+    "todo"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}

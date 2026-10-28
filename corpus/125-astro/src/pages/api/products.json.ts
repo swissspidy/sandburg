@@ -1,0 +1,27 @@
+import type { APIRoute } from 'astro';
+
+const DATA = {
+  "products": [
+    {
+      "id": 1,
+      "name": "Lamp",
+      "price": 25
+    },
+    {
+      "id": 2,
+      "name": "Chair",
+      "price": 80
+    },
+    {
+      "id": 3,
+      "name": "Desk",
+      "price": 150
+    }
+  ]
+};
+
+export const GET: APIRoute = () => {
+  return new Response(JSON.stringify(DATA), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+};

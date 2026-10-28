@@ -1,0 +1,14 @@
+{
+  "id": "197-vue-express",
+  "target": "vue-express",
+  "framework": "express-sqlite",
+  "features": [
+    "fetch",
+    "converter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "type-error",
+  "buggyFeature": null,
+  "expected": "pass"
+}

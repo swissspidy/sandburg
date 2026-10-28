@@ -1,0 +1,14 @@
+{
+  "id": "200-angular",
+  "target": "angular",
+  "framework": "angular",
+  "features": [
+    "form",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "bad-version",
+  "buggyFeature": null,
+  "expected": "fail"
+}

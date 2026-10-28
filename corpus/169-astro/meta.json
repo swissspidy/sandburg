@@ -1,0 +1,14 @@
+{
+  "id": "169-astro",
+  "target": "astro",
+  "framework": "astro",
+  "features": [
+    "modal",
+    "counter"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "undeclared-import",
+  "buggyFeature": null,
+  "expected": "fail"
+}

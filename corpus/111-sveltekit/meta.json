@@ -1,0 +1,16 @@
+{
+  "id": "111-sveltekit",
+  "target": "sveltekit",
+  "framework": "sveltekit",
+  "features": [
+    "dates",
+    "search",
+    "persist",
+    "fetch"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "logic",
+  "buggyFeature": "persist",
+  "expected": "fail"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "124-nuxt",
+  "target": "nuxt",
+  "framework": "nuxt",
+  "features": [
+    "modal",
+    "todo",
+    "counter",
+    "search"
+  ],
+  "tailwind": false,
+  "react": null,
+  "fault": "none",
+  "buggyFeature": null,
+  "expected": "pass"
+}
