@@ -62,7 +62,7 @@ body:
     attributes:
       label: result.json
       description: |
-        From `.sandburg/runs/<runId>/result.json`. At least the run's status, its failure's class (`app-bug`, `runtime-unsupported`, `timeout`, `infra`, `unknown`) and the rule that decided it, and the failing check's message. Remove anything private first.
+        From `.sandburg/runs/<runId>/result.json`. At least the run's status, its failure's class (`app-bug`, `runtime-unsupported`, `timeout`, `infra`, `unknown`) and the rule that decided it, and the failing check's message. Remove anything private first. Enter `not generated` if Sandburg stopped before creating the file.
       render: json
     validations:
       required: true
