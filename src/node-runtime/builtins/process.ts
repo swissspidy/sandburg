@@ -88,10 +88,19 @@ class Timeout {
   }
   private arm() {
     this.due = timerNow() + this.ms;
+    this.wait(this.ms);
+  }
+  /**
+   * Its browser timer, `ms` from now. Fired before its time by performance.now() (a browser may fire it
+   * a little early by that clock), it is set again for the rest: it runs neither early nor never.
+   */
+  private wait(ms: number) {
     this.id = nativeSetTimeout(() => {
       this.id = null;
+      const rest = this.due - performance.now();
+      if (rest > 0 && Math.floor(performance.now()) < this.due) return this.wait(Math.max(1, Math.ceil(rest)));
       this.fn();
-    }, this.ms);
+    }, ms);
   }
   /** An interval that ran: its next run, its time from now (as Node's). */
   rearm() {
@@ -283,6 +292,8 @@ immediateChannel.port1.onmessage = () => {
   turnMessage = false;
   void runTurn();
 };
+// (Under Node, as in the unit tests, its ports do not keep the process alive; a browser's have no unref.)
+for (const port of [immediateChannel.port1, yieldChannel.port1] as (MessagePort & { unref?: () => void })[]) port.unref?.();
 /** Runs a callback of the turn: as in Node, what it throws is uncaught (process 'uncaughtException'), and the rest still run. */
 function runOne(fn: () => void) {
   try {

@@ -74,9 +74,11 @@ queued meanwhile wait for the next turn.
   browser timer fired while a turn went waits for its end; cleared, it no longer waits, and only
   those still set whose browser timer fired run (one refreshed is set again: its browser timer runs
   it). Before this (since timers first waited for turns, in this change, not on main), one refreshed
-  meanwhile ran at the turn's end, its new time not come yet. Whether a timer is due is the browser's
-  to say once its timer fired: `performance.now()` may read a little behind the browser's clock, and
-  a phase that checked a fired timer's time by it could leave it to no one.
+  meanwhile ran at the turn's end, its new time not come yet. A browser timer that fires before its
+  timer's time by `performance.now()` (a browser may fire it a little early by that clock) is set
+  again for the rest: a timer runs neither early nor never, and a phase does not check a fired one's
+  time again (one it left out would be left to no one). A unit test fires the browser's timers 5 ms
+  early (`test/unit/runtime-timers-early.test.ts`).
 - **Handles are not browser timer ids.** A timer's handle counts from 2^30, and the runtime clears its
   own browser timers with the browser's `clearTimeout` (a unit test finds any other). Before this, the
   runtime cleared a browser timer of its own (a read report's) with the program's `clearTimeout`, and
