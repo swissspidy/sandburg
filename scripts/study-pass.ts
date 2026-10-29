@@ -1,8 +1,9 @@
 /**
  * A fidelity-study pass's result, from the process that ran it to the study's (scripts/fidelity-study.ts):
- * one `PASS <json>` line on the child's stdout. A pass of 232 apps is ~150 KB of JSON, more than a
- * pipe holds, and a write to a pipe completes later: the child exits once its line is written, and
- * the parent reads it once the pipe is closed.
+ * one `PASS <json>` line on the child's stdout. v7.1's passes of 232 apps were 55-61 KB each (61 KB
+ * with each run's app label), just under a pipe's 64 KiB buffer, which is why reading them at the
+ * child's exit lost none; a larger corpus's would not fit. A write to a pipe completes later: the
+ * child exits once its line is written, and the parent reads it once the pipe is closed.
  */
 import type { ChildProcess } from 'node:child_process';
 

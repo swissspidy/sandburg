@@ -49,7 +49,7 @@ import type { RunResult } from '../src/types.ts';
 const { values: args, positionals } = parseArgs({
   allowPositionals: true,
   options: {
-    parallel: { type: 'string', default: '3' },
+    parallel: { type: 'string' },
     rounds: { type: 'string' },
     only: { type: 'string' },
     out: { type: 'string' },
@@ -134,6 +134,7 @@ if (args.out) {
   if (!under.startsWith('..') && !isAbsolute(under)) refuse(`--out ${args.out} is under .sandburg/, which a cold pass removes`);
 }
 if (args.report && !args.out) refuse('--report reads the passes kept at --out');
+if (args.report && (positionals.length || args.parallel !== undefined || args.only !== undefined)) refuse('--report takes the corpus, --parallel and --only of the passes it reports: name none of them');
 
 // With --out, each pass is kept as it ends (<out>-passes.jsonl), and a study run again with the same
 // arguments goes on from the first pass it does not have (a warm pass on the stores its cold pass left).
@@ -151,7 +152,7 @@ if (args.report && !done.length) refuse(`${kept} holds no passes`);
 // corpus, apps, parallelism, filter and commit, and their apps' meta.json).
 const ran = args.report ? done[0].params : null;
 const corpus = ran?.corpus ?? resolve(positionals[0] ?? 'corpus');
-const parallel = ran?.parallel ?? count('parallel', args.parallel);
+const parallel = ran?.parallel ?? count('parallel', args.parallel ?? '3');
 const only = ran ? ran.only : (args.only ?? null);
 const items: (BatchItem & { meta: Meta })[] = [];
 if (ran) for (const label of ran.apps) items.push({ project: join(corpus, label), label, meta: ran.meta[label] });

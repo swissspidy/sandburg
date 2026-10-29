@@ -112,7 +112,7 @@ test('fidelity-study --report renders the kept passes: medians of the apps that 
   const out = join(tempDir('sandburg-study-out-'), 'study');
   // Kept at another commit: a report is of the passes kept, whatever this checkout's commit.
   writeFileSync(`${out}-passes.jsonl`, kept(dir, 'cold', {}, [2000, 6000]) + kept(dir, 'warm', {}, [1000, 4000]));
-  const r = await study(dir, [dir, '--report', '--out', out]);
+  const r = await study(dir, ['--report', '--out', out]);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /\| static \| 2 \| 2 \/ 2 \| 0 \/ 0 \| 1\/1 \/ 1\/1 \| 2\.0 s → 1\.0 s \| 0 of 1 \| 50% \/ 50% \|/);
   const cold = JSON.parse(readFileSync(`${out}.json`, 'utf8')) as { commit: string; apps: { app: string; totalMs: number | null; passedRounds: number }[] };
@@ -133,9 +133,13 @@ test('fidelity-study --report renders the kept passes: medians of the apps that 
   assert.match(all.stdout, /2 rounds, 2 apps/);
   assert.match((await study(dir, ['--report', '--rounds', '1', '--out', out])).stdout, /\| 2\.0 s → 1\.0 s \|/);
 
+  for (const extra of [[dir], ['--parallel', '3'], ['--only', 'static']]) {
+    assert.match((await study(dir, [...extra, '--report', '--out', out])).stderr, /--report takes the corpus, --parallel and --only of the passes it reports/);
+  }
+
   // A report needs every pass it reports.
   writeFileSync(`${out}-passes.jsonl`, kept(dir, 'cold', {}, [2000, 6000]));
-  assert.match((await study(dir, [dir, '--report', '--out', out])).stderr, /has no warm pass for round 1/);
+  assert.match((await study(dir, ['--report', '--out', out])).stderr, /has no warm pass for round 1/);
 });
 
 test("a pass's result line reaches the study whole, however large, and only from a child that exited with 0", async () => {
