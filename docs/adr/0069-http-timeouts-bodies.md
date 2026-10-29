@@ -70,6 +70,11 @@ queued meanwhile wait for the next turn.
   each run (its time from then, as Node's), so the loop runs it with the timeouts due with it, in the
   order they were set, and cancels its browser timer as it does theirs. Its handle (its number) stays
   the same across runs; `clearTimeout()` with an unknown number does nothing, as in Node.
+- **Handles are not browser timer ids.** A timer's handle counts from 2^30, and the runtime clears its
+  own browser timers with the browser's `clearTimeout` (a unit test finds any other). Before this, the
+  runtime cleared a browser timer of its own (a read report's) with the program's `clearTimeout`, and
+  once handles counted from 1 its id could be a pending program timer's handle: that timer was
+  cancelled, and a dev server's start (Angular, Vite) waited for it until its deadline.
 - **Timers set together come due together.** A timer's time is the time it is set at in whole ms (as
   Node's), plus its delay (0 is 1, as in Node): timers set microseconds apart come due together
   unless a millisecond boundary falls between them, as in Node. Before this, they came due
