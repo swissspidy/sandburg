@@ -58,14 +58,21 @@ than its cold ones. That was the method, not Sandburg ([ADR 0071](../adr/0071-wa
 measured in the same order, warm is faster than cold on every stack but static HTML, which has nothing
 to install and is the same either way (in v7.1, at parallel 3, every stack is faster warm). Run the passes with `scripts/fidelity-study.ts`, which:
 
-- starts the apps in the corpus's order in both passes (`longestFirst: false`). A batch otherwise
-  starts first the apps that took longest in its earlier batches (`.sandburg/batches`). Only the warm
-  pass has an earlier batch, so v7's warm pass ran its fast apps last, side by side, beside other
-  warm apps;
+- starts the apps in the corpus's order in both passes (`longestFirst: false`): the same start
+  order, though not the same overlap, since a cold pass's runs are longer. A batch otherwise starts
+  first the apps that took longest in its earlier batches (`.sandburg/batches`). Only the warm pass
+  has an earlier batch, so v7's warm pass ran its fast apps last, side by side, beside other warm
+  apps;
 - keeps each pass's batch summaries apart, and runs each pass in a process of its own;
-- with `--rounds n`, runs n cold/warm pairs one after the other and takes each app's median;
+- with `--rounds n`, runs n cold/warm pairs one after the other. An app's time in a pass is the
+  median of its passing rounds, and the table's medians are over the apps that pass in both passes;
 - records each run's phases, start and end, its mean number of open neighbours and the machine's
-  CPU use while it ran.
+  CPU use while it ran;
+- keeps each pass as it ends (`<out>-passes.jsonl`), with the corpus, apps, `--parallel`,
+  `--only` and commit it ran with: the same command again goes on from there, one with other
+  arguments or at another commit is refused, and `--report` renders the table and the JSON from
+  the kept passes without running anything. It refuses an `--out` under `.sandburg/`, and a run with
+  `SANDBURG_INSTALL_DIR` or `NODE_COMPILE_CACHE` set (stores a cold pass would not remove).
 
 ```sh
 node scripts/corpus/generate.ts corpus 232 1
@@ -79,7 +86,8 @@ How to read the times:
   median went from 2.1 to 4.4 s, static HTML's from 0.9 to 2.4 s (v7.1, "What the order does").
   Compare cold with warm per app at `--parallel 1`, or where the `cpu` of both runs is alike. The
   batch's wall time is the measure of the parallel pass.
-- "Cold" is cold for Sandburg's stores only: npm's own download cache stays warm, the batch warms up
+- "Cold" is cold for Sandburg's stores only: npm's own download cache and the OS's page cache stay
+  warm, the batch warms up
   the Vite, Vite + React and Next.js stacks first, and only a stack's first app installs from
   scratch (its later apps install from the store the first one filled).
 - A warm batch's first app is its session's first tab; a cold batch's first app runs after the

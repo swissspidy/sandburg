@@ -1,11 +1,13 @@
 {
-  "generated": "2026-10-28",
+  "generated": "2026-10-29",
   "runtime": "node",
   "reference": "ground truth (meta.expected)",
   "pass": "cold",
   "parallel": 3,
   "rounds": 2,
+  "commit": "426c8f25d27660f0ddbe646d6faa1a3d7b5dd19c",
   "order": "corpus order in both passes (longestFirst: false)",
+  "times": "an app's totalMs, phases and cpu: the medians of its passing rounds (null if none passed)",
   "wallMs": 784086,
   "apps": [
     {
@@ -17,6 +19,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 29116,
       "phases": {
         "probe": 0,
@@ -32,6 +35,7 @@
       "cpu": 76,
       "rounds": [
         {
+          "app": "000-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -52,6 +56,7 @@
           "cpu": 60
         },
         {
+          "app": "000-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -82,6 +87,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 36070.5,
       "phases": {
         "probe": 0.5,
@@ -97,6 +103,7 @@
       "cpu": 80,
       "rounds": [
         {
+          "app": "001-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -117,6 +124,7 @@
           "cpu": 67
         },
         {
+          "app": "001-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -147,6 +155,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 15692,
       "phases": {
         "probe": 1.5,
@@ -162,6 +171,7 @@
       "cpu": 60.5,
       "rounds": [
         {
+          "app": "002-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -182,6 +192,7 @@
           "cpu": 32
         },
         {
+          "app": "002-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -212,6 +223,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 22630.5,
       "phases": {
         "probe": 0.5,
@@ -227,6 +239,7 @@
       "cpu": 91,
       "rounds": [
         {
+          "app": "003-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -247,6 +260,7 @@
           "cpu": 85
         },
         {
+          "app": "003-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -277,6 +291,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 19753,
       "phases": {
         "probe": 1,
@@ -292,6 +307,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "004-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -312,6 +328,7 @@
           "cpu": 97
         },
         {
+          "app": "004-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -342,21 +359,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 19805,
-      "phases": {
-        "probe": 1,
-        "load": 0,
-        "mount": 20.5,
-        "install": 310.5,
-        "start": 366,
-        "ready": 795,
-        "checks": 18262,
-        "dispose": 46.5
-      },
-      "neighbours": 3.915,
-      "cpu": 97,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "005-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -377,6 +387,7 @@
           "cpu": 96
         },
         {
+          "app": "005-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -407,6 +418,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 16721,
       "phases": {
         "probe": 0.5,
@@ -422,6 +434,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "006-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -442,6 +455,7 @@
           "cpu": 96
         },
         {
+          "app": "006-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -472,6 +486,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 15276.5,
       "phases": {
         "probe": 0,
@@ -487,6 +502,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "007-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -507,6 +523,7 @@
           "cpu": 96
         },
         {
+          "app": "007-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -537,6 +554,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5684,
       "phases": {
         "probe": 1,
@@ -552,6 +570,7 @@
       "cpu": 96,
       "rounds": [
         {
+          "app": "008-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -572,6 +591,7 @@
           "cpu": 92
         },
         {
+          "app": "008-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -602,6 +622,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 10179.5,
       "phases": {
         "probe": 0,
@@ -617,6 +638,7 @@
       "cpu": 95,
       "rounds": [
         {
+          "app": "009-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -637,6 +659,7 @@
           "cpu": 92
         },
         {
+          "app": "009-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -667,21 +690,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 20793.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 109,
-        "install": 1537.5,
-        "start": 3109.5,
-        "ready": 15920,
-        "checks": 0,
-        "dispose": 108.5
-      },
-      "neighbours": 3.355,
-      "cpu": 89,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "010-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -702,6 +718,7 @@
           "cpu": 89
         },
         {
+          "app": "010-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -732,6 +749,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3817.5,
       "phases": {
         "probe": 5,
@@ -747,6 +765,7 @@
       "cpu": 96.5,
       "rounds": [
         {
+          "app": "011-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -767,6 +786,7 @@
           "cpu": 96
         },
         {
+          "app": "011-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -797,6 +817,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 11840.5,
       "phases": {
         "probe": 0,
@@ -812,6 +833,7 @@
       "cpu": 94.5,
       "rounds": [
         {
+          "app": "012-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -832,6 +854,7 @@
           "cpu": 94
         },
         {
+          "app": "012-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -862,21 +885,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 15380.5,
-      "phases": {
-        "probe": 0,
-        "load": 420.5,
-        "mount": 37,
-        "install": 908,
-        "start": 2237,
-        "ready": 2656.5,
-        "checks": 9094.5,
-        "dispose": 11.5
-      },
-      "neighbours": 3.25,
-      "cpu": 88,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "013-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -897,6 +913,7 @@
           "cpu": 87
         },
         {
+          "app": "013-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -927,6 +944,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2552,
       "phases": {
         "probe": 0.5,
@@ -942,6 +960,7 @@
       "cpu": 95,
       "rounds": [
         {
+          "app": "014-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -962,6 +981,7 @@
           "cpu": 93
         },
         {
+          "app": "014-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -992,6 +1012,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5808,
       "phases": {
         "probe": 0,
@@ -1007,6 +1028,7 @@
       "cpu": 89,
       "rounds": [
         {
+          "app": "015-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1027,6 +1049,7 @@
           "cpu": 89
         },
         {
+          "app": "015-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1057,21 +1080,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 12243,
-      "phases": {
-        "probe": 0,
-        "load": 582,
-        "mount": 214,
-        "install": 603.5,
-        "start": 2228.5,
-        "ready": 2257,
-        "checks": 6325.5,
-        "dispose": 20
-      },
-      "neighbours": 3.645,
-      "cpu": 83.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "016-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1092,6 +1108,7 @@
           "cpu": 84
         },
         {
+          "app": "016-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1122,21 +1139,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 9158.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 12.5,
-        "install": 170.5,
-        "start": 411.5,
-        "ready": 8522.5,
-        "checks": 0,
-        "dispose": 39.5
-      },
-      "neighbours": 3.49,
-      "cpu": 82.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "017-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -1157,6 +1167,7 @@
           "cpu": 83
         },
         {
+          "app": "017-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -1187,6 +1198,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 4705,
       "phases": {
         "probe": 0,
@@ -1202,6 +1214,7 @@
       "cpu": 80,
       "rounds": [
         {
+          "app": "018-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1222,6 +1235,7 @@
           "cpu": 82
         },
         {
+          "app": "018-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1252,6 +1266,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8120.5,
       "phases": {
         "probe": 0,
@@ -1267,6 +1282,7 @@
       "cpu": 90,
       "rounds": [
         {
+          "app": "019-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1287,6 +1303,7 @@
           "cpu": 89
         },
         {
+          "app": "019-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1317,6 +1334,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2209,
       "phases": {
         "probe": 0,
@@ -1332,6 +1350,7 @@
       "cpu": 93,
       "rounds": [
         {
+          "app": "020-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1352,6 +1371,7 @@
           "cpu": 91
         },
         {
+          "app": "020-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1382,21 +1402,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 15473,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 57.5,
-        "install": 612.5,
-        "start": 934,
-        "ready": 7068.5,
-        "checks": 6413.5,
-        "dispose": 385.5
-      },
-      "neighbours": 3.85,
-      "cpu": 95,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "021-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1417,6 +1430,7 @@
           "cpu": 95
         },
         {
+          "app": "021-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1447,21 +1461,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 12362,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 66,
-        "install": 407,
-        "start": 2658.5,
-        "ready": 2329,
-        "checks": 6822,
-        "dispose": 78.5
-      },
-      "neighbours": 3.96,
-      "cpu": 95.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "022-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1482,6 +1489,7 @@
           "cpu": 95
         },
         {
+          "app": "022-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1512,21 +1520,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 7631.5,
-      "phases": {
-        "probe": 0,
-        "load": 242,
-        "mount": 28.5,
-        "install": 287,
-        "start": 358,
-        "ready": 421,
-        "checks": 6201.5,
-        "dispose": 91.5
-      },
-      "neighbours": 3.74,
-      "cpu": 96,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "023-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1547,6 +1548,7 @@
           "cpu": 96
         },
         {
+          "app": "023-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -1577,6 +1579,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8323,
       "phases": {
         "probe": 0,
@@ -1592,6 +1595,7 @@
       "cpu": 95.5,
       "rounds": [
         {
+          "app": "024-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1612,6 +1616,7 @@
           "cpu": 95
         },
         {
+          "app": "024-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1642,6 +1647,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7622.5,
       "phases": {
         "probe": 0,
@@ -1657,6 +1663,7 @@
       "cpu": 96,
       "rounds": [
         {
+          "app": "025-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1677,6 +1684,7 @@
           "cpu": 96
         },
         {
+          "app": "025-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1707,6 +1715,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2699,
       "phases": {
         "probe": 0,
@@ -1722,6 +1731,7 @@
       "cpu": 95.5,
       "rounds": [
         {
+          "app": "026-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1742,6 +1752,7 @@
           "cpu": 95
         },
         {
+          "app": "026-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1772,21 +1783,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 10910,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 53,
-        "install": 734.5,
-        "start": 1265.5,
-        "ready": 8688,
-        "checks": 0,
-        "dispose": 166
-      },
-      "neighbours": 3.625,
-      "cpu": 93,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "027-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -1807,6 +1811,7 @@
           "cpu": 92
         },
         {
+          "app": "027-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -1837,6 +1842,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7534,
       "phases": {
         "probe": 0,
@@ -1852,6 +1858,7 @@
       "cpu": 93,
       "rounds": [
         {
+          "app": "028-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1872,6 +1879,7 @@
           "cpu": 92
         },
         {
+          "app": "028-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1902,6 +1910,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2473,
       "phases": {
         "probe": 0,
@@ -1917,6 +1926,7 @@
       "cpu": 96,
       "rounds": [
         {
+          "app": "029-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1937,6 +1947,7 @@
           "cpu": 95
         },
         {
+          "app": "029-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -1967,21 +1978,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 11857.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 71.5,
-        "install": 685.5,
-        "start": 1349,
-        "ready": 2162,
-        "checks": 7303.5,
-        "dispose": 282.5
-      },
-      "neighbours": 3.43,
-      "cpu": 94.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "030-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -2002,6 +2006,7 @@
           "cpu": 94
         },
         {
+          "app": "030-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -2032,6 +2037,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8963,
       "phases": {
         "probe": 0,
@@ -2047,6 +2053,7 @@
       "cpu": 95,
       "rounds": [
         {
+          "app": "031-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2067,6 +2074,7 @@
           "cpu": 94
         },
         {
+          "app": "031-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2097,6 +2105,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2227.5,
       "phases": {
         "probe": 0,
@@ -2112,6 +2121,7 @@
       "cpu": 94,
       "rounds": [
         {
+          "app": "032-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2132,6 +2142,7 @@
           "cpu": 95
         },
         {
+          "app": "032-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2162,6 +2173,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6714.5,
       "phases": {
         "probe": 0,
@@ -2177,6 +2189,7 @@
       "cpu": 96.5,
       "rounds": [
         {
+          "app": "033-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2197,6 +2210,7 @@
           "cpu": 96
         },
         {
+          "app": "033-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2227,21 +2241,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 25943.5,
-      "phases": {
-        "probe": 0,
-        "load": 635.5,
-        "mount": 90,
-        "install": 392,
-        "start": 2954.5,
-        "ready": 3438,
-        "checks": 18053,
-        "dispose": 14.5
-      },
-      "neighbours": 3.785,
-      "cpu": 97,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "034-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -2262,6 +2269,7 @@
           "cpu": 97
         },
         {
+          "app": "034-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -2292,6 +2300,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2987,
       "phases": {
         "probe": 0,
@@ -2307,6 +2316,7 @@
       "cpu": 96.5,
       "rounds": [
         {
+          "app": "035-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2327,6 +2337,7 @@
           "cpu": 96
         },
         {
+          "app": "035-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2357,6 +2368,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7620.5,
       "phases": {
         "probe": 0,
@@ -2372,6 +2384,7 @@
       "cpu": 97,
       "rounds": [
         {
+          "app": "036-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2392,6 +2405,7 @@
           "cpu": 96
         },
         {
+          "app": "036-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2422,21 +2436,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 805,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 162,
-        "install": 610.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 31.5
-      },
-      "neighbours": 4.63,
-      "cpu": 96,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "037-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -2457,6 +2464,7 @@
           "cpu": 95
         },
         {
+          "app": "037-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -2487,6 +2495,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3136,
       "phases": {
         "probe": 0,
@@ -2502,6 +2511,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "038-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2522,6 +2532,7 @@
           "cpu": 97
         },
         {
+          "app": "038-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2552,6 +2563,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8905,
       "phases": {
         "probe": 0,
@@ -2567,6 +2579,7 @@
       "cpu": 98.5,
       "rounds": [
         {
+          "app": "039-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2587,6 +2600,7 @@
           "cpu": 98
         },
         {
+          "app": "039-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2617,6 +2631,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9719,
       "phases": {
         "probe": 0,
@@ -2632,6 +2647,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "040-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2652,6 +2668,7 @@
           "cpu": 98
         },
         {
+          "app": "040-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2682,6 +2699,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3633.5,
       "phases": {
         "probe": 0,
@@ -2697,6 +2715,7 @@
       "cpu": 98.5,
       "rounds": [
         {
+          "app": "041-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2717,6 +2736,7 @@
           "cpu": 98
         },
         {
+          "app": "041-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2747,21 +2767,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 11603,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 47.5,
-        "install": 572.5,
-        "start": 1246.5,
-        "ready": 9428.5,
-        "checks": 0,
-        "dispose": 306
-      },
-      "neighbours": 3.7,
-      "cpu": 96.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "042-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -2782,6 +2795,7 @@
           "cpu": 97
         },
         {
+          "app": "042-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -2812,6 +2826,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9343,
       "phases": {
         "probe": 0,
@@ -2827,6 +2842,7 @@
       "cpu": 95.5,
       "rounds": [
         {
+          "app": "043-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2847,6 +2863,7 @@
           "cpu": 96
         },
         {
+          "app": "043-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2877,6 +2894,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2717,
       "phases": {
         "probe": 0,
@@ -2892,6 +2910,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "044-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2912,6 +2931,7 @@
           "cpu": 97
         },
         {
+          "app": "044-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2942,6 +2962,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7866,
       "phases": {
         "probe": 0,
@@ -2957,6 +2978,7 @@
       "cpu": 96,
       "rounds": [
         {
+          "app": "045-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -2977,6 +2999,7 @@
           "cpu": 97
         },
         {
+          "app": "045-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3007,6 +3030,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 11451,
       "phases": {
         "probe": 0,
@@ -3022,6 +3046,7 @@
       "cpu": 97,
       "rounds": [
         {
+          "app": "046-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3042,6 +3067,7 @@
           "cpu": 97
         },
         {
+          "app": "046-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3072,6 +3098,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3073,
       "phases": {
         "probe": 0,
@@ -3087,6 +3114,7 @@
       "cpu": 97,
       "rounds": [
         {
+          "app": "047-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3107,6 +3135,7 @@
           "cpu": 97
         },
         {
+          "app": "047-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3137,6 +3166,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8842,
       "phases": {
         "probe": 0,
@@ -3152,6 +3182,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "048-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3172,6 +3203,7 @@
           "cpu": 98
         },
         {
+          "app": "048-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3202,6 +3234,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 10458.5,
       "phases": {
         "probe": 0,
@@ -3217,6 +3250,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "049-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3237,6 +3271,7 @@
           "cpu": 97
         },
         {
+          "app": "049-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3267,6 +3302,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5702.5,
       "phases": {
         "probe": 0,
@@ -3282,6 +3318,7 @@
       "cpu": 97,
       "rounds": [
         {
+          "app": "050-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3302,6 +3339,7 @@
           "cpu": 97
         },
         {
+          "app": "050-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3332,21 +3370,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 10968.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 166,
-        "install": 579,
-        "start": 1733.5,
-        "ready": 2669,
-        "checks": 5706,
-        "dispose": 112.5
-      },
-      "neighbours": 4.33,
-      "cpu": 96.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "051-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -3367,6 +3398,7 @@
           "cpu": 96
         },
         {
+          "app": "051-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -3397,6 +3429,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9792,
       "phases": {
         "probe": 0,
@@ -3412,6 +3445,7 @@
       "cpu": 96.5,
       "rounds": [
         {
+          "app": "052-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3432,6 +3466,7 @@
           "cpu": 96
         },
         {
+          "app": "052-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3462,6 +3497,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3637.5,
       "phases": {
         "probe": 0,
@@ -3477,6 +3513,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "053-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3497,6 +3534,7 @@
           "cpu": 97
         },
         {
+          "app": "053-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3527,6 +3565,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6699,
       "phases": {
         "probe": 0,
@@ -3542,6 +3581,7 @@
       "cpu": 96.5,
       "rounds": [
         {
+          "app": "054-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3562,6 +3602,7 @@
           "cpu": 96
         },
         {
+          "app": "054-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3592,6 +3633,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9163.5,
       "phases": {
         "probe": 0,
@@ -3607,6 +3649,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "055-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3627,6 +3670,7 @@
           "cpu": 97
         },
         {
+          "app": "055-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3657,21 +3701,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 539.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 11.5,
-        "install": 514.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 11.5
-      },
-      "neighbours": 4.225,
-      "cpu": 93.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "056-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -3692,6 +3729,7 @@
           "cpu": 92
         },
         {
+          "app": "056-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -3722,6 +3760,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 16274,
       "phases": {
         "probe": 0,
@@ -3737,6 +3776,7 @@
       "cpu": 99,
       "rounds": [
         {
+          "app": "057-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3757,6 +3797,7 @@
           "cpu": 99
         },
         {
+          "app": "057-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3787,6 +3828,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 11804,
       "phases": {
         "probe": 0,
@@ -3802,6 +3844,7 @@
       "cpu": 99,
       "rounds": [
         {
+          "app": "058-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3822,6 +3865,7 @@
           "cpu": 99
         },
         {
+          "app": "058-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3852,6 +3896,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2394,
       "phases": {
         "probe": 0,
@@ -3867,6 +3912,7 @@
       "cpu": 99,
       "rounds": [
         {
+          "app": "059-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3887,6 +3933,7 @@
           "cpu": 99
         },
         {
+          "app": "059-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3917,6 +3964,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 10422,
       "phases": {
         "probe": 0,
@@ -3932,6 +3980,7 @@
       "cpu": 99,
       "rounds": [
         {
+          "app": "060-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3952,6 +4001,7 @@
           "cpu": 99
         },
         {
+          "app": "060-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -3982,6 +4032,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 11266,
       "phases": {
         "probe": 0,
@@ -3997,6 +4048,7 @@
       "cpu": 99,
       "rounds": [
         {
+          "app": "061-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4017,6 +4069,7 @@
           "cpu": 99
         },
         {
+          "app": "061-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4047,21 +4100,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 9633,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 13,
-        "install": 262.5,
-        "start": 571,
-        "ready": 1090,
-        "checks": 7662,
-        "dispose": 33.5
-      },
-      "neighbours": 4.1,
-      "cpu": 98,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "062-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -4082,6 +4128,7 @@
           "cpu": 98
         },
         {
+          "app": "062-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -4112,21 +4159,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 13665.5,
-      "phases": {
-        "probe": 0,
-        "load": 345,
-        "mount": 171.5,
-        "install": 468,
-        "start": 1348.5,
-        "ready": 11020,
-        "checks": 0,
-        "dispose": 309.5
-      },
-      "neighbours": 3.495,
-      "cpu": 92.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "063-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -4147,6 +4187,7 @@
           "cpu": 93
         },
         {
+          "app": "063-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -4177,21 +4218,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 16911,
-      "phases": {
-        "probe": 0,
-        "load": 637,
-        "mount": 75,
-        "install": 420,
-        "start": 2763.5,
-        "ready": 12499.5,
-        "checks": 0,
-        "dispose": 31.5
-      },
-      "neighbours": 3.1799999999999997,
-      "cpu": 91.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "064-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -4212,6 +4246,7 @@
           "cpu": 92
         },
         {
+          "app": "064-next-pages",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -4242,6 +4277,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3664,
       "phases": {
         "probe": 0,
@@ -4257,6 +4293,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "065-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4277,6 +4314,7 @@
           "cpu": 98
         },
         {
+          "app": "065-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4307,6 +4345,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5934,
       "phases": {
         "probe": 0,
@@ -4322,6 +4361,7 @@
       "cpu": 89.5,
       "rounds": [
         {
+          "app": "066-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4342,6 +4382,7 @@
           "cpu": 93
         },
         {
+          "app": "066-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4372,21 +4413,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 15867,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 10,
-        "install": 1388,
-        "start": 2372,
-        "ready": 2924.5,
-        "checks": 9093,
-        "dispose": 78
-      },
-      "neighbours": 3.48,
-      "cpu": 92,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "067-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -4407,6 +4441,7 @@
           "cpu": 91
         },
         {
+          "app": "067-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -4437,6 +4472,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2085.5,
       "phases": {
         "probe": 0,
@@ -4452,6 +4488,7 @@
       "cpu": 89.5,
       "rounds": [
         {
+          "app": "068-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4472,6 +4509,7 @@
           "cpu": 90
         },
         {
+          "app": "068-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4502,6 +4540,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6569.5,
       "phases": {
         "probe": 0,
@@ -4517,6 +4556,7 @@
       "cpu": 93,
       "rounds": [
         {
+          "app": "069-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4537,6 +4577,7 @@
           "cpu": 94
         },
         {
+          "app": "069-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4567,6 +4608,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9964.5,
       "phases": {
         "probe": 0,
@@ -4582,6 +4624,7 @@
       "cpu": 97,
       "rounds": [
         {
+          "app": "070-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4602,6 +4645,7 @@
           "cpu": 97
         },
         {
+          "app": "070-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4632,6 +4676,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5126,
       "phases": {
         "probe": 0,
@@ -4647,6 +4692,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "071-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4667,6 +4713,7 @@
           "cpu": 98
         },
         {
+          "app": "071-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4697,21 +4744,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 12648,
-      "phases": {
-        "probe": 0,
-        "load": 300.5,
-        "mount": 100.5,
-        "install": 329.5,
-        "start": 2037.5,
-        "ready": 2816.5,
-        "checks": 6783,
-        "dispose": 174
-      },
-      "neighbours": 4.015,
-      "cpu": 97,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "072-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -4732,6 +4772,7 @@
           "cpu": 97
         },
         {
+          "app": "072-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -4762,6 +4803,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 10147,
       "phases": {
         "probe": 0,
@@ -4777,6 +4819,7 @@
       "cpu": 97,
       "rounds": [
         {
+          "app": "073-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4797,6 +4840,7 @@
           "cpu": 97
         },
         {
+          "app": "073-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4827,6 +4871,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2841.5,
       "phases": {
         "probe": 0,
@@ -4842,6 +4887,7 @@
       "cpu": 94.5,
       "rounds": [
         {
+          "app": "074-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4862,6 +4908,7 @@
           "cpu": 94
         },
         {
+          "app": "074-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4892,6 +4939,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 14241.5,
       "phases": {
         "probe": 0,
@@ -4907,6 +4955,7 @@
       "cpu": 97,
       "rounds": [
         {
+          "app": "075-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4927,6 +4976,7 @@
           "cpu": 97
         },
         {
+          "app": "075-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4957,6 +5007,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 12183.5,
       "phases": {
         "probe": 0,
@@ -4972,6 +5023,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "076-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -4992,6 +5044,7 @@
           "cpu": 97
         },
         {
+          "app": "076-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5022,6 +5075,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2899,
       "phases": {
         "probe": 0,
@@ -5037,6 +5091,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "077-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5057,6 +5112,7 @@
           "cpu": 98
         },
         {
+          "app": "077-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5087,6 +5143,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5934,
       "phases": {
         "probe": 0,
@@ -5102,6 +5159,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "078-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5122,6 +5180,7 @@
           "cpu": 98
         },
         {
+          "app": "078-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5152,21 +5211,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 16990.5,
-      "phases": {
-        "probe": 0,
-        "load": 634,
-        "mount": 99,
-        "install": 582.5,
-        "start": 3433.5,
-        "ready": 4540.5,
-        "checks": 7064.5,
-        "dispose": 21
-      },
-      "neighbours": 4.1,
-      "cpu": 97,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "079-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5187,6 +5239,7 @@
           "cpu": 97
         },
         {
+          "app": "079-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5217,21 +5270,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 10199.5,
-      "phases": {
-        "probe": 0,
-        "load": 299.5,
-        "mount": 93,
-        "install": 207,
-        "start": 426,
-        "ready": 717,
-        "checks": 8149,
-        "dispose": 41.5
-      },
-      "neighbours": 4.16,
-      "cpu": 97.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "080-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5252,6 +5298,7 @@
           "cpu": 97
         },
         {
+          "app": "080-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5282,6 +5329,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6659,
       "phases": {
         "probe": 0,
@@ -5297,6 +5345,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "081-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5317,6 +5366,7 @@
           "cpu": 98
         },
         {
+          "app": "081-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5347,21 +5397,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 10923,
-      "phases": {
-        "probe": 0,
-        "load": 306,
-        "mount": 93.5,
-        "install": 669.5,
-        "start": 3157.5,
-        "ready": 3764,
-        "checks": 2574,
-        "dispose": 23
-      },
-      "neighbours": 4.21,
-      "cpu": 98,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "082-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5382,6 +5425,7 @@
           "cpu": 98
         },
         {
+          "app": "082-next-app",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5412,6 +5456,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3396.5,
       "phases": {
         "probe": 0,
@@ -5427,6 +5472,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "083-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5447,6 +5493,7 @@
           "cpu": 97
         },
         {
+          "app": "083-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5477,6 +5524,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7757,
       "phases": {
         "probe": 0,
@@ -5492,6 +5540,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "084-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5512,6 +5561,7 @@
           "cpu": 98
         },
         {
+          "app": "084-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5542,6 +5592,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9303,
       "phases": {
         "probe": 0,
@@ -5557,6 +5608,7 @@
       "cpu": 96.5,
       "rounds": [
         {
+          "app": "085-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5577,6 +5629,7 @@
           "cpu": 96
         },
         {
+          "app": "085-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5607,6 +5660,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2720.5,
       "phases": {
         "probe": 0,
@@ -5622,6 +5676,7 @@
       "cpu": 98,
       "rounds": [
         {
+          "app": "086-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5642,6 +5697,7 @@
           "cpu": 98
         },
         {
+          "app": "086-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5672,6 +5728,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 4234.5,
       "phases": {
         "probe": 0,
@@ -5687,6 +5744,7 @@
       "cpu": 96,
       "rounds": [
         {
+          "app": "087-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5707,6 +5765,7 @@
           "cpu": 96
         },
         {
+          "app": "087-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5737,6 +5796,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8785,
       "phases": {
         "probe": 0,
@@ -5752,6 +5812,7 @@
       "cpu": 95.5,
       "rounds": [
         {
+          "app": "088-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5772,6 +5833,7 @@
           "cpu": 96
         },
         {
+          "app": "088-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5802,21 +5864,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 3640.5,
-      "phases": {
-        "probe": 0,
-        "load": 349,
-        "mount": 44.5,
-        "install": 307.5,
-        "start": 396.5,
-        "ready": 2495.5,
-        "checks": 0,
-        "dispose": 36.5
-      },
-      "neighbours": 3.4299999999999997,
-      "cpu": 94.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "089-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -5837,6 +5892,7 @@
           "cpu": 94
         },
         {
+          "app": "089-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -5867,21 +5923,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 11297.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 16,
-        "install": 494.5,
-        "start": 1562,
-        "ready": 2671.5,
-        "checks": 6436.5,
-        "dispose": 115
-      },
-      "neighbours": 3.245,
-      "cpu": 93.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "090-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5902,6 +5951,7 @@
           "cpu": 94
         },
         {
+          "app": "090-vite-react",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -5932,6 +5982,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6805.5,
       "phases": {
         "probe": 0,
@@ -5947,6 +5998,7 @@
       "cpu": 93,
       "rounds": [
         {
+          "app": "091-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5967,6 +6019,7 @@
           "cpu": 94
         },
         {
+          "app": "091-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -5997,21 +6050,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 9530.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 13.5,
-        "install": 282,
-        "start": 322,
-        "ready": 8772.5,
-        "checks": 0,
-        "dispose": 138.5
-      },
-      "neighbours": 3.365,
-      "cpu": 93.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "092-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -6032,6 +6078,7 @@
           "cpu": 94
         },
         {
+          "app": "092-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -6062,6 +6109,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3063.5,
       "phases": {
         "probe": 0,
@@ -6077,6 +6125,7 @@
       "cpu": 90.5,
       "rounds": [
         {
+          "app": "093-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6097,6 +6146,7 @@
           "cpu": 92
         },
         {
+          "app": "093-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6127,6 +6177,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7700,
       "phases": {
         "probe": 0,
@@ -6142,6 +6193,7 @@
       "cpu": 93.5,
       "rounds": [
         {
+          "app": "094-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6162,6 +6214,7 @@
           "cpu": 94
         },
         {
+          "app": "094-next-app",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6192,6 +6245,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2596.5,
       "phases": {
         "probe": 0,
@@ -6207,6 +6261,7 @@
       "cpu": 94,
       "rounds": [
         {
+          "app": "095-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6227,6 +6282,7 @@
           "cpu": 95
         },
         {
+          "app": "095-vite-vanilla",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6257,6 +6313,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 22739.5,
       "phases": {
         "probe": 0,
@@ -6272,6 +6329,7 @@
       "cpu": 92,
       "rounds": [
         {
+          "app": "096-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6292,6 +6350,7 @@
           "cpu": 90
         },
         {
+          "app": "096-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6322,6 +6381,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9155.5,
       "phases": {
         "probe": 0,
@@ -6337,6 +6397,7 @@
       "cpu": 92.5,
       "rounds": [
         {
+          "app": "097-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6357,6 +6418,7 @@
           "cpu": 93
         },
         {
+          "app": "097-next-pages",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6387,21 +6449,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 3575,
-      "phases": {
-        "probe": 0,
-        "load": 431,
-        "mount": 83.5,
-        "install": 299,
-        "start": 349.5,
-        "ready": 2365,
-        "checks": 0,
-        "dispose": 18
-      },
-      "neighbours": 2.3,
-      "cpu": 88.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "098-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -6422,6 +6477,7 @@
           "cpu": 89
         },
         {
+          "app": "098-vite-vanilla",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -6452,6 +6508,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 12330.5,
       "phases": {
         "probe": 0,
@@ -6467,6 +6524,7 @@
       "cpu": 92.5,
       "rounds": [
         {
+          "app": "099-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6487,6 +6545,7 @@
           "cpu": 89
         },
         {
+          "app": "099-vite-react",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6517,6 +6576,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 18442.5,
       "phases": {
         "probe": 0,
@@ -6532,6 +6592,7 @@
       "cpu": 87.5,
       "rounds": [
         {
+          "app": "100-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6552,6 +6613,7 @@
           "cpu": 81
         },
         {
+          "app": "100-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6582,21 +6644,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 27565,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 104.5,
-        "install": 11261.5,
-        "start": 8133,
-        "ready": 2234.5,
-        "checks": 5584.5,
-        "dispose": 244.5
-      },
-      "neighbours": 2.4699999999999998,
-      "cpu": 79.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "101-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -6617,6 +6672,7 @@
           "cpu": 70
         },
         {
+          "app": "101-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -6647,6 +6703,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 54288.5,
       "phases": {
         "probe": 0,
@@ -6662,6 +6719,7 @@
       "cpu": 78,
       "rounds": [
         {
+          "app": "102-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6682,6 +6740,7 @@
           "cpu": 71
         },
         {
+          "app": "102-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6712,21 +6771,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "server-render-error",
-      "totalMs": 34484.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 21.5,
-        "install": 11864.5,
-        "start": 7850.5,
-        "ready": 14618,
-        "checks": 0,
-        "dispose": 117.5
-      },
-      "neighbours": 2.29,
-      "cpu": 74,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "103-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "server-render-error",
@@ -6747,6 +6799,7 @@
           "cpu": 66
         },
         {
+          "app": "103-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "server-render-error",
@@ -6777,6 +6830,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 15151,
       "phases": {
         "probe": 0,
@@ -6792,6 +6846,7 @@
       "cpu": 71.5,
       "rounds": [
         {
+          "app": "104-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6812,6 +6867,7 @@
           "cpu": 65
         },
         {
+          "app": "104-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6842,21 +6898,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 19383,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 19.5,
-        "install": 4298.5,
-        "start": 2351,
-        "ready": 5846.5,
-        "checks": 6613.5,
-        "dispose": 249.5
-      },
-      "neighbours": 2.5300000000000002,
-      "cpu": 82.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "105-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -6877,6 +6926,7 @@
           "cpu": 81
         },
         {
+          "app": "105-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -6907,6 +6957,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6280,
       "phases": {
         "probe": 0,
@@ -6922,6 +6973,7 @@
       "cpu": 90,
       "rounds": [
         {
+          "app": "106-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6942,6 +6994,7 @@
           "cpu": 92
         },
         {
+          "app": "106-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -6972,6 +7025,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7327,
       "phases": {
         "probe": 0,
@@ -6987,6 +7041,7 @@
       "cpu": 90,
       "rounds": [
         {
+          "app": "107-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7007,6 +7062,7 @@
           "cpu": 91
         },
         {
+          "app": "107-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7037,21 +7093,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 10847.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 19,
-        "install": 1363,
-        "start": 807,
-        "ready": 8587.5,
-        "checks": 0,
-        "dispose": 69
-      },
-      "neighbours": 3.205,
-      "cpu": 88.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "108-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -7072,6 +7121,7 @@
           "cpu": 89
         },
         {
+          "app": "108-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -7102,21 +7152,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 11549.5,
-      "phases": {
-        "probe": 1.5,
-        "load": 0,
-        "mount": 16.5,
-        "install": 1599.5,
-        "start": 2908.5,
-        "ready": 1069.5,
-        "checks": 5856,
-        "dispose": 97
-      },
-      "neighbours": 3.125,
-      "cpu": 90,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "109-vue-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7137,6 +7180,7 @@
           "cpu": 90
         },
         {
+          "app": "109-vue-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7167,6 +7211,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2750.5,
       "phases": {
         "probe": 0,
@@ -7182,6 +7227,7 @@
       "cpu": 91.5,
       "rounds": [
         {
+          "app": "110-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7202,6 +7248,7 @@
           "cpu": 91
         },
         {
+          "app": "110-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7232,21 +7279,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 26448.5,
-      "phases": {
-        "probe": 0,
-        "load": 233,
-        "mount": 259.5,
-        "install": 418,
-        "start": 5719.5,
-        "ready": 2614.5,
-        "checks": 16796.5,
-        "dispose": 405.5
-      },
-      "neighbours": 3.9450000000000003,
-      "cpu": 93.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "111-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7267,6 +7307,7 @@
           "cpu": 94
         },
         {
+          "app": "111-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7297,21 +7338,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 15243.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 18.5,
-        "install": 424.5,
-        "start": 4961.5,
-        "ready": 2893,
-        "checks": 6497,
-        "dispose": 447
-      },
-      "neighbours": 3.645,
-      "cpu": 93.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "112-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7332,6 +7366,7 @@
           "cpu": 94
         },
         {
+          "app": "112-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7362,6 +7397,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 14247.5,
       "phases": {
         "probe": 0,
@@ -7377,6 +7413,7 @@
       "cpu": 93.5,
       "rounds": [
         {
+          "app": "113-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7397,6 +7434,7 @@
           "cpu": 94
         },
         {
+          "app": "113-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7427,21 +7465,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 18593,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 25.5,
-        "install": 366,
-        "start": 2533.5,
-        "ready": 7451.5,
-        "checks": 7997,
-        "dispose": 218
-      },
-      "neighbours": 4.48,
-      "cpu": 94.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "114-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7462,6 +7493,7 @@
           "cpu": 95
         },
         {
+          "app": "114-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7492,6 +7524,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 13957.5,
       "phases": {
         "probe": 0,
@@ -7507,6 +7540,7 @@
       "cpu": 95,
       "rounds": [
         {
+          "app": "115-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7527,6 +7561,7 @@
           "cpu": 95
         },
         {
+          "app": "115-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7557,6 +7592,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8134,
       "phases": {
         "probe": 0,
@@ -7572,6 +7608,7 @@
       "cpu": 94.5,
       "rounds": [
         {
+          "app": "116-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7592,6 +7629,7 @@
           "cpu": 95
         },
         {
+          "app": "116-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7622,21 +7660,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 11865.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 19,
-        "install": 1016.5,
-        "start": 2184.5,
-        "ready": 1791.5,
-        "checks": 6672,
-        "dispose": 179.5
-      },
-      "neighbours": 4.62,
-      "cpu": 94.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "117-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7657,6 +7688,7 @@
           "cpu": 95
         },
         {
+          "app": "117-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -7687,6 +7719,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9963.5,
       "phases": {
         "probe": 0,
@@ -7702,6 +7735,7 @@
       "cpu": 94.5,
       "rounds": [
         {
+          "app": "118-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7722,6 +7756,7 @@
           "cpu": 95
         },
         {
+          "app": "118-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7752,21 +7787,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 5969.5,
-      "phases": {
-        "probe": 0,
-        "load": 572.5,
-        "mount": 145,
-        "install": 353,
-        "start": 828.5,
-        "ready": 3100.5,
-        "checks": 0,
-        "dispose": 93
-      },
-      "neighbours": 4.720000000000001,
-      "cpu": 94,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "119-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -7787,6 +7815,7 @@
           "cpu": 95
         },
         {
+          "app": "119-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -7817,21 +7846,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 14669,
-      "phases": {
-        "probe": 1,
-        "load": 0,
-        "mount": 136,
-        "install": 2023.5,
-        "start": 3667.5,
-        "ready": 8723.5,
-        "checks": 0,
-        "dispose": 116
-      },
-      "neighbours": 3.19,
-      "cpu": 89.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "120-react-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -7852,6 +7874,7 @@
           "cpu": 90
         },
         {
+          "app": "120-react-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -7882,6 +7905,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2961.5,
       "phases": {
         "probe": 0,
@@ -7897,6 +7921,7 @@
       "cpu": 93.5,
       "rounds": [
         {
+          "app": "121-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7917,6 +7942,7 @@
           "cpu": 94
         },
         {
+          "app": "121-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7947,6 +7973,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9903.5,
       "phases": {
         "probe": 0,
@@ -7962,6 +7989,7 @@
       "cpu": 90,
       "rounds": [
         {
+          "app": "122-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -7982,6 +8010,7 @@
           "cpu": 89
         },
         {
+          "app": "122-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8012,21 +8041,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 4997,
-      "phases": {
-        "probe": 0,
-        "load": 482,
-        "mount": 90.5,
-        "install": 749,
-        "start": 3604.5,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 6.5
-      },
-      "neighbours": 3.02,
-      "cpu": 90.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "123-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -8047,6 +8069,7 @@
           "cpu": 91
         },
         {
+          "app": "123-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -8077,6 +8100,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 11734.5,
       "phases": {
         "probe": 0,
@@ -8092,6 +8116,7 @@
       "cpu": 91.5,
       "rounds": [
         {
+          "app": "124-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8112,6 +8137,7 @@
           "cpu": 91
         },
         {
+          "app": "124-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8142,21 +8168,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 742.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 16.5,
-        "install": 713.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 11.5
-      },
-      "neighbours": 3,
-      "cpu": 93.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "125-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -8177,6 +8196,7 @@
           "cpu": 96
         },
         {
+          "app": "125-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -8207,6 +8227,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 10177,
       "phases": {
         "probe": 0,
@@ -8222,6 +8243,7 @@
       "cpu": 94,
       "rounds": [
         {
+          "app": "126-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8242,6 +8264,7 @@
           "cpu": 95
         },
         {
+          "app": "126-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8272,21 +8295,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 1231,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 63.5,
-        "install": 1136.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 30
-      },
-      "neighbours": 2.1,
-      "cpu": 91,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "127-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -8307,6 +8323,7 @@
           "cpu": 87
         },
         {
+          "app": "127-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -8337,21 +8354,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 12821.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 35.5,
-        "install": 310,
-        "start": 1884,
-        "ready": 2364.5,
-        "checks": 7951.5,
-        "dispose": 274.5
-      },
-      "neighbours": 3.9299999999999997,
-      "cpu": 97,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "128-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -8372,6 +8382,7 @@
           "cpu": 97
         },
         {
+          "app": "128-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -8402,6 +8413,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 10640.5,
       "phases": {
         "probe": 0,
@@ -8417,6 +8429,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "129-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8437,6 +8450,7 @@
           "cpu": 98
         },
         {
+          "app": "129-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8467,6 +8481,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6129.5,
       "phases": {
         "probe": 0,
@@ -8482,6 +8497,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "130-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8502,6 +8518,7 @@
           "cpu": 98
         },
         {
+          "app": "130-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8532,6 +8549,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 9239,
       "phases": {
         "probe": 0.5,
@@ -8547,6 +8565,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "131-vue-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8567,6 +8586,7 @@
           "cpu": 98
         },
         {
+          "app": "131-vue-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8597,6 +8617,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5366.5,
       "phases": {
         "probe": 0,
@@ -8612,6 +8633,7 @@
       "cpu": 97.5,
       "rounds": [
         {
+          "app": "132-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8632,6 +8654,7 @@
           "cpu": 98
         },
         {
+          "app": "132-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8662,6 +8685,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 11788.5,
       "phases": {
         "probe": 0,
@@ -8677,6 +8701,7 @@
       "cpu": 95,
       "rounds": [
         {
+          "app": "133-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8697,6 +8722,7 @@
           "cpu": 96
         },
         {
+          "app": "133-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8727,21 +8753,23 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
-      "totalMs": 10460.5,
+      "passedRounds": 1,
+      "totalMs": 11166,
       "phases": {
         "probe": 0,
         "load": 0,
-        "mount": 39.5,
-        "install": 511.5,
-        "start": 5462.5,
-        "ready": 3250,
-        "checks": 1137.5,
-        "dispose": 58
+        "mount": 61,
+        "install": 579,
+        "start": 5353,
+        "ready": 2793,
+        "checks": 2275,
+        "dispose": 103
       },
-      "neighbours": 3.04,
-      "cpu": 94.5,
+      "neighbours": 3.19,
+      "cpu": 96,
       "rounds": [
         {
+          "app": "134-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8762,6 +8790,7 @@
           "cpu": 96
         },
         {
+          "app": "134-angular",
           "result": "fail",
           "failureClass": "runtime-unsupported",
           "rule": "signature:wasm-trap",
@@ -8792,21 +8821,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 32641.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 66,
-        "install": 492,
-        "start": 484.5,
-        "ready": 7323,
-        "checks": 24007,
-        "dispose": 267
-      },
-      "neighbours": 3.3200000000000003,
-      "cpu": 86,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "135-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -8827,6 +8849,7 @@
           "cpu": 86
         },
         {
+          "app": "135-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -8857,6 +8880,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 8917.5,
       "phases": {
         "probe": 0,
@@ -8872,6 +8896,7 @@
       "cpu": 92.5,
       "rounds": [
         {
+          "app": "136-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8892,6 +8917,7 @@
           "cpu": 95
         },
         {
+          "app": "136-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -8922,21 +8948,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 14412.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 220,
-        "install": 789,
-        "start": 2065,
-        "ready": 11113,
-        "checks": 0,
-        "dispose": 219
-      },
-      "neighbours": 3.12,
-      "cpu": 80,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "137-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -8957,6 +8976,7 @@
           "cpu": 80
         },
         {
+          "app": "137-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -8987,21 +9007,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 12050,
-      "phases": {
-        "probe": 0,
-        "load": 172,
-        "mount": 111,
-        "install": 336,
-        "start": 1790,
-        "ready": 9462,
-        "checks": 0,
-        "dispose": 177
-      },
-      "neighbours": 3.115,
-      "cpu": 78,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "138-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -9022,6 +9035,7 @@
           "cpu": 77
         },
         {
+          "app": "138-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -9052,21 +9066,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 4349,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 55.5,
-        "install": 220.5,
-        "start": 1235,
-        "ready": 2810,
-        "checks": 0,
-        "dispose": 25.5
-      },
-      "neighbours": 3.33,
-      "cpu": 71.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "139-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -9087,6 +9094,7 @@
           "cpu": 68
         },
         {
+          "app": "139-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -9117,21 +9125,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 12934,
-      "phases": {
-        "probe": 0,
-        "load": 364,
-        "mount": 40,
-        "install": 164,
-        "start": 3095.5,
-        "ready": 8687,
-        "checks": 0,
-        "dispose": 295.5
-      },
-      "neighbours": 3.7199999999999998,
-      "cpu": 82,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "140-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -9152,6 +9153,7 @@
           "cpu": 82
         },
         {
+          "app": "140-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -9182,6 +9184,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3494,
       "phases": {
         "probe": 0,
@@ -9197,6 +9200,7 @@
       "cpu": 91,
       "rounds": [
         {
+          "app": "141-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9217,6 +9221,7 @@
           "cpu": 90
         },
         {
+          "app": "141-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9247,6 +9252,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5779.5,
       "phases": {
         "probe": 0.5,
@@ -9262,6 +9268,7 @@
       "cpu": 89.5,
       "rounds": [
         {
+          "app": "142-react-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9282,6 +9289,7 @@
           "cpu": 91
         },
         {
+          "app": "142-react-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9312,21 +9320,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 36429.5,
-      "phases": {
-        "probe": 0,
-        "load": 213.5,
-        "mount": 23,
-        "install": 153.5,
-        "start": 62,
-        "ready": 292.5,
-        "checks": 35677,
-        "dispose": 6.5
-      },
-      "neighbours": 4.324999999999999,
-      "cpu": 80.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "143-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -9347,6 +9348,7 @@
           "cpu": 81
         },
         {
+          "app": "143-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -9377,21 +9379,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 598.5,
-      "phases": {
-        "probe": 0,
-        "load": 112.5,
-        "mount": 103.5,
-        "install": 363.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 17.5
-      },
-      "neighbours": 4.865,
-      "cpu": 93,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "144-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -9412,6 +9407,7 @@
           "cpu": 96
         },
         {
+          "app": "144-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -9442,21 +9438,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 4511,
-      "phases": {
-        "probe": 0,
-        "load": 329,
-        "mount": 63,
-        "install": 343.5,
-        "start": 3770.5,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 3
-      },
-      "neighbours": 4.275,
-      "cpu": 88,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "145-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -9477,6 +9466,7 @@
           "cpu": 88
         },
         {
+          "app": "145-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -9507,6 +9497,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 10987.5,
       "phases": {
         "probe": 0,
@@ -9522,6 +9513,7 @@
       "cpu": 91,
       "rounds": [
         {
+          "app": "146-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9542,6 +9534,7 @@
           "cpu": 90
         },
         {
+          "app": "146-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9572,21 +9565,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 77010.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 224.5,
-        "install": 3255.5,
-        "start": 2668.5,
-        "ready": 4875,
-        "checks": 65935.5,
-        "dispose": 49.5
-      },
-      "neighbours": 4.23,
-      "cpu": 70,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "147-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -9607,6 +9593,7 @@
           "cpu": 69
         },
         {
+          "app": "147-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -9637,21 +9624,14 @@
       "result": "fail",
       "failureClass": "timeout",
       "rule": "phase-deadline",
-      "totalMs": 242183,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 113,
-        "install": 352,
-        "start": 1552.5,
-        "ready": 240000,
-        "checks": 0,
-        "dispose": 162.5
-      },
-      "neighbours": 4.445,
-      "cpu": 59,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "148-solid-start",
           "result": "fail",
           "failureClass": "timeout",
           "rule": "phase-deadline",
@@ -9672,6 +9652,7 @@
           "cpu": 58
         },
         {
+          "app": "148-solid-start",
           "result": "fail",
           "failureClass": "timeout",
           "rule": "phase-deadline",
@@ -9702,21 +9683,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 19671.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 34.5,
-        "install": 1070,
-        "start": 2388.5,
-        "ready": 4396,
-        "checks": 11615.5,
-        "dispose": 164.5
-      },
-      "neighbours": 4.5,
-      "cpu": 74.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "149-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -9737,6 +9711,7 @@
           "cpu": 76
         },
         {
+          "app": "149-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -9767,6 +9742,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2423.5,
       "phases": {
         "probe": 0,
@@ -9782,6 +9758,7 @@
       "cpu": 89.5,
       "rounds": [
         {
+          "app": "150-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9802,6 +9779,7 @@
           "cpu": 90
         },
         {
+          "app": "150-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9832,21 +9810,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 12687.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 15,
-        "install": 369,
-        "start": 3676,
-        "ready": 8378,
-        "checks": 0,
-        "dispose": 243
-      },
-      "neighbours": 4.945,
-      "cpu": 65.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "151-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -9867,6 +9838,7 @@
           "cpu": 67
         },
         {
+          "app": "151-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -9897,6 +9869,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 1784.5,
       "phases": {
         "probe": 0,
@@ -9912,6 +9885,7 @@
       "cpu": 82,
       "rounds": [
         {
+          "app": "152-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9932,6 +9906,7 @@
           "cpu": 80
         },
         {
+          "app": "152-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9962,6 +9937,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2601,
       "phases": {
         "probe": 0.5,
@@ -9977,6 +9953,7 @@
       "cpu": 64.5,
       "rounds": [
         {
+          "app": "153-vue-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -9997,6 +9974,7 @@
           "cpu": 68
         },
         {
+          "app": "153-vue-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10027,6 +10005,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 746,
       "phases": {
         "probe": 0,
@@ -10042,6 +10021,7 @@
       "cpu": 62.5,
       "rounds": [
         {
+          "app": "154-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10062,6 +10042,7 @@
           "cpu": 62
         },
         {
+          "app": "154-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10092,6 +10073,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7084.5,
       "phases": {
         "probe": 0,
@@ -10107,6 +10089,7 @@
       "cpu": 60.5,
       "rounds": [
         {
+          "app": "155-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10127,6 +10110,7 @@
           "cpu": 64
         },
         {
+          "app": "155-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10157,21 +10141,23 @@
       "result": "fail",
       "failureClass": "runtime-unsupported",
       "rule": "signature:wasm-trap",
-      "totalMs": 7789.5,
+      "passedRounds": 1,
+      "totalMs": 7703,
       "phases": {
         "probe": 0,
         "load": 0,
-        "mount": 26.5,
-        "install": 355,
-        "start": 4307.5,
-        "ready": 2483.5,
-        "checks": 526,
-        "dispose": 90
+        "mount": 45,
+        "install": 335,
+        "start": 4231,
+        "ready": 1891,
+        "checks": 1052,
+        "dispose": 149
       },
-      "neighbours": 4.04,
-      "cpu": 77.5,
+      "neighbours": 4.07,
+      "cpu": 84,
       "rounds": [
         {
+          "app": "156-angular",
           "result": "fail",
           "failureClass": "runtime-unsupported",
           "rule": "signature:wasm-trap",
@@ -10192,6 +10178,7 @@
           "cpu": 71
         },
         {
+          "app": "156-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10222,21 +10209,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 14248.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 122,
-        "install": 346.5,
-        "start": 376,
-        "ready": 13073,
-        "checks": 0,
-        "dispose": 327
-      },
-      "neighbours": 3.705,
-      "cpu": 69,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "157-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -10257,6 +10237,7 @@
           "cpu": 66
         },
         {
+          "app": "157-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -10287,21 +10268,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 10883.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 37,
-        "install": 251,
-        "start": 1315,
-        "ready": 2845,
-        "checks": 6360,
-        "dispose": 73.5
-      },
-      "neighbours": 3.815,
-      "cpu": 70.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "158-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -10322,6 +10296,7 @@
           "cpu": 71
         },
         {
+          "app": "158-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -10352,6 +10327,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6998.5,
       "phases": {
         "probe": 0,
@@ -10367,6 +10343,7 @@
       "cpu": 79.5,
       "rounds": [
         {
+          "app": "159-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10387,6 +10364,7 @@
           "cpu": 83
         },
         {
+          "app": "159-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10417,6 +10395,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7679.5,
       "phases": {
         "probe": 0,
@@ -10432,6 +10411,7 @@
       "cpu": 87.5,
       "rounds": [
         {
+          "app": "160-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10452,6 +10432,7 @@
           "cpu": 88
         },
         {
+          "app": "160-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10482,6 +10463,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3377.5,
       "phases": {
         "probe": 0,
@@ -10497,6 +10479,7 @@
       "cpu": 90.5,
       "rounds": [
         {
+          "app": "161-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10517,6 +10500,7 @@
           "cpu": 91
         },
         {
+          "app": "161-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10547,21 +10531,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 9937.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 35.5,
-        "install": 265,
-        "start": 3225.5,
-        "ready": 342,
-        "checks": 5838,
-        "dispose": 230
-      },
-      "neighbours": 3.9699999999999998,
-      "cpu": 69,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "162-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -10582,6 +10559,7 @@
           "cpu": 67
         },
         {
+          "app": "162-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -10612,21 +10590,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 9655.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 14,
-        "install": 215,
-        "start": 582,
-        "ready": 8816,
-        "checks": 0,
-        "dispose": 22
-      },
-      "neighbours": 3.88,
-      "cpu": 61,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "163-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -10647,6 +10618,7 @@
           "cpu": 62
         },
         {
+          "app": "163-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -10677,6 +10649,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3950,
       "phases": {
         "probe": 0,
@@ -10692,6 +10665,7 @@
       "cpu": 64,
       "rounds": [
         {
+          "app": "164-react-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10712,6 +10686,7 @@
           "cpu": 63
         },
         {
+          "app": "164-react-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10742,6 +10717,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 955.5,
       "phases": {
         "probe": 0,
@@ -10757,6 +10733,7 @@
       "cpu": 74.5,
       "rounds": [
         {
+          "app": "165-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10777,6 +10754,7 @@
           "cpu": 79
         },
         {
+          "app": "165-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10807,21 +10785,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 111088.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 33.5,
-        "install": 200.5,
-        "start": 3981,
-        "ready": 1587.5,
-        "checks": 105028.5,
-        "dispose": 256.5
-      },
-      "neighbours": 4.75,
-      "cpu": 63.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "166-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -10842,6 +10813,7 @@
           "cpu": 63
         },
         {
+          "app": "166-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -10872,6 +10844,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7722.5,
       "phases": {
         "probe": 0,
@@ -10887,6 +10860,7 @@
       "cpu": 85,
       "rounds": [
         {
+          "app": "167-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10907,6 +10881,7 @@
           "cpu": 84
         },
         {
+          "app": "167-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -10937,21 +10912,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 27807.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 90.5,
-        "install": 341.5,
-        "start": 329.5,
-        "ready": 5152,
-        "checks": 21597,
-        "dispose": 294
-      },
-      "neighbours": 4.82,
-      "cpu": 50.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "168-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -10972,6 +10940,7 @@
           "cpu": 49
         },
         {
+          "app": "168-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11002,21 +10971,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 66086,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 33.5,
-        "install": 351.5,
-        "start": 1542.5,
-        "ready": 3805.5,
-        "checks": 60313,
-        "dispose": 38
-      },
-      "neighbours": 4.9,
-      "cpu": 57,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "169-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -11037,6 +10999,7 @@
           "cpu": 56
         },
         {
+          "app": "169-astro",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -11067,21 +11030,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 10191.5,
-      "phases": {
-        "probe": 1.5,
-        "load": 0,
-        "mount": 16.5,
-        "install": 258,
-        "start": 1286,
-        "ready": 2961.5,
-        "checks": 5562,
-        "dispose": 104
-      },
-      "neighbours": 5,
-      "cpu": 47.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "170-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11102,6 +11058,7 @@
           "cpu": 47
         },
         {
+          "app": "170-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11132,21 +11089,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 10190.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 18,
-        "install": 155,
-        "start": 1150,
-        "ready": 8774,
-        "checks": 0,
-        "dispose": 91.5
-      },
-      "neighbours": 5,
-      "cpu": 29.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "171-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -11167,6 +11117,7 @@
           "cpu": 29
         },
         {
+          "app": "171-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -11197,21 +11148,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 9267,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 26,
-        "install": 205.5,
-        "start": 697.5,
-        "ready": 8306,
-        "checks": 0,
-        "dispose": 25.5
-      },
-      "neighbours": 4.845,
-      "cpu": 31.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "172-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -11232,6 +11176,7 @@
           "cpu": 33
         },
         {
+          "app": "172-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -11262,21 +11207,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 5851,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 40,
-        "install": 259.5,
-        "start": 2967.5,
-        "ready": 2359,
-        "checks": 0,
-        "dispose": 223
-      },
-      "neighbours": 4.58,
-      "cpu": 60,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "173-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -11297,6 +11235,7 @@
           "cpu": 59
         },
         {
+          "app": "173-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -11327,21 +11266,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 6636,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 35,
-        "install": 199.5,
-        "start": 432.5,
-        "ready": 250,
-        "checks": 5697,
-        "dispose": 20
-      },
-      "neighbours": 4.855,
-      "cpu": 47.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "174-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11362,6 +11294,7 @@
           "cpu": 42
         },
         {
+          "app": "174-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11392,21 +11325,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 10513.5,
-      "phases": {
-        "probe": 0.5,
-        "load": 0,
-        "mount": 8,
-        "install": 318.5,
-        "start": 1678.5,
-        "ready": 8475,
-        "checks": 0,
-        "dispose": 31
-      },
-      "neighbours": 4.79,
-      "cpu": 47,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "175-vue-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -11427,6 +11353,7 @@
           "cpu": 45
         },
         {
+          "app": "175-vue-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -11457,21 +11384,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 5815,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 39,
-        "install": 55,
-        "start": 50.5,
-        "ready": 235,
-        "checks": 5430.5,
-        "dispose": 3.5
-      },
-      "neighbours": 4.99,
-      "cpu": 41.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "176-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11492,6 +11412,7 @@
           "cpu": 39
         },
         {
+          "app": "176-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11522,21 +11443,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 71803.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 36.5,
-        "install": 146,
-        "start": 3744,
-        "ready": 1564,
-        "checks": 66043,
-        "dispose": 269.5
-      },
-      "neighbours": 4.825,
-      "cpu": 71.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "177-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11557,6 +11471,7 @@
           "cpu": 71
         },
         {
+          "app": "177-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -11587,6 +11502,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7077.5,
       "phases": {
         "probe": 0,
@@ -11602,6 +11518,7 @@
       "cpu": 84.5,
       "rounds": [
         {
+          "app": "178-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11622,6 +11539,7 @@
           "cpu": 85
         },
         {
+          "app": "178-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11652,6 +11570,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 7927.5,
       "phases": {
         "probe": 0,
@@ -11667,6 +11586,7 @@
       "cpu": 85.5,
       "rounds": [
         {
+          "app": "179-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11687,6 +11607,7 @@
           "cpu": 86
         },
         {
+          "app": "179-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11717,6 +11638,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6020,
       "phases": {
         "probe": 0,
@@ -11732,6 +11654,7 @@
       "cpu": 80,
       "rounds": [
         {
+          "app": "180-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11752,6 +11675,7 @@
           "cpu": 80
         },
         {
+          "app": "180-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11782,6 +11706,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5824.5,
       "phases": {
         "probe": 0,
@@ -11797,6 +11722,7 @@
       "cpu": 81.5,
       "rounds": [
         {
+          "app": "181-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11817,6 +11743,7 @@
           "cpu": 82
         },
         {
+          "app": "181-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11847,6 +11774,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 4650.5,
       "phases": {
         "probe": 0,
@@ -11862,6 +11790,7 @@
       "cpu": 82.5,
       "rounds": [
         {
+          "app": "182-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11882,6 +11811,7 @@
           "cpu": 83
         },
         {
+          "app": "182-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11912,6 +11842,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2019,
       "phases": {
         "probe": 0,
@@ -11927,6 +11858,7 @@
       "cpu": 80.5,
       "rounds": [
         {
+          "app": "183-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11947,6 +11879,7 @@
           "cpu": 81
         },
         {
+          "app": "183-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -11977,21 +11910,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 10405,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 32.5,
-        "install": 280,
-        "start": 3632.5,
-        "ready": 640,
-        "checks": 5657.5,
-        "dispose": 160.5
-      },
-      "neighbours": 4.985,
-      "cpu": 52.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "184-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12012,6 +11938,7 @@
           "cpu": 53
         },
         {
+          "app": "184-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12042,6 +11969,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2365,
       "phases": {
         "probe": 0,
@@ -12057,6 +11985,7 @@
       "cpu": 87.5,
       "rounds": [
         {
+          "app": "185-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12077,6 +12006,7 @@
           "cpu": 86
         },
         {
+          "app": "185-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12107,21 +12037,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 1227,
-      "phases": {
-        "probe": 0.5,
-        "load": 448.5,
-        "mount": 103,
-        "install": 345.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 3
-      },
-      "neighbours": 5,
-      "cpu": 86,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "186-react-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -12142,6 +12065,7 @@
           "cpu": 82
         },
         {
+          "app": "186-react-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -12172,21 +12096,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 5847.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 33.5,
-        "install": 47.5,
-        "start": 63.5,
-        "ready": 248,
-        "checks": 5435.5,
-        "dispose": 18
-      },
-      "neighbours": 4.995,
-      "cpu": 27.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "187-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12207,6 +12124,7 @@
           "cpu": 29
         },
         {
+          "app": "187-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12237,21 +12155,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 12134.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 51.5,
-        "install": 182.5,
-        "start": 4362.5,
-        "ready": 1357,
-        "checks": 6018,
-        "dispose": 161
-      },
-      "neighbours": 4.705,
-      "cpu": 80.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "188-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12272,6 +12183,7 @@
           "cpu": 81
         },
         {
+          "app": "188-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12302,6 +12214,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6911.5,
       "phases": {
         "probe": 0,
@@ -12317,6 +12230,7 @@
       "cpu": 82.5,
       "rounds": [
         {
+          "app": "189-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12337,6 +12251,7 @@
           "cpu": 83
         },
         {
+          "app": "189-angular",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12367,21 +12282,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 13945.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 22.5,
-        "install": 391.5,
-        "start": 302.5,
-        "ready": 13067.5,
-        "checks": 0,
-        "dispose": 155.5
-      },
-      "neighbours": 4.785,
-      "cpu": 72,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "190-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -12402,6 +12310,7 @@
           "cpu": 71
         },
         {
+          "app": "190-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -12432,6 +12341,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6109,
       "phases": {
         "probe": 0,
@@ -12447,6 +12357,7 @@
       "cpu": 78.5,
       "rounds": [
         {
+          "app": "191-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12467,6 +12378,7 @@
           "cpu": 79
         },
         {
+          "app": "191-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12497,21 +12409,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 10141.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 29,
-        "install": 239,
-        "start": 1039.5,
-        "ready": 2516.5,
-        "checks": 6187,
-        "dispose": 128.5
-      },
-      "neighbours": 4.715,
-      "cpu": 71,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "192-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12532,6 +12437,7 @@
           "cpu": 70
         },
         {
+          "app": "192-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12562,21 +12468,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 107452.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 17,
-        "install": 880,
-        "start": 1393,
-        "ready": 4114,
-        "checks": 100731,
-        "dispose": 316.5
-      },
-      "neighbours": 4.4,
-      "cpu": 50.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "193-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12597,6 +12496,7 @@
           "cpu": 49
         },
         {
+          "app": "193-react-router",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12627,21 +12527,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 655,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 90,
-        "install": 561,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 3
-      },
-      "neighbours": 5,
-      "cpu": 87.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "194-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -12662,6 +12555,7 @@
           "cpu": 82
         },
         {
+          "app": "194-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -12692,21 +12586,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 572.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 35,
-        "install": 532,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 4
-      },
-      "neighbours": 5,
-      "cpu": 90,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "195-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -12727,6 +12614,7 @@
           "cpu": 90
         },
         {
+          "app": "195-svelte-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -12757,21 +12645,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 7041.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 40.5,
-        "install": 204,
-        "start": 633.5,
-        "ready": 422,
-        "checks": 5721.5,
-        "dispose": 19
-      },
-      "neighbours": 4.98,
-      "cpu": 67,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "196-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12792,6 +12673,7 @@
           "cpu": 66
         },
         {
+          "app": "196-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -12822,6 +12704,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2571.5,
       "phases": {
         "probe": 0,
@@ -12837,6 +12720,7 @@
       "cpu": 69,
       "rounds": [
         {
+          "app": "197-vue-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12857,6 +12741,7 @@
           "cpu": 68
         },
         {
+          "app": "197-vue-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12887,6 +12772,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 869,
       "phases": {
         "probe": 0,
@@ -12902,6 +12788,7 @@
       "cpu": 61,
       "rounds": [
         {
+          "app": "198-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12922,6 +12809,7 @@
           "cpu": 63
         },
         {
+          "app": "198-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12952,6 +12840,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6772.5,
       "phases": {
         "probe": 0,
@@ -12967,6 +12856,7 @@
       "cpu": 71.5,
       "rounds": [
         {
+          "app": "199-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -12987,6 +12877,7 @@
           "cpu": 70
         },
         {
+          "app": "199-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13017,21 +12908,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 713.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 49.5,
-        "install": 658,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 5
-      },
-      "neighbours": 5,
-      "cpu": 77.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "200-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -13052,6 +12936,7 @@
           "cpu": 77
         },
         {
+          "app": "200-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -13082,21 +12967,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 888.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 63,
-        "install": 821.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 3.5
-      },
-      "neighbours": 5,
-      "cpu": 84.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "201-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -13117,6 +12995,7 @@
           "cpu": 86
         },
         {
+          "app": "201-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -13147,6 +13026,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6177.5,
       "phases": {
         "probe": 0,
@@ -13162,6 +13042,7 @@
       "cpu": 79.5,
       "rounds": [
         {
+          "app": "202-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13182,6 +13063,7 @@
           "cpu": 79
         },
         {
+          "app": "202-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13212,21 +13094,14 @@
       "result": "fail",
       "failureClass": "timeout",
       "rule": "phase-deadline",
-      "totalMs": 241448,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 33.5,
-        "install": 244.5,
-        "start": 1066,
-        "ready": 240001,
-        "checks": 0,
-        "dispose": 101.5
-      },
-      "neighbours": 2.335,
-      "cpu": 24.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "203-solid-start",
           "result": "fail",
           "failureClass": "timeout",
           "rule": "phase-deadline",
@@ -13247,6 +13122,7 @@
           "cpu": 24
         },
         {
+          "app": "203-solid-start",
           "result": "fail",
           "failureClass": "timeout",
           "rule": "phase-deadline",
@@ -13277,6 +13153,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 3966,
       "phases": {
         "probe": 0,
@@ -13292,6 +13169,7 @@
       "cpu": 78.5,
       "rounds": [
         {
+          "app": "204-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13312,6 +13190,7 @@
           "cpu": 76
         },
         {
+          "app": "204-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13342,6 +13221,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 1920,
       "phases": {
         "probe": 0,
@@ -13357,6 +13237,7 @@
       "cpu": 79.5,
       "rounds": [
         {
+          "app": "205-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13377,6 +13258,7 @@
           "cpu": 76
         },
         {
+          "app": "205-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13407,6 +13289,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 4738,
       "phases": {
         "probe": 0,
@@ -13422,6 +13305,7 @@
       "cpu": 64,
       "rounds": [
         {
+          "app": "206-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13442,6 +13326,7 @@
           "cpu": 64
         },
         {
+          "app": "206-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13472,21 +13357,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 514,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 7.5,
-        "install": 501.5,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 4
-      },
-      "neighbours": 4,
-      "cpu": 80.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "207-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -13507,6 +13385,7 @@
           "cpu": 80
         },
         {
+          "app": "207-lit-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -13537,6 +13416,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 4571.5,
       "phases": {
         "probe": 0,
@@ -13552,6 +13432,7 @@
       "cpu": 76.5,
       "rounds": [
         {
+          "app": "208-react-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13572,6 +13453,7 @@
           "cpu": 76
         },
         {
+          "app": "208-react-express",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13602,21 +13484,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "undeclared-import",
-      "totalMs": 71292.5,
-      "phases": {
-        "probe": 0,
-        "load": 326.5,
-        "mount": 41,
-        "install": 116.5,
-        "start": 19,
-        "ready": 233.5,
-        "checks": 70339.5,
-        "dispose": 4
-      },
-      "neighbours": 4.33,
-      "cpu": 38.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "209-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -13637,6 +13512,7 @@
           "cpu": 37
         },
         {
+          "app": "209-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "undeclared-import",
@@ -13667,6 +13543,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6789.5,
       "phases": {
         "probe": 0,
@@ -13682,6 +13559,7 @@
       "cpu": 55.5,
       "rounds": [
         {
+          "app": "210-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13702,6 +13580,7 @@
           "cpu": 55
         },
         {
+          "app": "210-sveltekit",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13732,21 +13611,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 3476,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 11,
-        "install": 378.5,
-        "start": 3082,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 2
-      },
-      "neighbours": 4.405,
-      "cpu": 70.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "211-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -13767,6 +13639,7 @@
           "cpu": 72
         },
         {
+          "app": "211-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -13797,21 +13670,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "server-render-error",
-      "totalMs": 12784,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 80.5,
-        "install": 279,
-        "start": 301,
-        "ready": 11980.5,
-        "checks": 0,
-        "dispose": 139.5
-      },
-      "neighbours": 4,
-      "cpu": 28,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "212-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "server-render-error",
@@ -13832,6 +13698,7 @@
           "cpu": 29
         },
         {
+          "app": "212-nuxt",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "server-render-error",
@@ -13862,6 +13729,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5594.5,
       "phases": {
         "probe": 0,
@@ -13877,6 +13745,7 @@
       "cpu": 59.5,
       "rounds": [
         {
+          "app": "213-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13897,6 +13766,7 @@
           "cpu": 60
         },
         {
+          "app": "213-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13927,6 +13797,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5230,
       "phases": {
         "probe": 0,
@@ -13942,6 +13813,7 @@
       "cpu": 67,
       "rounds": [
         {
+          "app": "214-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13962,6 +13834,7 @@
           "cpu": 67
         },
         {
+          "app": "214-solid-start",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -13992,6 +13865,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 4156,
       "phases": {
         "probe": 0,
@@ -14007,6 +13881,7 @@
       "cpu": 68.5,
       "rounds": [
         {
+          "app": "215-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14027,6 +13902,7 @@
           "cpu": 67
         },
         {
+          "app": "215-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14057,21 +13933,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "compile-error",
-      "totalMs": 9369,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 11,
-        "install": 262,
-        "start": 716,
-        "ready": 8352,
-        "checks": 0,
-        "dispose": 25
-      },
-      "neighbours": 4.135,
-      "cpu": 17,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "216-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -14092,6 +13961,7 @@
           "cpu": 16
         },
         {
+          "app": "216-vue-vite",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "compile-error",
@@ -14122,6 +13992,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 4892,
       "phases": {
         "probe": 0,
@@ -14137,6 +14008,7 @@
       "cpu": 71.5,
       "rounds": [
         {
+          "app": "217-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14157,6 +14029,7 @@
           "cpu": 71
         },
         {
+          "app": "217-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14187,6 +14060,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2358,
       "phases": {
         "probe": 0,
@@ -14202,6 +14076,7 @@
       "cpu": 78.5,
       "rounds": [
         {
+          "app": "218-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14222,6 +14097,7 @@
           "cpu": 76
         },
         {
+          "app": "218-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14252,21 +14128,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 4187.5,
-      "phases": {
-        "probe": 0.5,
-        "load": 0,
-        "mount": 8.5,
-        "install": 240,
-        "start": 1472,
-        "ready": 2437.5,
-        "checks": 0,
-        "dispose": 26
-      },
-      "neighbours": 4.1850000000000005,
-      "cpu": 37,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "219-vue-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -14287,6 +14156,7 @@
           "cpu": 37
         },
         {
+          "app": "219-vue-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -14317,21 +14187,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 90713.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 33,
-        "install": 50.5,
-        "start": 56.5,
-        "ready": 204.5,
-        "checks": 90361.5,
-        "dispose": 5.5
-      },
-      "neighbours": 3.13,
-      "cpu": 25.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "220-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -14352,6 +14215,7 @@
           "cpu": 25
         },
         {
+          "app": "220-static",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -14382,21 +14246,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 80252,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 79,
-        "install": 139,
-        "start": 3734.5,
-        "ready": 1131,
-        "checks": 75017.5,
-        "dispose": 149
-      },
-      "neighbours": 3.4000000000000004,
-      "cpu": 28.5,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "221-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -14417,6 +14274,7 @@
           "cpu": 28
         },
         {
+          "app": "221-sveltekit",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -14447,21 +14305,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "app-error-before-ready",
-      "totalMs": 14031,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 32.5,
-        "install": 305.5,
-        "start": 3996.5,
-        "ready": 9581,
-        "checks": 0,
-        "dispose": 112.5
-      },
-      "neighbours": 4.525,
-      "cpu": 73,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "222-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -14482,6 +14333,7 @@
           "cpu": 73
         },
         {
+          "app": "222-angular",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "app-error-before-ready",
@@ -14512,6 +14364,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6975.5,
       "phases": {
         "probe": 0,
@@ -14527,6 +14380,7 @@
       "cpu": 83,
       "rounds": [
         {
+          "app": "223-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14547,6 +14401,7 @@
           "cpu": 85
         },
         {
+          "app": "223-nuxt",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14577,6 +14432,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5929,
       "phases": {
         "probe": 0,
@@ -14592,6 +14448,7 @@
       "cpu": 66.5,
       "rounds": [
         {
+          "app": "224-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14612,6 +14469,7 @@
           "cpu": 67
         },
         {
+          "app": "224-astro",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14642,21 +14500,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "unresolvable-dependency",
-      "totalMs": 1024.5,
-      "phases": {
-        "probe": 0,
-        "load": 0,
-        "mount": 12.5,
-        "install": 1008,
-        "start": 0,
-        "ready": 0,
-        "checks": 0,
-        "dispose": 2.5
-      },
-      "neighbours": 4.95,
-      "cpu": 74,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "225-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -14677,6 +14528,7 @@
           "cpu": 75
         },
         {
+          "app": "225-solid-start",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "unresolvable-dependency",
@@ -14707,6 +14559,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 5569,
       "phases": {
         "probe": 0,
@@ -14722,6 +14575,7 @@
       "cpu": 82,
       "rounds": [
         {
+          "app": "226-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14742,6 +14596,7 @@
           "cpu": 80
         },
         {
+          "app": "226-react-router",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14772,6 +14627,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2241.5,
       "phases": {
         "probe": 0,
@@ -14787,6 +14643,7 @@
       "cpu": 87.5,
       "rounds": [
         {
+          "app": "227-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14807,6 +14664,7 @@
           "cpu": 88
         },
         {
+          "app": "227-vue-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14837,6 +14695,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 6399.5,
       "phases": {
         "probe": 0,
@@ -14852,6 +14711,7 @@
       "cpu": 91.5,
       "rounds": [
         {
+          "app": "228-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14872,6 +14732,7 @@
           "cpu": 91
         },
         {
+          "app": "228-svelte-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14902,6 +14763,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 2592,
       "phases": {
         "probe": 0,
@@ -14917,6 +14779,7 @@
       "cpu": 92.5,
       "rounds": [
         {
+          "app": "229-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14937,6 +14800,7 @@
           "cpu": 92
         },
         {
+          "app": "229-lit-vite",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -14967,21 +14831,14 @@
       "result": "fail",
       "failureClass": "app-bug",
       "rule": "blocking-check-failed",
-      "totalMs": 9401,
-      "phases": {
-        "probe": 1,
-        "load": 0,
-        "mount": 18,
-        "install": 254.5,
-        "start": 2482.5,
-        "ready": 1302,
-        "checks": 5279.5,
-        "dispose": 62
-      },
-      "neighbours": 3.7350000000000003,
-      "cpu": 45,
+      "passedRounds": 0,
+      "totalMs": null,
+      "phases": {},
+      "neighbours": null,
+      "cpu": null,
       "rounds": [
         {
+          "app": "230-react-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -15002,6 +14859,7 @@
           "cpu": 45
         },
         {
+          "app": "230-react-express",
           "result": "fail",
           "failureClass": "app-bug",
           "rule": "blocking-check-failed",
@@ -15032,6 +14890,7 @@
       "result": "pass",
       "failureClass": null,
       "rule": null,
+      "passedRounds": 2,
       "totalMs": 1858.5,
       "phases": {
         "probe": 0,
@@ -15047,6 +14906,7 @@
       "cpu": 79,
       "rounds": [
         {
+          "app": "231-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,
@@ -15067,6 +14927,7 @@
           "cpu": 75
         },
         {
+          "app": "231-static",
           "result": "pass",
           "failureClass": null,
           "rule": null,

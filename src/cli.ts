@@ -35,8 +35,8 @@ Options:
   --parallel <n>       batch/compare: tabs at a time (default: one per core, up to 8)
   --no-prewarm         batch/compare: do not warm up common stacks first (only runs when their
                        installs are missing)
-  --no-longest-first   batch: start the projects in the order found, not those that took longest
-                       in earlier batches first (for timings to compare between batches)
+  --no-longest-first   batch: start the projects in the order found, not ordered by earlier
+                       batches (for timings to compare between batches; not for compare)
   --out <dir>          Results directory (default: .sandburg/runs)
   --cache <dir>        HTTP cache directory (default: .sandburg/cache)
   --store <dir>        Snapshot store directory (default: .sandburg/store)
