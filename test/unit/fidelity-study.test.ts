@@ -79,6 +79,28 @@ test('fidelity-study refuses to go on from passes kept with other arguments, and
   assert.match((await study(dir, [dir, '--out', out])).stderr, /without its parameters/);
 });
 
+test('fidelity-study refuses to go on from passes run from another directory, or with other uncommitted changes', async () => {
+  const dir = corpus();
+  const out = join(tempDir('sandburg-study-out-'), 'study');
+  const refusal = async (params: Record<string, unknown>) => {
+    writeFileSync(`${out}-passes.jsonl`, kept(dir, 'cold', params, [1000, 5000]));
+    const r = await study(dir, [dir, '--out', out]);
+    assert.equal(r.code, 64);
+    return r.stderr;
+  };
+  // Its stores were another directory's .sandburg/ (the same corpus and --out, from elsewhere); the message names this run's.
+  const moved = await refusal({ store: join(dir, 'elsewhere', '.sandburg') });
+  const store = /its stores in another directory \(.+, not (.+)\): run it from the directory it ran in/.exec(moved)?.[1];
+  assert.ok(store, moved);
+  assert.match(await refusal({}), /its stores in another directory \(\(unknown\), not /, 'a pass kept without its store');
+
+  // The same store and commit, other uncommitted changes.
+  const head = /run with commit abc, not (.+?): use another --out/.exec(await refusal({ store }))?.[1];
+  assert.ok(head);
+  const commit = head === '(unknown)' ? null : head;
+  assert.match(await refusal({ store, commit, tree: 'not this tree' }), /other uncommitted changes to the corpus, src\/ or scripts\/ \(not this tree, not /);
+});
+
 test('fidelity-study refuses a --parallel or --rounds that is not a positive whole number', async () => {
   const dir = corpus();
   for (const [option, value] of [

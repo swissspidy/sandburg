@@ -21,9 +21,10 @@
  *   the apps that pass in both passes (in at least one round of each), so that cold and warm are
  *   medians of the same apps.
  * - With --out, each pass is kept as it ends (<out>-passes.jsonl), with what it was run with (the
- *   corpus, its apps, --parallel, --only, the commit): the same command again goes on from the first
- *   pass it does not have, and one with other arguments, or at another commit, is refused. --out
- *   may not be under .sandburg/, which a cold pass removes.
+ *   corpus, its apps, --parallel, --only, the commit, uncommitted changes to the corpus, src/ and
+ *   scripts/, and where its stores are): the same command again goes on from the first pass it does
+ *   not have, and one with other arguments, at another commit, with other changes or from another
+ *   directory, is refused. --out may not be under .sandburg/, which a cold pass removes.
  * - --report: no runs; the table and the JSON from the passes kept at --out, as they were run (their
  *   corpus, apps and the apps' meta.json, --parallel, --only and commit), over every round kept
  *   unless --rounds says how many.
@@ -37,6 +38,7 @@
  * Set SANDBURG_CHROMIUM to use a Chromium other than Playwright's.
  */
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -106,6 +108,13 @@ interface Params {
   parallel: number;
   only: string | null;
   commit: string | null;
+  /** The stores' directory (.sandburg/ under the study's working directory), which the cold pass removes and fills. */
+  store?: string;
+  /**
+   * A digest of the uncommitted changes (git status and git diff) to the corpus (when it is in the
+   * repository), src/ and scripts/, or null outside a git checkout.
+   */
+  tree?: string | null;
 }
 
 interface Kept {
@@ -230,14 +239,30 @@ if (args.pass) {
   process.exit(0);
 }
 
+const repo = resolve(import.meta.dirname, '..');
+const git = (...a: string[]) => execFileSync('git', a, { cwd: repo, encoding: 'utf8', maxBuffer: 256 * 2 ** 20 });
 const commit = (() => {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: import.meta.dirname, encoding: 'utf8' }).trim();
+    return git('rev-parse', 'HEAD').trim();
   } catch {
     return null;
   }
 })();
-const params: Params = ran ?? { corpus, apps: items.map((i) => i.label), meta: Object.fromEntries(items.map((i) => [i.label, i.meta])), parallel, only, commit };
+// What a commit does not say: uncommitted edits to what the runs run (an app's files, its checks, Sandburg).
+const tree = (() => {
+  const inRepo = relative(repo, corpus);
+  const paths = ['src', 'scripts', ...(inRepo.startsWith('..') || isAbsolute(inRepo) ? [] : [inRepo || '.'])];
+  try {
+    return createHash('sha256')
+      .update(git('status', '--porcelain', '--', ...paths))
+      .update(git('diff', 'HEAD', '--', ...paths))
+      .digest('hex')
+      .slice(0, 16);
+  } catch {
+    return null;
+  }
+})();
+const params: Params = ran ?? { corpus, apps: items.map((i) => i.label), meta: Object.fromEntries(items.map((i) => [i.label, i.meta])), parallel, only, commit, store: resolve('.sandburg'), tree };
 
 /** The first way two passes' parameters differ, or null. */
 function mismatch(a: Params, b: Params): string | null {
@@ -247,7 +272,10 @@ function mismatch(a: Params, b: Params): string | null {
   if (changed) return `another meta.json of ${changed} (${JSON.stringify(a.meta[changed])}, not ${JSON.stringify(b.meta[changed])})`;
   if (a.parallel !== b.parallel) return `--parallel ${a.parallel}, not ${b.parallel}`;
   if (a.only !== b.only) return `--only ${a.only ?? '(none)'}, not ${b.only ?? '(none)'}`;
+  // Passes kept before the store and the tree were recorded have them unknown: a report of them agrees, a study refuses them.
+  if ((a.store ?? null) !== (b.store ?? null)) return `its stores in another directory (${a.store ?? '(unknown)'}, not ${b.store ?? '(unknown)'}): run it from the directory it ran in`;
   if (a.commit !== b.commit) return `commit ${a.commit ?? '(unknown)'}, not ${b.commit ?? '(unknown)'}`;
+  if ((a.tree ?? null) !== (b.tree ?? null)) return `other uncommitted changes to the corpus, src/ or scripts/ (${a.tree ?? '(unknown)'}, not ${b.tree ?? '(unknown)'})`;
   return null;
 }
 
