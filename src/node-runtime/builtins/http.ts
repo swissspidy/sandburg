@@ -762,8 +762,10 @@ export class Server extends EventEmitter {
       },
       write: (chunk) => {
         if (!streamed || req.complete || req.destroyed) return;
+        const taken = req.push(Buffer.from(chunk));
+        // Its idle time counts from after its 'data' listeners (a slow one does not time it out), as Node's.
         socket.active();
-        if (req.push(Buffer.from(chunk))) bridge.consumed?.(chunk.length);
+        if (taken) bridge.consumed?.(chunk.length);
         else unread += chunk.length;
       },
       end: () => {

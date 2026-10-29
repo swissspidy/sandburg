@@ -80,12 +80,13 @@ test("http: server.setTimeout, res.setTimeout and req.setTimeout: 'timeout' on t
     'req.setTimeout complete GET: request, client error socket hang up, aborted, res close',
     'req.setTimeout mid-body: request, req timeout socket=true, req cb, res timeout socket=true, res close, client response 200, client end "t"',
     'writes keep it alive: request, write 1, client response 200, write 2, write 3, write 4, client res aborted, aborted, res close',
+    'body keeps it alive: request, data 0, data 1, data 2, data 3, client error socket hang up, aborted, res close',
   ]);
 });
 
 test('http: idle time starts over with what is read or written; requestTimeout fails a body that takes too long (408, or clientError)', async () => {
   assert.deepEqual(await run('server-timeouts.cjs', [], { PART: '2' }), [
-    'body keeps it alive: request, data 0, data 1, data 2, data 3, client error socket hang up, aborted, res close',
+    'slow data listener: request, data 0, data 1, client error socket hang up, aborted, res close',
     'fires again after activity: request, res timeout socket=true, server timeout, write, client response 200, res timeout socket=true, server timeout, res close, client end "x"',
     'set after the request came: request, res close, client response 200, client end "ok"',
     'setTimeout(0) clears: request, res close, client response 200, client end "ok"',
