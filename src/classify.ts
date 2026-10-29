@@ -253,12 +253,13 @@ function devServerCompileError(lines: string[]): string | null {
 }
 
 /**
- * Whether a code frame's path names the project's file at `path` (relative to /app): the frame's
- * path is absolute, or relative to "/", to /app, or to a folder in it (a dev server started in
- * client/), so /app/<path> ends with it.
+ * Whether a code frame's path names the project's file at `path` (relative to /app): an absolute
+ * frame path is that file exactly; a relative one is relative to "/", to /app, or to a folder in it
+ * (a dev server started in client/), so /app/<path> ends with it.
  */
 function sameFile(path: string, framePath: string): boolean {
-  return `/app/${path}`.endsWith(`/${framePath.replace(/^\//, '')}`);
+  if (framePath.startsWith('/')) return framePath === `/app/${path}`;
+  return `/app/${path}`.endsWith(`/${framePath}`);
 }
 
 function matchSignature(texts: string[]): string | null {

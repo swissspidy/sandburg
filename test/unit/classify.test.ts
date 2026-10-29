@@ -222,12 +222,14 @@ test("a Vite 8 code frame's location is found whether its path is relative to / 
     classify(input({ phases: failedAt('ready', '500'), runtimeOutput: ['[vite] Internal server error: Transform failed with 1 error:', '[PARSE_ERROR] Unexpected token', `   ╭─[ ${framePath} ]`, ' 3 │ }'] }));
   assert.equal(frameOnly('app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
   assert.equal(frameOnly('src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
-  assert.notEqual(frameOnly('../node_modules/x/index.js:3:1')?.message, 'node_modules/x/index.js:3:1: Unexpected token');
+  for (const framePath of ['../shared/x.ts:3:1', '../node_modules/x/index.js:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', framePath);
   assert.equal(frameOnly('/app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
   // An absolute path outside /app, or a virtual module's id, is not a project file.
   for (const framePath of ['/usr/lib/x.js:3:1', '\0virtual:foo:3:1', 'virtual:foo:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', JSON.stringify(framePath));
   // The match is on whole path segments: "pp.tsx" is not App.tsx.
   assert.equal(oxc('pp.tsx:3:1')?.message, `src/App.tsx: ${message}`);
+  // An absolute frame names one file exactly: /app/src/App.tsx is not /app/client/app/src/App.tsx.
+  assert.equal(oxc('/app/src/App.tsx:3:1', '/app/client/app/src/App.tsx', '[client] ')?.message, `client/app/src/App.tsx: ${message}`);
 });
 
 test('ng serve waiting after a failed first build is an app bug at the error\'s location', () => {
