@@ -37,7 +37,7 @@ void (async () => {
   const part = process.env.PART;
   if (part !== '2') {
     // The hint, a second less: 1 s.
-    await run('global agent', undefined, false, [1000, 2500]);
+    await run('global agent', undefined, false, [1000, 1900]);
     await run('new Agent()', new http.Agent(), false, [0, 500]);
     await run('agent: false', false, false, [0, 500]);
   }
