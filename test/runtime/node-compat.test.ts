@@ -1171,6 +1171,26 @@ test("http: a response's start is activity for its request's timeout", async () 
   assert.equal(out.stdout, 'response | end late | req close\n');
 });
 
+test("http: an agent's queued request destroyed with no 'error' listener (its error uncaught, and handled) frees its turn: the next request completes", async () => {
+  const out = await h.run({ 'main.js': `
+        // maxSockets 1: a queued request destroyed with no 'error' listener (its error uncaught, and handled):
+        // the request after it still gets the socket and completes.
+        const http = require('http');
+        const log = [];
+        process.on('uncaughtException', (e) => log.push('uncaught ' + e.message));
+        http.createServer((req, res) => setTimeout(() => res.end(req.url), 30)).listen(3021, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const get = (path, cb) => http.get(\`http://localhost:3021\${path}\`, { agent }, (res) => { let b = ''; res.on('data', (d) => (b += d)); res.on('end', () => { log.push('got ' + b); cb?.(); }); });
+          get('/a');
+          const b = get('/b');
+          b.destroy();
+          get('/c', () => setTimeout(() => { console.log(log.join(', ')); process.exit(0); }, 20));
+          setTimeout(() => { console.log(log.join(', ') + ' | TIMING: not over in 3000 ms'); process.exit(0); }, 3000);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'got /a, uncaught socket hang up, got /c\n');
+});
+
 test("http: an agent's maxSockets: its requests to a host wait for one of its sockets", async () => {
   const out = await h.run({ 'main.js': `
         // An agent's maxSockets: its requests to a host go one at a time (here, one socket).

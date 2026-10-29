@@ -1007,8 +1007,14 @@ class ClientRequest extends Writable {
   #assigned() {
     if (this.destroyed) {
       const err = this.#error ?? (this.aborted ? undefined : connectionReset('socket hang up'));
-      if (err) this.emit('error', err);
-      return this.#emitClose();
+      // Its 'close' (and its agent's socket for the next request) also when its 'error' has no listener
+      // and throws (to the program's 'uncaughtException').
+      try {
+        if (err) this.emit('error', err);
+      } finally {
+        this.#emitClose();
+      }
+      return;
     }
     this.#hasSocket = true;
     this.emit('socket', this.socket);
