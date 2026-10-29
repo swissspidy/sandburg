@@ -159,11 +159,16 @@ Framing is Node's, decided as the headers are:
 Loopback requests also send `Connection: keep-alive` (or `close` for an agent that does not keep
 connections).
 
-**A request goes out once.** Opened (its headers out) and finished (its body out) at most once each,
-whatever asks again: ended in its 'socket' listener, it was opened by its end and again by its
-socket, and finished twice, so a request through `fetch()` went three times and one to a server of
-its own twice (a tick later: twice through `fetch()`). main sent one ended in its 'socket' listener
-twice too (through `fetch()`).
+**A request goes out once.** It is opened (its headers out) and finished (its body out) at most once
+each, whatever asks again. Before this fix, one ended in its 'socket' listener was opened by its end
+and again by its socket, and finished twice: through `fetch()` it went three times, and to a server
+of its own twice (ended a tick later: twice through `fetch()`). main sends one ended in its 'socket'
+listener twice (through `fetch()`).
+
+**A queued request destroyed frees its turn.** One an agent's `maxSockets` held back, destroyed
+before it got a socket, closes (and the agent's next request gets the socket) also when its 'error'
+has no listener and goes to 'uncaughtException': before this fix, the throw skipped its close, and
+the agent's next request waited for good.
 
 **Backpressure.** A server acknowledges body bytes as its request takes them (`push()` under its
 high-water mark, else on its next `_read`). Across runtimes the acknowledgement is `response-read`
