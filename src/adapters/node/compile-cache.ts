@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import { version as esbuildVersion } from 'esbuild';
 import { readFileSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { source } from '../../sources.ts';
 import { tmpSuffix } from './install.ts';
@@ -58,6 +58,8 @@ export class CompileCache {
   private dirty = new Set<string>();
   private flushing: ReturnType<typeof setTimeout> | null = null;
   private bundles = new Map<string, Buffer>();
+  /** Keys whose entries are all in their file (read from it, or written to it): kept while the file is (see has). */
+  private stored = new Set<string>();
   private dir: () => string;
 
   constructor(dir: () => string) {
@@ -85,6 +87,7 @@ export class CompileCache {
             size += e.code.length + e.out.length;
           }
           this.bytes.set(key, size);
+          this.stored.add(key);
           return map;
         })
         .catch(() => new Map<string, Entry>());
@@ -92,16 +95,27 @@ export class CompileCache {
       for (const old of this.keys.keys()) {
         if (this.keys.size <= KEYS_KEPT) break;
         if (this.dirty.has(old)) continue;
-        this.keys.delete(old);
-        this.bytes.delete(old);
-        this.bundles.delete(old);
+        this.drop(old);
       }
     }
     return entries;
   }
 
-  /** Whether earlier runs of the project compiled anything. */
+  private drop(key: string): void {
+    this.keys.delete(key);
+    this.bytes.delete(key);
+    this.bundles.delete(key);
+    this.stored.delete(key);
+  }
+
+  /**
+   * Whether earlier runs of the project compiled anything. Compiles kept in memory whose file was
+   * removed since (.sandburg cleared while the process kept running) are dropped: the file is read again.
+   */
   async has(key: string): Promise<boolean> {
+    if (this.stored.has(key) && !this.dirty.has(key) && !(await access(this.file(key)).then(() => true, () => false))) {
+      if (this.stored.has(key) && !this.dirty.has(key)) this.drop(key);
+    }
     return (await this.load(key)).size > 0;
   }
 
@@ -135,6 +149,7 @@ export class CompileCache {
     entries.set(k, entry);
     this.bytes.set(key, total);
     this.bundles.delete(key);
+    this.stored.delete(key);
     this.dirty.add(key);
     this.flushing ??= setTimeout(() => void this.flush(), 2000);
   }
@@ -153,6 +168,9 @@ export class CompileCache {
       const tmp = `${file}.${tmpSuffix()}.tmp`;
       await writeFile(tmp, bundle)
         .then(() => rename(tmp, file))
+        .then(() => {
+          if (!this.dirty.has(key)) this.stored.add(key);
+        })
         .catch(() => {});
     }
   }

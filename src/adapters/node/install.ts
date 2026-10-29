@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import * as esbuild from 'esbuild';
 import semver from 'semver';
@@ -55,7 +55,13 @@ export interface InstallInfo {
 /** Path (relative to node_modules' parent) → size; directories are implied. */
 export type FileIndex = Record<string, number>;
 
-/** The install cache shared by the adapters that install npm dependencies on the host (node, esbuild). */
+/**
+ * The install cache shared by the adapters that install npm dependencies on the host (node, esbuild).
+ * Its root is the process's, from the first use: every cache beside the installs (the store, side
+ * installs, transforms, dev caches) is found from it, so sessions in one process share them even if
+ * the working directory changes. What it keeps of an install is checked against the disk when the
+ * install is asked for again (Installer.install).
+ */
 export function sharedInstaller(): Installer {
   return (shared ??= new Installer(resolve(process.env.SANDBURG_INSTALL_DIR ?? '.sandburg/installs')));
 }
@@ -63,6 +69,15 @@ let shared: Installer | undefined;
 
 /** A name for a temporary file no other write uses, even of the same file at the same time. */
 export const tmpSuffix = () => `${process.pid}-${randomBytes(6).toString('hex')}`;
+
+/**
+ * The identity of an install's (or side install's) .sandburg-complete, or null when it has none: a
+ * new install of the same key (after the directory was removed) has another.
+ */
+async function recordOf(dir: string): Promise<string | null> {
+  const st = await stat(join(dir, '.sandburg-complete')).catch(() => null);
+  return st && `${st.dev}:${st.ino}:${st.mtimeMs}`;
+}
 
 interface Manifest {
   dependencies?: Record<string, string>;
@@ -74,6 +89,10 @@ interface Manifest {
 export class Installer {
   readonly root: string;
   private pending = new Map<string, Promise<InstallInfo>>();
+  /** Keys of `pending` whose install finished, and its record's identity on disk (see install). */
+  private settled = new Map<string, string>();
+  /** Told the keys of installs found removed, to drop what they keep of them (see onForget). */
+  private forgetters: ((key: string) => void)[] = [];
   private indexes = new Map<string, Promise<FileIndex>>();
   private combined = new Map<string, { dir: string; key: string }[]>();
   /** Transforms in progress, by content hash. */
@@ -163,12 +182,53 @@ export class Installer {
     assertRegistryManifest(manifest);
     if (lock !== null) assertRegistryLockfile(lock);
     let pending = this.pending.get(key);
+    // A finished install is used while its record is the one it finished with (one stat): one removed
+    // since (.sandburg cleared while the process kept running), or removed and made again by another
+    // process, is forgotten, with what this process kept of it, and installed again.
+    const known = this.settled.get(key);
+    if (pending && known !== undefined && (await recordOf(join(this.root, key))) !== known) {
+      if (this.pending.get(key) === pending) this.forget(key);
+      pending = this.pending.get(key);
+    }
     if (!pending) {
-      pending = this.doInstall(key, manifest, lock, log);
-      this.pending.set(key, pending);
-      pending.catch(() => this.pending.delete(key));
+      // Its record is taken before anyone is answered, so that a removal after the answer is seen.
+      const started: Promise<InstallInfo> = this.doInstall(key, manifest, lock, log).then(async (info) => {
+        const record = await recordOf(info.dir);
+        if (record !== null && this.pending.get(key) === started) this.settled.set(key, record);
+        return info;
+      });
+      this.pending.set(key, (pending = started));
+      started.catch(() => {
+        if (this.pending.get(key) === started) this.pending.delete(key);
+      });
     }
     return pending;
+  }
+
+  /** `listener` is told the key of each install found removed (and of each combined key that has it), to drop what it keeps of it. */
+  onForget(listener: (key: string) => void): void {
+    this.forgetters.push(listener);
+  }
+
+  /** Drops what this process keeps of install `key` (found removed from disk), and of the combined keys that have it. */
+  private forget(key: string): void {
+    this.pending.delete(key);
+    this.settled.delete(key);
+    this.indexes.delete(key);
+    const keys = [key];
+    for (const [combined, parts] of this.combined) {
+      if (!parts.some((p) => p.key === key)) continue;
+      this.combined.delete(combined);
+      keys.push(combined);
+    }
+    for (const [id, body] of this.memory) {
+      if (!id.startsWith(`${key}\0`)) continue;
+      this.memory.delete(id);
+      this.memoryBytes -= body.length;
+    }
+    const dir = `${join(this.root, key)}\0`;
+    for (const id of typeCache.keys()) if (id.startsWith(dir)) typeCache.delete(id);
+    for (const k of keys) for (const listener of this.forgetters) listener(k);
   }
 
   private async doInstall(key: string, manifest: object, lock: string | null, log: (line: string) => void): Promise<InstallInfo> {
@@ -620,10 +680,23 @@ async function sweepSideInstalls(root: string): Promise<void> {
  * place): npm installs each package.json once, as with installs themselves (the versions npm picks
  * first stay), so every Vite app does not pay ~1 s of npm for the same lightningcss-wasm.
  */
-function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line: string) => void): Promise<string> {
+export function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line: string) => void): Promise<string> {
   const root = sides.root;
   const key = createHash('sha256').update(`layout:${LAYOUT_VERSION}\0`).update(JSON.stringify([manifest, flags])).digest('hex').slice(0, 24);
   let pending = sideInstalls.get(key);
+  // A finished side install removed since, or made again (as installs, see Installer.install), is installed again.
+  const record = sideDone.get(key);
+  if (pending && record !== undefined) {
+    const known = pending;
+    return recordOf(join(root, key)).then((now) => {
+      if (now === record) return known;
+      if (sideInstalls.get(key) === known) {
+        sideInstalls.delete(key);
+        sideDone.delete(key);
+      }
+      return sideInstall(sides, manifest, flags, log);
+    });
+  }
   if (!pending) {
     pending = (async () => {
       const dir = join(root, key);
@@ -652,16 +725,26 @@ function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line
         await rm(tmp, { recursive: true, force: true });
       }
       return dir;
-    })();
-    sideInstalls.set(key, pending);
-    pending.catch(() => sideInstalls.delete(key));
+    })().then(async (dir) => {
+      // Taken before anyone is answered, as an install's record (Installer.install).
+      const done = await recordOf(dir);
+      if (done !== null && sideInstalls.get(key) === started) sideDone.set(key, done);
+      return dir;
+    });
+    const started = pending;
+    sideInstalls.set(key, started);
+    started.catch(() => {
+      if (sideInstalls.get(key) === started) sideInstalls.delete(key);
+    });
   }
   return pending;
 }
 const sideInstalls = new Map<string, Promise<string>>();
+/** Keys of `sideInstalls` whose side install finished, and its record's identity (recordOf). */
+const sideDone = new Map<string, string>();
 
 /** Where side installs are kept, and how they are made. */
-interface Sides {
+export interface Sides {
   root: string;
   store: string;
   resolver: Resolver;

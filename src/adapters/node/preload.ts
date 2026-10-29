@@ -226,6 +226,30 @@ const bundles = new Map<string, { hash: string; bundle: Promise<Buffer | null> }
 
 export const BUNDLES_KEPT = 4;
 
+/**
+ * What this process keeps of an install found removed (Installer.install), which may be made again
+ * with other files: its lists are read again from their files, its bundles built again. The package
+ * versions' list is read again too if its file is gone (.sandburg cleared).
+ */
+installer.onForget((key) => {
+  for (const name of [key, `${key}-read`]) {
+    preloadLists.delete(name);
+    preloadSeen.delete(name);
+    preloadDirty.delete(name);
+  }
+  for (const id of packageVersions.keys()) if (id.startsWith(`${key}\0`)) packageVersions.delete(id);
+  for (const map of [issuedBundles, predicted]) for (const id of map.keys()) if (id.startsWith(`${key}/`)) map.delete(id);
+  prefetchers.delete(key);
+  bundles.delete(key);
+  if (preloadSeen.has(PACKAGE_LIST) && !preloadDirty.has(PACKAGE_LIST)) {
+    void stat(preloadListPath(PACKAGE_LIST)).catch(() => {
+      if (preloadDirty.has(PACKAGE_LIST)) return;
+      preloadLists.delete(PACKAGE_LIST);
+      preloadSeen.delete(PACKAGE_LIST);
+    });
+  }
+});
+
 export function preloadBundle(key: string, hash: string): Promise<Buffer | null> {
   const known = bundles.get(key);
   if (known?.hash === hash) return known.bundle;
