@@ -74,3 +74,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0068](0068-uncaught-exceptions-and-signals.md) | Uncaught exceptions, unhandled rejections and signals as in Node; signals stop a command cleanly | Accepted |
 | [0069](0069-http-timeouts-bodies.md) | http shim: server timeouts, streamed request bodies, and when a connection's events come | Accepted |
 | [0070](0070-wasm-memory-growth-race.md) | The rolldown trap: V8 sees shared memory growth late; modules with shared memory are guarded | Accepted |
+| [0071](0071-warm-slower-than-cold.md) | Warm runs slower than cold in fidelity study v7: the method, not the runs | Accepted |
