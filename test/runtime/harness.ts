@@ -175,6 +175,10 @@ export class RuntimeHarness {
   classicRuntime = false;
   /** File channels waiting to be accepted, while the harness holds them (runInstalled's holdChannel); null when it does not. */
   private held: (() => void)[] | null = null;
+  /** Requests to /__test/hold-closed waiting for more of /__test/hold's responses to close. */
+  private holdWaiters = new Set<() => void>();
+  /** Requests /__test/count took (all but those reading the count), by its `key`. */
+  private counted = new Map<string, number>();
 
   private release(): void {
     const held = this.held ?? [];
@@ -281,11 +285,54 @@ export class RuntimeHarness {
         res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
         return res.end('remote');
       }
+      // How many requests came for `key`: each counts one (its body read), but `read=1`, which answers the count.
+      if (url.pathname === '/__test/count') {
+        const key = url.searchParams.get('key') ?? '';
+        const cors = { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' };
+        if (url.searchParams.get('read') !== '1') {
+          req.resume();
+          return void req.on('end', () => {
+            this.counted.set(key, (this.counted.get(key) ?? 0) + 1);
+            res.writeHead(200, cors);
+            res.end('counted');
+          });
+        }
+        res.writeHead(200, cors);
+        return res.end(String(this.counted.get(key) ?? 0));
+      }
       // A response that starts and is never ended: `asked` says when the client went away.
       if (url.pathname === '/__test/hold') {
-        res.on('close', () => this.asked.push('hold closed'));
+        res.on('close', () => {
+          this.asked.push('hold closed');
+          for (const waiter of [...this.holdWaiters]) waiter();
+        });
         res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
         return void res.write('a');
+      }
+      // How many of those this run's client went away from, once it is `count` (or after 10 s): for a
+      // program to wait, while it runs, for this side to have seen its connections close.
+      if (url.pathname === '/__test/hold-closed') {
+        const count = Number(url.searchParams.get('count'));
+        if (!Number.isInteger(count) || count < 0) {
+          res.writeHead(400, { 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+          return res.end('count must be a whole number');
+        }
+        const closed = () => this.asked.filter((a) => a === 'hold closed').length;
+        const answer = () => {
+          this.holdWaiters.delete(check);
+          clearTimeout(timer);
+          res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+          res.end(String(closed()));
+        };
+        const check = () => void (closed() >= count && answer());
+        const timer = setTimeout(answer, 10_000);
+        this.holdWaiters.add(check);
+        // Its client went away: nothing to answer.
+        res.on('close', () => {
+          this.holdWaiters.delete(check);
+          clearTimeout(timer);
+        });
+        return check();
       }
       if (url.pathname === '/__sandburg/tla-scan') {
         const chunks: Buffer[] = [];

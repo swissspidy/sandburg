@@ -557,9 +557,12 @@ export class NodeProcess {
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         break;
-      // The page's runtime is started with init right away, and has no parent for process.send().
+      // The page's runtime is started with init right away, and has no parent for process.send();
+      // the page sends requests with their whole body (a streamed one's server says what it read).
       case 'booted':
       case 'message':
+      case 'response-read':
+      case 'response-info':
         break;
     }
     for (const w of this.waiters) w();

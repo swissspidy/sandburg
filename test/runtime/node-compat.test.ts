@@ -659,6 +659,55 @@ test("http: a response that came through fetch() and was read to its end is comp
   assert.equal(out.stdout, 'data remote, end, close, aborted false, complete true\n');
 });
 
+test('http: a request ended after it has its socket goes out once, to another origin (through fetch()) and to a server of its own', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // Ended in its 'socket' listener, a tick after it, or with a body after it (a POST), or a GET 20 ms
+        // after: one request each, as in Node.
+        const http = require('http');
+        const counted = new Map();
+        http.createServer((req, res) => {
+          const key = new URL(req.url, 'http://x').searchParams.get('key');
+          if (new URL(req.url, 'http://x').searchParams.get('read') === '1') return res.end(String(counted.get(key) ?? 0));
+          counted.set(key, (counted.get(key) ?? 0) + 1);
+          req.resume();
+          req.on('end', () => res.end('counted'));
+        }).listen(3019, () => run());
+        const cases = {
+          'end() on socket': (req) => req.on('socket', () => req.end()),
+          'end() a tick after socket': (req) => req.on('socket', () => setTimeout(() => req.end(), 0)),
+          'end(body) after socket': (req) => req.on('socket', () => setTimeout(() => req.end('body'), 0)),
+          'GET end() 20 ms after socket': (req) => req.on('socket', () => setTimeout(() => req.end(), 20)),
+        };
+        const key = (name) => encodeURIComponent(name);
+        const run = async () => {
+          const lines = [];
+          for (const [where, base] of [['remote', process.env.REMOTE], ['own', 'http://localhost:3019/']]) {
+          for (const [name, act] of Object.entries(cases)) await new Promise((done) => {
+            const req = http.request(base + '?key=' + key(name), { method: name.startsWith('GET') ? 'GET' : 'POST' }, (res) => { res.resume(); res.on('end', done); });
+            req.on('error', (e) => { console.log(name + ': error ' + e.message); done(); });
+            act(req);
+          });
+          for (const name of Object.keys(cases)) lines.push(where + ', ' + name + ': ' + await new Promise((done) => http.get(base + '?read=1&key=' + key(name), (res) => {
+            let b = '';
+            res.on('data', (d) => (b += d));
+            res.on('end', () => done(b));
+          })));
+          }
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        };`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { env: { REMOTE: `http://fetch.localhost:${h.port}/__test/count` } },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['remote', 'own'].flatMap((where) => ['end() on socket', 'end() a tick after socket', 'end(body) after socket', 'GET end() 20 ms after socket'].map((name) => `${where}, ${name}: 1`)));
+});
+
 /**
  * A program's requests to a server of its own (3005: through the runtime) and, with REMOTE, to another
  * origin's (through fetch()): /ok answers, /hold starts a response and never ends it. Logs each case on a line.
@@ -740,6 +789,13 @@ test('http: destroying a request whose response is in flight aborts the response
           req.on('close', () => log.push('req close destroyed=' + req.destroyed));
           req.destroy();
           setTimeout(() => done(log.join(' | ')), 200);
+        }),
+        // The other origin saw both of its connections close, while this program still runs (it
+        // answers once it has, or after 10 s): not as the run ended and took its fetches with it.
+        (done) => http.get(remote + '/__test/hold-closed?count=2', (res) => {
+          let count = '';
+          res.on('data', (d) => (count += d));
+          res.on('end', () => done('hold closed: ' + count));
         }),`),
     },
     '/app/main.js',
@@ -750,7 +806,7 @@ test('http: destroying a request whose response is in flight aborts the response
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   const inFlight = ['response | res aborted | req close | res error ECONNRESET | res close destroyed=true', 'response | res aborted | res close destroyed=false | req close'];
   const before = 'req error ECONNRESET socket hang up | req close destroyed=true';
-  assert.deepEqual(out.stdout.trim().split('\n'), [...inFlight, ...inFlight, before, before]);
+  assert.deepEqual(out.stdout.trim().split('\n'), [...inFlight, ...inFlight, before, before, 'hold closed: 2']);
   // What was still coming from the other origin is not read: its two responses' connections closed.
   assert.deepEqual(h.asked.filter((a) => a === 'hold closed'), ['hold closed', 'hold closed']);
 });
@@ -1047,9 +1103,10 @@ test("http: req.setTimeout(ms, cb) and the timeout option emit 'timeout' once th
 
 test("http: a request's timeout counts idle time: not while its response keeps coming, nor once it completed", async () => {
   const out = await h.run({ 'main.js': `
-        // The timeout counts idle time only: a response that keeps coming (a chunk each 50 ms for 500 ms,
-        // timeout 200) is not timed out, and a request that completed is not timed out after. Each case is
-        // reported once its request closed and twice the timeout went by, whatever the machine's speed.
+        // The timeout counts idle time only: a response that keeps coming (a chunk each 100 ms for 3 s,
+        // timeout 1 s: each gap far from it, so that a late loop does not time it out) is not timed out,
+        // and a request that completed is not timed out after. Each case is reported once its request
+        // closed and twice the timeout went by, whatever the machine's speed.
         const http = require('http');
         const lines = [];
         http.createServer((req, res) => {
@@ -1058,11 +1115,11 @@ test("http: a request's timeout counts idle time: not while its response keeps c
           res.writeHead(200);
           const tick = setInterval(() => {
             res.write('x');
-            if (++n === 10) {
+            if (++n === 30) {
               clearInterval(tick);
               res.end();
             }
-          }, 50);
+          }, 100);
         }).listen(3017, async () => {
           for (const path of ['/trickle', '/quick']) {
             lines.push(await new Promise((done) => {
@@ -1072,10 +1129,10 @@ test("http: a request's timeout counts idle time: not while its response keeps c
                 res.on('data', (d) => (body += d));
                 res.on('end', () => log.push('end ' + body));
               });
-              req.setTimeout(200, () => log.push('timeout'));
+              req.setTimeout(1000, () => log.push('timeout'));
               req.on('close', () => {
                 log.push('req close');
-                setTimeout(() => done(log.join(' | ')), 400);
+                setTimeout(() => done(log.join(' | ')), 2000);
               });
             }));
           }
@@ -1083,17 +1140,19 @@ test("http: a request's timeout counts idle time: not while its response keeps c
           process.exit(0);
         });` }, '/app/main.js');
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
-  assert.deepEqual(out.stdout.trim().split('\n'), ['/trickle | end xxxxxxxxxx | req close', '/quick | end done | req close']);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['/trickle | end ' + 'x'.repeat(30) + ' | req close', '/quick | end done | req close']);
 });
 
 test("http: a response's start is activity for its request's timeout", async () => {
   const out = await h.run({ 'main.js': `
-        // The response's start is activity too: headers late in the timeout (300 of 400 ms), the body 300 ms
-        // after. Reported once the request closed.
+        // The response's start is activity too: headers halfway into the timeout (1 of 2 s), the body after
+        // the timeout would have come without them (2.1 s), each a second from the next deadline (a late
+        // loop runs timers due together in one phase: close ones could come in either order). Reported once
+        // the request closed.
         const http = require('http');
         http.createServer((req, res) => {
-          setTimeout(() => res.flushHeaders(), 300);
-          setTimeout(() => res.end('late'), 600);
+          setTimeout(() => res.flushHeaders(), 1000);
+          setTimeout(() => res.end('late'), 2100);
         }).listen(3018, () => {
           const log = [];
           const req = http.get('http://localhost:3018/', (res) => {
@@ -1102,7 +1161,7 @@ test("http: a response's start is activity for its request's timeout", async () 
             res.on('data', (d) => (body += d));
             res.on('end', () => log.push('end ' + body));
           });
-          req.setTimeout(400, () => log.push('timeout'));
+          req.setTimeout(2000, () => log.push('timeout'));
           req.on('close', () => {
             console.log(log.concat('req close').join(' | '));
             process.exit(0);
@@ -1110,6 +1169,26 @@ test("http: a response's start is activity for its request's timeout", async () 
         });` }, '/app/main.js');
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout, 'response | end late | req close\n');
+});
+
+test("http: an agent's queued request destroyed with no 'error' listener (its error uncaught, and handled) frees its turn: the next request completes", async () => {
+  const out = await h.run({ 'main.js': `
+        // maxSockets 1: a queued request destroyed with no 'error' listener (its error uncaught, and handled):
+        // the request after it still gets the socket and completes.
+        const http = require('http');
+        const log = [];
+        process.on('uncaughtException', (e) => log.push('uncaught ' + e.message));
+        http.createServer((req, res) => setTimeout(() => res.end(req.url), 30)).listen(3021, () => {
+          const agent = new http.Agent({ maxSockets: 1 });
+          const get = (path, cb) => http.get(\`http://localhost:3021\${path}\`, { agent }, (res) => { let b = ''; res.on('data', (d) => (b += d)); res.on('end', () => { log.push('got ' + b); cb?.(); }); });
+          get('/a');
+          const b = get('/b');
+          b.destroy();
+          get('/c', () => setTimeout(() => { console.log(log.join(', ')); process.exit(0); }, 20));
+          setTimeout(() => { console.log(log.join(', ') + ' | TIMING: not over in 3000 ms'); process.exit(0); }, 3000);
+        });` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout, 'got /a, uncaught socket hang up, got /c\n');
 });
 
 test("http: an agent's maxSockets: its requests to a host wait for one of its sockets", async () => {

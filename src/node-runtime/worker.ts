@@ -21,7 +21,7 @@ import { installAsyncContext } from './async-context.ts';
 import { installWasmGrowGuard } from './wasm-grow-guard.ts';
 import { trackPending } from './track-pending.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
-import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
+import { servers, serverConnections, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
 import { ExitError, NODE_VERSION, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
 import { netEvents, netServers } from './builtins/net.ts';
@@ -38,7 +38,7 @@ import { COMPILE_POST_MAX } from '../file-channel.ts';
 import { readBundle, prefetchedBody, bundleFiles, syncGet, compilesLoaded, loadCompiles, requestSync, startDigester, prepareDigester, dropPreparedDigester, shareChannel, useChannel, shareSpawner, useSpawner, spawnSyncRuntime, helperStarting, releaseSpawner, digestOf, digestWhenWritten, writtenDigest, ASK_FIRST, compileInPage, connectPageCompiler, installedFile, postViaChannel, postSync } from './host-files.ts';
 import { buildBuiltins } from './builtins.ts';
 import { compileAhead, compileWhenWritten, compiledAhead } from './compile-ahead.ts';
-import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone, cancelForwarded } from './peers.ts';
+import { netConns, netMessage, nestedPorts, nestedSockets, loopbackReply, relayFromNested, forwardRequest, forgetNested, unannounce, loopbackServersGone, cancelForwarded, forwardBody } from './peers.ts';
 
 patchBase64Url();
 
@@ -638,7 +638,7 @@ function exitWhenIdle() {
   globalThis.fetch = track(globalThis.fetch.bind(globalThis));
   const wasm = WebAssembly as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
   for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) if (wasm[name]) wasm[name] = track(wasm[name].bind(WebAssembly));
-  const busy = () => timersActive() || servers.size > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
+  const busy = () => timersActive() || [...servers.values()].some((s) => s.keepsAlive) || serverConnections.count > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
   let idle = 0;
   const timer = nativeSetInterval(() => {
     if (hasExited) return nativeClearInterval(timer);
@@ -742,6 +742,9 @@ const inflight = new Set<number>();
 /** What tells the server of each of those requests that its client went away (a parent's loopback request: see cancelRequest). */
 const requestAborts = new Map<number, () => void>();
 
+/** Where the rest of the body of each of those requests goes (a body that comes after the request: see loopback.route), until its end. */
+const requestBodies = new Map<number, Dispatched>();
+
 /** A request to this runtime's own servers is answered (or no longer this runtime's to answer). */
 function settle(id: number) {
   inflight.delete(id);
@@ -752,9 +755,19 @@ function settle(id: number) {
 function cancelRequest(id: number) {
   if (cancelForwarded(id)) return;
   const abort = requestAborts.get(id);
+  requestBodies.delete(id);
   if (!abort) return;
   settle(id);
   abort();
+}
+
+/** More of the body of a request from the parent. */
+function requestBody(msg: Extract<ToWorker, { type: 'request-body' | 'request-body-end' }>) {
+  const body = requestBodies.get(msg.id);
+  if (!body) return;
+  if (msg.type === 'request-body') return body.write(new Uint8Array(msg.chunk));
+  requestBodies.delete(msg.id);
+  body.end();
 }
 
 /** Whether the program exited (see exited). */
@@ -775,6 +788,7 @@ export function exited(code: number) {
   for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
   inflight.clear();
   requestAborts.clear();
+  requestBodies.clear();
   loopbackServersGone();
   for (const port of [...servers.keys()]) {
     servers.delete(port);
@@ -811,7 +825,8 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
     heldResponses.push(release);
   };
   try {
-    const abort = server.dispatch(msg.method, msg.url, msg.headers, msg.body ? new Uint8Array(msg.body) : null, {
+    const streamed = msg.body === STREAMED;
+    const dispatched = server.dispatch(msg.method, msg.url, msg.headers, msg.body === STREAMED ? STREAMED : msg.body ? new Uint8Array(msg.body) : null, {
       start: (status, statusText, headers) => {
         if (!held) return void answer({ type: 'response-start', id, status, statusText, headers });
         held.start = [status, statusText, headers];
@@ -847,8 +862,13 @@ function request(msg: Extract<ToWorker, { type: 'request' }>) {
         answer({ type: 'response-error', id, message, code });
         settle(id);
       },
+      // A streamed body: its client may send as much more as the server read.
+      consumed: (bytes) => post({ type: 'response-read', id, bytes }),
+      info: (status, statusText, headers) => answer({ type: 'response-info', id, status, statusText, headers }),
+      idle: msg.idle,
     });
-    if (inflight.has(id)) requestAborts.set(id, abort);
+    if (inflight.has(id)) requestAborts.set(id, dispatched.abort);
+    if (streamed) requestBodies.set(id, dispatched);
   } catch (e) {
     // process.exit() in the handler ('request' is emitted as the request is dispatched) ends the process.
     if (e instanceof ExitError) return exited(e.code);
@@ -884,6 +904,9 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
   else if (msg.type === 'request' && !servers.has(msg.port) && nestedPorts.has(msg.port)) forwardRequest(msg);
   else if (msg.type === 'request') request(msg);
   else if (msg.type === 'request-cancel') cancelRequest(msg.id);
+  else if (msg.type === 'request-body' || msg.type === 'request-body-end') {
+    if (!forwardBody(msg)) requestBody(msg);
+  }
   else if (msg.type === 'ws-open' && !servers.has(msg.port) && nestedPorts.has(msg.port)) {
     nestedSockets.set(msg.id, nestedPorts.get(msg.port)!);
     nestedSockets.get(msg.id)!.postMessage(msg);

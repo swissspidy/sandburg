@@ -47,11 +47,29 @@ export const CAPTURE_CALLBACK = Symbol('sandburg.uncaughtExceptionCapture');
 
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
-const nativeSetInterval = globalThis.setInterval.bind(globalThis);
-const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
+/** Reports an error as uncaught (the worker's 'error' event), as one thrown from a task would be. */
+const reportUncaught = globalThis.reportError?.bind(globalThis) ?? ((e: unknown) => queueMicrotask(() => { throw e; }));
 
+/**
+ * The time a timer is set at, in whole ms as Node's timers take it: timers set together come due
+ * together (unless a millisecond boundary falls between them, as in Node). Not cached: one set after a
+ * long synchronous block counts from its end, as in Node.
+ */
+function timerNow(): number {
+  return Math.floor(performance.now());
+}
+/**
+ * Timers' handles (their numbers) count from 2^30: never a browser timer's id (those count from 1), so
+ * that a browser timer's id given to the program's clearTimeout() cannot cancel a program's timer.
+ */
+let timerSeq = 2 ** 30;
 class Timeout {
+  /** The browser's timer for its next firing (an interval's too: it is set again after each run). */
   private id: ReturnType<typeof nativeSetTimeout> | null = null;
+  /** Set and not cleared, nor fired (a timeout). */
+  private scheduled = false;
+  /** Its handle (byId, its number), the same across an interval's runs; and the order it was set in. */
+  readonly seq = ++timerSeq;
   private refed = true;
   private fn: () => void;
   private ms: number;
@@ -64,18 +82,62 @@ class Timeout {
   }
   /** Scheduled, and pending (in byId) until it fires or is cleared; a refresh() after it fired schedules it again. */
   private start() {
-    this.id = this.repeat ? nativeSetInterval(this.fn, this.ms) : nativeSetTimeout(this.fn, this.ms);
-    byId.set(Number(this.id), this);
+    this.scheduled = true;
+    this.arm();
+    byId.set(this.seq, this);
   }
-  /** It fired (a timeout: no longer pending). */
+  private arm() {
+    this.due = timerNow() + this.ms;
+    this.wait(this.ms);
+  }
+  /**
+   * Its browser timer, `ms` from now. Fired before its time by performance.now() (a browser may fire it
+   * a little early by that clock), it is set again for the rest: it runs neither early nor never.
+   */
+  private wait(ms: number) {
+    this.id = nativeSetTimeout(() => {
+      this.id = null;
+      const rest = this.due - performance.now();
+      if (rest > 0 && Math.floor(performance.now()) < this.due) return this.wait(Math.max(1, Math.ceil(rest)));
+      this.fn();
+    }, ms);
+  }
+  /** An interval that ran: its next run, its time from now (as Node's). */
+  rearm() {
+    if (!this.repeat || !this.scheduled) return;
+    this.cancelNative();
+    this.arm();
+  }
+  /** When it fires next (see takeDueTimers). */
+  due = 0;
+  /** Its callback, for the loop to run it as it comes due (see takeDueTimers). */
+  run: () => void = () => {};
+  /** A timer the loop runs itself: the browser's timer for it no longer fires. */
+  cancelNative() {
+    if (this.id !== null) nativeClearTimeout(this.id);
+    this.id = null;
+  }
+  /** Scheduled and not cleared (a timeout: not fired). */
+  get pending() {
+    return this.scheduled;
+  }
+  /** Its browser timer is set (it has not fired yet: the loop has not run it either). */
+  get armed() {
+    return this.id !== null;
+  }
+  /** A timeout fired: no longer due (refresh() schedules it again). */
   fired() {
-    if (this.id !== null) byId.delete(Number(this.id));
+    this.scheduled = false;
+    byId.delete(this.seq);
   }
   clear() {
-    if (this.id === null) return;
-    byId.delete(Number(this.id));
-    (this.repeat ? nativeClearInterval : nativeClearTimeout)(this.id);
-    this.id = null;
+    if (!this.scheduled) return;
+    this.scheduled = false;
+    byId.delete(this.seq);
+    this.cancelNative();
+    // Nor does it wait for a turn's end any more (refresh() sets it again: due later).
+    const waiting = dueTimers.indexOf(this);
+    if (waiting >= 0) dueTimers.splice(waiting, 1);
   }
   ref() {
     this.refed = true;
@@ -88,7 +150,7 @@ class Timeout {
   hasRef() { return this.refed; }
   /** Whether it keeps the process alive (see activeHandles). */
   get alive() {
-    return this.refed && this.id !== null;
+    return this.refed && this.scheduled;
   }
   refresh() {
     this.clear();
@@ -100,12 +162,21 @@ class Timeout {
     return this;
   }
   [Symbol.toPrimitive]() {
-    return Number(this.id ?? 0);
+    return this.seq;
   }
   [Symbol.dispose]() {
     this.clear();
   }
 }
+
+/**
+ * The phase of libuv's loop the program's code runs in, as far as it decides what a connection's other
+ * end sees when (see onPeerPhase): a timer's callback (and what it queued), an immediate, a close
+ * callback, else I/O ('poll': messages, fetches).
+ */
+type Phase = 'timers' | 'poll' | 'check' | 'close';
+let phase: Phase = 'poll';
+const toPoll = () => void (phase = 'poll');
 
 const byId = new Map<number, Timeout>();
 /** The process exited: nothing it scheduled runs any more (see stopTimers). */
@@ -114,21 +185,32 @@ function make(repeat: boolean) {
   return (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
     if (typeof fn !== 'function') throw new TypeError('The "callback" argument must be of type function');
     const bound = bindContext(fn as never) as (...a: unknown[]) => void;
-    const t: Timeout = new Timeout(() => {
+    const fire = () => {
+      // Cleared while it waited for a turn to end (see dueTimers).
+      if (!t.pending) return;
       if (!repeat) t.fired();
       if (stopped) return t.clear();
-      bound(...args);
-    }, Math.max(1, Number(ms) || 1), repeat);
+      phase = 'timers';
+      try {
+        bound(...args);
+      } finally {
+        // An interval's next run, unless it cleared itself; what it queued (process.nextTick,
+        // promises) still runs in it.
+        if (repeat) t.rearm();
+        queueMicrotask(toPoll);
+      }
+    };
+    // While a turn is posted or going, it waits for the turn's end (see takeDueTimers); else it starts a
+    // timers phase of its own, with the others due by then.
+    const t: Timeout = new Timeout(() => (turnPosted || turnRunning ? void dueTimers.push(t) : void runTimers(t)), Math.max(1, Number(ms) || 1), repeat);
+    t.run = fire;
     return t;
   };
 }
 function clear(t: unknown) {
   if (t instanceof Timeout) t.clear();
-  else if (typeof t === 'number') {
-    const found = byId.get(t);
-    if (found) found.clear();
-    else nativeClearTimeout(t);
-  }
+  // Its number (an unknown one, as in Node, nothing).
+  else if (typeof t === 'number') byId.get(t)?.clear();
 }
 
 /**
@@ -138,7 +220,7 @@ function clear(t: unknown) {
  */
 export const pendingWork = { count: 0 };
 export function timersActive(): boolean {
-  if (immediateQueue.length || pendingWork.count > 0) return true;
+  if (turnPosted || turnRunning || immediateQueue.length || closeQueue.length || ioQueue.length || nextIoQueue.length || dueTimers.length || pendingWork.count > 0) return true;
   for (const t of byId.values()) if (t.alive) return true;
   return false;
 }
@@ -152,6 +234,10 @@ export function stopTimers(): void {
   stopped = true;
   for (const t of [...byId.values()]) t.clear();
   immediateQueue.length = 0;
+  closeQueue.length = 0;
+  ioQueue.length = 0;
+  nextIoQueue.length = 0;
+  dueTimers.length = 0;
 }
 
 class Immediate {
@@ -162,22 +248,185 @@ class Immediate {
 }
 const immediateChannel = new MessageChannel();
 const immediateQueue: (() => void)[] = [];
+/** What runs as Node's close callbacks do (see onClosePhase): after the immediates of the same turn. */
+const closeQueue: (() => void)[] = [];
+/** What runs as I/O callbacks do (see onIoPhase): on the next turn, before its immediates. */
+const ioQueue: (() => void)[] = [];
+/** I/O for the loop's next iteration, after this one's close callbacks (see onPeerPhase), in the order it came. */
+const nextIoQueue: (() => void)[] = [];
+/**
+ * A turn of the loop: its I/O callbacks, then its immediates, then its close callbacks (each step's as
+ * they were when it began: those queued since wait for the next iteration), then the timers that came
+ * due meanwhile. Each callback is a task of its own: what it queued with process.nextTick or promises
+ * runs, all of it, before the next (a browser drains its microtasks only between tasks). A timer that
+ * comes due while a turn is posted waits for the turn's end, as Node's wait for the next timers phase.
+ */
+type Step = 'io' | 'check' | 'close';
+const STEPS: Step[] = ['io', 'check', 'close'];
+const queues: Record<Step, (() => void)[]> = { io: ioQueue, check: immediateQueue, close: closeQueue };
+/** A turn is wanted (posted, going, or asked for while one goes): timers wait for it, and it keeps the process alive (see timersActive). */
+let turnPosted = false;
+/** A turn is going (its steps or its timers phase): one at a time, so a timer of it runs once. */
+let turnRunning = false;
+/** The message that starts the next turn is posted. */
+let turnMessage = false;
+/** Timers that came due while a turn was posted: they run as it ends. */
+const dueTimers: Timeout[] = [];
+const yieldChannel = new MessageChannel();
+const yielded: (() => void)[] = [];
+yieldChannel.port1.onmessage = () => yielded.shift()?.();
+/** Ends this task: what the callback before queued (microtasks) runs, and the browser's other tasks. */
+const nextTask = () =>
+  new Promise<void>((resume) => {
+    yielded.push(resume);
+    yieldChannel.port2.postMessage(0);
+  });
+function postTurn() {
+  turnPosted = true;
+  // One going posts the next as it ends.
+  if (turnRunning || turnMessage) return;
+  turnMessage = true;
+  immediateChannel.port2.postMessage(0);
+}
 immediateChannel.port1.onmessage = () => {
-  const batch = immediateQueue.splice(0);
-  for (let i = 0; i < batch.length; i++) {
-    try {
-      batch[i]();
-    } catch (e) {
-      // As in Node: the error is uncaught (process 'uncaughtException'), and the rest of the batch
-      // still runs, on the next turn, before immediates queued since; process.exit() ends it there.
-      if (!(e instanceof ExitError) && i + 1 < batch.length) {
-        if (!immediateQueue.length) immediateChannel.port2.postMessage(0);
-        immediateQueue.unshift(...batch.slice(i + 1));
-      }
-      throw e;
-    }
-  }
+  turnMessage = false;
+  void runTurn();
 };
+// (Under Node, as in the unit tests, its ports do not keep the process alive; a browser's have no unref.)
+for (const port of [immediateChannel.port1, yieldChannel.port1] as (MessagePort & { unref?: () => void })[]) port.unref?.();
+/** Runs a callback of the turn: as in Node, what it throws is uncaught (process 'uncaughtException'), and the rest still run. */
+function runOne(fn: () => void) {
+  try {
+    fn();
+  } catch (e) {
+    // process.exit() reports too, and ends it there (nothing runs once it stopped).
+    reportUncaught(e);
+  }
+}
+/**
+ * The timers due now, in the order they came due: those that fired while the turn went, and those
+ * whose browser timer has not fired yet (it would lose to the next turn's task), which the loop runs itself.
+ */
+function takeDueTimers(): Timeout[] {
+  const now = Math.floor(performance.now());
+  // Each still set whose browser timer fired (the browser's clock: performance.now() may read a little
+  // behind it, so not by its time): one cleared since is not, nor one refreshed (set again, due later).
+  const due = dueTimers.splice(0).filter((t) => t.pending && !t.armed);
+  for (const t of byId.values()) {
+    if (t.due > now || due.includes(t)) continue;
+    t.cancelNative();
+    due.push(t);
+  }
+  // In the order they came due, those due together in the order they were set (as Node's lists).
+  return due.sort((a, b) => a.due - b.due || a.seq - b.seq);
+}
+async function runTurn() {
+  turnRunning = true;
+  try {
+    do {
+      for (const step of STEPS) {
+        if (!queues[step].length) continue;
+        // As libuv's closing handles, the last closed first.
+        const batch = step === 'close' ? closeQueue.splice(0).reverse() : queues[step].splice(0);
+        for (let i = 0; i < batch.length; i++) {
+          phase = step === 'io' ? 'poll' : step;
+          runOne(batch[i]);
+          await nextTask();
+          if (stopped) return;
+        }
+      }
+      // What this iteration's other ends see on the next.
+      ioQueue.push(...nextIoQueue.splice(0));
+      // The next iteration at once, unless a timer is due (its timers phase comes first).
+    } while ((ioQueue.length || immediateQueue.length || closeQueue.length) && !dueTimers.length && !byIdDue());
+  } finally {
+    turnPosted = false;
+    await timersPhase();
+    endTurn();
+  }
+}
+/**
+ * The loop's timers phase: each timer due by then (`first` too, a timer whose browser timer fired: it
+ * may fire after one due before it), in the order they came due, a task each. A timer one of them sets
+ * runs on a later one, as in Node, and so does one they refresh (it is due later now). What they
+ * queue (an immediate) waits for its end.
+ */
+async function timersPhase(first?: Timeout) {
+  const due = takeDueTimers();
+  if (first && first.pending && !first.armed && !due.includes(first)) {
+    due.push(first);
+    due.sort((a, b) => a.due - b.due || a.seq - b.seq);
+  }
+  for (const [timer, at] of due.map((t) => [t, t.due] as const)) {
+    if (stopped) return;
+    if (timer.due !== at) continue;
+    runOne(timer.run);
+    await nextTask();
+  }
+}
+/** A timer whose browser timer fired while no turn was posted or going: a timers phase of its own. */
+async function runTimers(first?: Timeout) {
+  turnRunning = true;
+  try {
+    await timersPhase(first);
+  } finally {
+    endTurn();
+  }
+}
+/** A turn or timers phase ended: the next turn it asked for, or the timers that came due meanwhile. */
+function endTurn() {
+  phase = 'poll';
+  turnRunning = false;
+  if (stopped) return;
+  if (turnPosted || ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
+  else if (dueTimers.length) void runTimers();
+}
+/** Whether a timeout has come due (its browser timer has not run it yet). */
+function byIdDue(): boolean {
+  const now = performance.now();
+  for (const t of byId.values()) if (t.due <= now) return true;
+  return false;
+}
+
+/**
+ * Runs `fn` as libuv runs a closed handle's callback (a socket's 'close'): after what process.nextTick,
+ * promises and setImmediate queued before it in this turn, before the timers of the next.
+ */
+export function onClosePhase(fn: () => void): void {
+  closeQueue.push(() => {
+    if (!stopped) fn();
+  });
+  postTurn();
+}
+
+/** Runs `fn` as libuv runs an I/O callback: on the next turn, before the immediates queued until then. */
+function onIoPhase(fn: () => void): void {
+  ioQueue.push(() => {
+    if (!stopped) fn();
+  });
+  postTurn();
+}
+
+/**
+ * Runs `fn` as the other end of a connection in this process sees what this end did now (its data,
+ * end or reset): in libuv's next poll phase. In a timer's callback that is the same loop iteration's,
+ * before the immediates and close callbacks this turn queued; else the next iteration's, after them.
+ */
+export function onPeerPhase(fn: () => void): void {
+  if (phase === 'timers') return onIoPhase(fn);
+  onLaterIo(fn);
+}
+
+/**
+ * Runs `fn` as an I/O callback of the loop's next iteration (a file system call's, done in the
+ * thread pool): after the immediates and close callbacks this one queued, before the next one's.
+ */
+export function onLaterIo(fn: () => void): void {
+  nextIoQueue.push(() => {
+    if (!stopped) fn();
+  });
+  postTurn();
+}
 
 export const timers = {
   setTimeout: make(false),
@@ -190,7 +439,7 @@ export const timers = {
     immediateQueue.push(() => {
       if (!imm.cancelled && !stopped) bound(...args);
     });
-    if (immediateQueue.length === 1) immediateChannel.port2.postMessage(0);
+    postTurn();
     return imm;
   },
   clearImmediate(imm: unknown) {

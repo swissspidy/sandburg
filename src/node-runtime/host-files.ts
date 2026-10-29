@@ -181,7 +181,8 @@ function noteRead(key: string): void {
 }
 
 function reportReads(): void {
-  if (reportTimer) clearTimeout(reportTimer);
+  // The browser's: it was set with the browser's setTimeout (not the program's timers).
+  if (reportTimer) nativeClearTimeout(reportTimer);
   reportTimer = null;
   const keys = unreported;
   unreported = [];
@@ -638,6 +639,7 @@ const written = new Map<string, { data: Uint8Array; shared: SharedArrayBuffer }>
 const toDigest = new Set<string>();
 
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
+const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
 
 export function digestWhenWritten(path: string): void {
   if (!digester || path.includes('/node_modules/') || !/\.c?js$/.test(path)) return;
