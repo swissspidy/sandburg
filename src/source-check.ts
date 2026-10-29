@@ -138,7 +138,8 @@ export async function checkSources(
     signal?.addEventListener('abort', stop, { once: true });
     child.stdout!.setEncoding('utf8').on('data', (d: string) => (out += d));
     child.once('error', (e) => finish(null, e));
-    child.once('exit', (code) => {
+    // 'close', not 'exit': the process may exit before its output has all been read.
+    child.once('close', (code) => {
       try {
         finish(code === 0 ? (JSON.parse(out) as SourceFinding[]) : null, `it exited with code ${code}`);
       } catch (e) {

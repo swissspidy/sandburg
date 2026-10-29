@@ -379,3 +379,13 @@ test(
     }
   },
 );
+
+test("a check's whole answer is read, however large: 1,500 findings, far more than a pipe holds", async () => {
+  const files: Record<string, string> = { 'index.html': page() };
+  const names = Array.from({ length: 1_500 }, (_, i) => `f${String(i).padStart(4, '0')}`);
+  for (const n of names) files[`src/${n}.ts`] = `export const ${n} = ;\n`;
+  files['src/main.ts'] = names.map((n) => `import './${n}';`).join('\n') + '\n';
+  const found = await checkSources(files, {}, { budgetMs: 30_000 });
+  assert.equal(found.length, 1_500);
+  assert.ok(JSON.stringify(found).length > 128 * 1024, "more than twice a pipe's 64 KB");
+});

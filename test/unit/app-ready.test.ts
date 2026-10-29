@@ -296,6 +296,21 @@ test("the sources are checked once, after 20 s without the app rendering, and wh
   assert.deepEqual([checks, matched], [1, after]);
 });
 
+test("what the runtime says after the phase is over is not kept: the findings stay as they were when it ended", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const found: SourceFinding = { rule: 'compile-error', file: 'src/a.ts', line: 1, column: 1, message: 'x' };
+  let answer!: (f: SourceFinding[]) => void;
+  const over = new AbortController();
+  watchSources(asRun(run), async () => [found], () => new Promise((r) => (answer = r)), over.signal);
+  await advance(t, 20_100);
+  // The phase ends while the runtime is still being asked; its answer comes after.
+  over.abort();
+  answer([found]);
+  await advance(t, 5_000);
+  assert.equal(run.sourceFindings, null);
+});
+
 test('an app that renders within 20 s never has its sources checked; a check that finds nothing, or fails, leaves nothing', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   let checks = 0;

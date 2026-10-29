@@ -228,8 +228,11 @@ export function watchSources(run: RunState, check: (signal: AbortSignal) => Prom
     // The check is told when the phase is over (it is stopped then).
     found ??= await check(signal).catch(() => []);
     if (signal.aborted) return;
-    run.sourceFindings = found.length ? await relevant(found).catch(() => []) : [];
-    if (found.length && !signal.aborted) timer = setTimeout(() => void tick(), SOURCE_RELEVANCE_MS);
+    const bearing = found.length ? await relevant(found).catch(() => []) : [];
+    // The phase may have ended while the runtime answered: what it has is kept as it was then.
+    if (signal.aborted) return;
+    run.sourceFindings = bearing;
+    if (found.length) timer = setTimeout(() => void tick(), SOURCE_RELEVANCE_MS);
   };
   let timer = setTimeout(() => void tick(), SOURCE_CHECK_AFTER_MS);
   signal.addEventListener('abort', () => clearTimeout(timer), { once: true });

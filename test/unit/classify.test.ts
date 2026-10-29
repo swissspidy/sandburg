@@ -377,6 +377,8 @@ test("what the source check found classifies a ready phase that timed out, and o
     ['an infra error', { infraError: { phase: 'ready', message: 'the tab crashed' } }],
     ['a broken download in the runtime errors', { runtimeErrors: ['npm registry: socket hang up'] }],
     ['a broken download in the runtime output', { runtimeOutput: ["[runtime:stderr] npm error 404 Not Found - GET https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz - Not found"] }],
+    // As the runtime's output lines come: with their stream's prefix (a signature anchored at the line's start still counts).
+    ['a registry failure in the runtime output', { runtimeOutput: ['[runtime:stderr] npm registry: react: HTTP 503'] }],
     ['a runtime signature', { runtimeErrors: ["Error: Cannot find module 'node:inspector'"] }],
     ['a WebAssembly trap in the runtime output', { runtimeOutput: ['[runtime:stderr] RuntimeError: memory access out of bounds'] }],
     ['an unsupported probe', { probe: { verdict: 'unsupported', reason: 'needs a native addon' } }],

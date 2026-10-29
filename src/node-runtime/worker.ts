@@ -287,8 +287,6 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) installed.addRemote(`${msg.cwd}/${rel}`, size);
     vfs = new ThreadVfs((m) => realPostMessage(m), installed, msg.cwd, thread.snapshot, msg.nodeModulesWrites);
   }
-  // The main runtime records which project files its processes read (a diagnosis's evidence: see Vfs.trackReads).
-  if (!thread) vfs.trackReads(msg.cwd);
   // The main runtime's, before the project's files are written (some may be in node_modules).
   nodeModulesWrites = thread ? msg.nodeModulesWrites : trackNodeModulesWrites(vfs, msg.cwd, msg.nodeModules);
   nodeModulesIndex = msg.nodeModules;
@@ -314,6 +312,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if (!thread) linkLocalPackages(links, Object.keys(msg.files), msg.cwd);
   }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
+  // The main runtime records which project files its processes read (a diagnosis's evidence: see
+  // Vfs.trackReads), from here on: what it read itself to link local packages is not the app's.
+  if (!thread) vfs.trackReads(msg.cwd);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
   if (msg.inherit) ({ usesSqlite, asyncModules } = msg.inherit);
   else usesSqlite =

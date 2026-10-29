@@ -177,7 +177,7 @@ function whatIsWrong(found: SourceFinding): string {
 function sourceTimeout(failedPhase: PhaseRecord | undefined, input: ClassifyInput, output: string[]): Failure | null {
   const found = failedPhase?.name === 'ready' && failedPhase.status === 'timeout' ? input.sourceFindings?.[0] : undefined;
   if (!found) return null;
-  const said = [failedPhase!.error?.message ?? '', ...(input.runtimeErrors ?? []), ...output];
+  const said = [failedPhase!.error?.message ?? '', ...(input.runtimeErrors ?? []), ...output.map(unprefixed)];
   if (input.infraError || input.probe?.verdict === 'unsupported' || said.some((t) => INFRA_SIGNATURE.test(t) || WASM_TRAP.test(t)) || matchSignature(said)) return null;
   return failure('app-bug', 'ready', found.rule, describeFinding(found), [`ready timed out; the app read ${found.file}, ${whatIsWrong(found)}`, ...input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message)]);
 }
@@ -197,6 +197,9 @@ function undeclaredImport(errors: string[], declared: string[]): string | null {
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 
+/** A line of the runtime's output as the program wrote it: without colours and the stream's `[runtime:stdout] ` or `[runtime:stderr] `. */
+const unprefixed = (line: string) => line.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, '');
+
 /**
  * Vite's report of a module it could not compile: "[vite] Internal server error: <message>" (or
  * "Pre-transform error"), then "Plugin: …" and "File: /app/<path>:<line>:<column>". Only files of
@@ -204,8 +207,8 @@ const ANSI = /\x1b\[[0-9;]*m/g;
  */
 function devServerCompileError(lines: string[]): string | null {
   // Without the stream, and the prefix of a process that concurrently runs ("[client] ").
-  const unprefixed = lines.map((l) => l.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, ''));
-  const clean = unprefixed.map((l) => l.replace(/^\[[\w@:./-]{1,40}\]\s/, ''));
+  const plain = lines.map(unprefixed);
+  const clean = plain.map((l) => l.replace(/^\[[\w@:./-]{1,40}\]\s/, ''));
   for (let i = 0; i < clean.length; i++) {
     const head = /(?:Internal server error|Pre-transform error): (.+)/.exec(clean[i]);
     if (!head) continue;
@@ -221,7 +224,7 @@ function devServerCompileError(lines: string[]): string | null {
       const span = /╭─\[\s*\/?app\/(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
       if (span) frame ??= { path: span[1], loc: span[2] };
       // Before and after a process prefix is removed: "[client] [PARSE_ERROR] …" and "[PARSE_ERROR] …".
-      const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(unprefixed[j]);
+      const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(plain[j]);
       if (code) coded ??= code[1].trim();
     }
     if (frame && (!at || (at.path === frame.path && !at.loc))) at = frame;
