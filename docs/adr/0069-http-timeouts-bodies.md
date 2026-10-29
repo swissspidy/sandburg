@@ -51,7 +51,7 @@ queued meanwhile wait for the next turn.
   a decision for correctness over speed. A program cannot see from JavaScript when the microtask
   queue is empty: there is no PromiseHook, a native `await` bypasses a patched `then`, and a sentinel
   does not see jobs queued after it. So a fixed number of microtask hops (tried in review) was wrong
-  for ordinary async code. The cost: 100k immediates queued at once take about 0.8 s, against
+  for ordinary async code. The cost: 100k immediates queued at once take about 0.5–0.8 s, against
   0.1 s for the hops and 0.05–0.07 s in Node. No real program queues that many at once, and main's
   chained case is about 0.5 s.
 - **Timers wait for the turn.** A timer that comes due while a turn is posted waits for it, as
@@ -61,6 +61,10 @@ queued meanwhile wait for the next turn.
   an I/O callback, every immediate queued there runs before a `setTimeout(0)`. A timer set during
   the timers phase runs on a later one, as in Node. So does one that an earlier timer of the phase
   refreshed: it is due later now.
+- **A timer outside a turn starts a timers phase.** A timer whose browser timer fires while no turn
+  is posted or going runs, then every other timer due by then, a task each, before the turn an
+  immediate of theirs asked for. Before this, the second of two timers due together waited for that
+  turn (its immediate came between them).
 - **One turn at a time.** A turn asked for while one goes (a timer of its timers phase queued an
   immediate) starts as that one ends. Before this, two turns could overlap and run the same due
   timer twice. esbuild-wasm's Go
@@ -86,11 +90,11 @@ queued meanwhile wait for the next turn.
 |---|---|---|---|---|
 | 20 immediates of 30 ms each, run before exit | 20 | 20 | 16 | 20 |
 | 100k immediates: run before exit | 100000 | 100000 | ~2000 | 100000 |
-| 100k immediates: time to run | 55–73 ms | 125 ms | (cut short) | 73–105 ms |
+| 100k immediates: time to run | 55–73 ms | 125 ms | (cut short) | 484–713 ms (a task each) |
 | readFile callback: immediates before its `setTimeout(0)` | 2000 of 2000 | 2000 | 23 | 2000 |
 | loop1 order (`tick0 I1 tick1 p1 I2 I3 … T0`) | yes | no (`I1 I2 I3 tick1 p1`) | yes | yes |
-| 32 MiB upload to the same process | 103 ms | 356 ms | 402 ms | 324–341 ms |
-| 2000 sequential GETs to the same process | 238 ms | 91 ms | 255 ms | 143–148 ms |
+| 32 MiB upload to the same process | 69–103 ms | 56–356 ms | 402 ms | 92–341 ms |
+| 2000 sequential GETs to the same process | 216–238 ms | 79–91 ms | 255 ms | 143–217 ms |
 
 On top of that:
 
@@ -225,9 +229,12 @@ output of its `fixtures/http` program:
 - What an immediate queued, at any depth, before the next one; and a timer due during an immediate
   before the next iteration's (`microtasks.cjs`).
 - `server.close(cb)` with a connection that outlives a response (`close-waits.cjs`).
+- Timers due together run in one timers phase, a task each, before an immediate one of them queued,
+  whether set from the main script, an immediate or an I/O callback (`timers-phase.cjs`).
 - Timers due together at a turn's end fire once each, in order, when one queues an immediate, and
   one that another refreshed waits its time again (`timers-once.cjs`).
-- Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`).
+- Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`), and a
+  sibling's forged response for another's request, ignored (`forged-response.cjs`).
 - A server's action from an I/O callback (an IPC message) reaches its client after its own side
   closed (`from-io.cjs`).
 - A server's connections (`server-close.cjs`; its 'close' on a tick after the last one closed), Expect and informational responses (`expect.cjs`,

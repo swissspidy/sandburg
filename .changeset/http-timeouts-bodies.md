@@ -9,6 +9,6 @@ More of `node:http` behaves as in Node 24:
 - A request body to a server on this machine streams chunk by chunk, framed as Node frames it, including between processes. A client that writes faster than its server reads waits for it.
 - A server sees a POST that was destroyed mid-body as 'aborted'.
 - What destroying or aborting a request emits comes when it does in Node: as its socket closes, after the callbacks the turn queued. 'abort' comes on the next tick.
-- Callbacks queued with `process.nextTick` or promises run between two immediates, and a timer that comes due while immediates run waits for them, as in Node.
+- Callbacks queued with `process.nextTick` or promises run between two immediates, and a timer that comes due while immediates run waits for them, as in Node. Timers due together run before an immediate one of them queued. Each callback is a task of its own, so a program that queues very many immediates at once runs them more slowly than before (about 0.5–0.7 s for 100,000, against well under 0.1 s).
 - A server tracks its connections ('connection', `getConnections()`); `close()` closes the idle ones, and `closeIdleConnections()` and `closeAllConnections()` work. `unref()` lets the process exit.
 - `Expect: 100-continue` and informational responses (`writeContinue()`, `writeEarlyHints()`) work, with 'checkContinue', 'checkExpectation', and the client's 'continue' and 'information'.
