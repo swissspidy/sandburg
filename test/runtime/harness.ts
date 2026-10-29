@@ -177,6 +177,8 @@ export class RuntimeHarness {
   private held: (() => void)[] | null = null;
   /** Requests to /__test/hold-closed waiting for more of /__test/hold's responses to close. */
   private holdWaiters = new Set<() => void>();
+  /** Requests /__test/count took (POSTs), by its `key`. */
+  private counted = new Map<string, number>();
 
   private release(): void {
     const held = this.held ?? [];
@@ -282,6 +284,21 @@ export class RuntimeHarness {
       if (url.pathname === '/__test/remote') {
         res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
         return res.end('remote');
+      }
+      // How many requests came for `key`: a POST counts one (its body read), a GET answers the count.
+      if (url.pathname === '/__test/count') {
+        const key = url.searchParams.get('key') ?? '';
+        const cors = { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' };
+        if (req.method === 'POST') {
+          req.resume();
+          return void req.on('end', () => {
+            this.counted.set(key, (this.counted.get(key) ?? 0) + 1);
+            res.writeHead(200, cors);
+            res.end('counted');
+          });
+        }
+        res.writeHead(200, cors);
+        return res.end(String(this.counted.get(key) ?? 0));
       }
       // A response that starts and is never ended: `asked` says when the client went away.
       if (url.pathname === '/__test/hold') {

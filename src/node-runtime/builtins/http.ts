@@ -935,6 +935,8 @@ class ClientRequest extends Writable {
   /** It was ended; _final's callback ('finish') waits until its body went out. */
   #ended = false;
   #finalCb: (() => void) | null = null;
+  /** Its body went out to its end (see #finish): once, whatever asks again. */
+  #finished = false;
   /** Body bytes its server has not read yet (see BODY_WINDOW), and the write waiting for it to. */
   #unread = 0;
   #heldWrite: (() => void) | null = null;
@@ -1188,6 +1190,9 @@ class ClientRequest extends Writable {
   }
   /** Its body went out to its end: 'finish' (as Node's, once its socket wrote it). */
   #finish() {
+    // Once: a second would send it again (a request through fetch() twice).
+    if (this.#finished) return;
+    this.#finished = true;
     const out = this.#out;
     if (out === 'fetch') this.#fetch();
     else {
@@ -1204,6 +1209,8 @@ class ClientRequest extends Writable {
    * fetch(), once it ended.
    */
   #open() {
+    // Once: opened already (by its end in its 'socket' listener, say), it is not again.
+    if (this.#out) return;
     const headers: [string, string][] = Object.entries(this.headers);
     if (!('host' in this.headers)) headers.push(['host', this.host || 'localhost']);
     if (this.target !== null) {

@@ -659,6 +659,53 @@ test("http: a response that came through fetch() and was read to its end is comp
   assert.equal(out.stdout, 'data remote, end, close, aborted false, complete true\n');
 });
 
+test('http: a request ended after it has its socket goes out once, to another origin (through fetch()) and to a server of its own', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        // Ended in its 'socket' listener, a tick after it, or with a body after it: one request each, as in Node.
+        const http = require('http');
+        const counted = new Map();
+        http.createServer((req, res) => {
+          const key = new URL(req.url, 'http://x').searchParams.get('key');
+          if (req.method === 'GET') return res.end(String(counted.get(key) ?? 0));
+          counted.set(key, (counted.get(key) ?? 0) + 1);
+          req.resume();
+          req.on('end', () => res.end('counted'));
+        }).listen(3019, () => run());
+        const cases = {
+          'end() on socket': (req) => req.on('socket', () => req.end()),
+          'end() a tick after socket': (req) => req.on('socket', () => setTimeout(() => req.end(), 0)),
+          'end(body) after socket': (req) => req.on('socket', () => setTimeout(() => req.end('body'), 0)),
+        };
+        const key = (name) => encodeURIComponent(name);
+        const run = async () => {
+          const lines = [];
+          for (const [where, base] of [['remote', process.env.REMOTE], ['own', 'http://localhost:3019/']]) {
+          for (const [name, act] of Object.entries(cases)) await new Promise((done) => {
+            const req = http.request(base + '?key=' + key(name), { method: 'POST' }, (res) => { res.resume(); res.on('end', done); });
+            req.on('error', (e) => { console.log(name + ': error ' + e.message); done(); });
+            act(req);
+          });
+          for (const name of Object.keys(cases)) lines.push(where + ', ' + name + ': ' + await new Promise((done) => http.get(base + '?key=' + key(name), (res) => {
+            let b = '';
+            res.on('data', (d) => (b += d));
+            res.on('end', () => done(b));
+          })));
+          }
+          console.log(lines.join('\\n'));
+          process.exit(0);
+        };`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { env: { REMOTE: `http://fetch.localhost:${h.port}/__test/count` } },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['remote', 'own'].flatMap((where) => ['end() on socket', 'end() a tick after socket', 'end(body) after socket'].map((name) => `${where}, ${name}: 1`)));
+});
+
 /**
  * A program's requests to a server of its own (3005: through the runtime) and, with REMOTE, to another
  * origin's (through fetch()): /ok answers, /hold starts a response and never ends it. Logs each case on a line.
