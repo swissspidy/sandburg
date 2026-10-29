@@ -158,6 +158,24 @@ const smallNumbers = (done) => {
     done();
   }, 50);
 };
+// A timer that came due while a turn went (an immediate held the loop past its time), refreshed by
+// the next immediate of that turn: due later now, it waits its time from the refresh.
+const refreshedWhileDue = (done) => {
+  let refreshed = NaN;
+  const t = setTimeout(() => {
+    out.push(`refreshed while due: waited its time ${performance.now() - refreshed >= 98}`);
+    done();
+  }, 100);
+  setTimeout(() => {
+    setImmediate(() => hold(100));
+    // (Its time passed: the immediates after go on, and it waits for them.)
+    for (let i = 0; i < 50; i++) setImmediate(() => {});
+    setImmediate(() => {
+      t.refresh();
+      refreshed = performance.now();
+    });
+  }, 40);
+};
 const step = (fn) => new Promise((done) => fn(done));
 void (async () => {
   await step(chained);
@@ -171,5 +189,6 @@ void (async () => {
   await step(afterBlock);
   await step(busyThenShort);
   await step(smallNumbers);
+  await step(refreshedWhileDue);
   console.log(out.join('\n'));
 })();

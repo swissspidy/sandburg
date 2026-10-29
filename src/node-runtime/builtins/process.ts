@@ -122,6 +122,9 @@ class Timeout {
     this.scheduled = false;
     byId.delete(this.seq);
     this.cancelNative();
+    // Nor does it wait for a turn's end any more (refresh() sets it again: due later).
+    const waiting = dueTimers.indexOf(this);
+    if (waiting >= 0) dueTimers.splice(waiting, 1);
   }
   ref() {
     this.refed = true;
@@ -290,8 +293,9 @@ function runOne(fn: () => void) {
  * whose browser timer has not fired yet (it would lose to the next turn's task), which the loop runs itself.
  */
 function takeDueTimers(): Timeout[] {
-  const due = dueTimers.splice(0);
   const now = Math.floor(performance.now());
+  // (Each still set and due: one cleared, or refreshed, since its browser timer fired is not.)
+  const due = dueTimers.splice(0).filter((t) => t.pending && t.due <= now);
   for (const t of byId.values()) {
     if (t.due > now || due.includes(t)) continue;
     t.cancelNative();
@@ -333,7 +337,7 @@ async function runTurn() {
  */
 async function timersPhase(first?: Timeout) {
   const due = takeDueTimers();
-  if (first && !due.includes(first)) {
+  if (first && first.pending && first.due <= Math.floor(performance.now()) && !due.includes(first)) {
     due.push(first);
     due.sort((a, b) => a.due - b.due || a.seq - b.seq);
   }
@@ -345,7 +349,7 @@ async function timersPhase(first?: Timeout) {
   }
 }
 /** A timer whose browser timer fired while no turn was posted or going: a timers phase of its own. */
-async function runTimers(first: Timeout) {
+async function runTimers(first?: Timeout) {
   turnRunning = true;
   try {
     await timersPhase(first);
@@ -359,7 +363,7 @@ function endTurn() {
   turnRunning = false;
   if (stopped) return;
   if (turnPosted || ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
-  else if (dueTimers.length) void runTimers(dueTimers.shift()!);
+  else if (dueTimers.length) void runTimers();
 }
 /** Whether a timeout has come due (its browser timer has not run it yet). */
 function byIdDue(): boolean {

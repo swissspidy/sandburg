@@ -144,6 +144,7 @@ test('timers: timers due together (intervals too) run in one timers phase, a tas
     'set after a long block: waited its time true',
     'set after a busy stretch: A, B',
     'numbers 1 to 5000 cleared: it fired true',
+    'refreshed while due: waited its time true',
   ]);
 });
 
