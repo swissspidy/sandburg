@@ -28,7 +28,7 @@ import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { createUncaught } from './uncaught.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
-import { Vfs } from './vfs.ts';
+import { Vfs, installedFrom } from './vfs.ts';
 import { parseWorkspace, safeLinks, setLinks, WORKSPACE_FILE } from './links.ts';
 import { TRANSFORM_CACHE, createTransformCache, type TransformCache } from './transform-cache.ts';
 import { NATIVE_TRANSFORM, createNativeTransform } from './native-transform.ts';
@@ -312,6 +312,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     if (!thread) linkLocalPackages(links, Object.keys(msg.files), msg.cwd);
   }
   if (!thread) for (const [rel, size] of Object.entries(msg.nodeModules ?? {})) vfs.addRemote(`${msg.cwd}/${rel}`, size);
+  // The main runtime records which project files its processes read (a diagnosis's evidence: see
+  // Vfs.trackReads), from here on: what it read itself to link local packages is not the app's.
+  if (!thread) vfs.trackReads(msg.cwd);
   // SQLite's WebAssembly engine is loaded before the program runs if it may need it (the APIs are synchronous).
   if (msg.inherit) ({ usesSqlite, asyncModules } = msg.inherit);
   else usesSqlite =
@@ -906,6 +909,9 @@ self.addEventListener('message', (e: MessageEvent<ToWorker>) => {
       const bundle = msg.bytes ? bundleCache(vfs, projectRoot, files) : null;
       post({ type: 'cache', id: msg.id, files, bundle }, bundle ? [bundle] : []);
     }
+  }
+  else if (msg.type === 'project-reads') {
+    post({ type: 'project-reads', id: msg.id, reads: vfs.projectReads(), installed: msg.packages.map((p) => installedFrom(vfs, projectRoot, p.name, p.from)) });
   }
   else if (msg.type === 'read-tree') {
     // The project's files whose path matches, outside node_modules and dot directories.

@@ -47,3 +47,24 @@ test("a linked package: its files in node_modules, its modules at its own path, 
     read: "module.exports = 'helper';",
   });
 });
+
+test("a linked package's files count as read by the app only when its program reads them, not when the runtime links them", async () => {
+  const out = await h.run(
+    {
+      '.sandburg/workspace.json': JSON.stringify({ links: { 'node_modules/@acme/ui': 'packages/ui' }, packages: { '@acme/ui': 'packages/ui' } }),
+      'packages/ui/package.json': JSON.stringify({ name: '@acme/ui', main: 'index.js' }),
+      'packages/ui/index.js': `module.exports = require('./lib/helper');`,
+      'packages/ui/lib/helper.js': `module.exports = 'helper';`,
+      // Linked with the rest (copied into node_modules), never loaded.
+      'packages/ui/unused.js': `export const broken = ;`,
+      'main.js': `console.log(require('@acme/ui'));`,
+    },
+    '/app/main.js',
+    [],
+    undefined,
+    { reads: true },
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const reads = (out.reads ?? []).filter((p) => /\.js$/.test(p)).sort();
+  assert.deepEqual(reads, ['main.js', 'packages/ui/index.js', 'packages/ui/lib/helper.js']);
+});

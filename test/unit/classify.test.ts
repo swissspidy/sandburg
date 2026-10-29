@@ -303,6 +303,12 @@ test('a console error that names a thrown error counts, however it is introduced
   for (const warning of ['Warning: Each child in a list should have a unique "key" prop.', 'Each child in a list should have a unique "key" prop.', 'Warning: a TypeError: in a warning is still a warning']) {
     assert.equal(rule(warning), 'unmatched', warning);
   }
+  // A path segment named like an error, followed by a colon, is a path.
+  for (const path of ['Loaded module src/components/Error: ok', 'Loaded module src\\components\\Error: ok', 'Rendered /app/src/routes/NotFoundException: done', 'Loaded src/AppError:12']) {
+    assert.equal(rule(path), 'unmatched', path);
+  }
+  // A namespaced error is still one.
+  assert.equal(rule('Prisma.PrismaClientKnownRequestError: x'), 'app-error-before-ready');
 });
 
 test("dependencies and generated code are not the project's: node_modules at any depth, .nuxt, .svelte-kit and the like", () => {
@@ -337,4 +343,50 @@ test('a project or checks file that did not load is the failure, even with no ph
     message: 'SyntaxError: Unexpected end of input',
     evidence: [],
   });
+});
+
+test("what the source check found classifies a ready phase that timed out, and only that; it says so plainly", () => {
+  const syntax = { rule: 'compile-error' as const, file: 'src/components/ConverterFeature.tsx', line: 3, column: 16, message: 'Unexpected ";"' };
+  const undeclared = { rule: 'undeclared-import' as const, file: 'src/components/CounterFeature.tsx', line: 3, message: 'dayjs' };
+  const timedOut = failedAt('ready', 'ready timed out after 240000 ms', undefined, 'timeout');
+  const s = classify(input({ phases: timedOut, sourceFindings: [syntax] }));
+  assert.deepEqual([s?.class, s?.phase, s?.rule, s?.message, s?.evidence[0]], ['app-bug', 'ready', 'compile-error', 'src/components/ConverterFeature.tsx:3:16: Unexpected ";"', 'ready timed out; the app read src/components/ConverterFeature.tsx, which does not parse: src/components/ConverterFeature.tsx:3:16: Unexpected ";"']);
+  const u = classify(input({ phases: timedOut, sourceFindings: [undeclared] }));
+  assert.deepEqual([u?.class, u?.rule, u?.message, u?.evidence[0]], ['app-bug', 'undeclared-import', 'imports undeclared package "dayjs" (src/components/CounterFeature.tsx:3)', 'ready timed out; the app read src/components/CounterFeature.tsx, which imports "dayjs", a package it neither declares nor has installed (src/components/CounterFeature.tsx:3)']);
+  // Without findings, a timeout is one.
+  assert.deepEqual([classify(input({ phases: timedOut, sourceFindings: [] }))?.rule], ['phase-deadline']);
+  // A ready phase that failed on an error of its own is not relabelled: the app's error is the cause,
+  // whatever file the app also read (a scanner's); what was found is only noted.
+  for (const message of ['app threw before rendering: ReferenceError: window is not defined', 'app did not render: its page answered HTTP 500 (http://app.test/)', 'app did not render after a console error: Failed to load resource: the server responded with a status of 404 (Not Found)']) {
+    const failed = classify(input({ phases: failedAt('ready', message), sourceFindings: [syntax] }));
+    assert.deepEqual([failed?.class, failed?.rule, failed?.message], ['unknown', 'unmatched', message]);
+    assert.equal(failed?.evidence.at(-1), 'the app also read src/components/ConverterFeature.tsx, which does not parse: src/components/ConverterFeature.tsx:3:16: Unexpected ";"');
+  }
+  // Better evidence wins: the app's own error with a stack through its files; another phase is not the check's.
+  const threw = classify(input({ phases: failedAt('ready', 'app threw before rendering: x'), sourceFindings: [syntax], pageErrors: [{ source: 'app', message: 'TypeError: x\n    at run (http://s-1.sandburg.localhost:39303/src/App.tsx:8:3)' }] }));
+  assert.deepEqual([threw?.class, threw?.rule], ['app-bug', 'app-error-before-ready']);
+  const start = classify(input({ phases: failedAt('start', 'start timed out', undefined, 'timeout'), sourceFindings: [syntax] }));
+  assert.deepEqual([start?.class, start?.rule], ['timeout', 'phase-deadline']);
+  // Sandburg's own failure (a tab that crashed, an offline cache miss, a download that broke) is
+  // classified as it is without the source check's findings, whether the phase timed out or failed.
+  // Nor when Sandburg's side or the runtime says why the phase timed out: its own failure (a tab that
+  // crashed, a download that broke, in its errors or the runtime's output), a built-in the runtime
+  // lacks, a WebAssembly trap, a project the probe found unsupported. The timeout is classified as
+  // it is without findings.
+  const why: [string, Partial<ClassifyInput>][] = [
+    ['an infra error', { infraError: { phase: 'ready', message: 'the tab crashed' } }],
+    ['a broken download in the runtime errors', { runtimeErrors: ['npm registry: socket hang up'] }],
+    ['a broken download in the runtime output', { runtimeOutput: ["[runtime:stderr] npm error 404 Not Found - GET https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz - Not found"] }],
+    // As the runtime's output lines come: with their stream's prefix (a signature anchored at the line's start still counts).
+    ['a registry failure in the runtime output', { runtimeOutput: ['[runtime:stderr] npm registry: react: HTTP 503'] }],
+    ['a runtime signature', { runtimeErrors: ["Error: Cannot find module 'node:inspector'"] }],
+    ['a WebAssembly trap in the runtime output', { runtimeOutput: ['[runtime:stderr] RuntimeError: memory access out of bounds'] }],
+    ['an unsupported probe', { probe: { verdict: 'unsupported', reason: 'needs a native addon' } }],
+  ];
+  for (const [what, over] of why) {
+    const without = classify(input({ phases: timedOut, ...over }));
+    const withFindings = classify(input({ phases: timedOut, ...over, sourceFindings: [syntax] }));
+    assert.notEqual(withFindings?.class, 'app-bug', what);
+    assert.deepEqual([withFindings?.class, withFindings?.rule], [without?.class, without?.rule], what);
+  }
 });

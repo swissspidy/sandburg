@@ -23,6 +23,7 @@ interface ClassifyInput {
     readyOutputFrom?: number;
     appPath?: string | null;
     declaredDependencies: string[];
+    sourceFindings?: SourceFinding[] | null;
     infraError: {
         phase: PhaseName;
         message: string;
@@ -523,6 +524,15 @@ interface SerializedError {
 }
 
 // --- referenced, not exported by the package ---
+
+// source-check.ts
+interface SourceFinding {
+    rule: 'compile-error' | 'undeclared-import';
+    file: string;
+    line: number;
+    column?: number;
+    message: string;
+}
 
 // types.ts
 interface HostInstallOptions {

@@ -180,6 +180,7 @@ export class NodeProcess {
   private label: string;
   private partial = { stdout: '', stderr: '' };
   private trees = new Map<number, (files: Record<string, CacheFile>) => void>();
+  private projectReadsAnswers = new Map<number, (answer: { reads: string[] | null; installed: boolean[] }) => void>();
   private caches = new Map<number, (cache: CacheSnapshot | null) => void>();
   /** When the page last sent the runtime a request or heard from it (see activity()). */
   private lastActivity = performance.now();
@@ -377,6 +378,31 @@ export class NodeProcess {
   }
 
   /**
+   * The project's files the runtime's processes have read (null when they are not recorded), and
+   * whether each package is installed where its file imports it from (see Vfs.trackReads, installedFrom);
+   * null when the runtime does not answer within `timeoutMs` (it is not waited for after that).
+   */
+  projectReads(packages: { name: string; from: string }[], timeoutMs = 3_000): Promise<{ reads: string[] | null; installed: boolean[] } | null> {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.projectReadsAnswers.delete(id);
+        resolve(null);
+      }, timeoutMs);
+      this.projectReadsAnswers.set(id, (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      });
+      this.send({ type: 'project-reads', id, packages });
+    });
+  }
+
+  /** How many project-reads answers are still awaited (tests). */
+  get projectReadsWaiting(): number {
+    return this.projectReadsAnswers.size;
+  }
+
+  /**
    * A dev server's cache under project directories (see node-runtime/cache-tree.ts): its files, and
    * with `bytes` their bytes as a bundle; with `ifChanged`, null when no file under the directories
    * run() tracks changed since the program started.
@@ -457,6 +483,10 @@ export class NodeProcess {
         if (tracing()) traceTransfer({ hop: 'runtime→page postMessage', what: 'tree', bytes: Object.values(m.files).reduce((n, f) => n + f.base64.length, 0), encoding: 'base64', ms: 0 });
         this.trees.get(m.id)?.(m.files);
         this.trees.delete(m.id);
+        break;
+      case 'project-reads':
+        this.projectReadsAnswers.get(m.id)?.({ reads: m.reads, installed: m.installed });
+        this.projectReadsAnswers.delete(m.id);
         break;
       case 'process-exit':
         this.failedCommands.push({ command: m.command, code: m.code, stderr: m.stderr });

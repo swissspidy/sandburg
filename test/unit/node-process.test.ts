@@ -85,3 +85,18 @@ test("a response for a request the page does not wait for (another runtime's, or
   assert.deepEqual(got, ['full', 'closed']);
   assert.equal(doc.document.cookie, 'mine=1');
 });
+
+test("a runtime that does not say what the app read is waited for no longer than asked, and not remembered after", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { proc, from } = start(t);
+  const unanswered = proc.projectReads([{ name: 'dayjs', from: 'src/a.ts' }], 3_000);
+  assert.equal(proc.projectReadsWaiting, 1);
+  t.mock.timers.tick(3_000);
+  assert.equal(await unanswered, null);
+  assert.equal(proc.projectReadsWaiting, 0);
+  // An answer in time is the answer (the id is the one sent: the second asked).
+  const answered = proc.projectReads([], 3_000);
+  from({ type: 'project-reads', id: 2, reads: ['src/a.ts'], installed: [] });
+  assert.deepEqual(await answered, { reads: ['src/a.ts'], installed: [] });
+  assert.equal(proc.projectReadsWaiting, 0);
+});

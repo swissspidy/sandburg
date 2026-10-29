@@ -23,7 +23,19 @@ export interface RuntimeAdapter {
   failed?(): Promise<never>;
   /** Requests the app's servers are still answering, and how long the runtime has been quiet. */
   activity?(): Activity | null;
+  /** The project's files the app's processes read, and whether each package is installed where its file imports it from (ProjectReads). */
+  projectReads?(packages: { name: string; from: string }[]): Promise<ProjectReads | null>;
   dispose(): Promise<void>;
+}
+
+/**
+ * What a diagnosis may know of the running app's files: those its processes have read (relative to
+ * the project, outside node_modules; null when the runtime does not record them), and for each package
+ * asked about, whether it is installed where the file that imports it imports it from.
+ */
+export interface ProjectReads {
+  reads: string[] | null;
+  installed: boolean[];
 }
 
 /** What the app's servers are doing: their requests from the page, and when the runtime last spoke. */
@@ -70,6 +82,8 @@ export interface HostApi {
    */
   rendered(selector: string | null): Promise<RpcResult<boolean>>;
   activity(): Promise<RpcResult<Activity | null>>;
+  /** ProjectReads for `packages`, or null without a runtime that records them. */
+  projectReads(packages: { name: string; from: string }[]): Promise<RpcResult<ProjectReads | null>>;
   /**
    * Waits until the app has settled (see Activity): its framework says input is no longer lost
    * (host/settle.ts), else no request sent for `quietMs` and none in flight that was sent within
