@@ -112,6 +112,10 @@ class Timeout {
   get pending() {
     return this.scheduled;
   }
+  /** Its browser timer is set (it has not fired yet: the loop has not run it either). */
+  get armed() {
+    return this.id !== null;
+  }
   /** A timeout fired: no longer due (refresh() schedules it again). */
   fired() {
     this.scheduled = false;
@@ -294,8 +298,9 @@ function runOne(fn: () => void) {
  */
 function takeDueTimers(): Timeout[] {
   const now = Math.floor(performance.now());
-  // (Each still set and due: one cleared, or refreshed, since its browser timer fired is not.)
-  const due = dueTimers.splice(0).filter((t) => t.pending && t.due <= now);
+  // Each still set whose browser timer fired (the browser's clock: performance.now() may read a little
+  // behind it, so not by its time): one cleared since is not, nor one refreshed (set again, due later).
+  const due = dueTimers.splice(0).filter((t) => t.pending && !t.armed);
   for (const t of byId.values()) {
     if (t.due > now || due.includes(t)) continue;
     t.cancelNative();
@@ -337,7 +342,7 @@ async function runTurn() {
  */
 async function timersPhase(first?: Timeout) {
   const due = takeDueTimers();
-  if (first && first.pending && first.due <= Math.floor(performance.now()) && !due.includes(first)) {
+  if (first && first.pending && !first.armed && !due.includes(first)) {
     due.push(first);
     due.sort((a, b) => a.due - b.due || a.seq - b.seq);
   }
