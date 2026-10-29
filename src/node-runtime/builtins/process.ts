@@ -58,7 +58,11 @@ const reportUncaught = globalThis.reportError?.bind(globalThis) ?? ((e: unknown)
 function timerNow(): number {
   return Math.floor(performance.now());
 }
-let timerSeq = 0;
+/**
+ * Timers' handles (their numbers) count from 2^30: never a browser timer's id (those count from 1), so
+ * that a browser timer's id given to the program's clearTimeout() cannot cancel a program's timer.
+ */
+let timerSeq = 2 ** 30;
 class Timeout {
   /** The browser's timer for its next firing (an interval's too: it is set again after each run). */
   private id: ReturnType<typeof nativeSetTimeout> | null = null;

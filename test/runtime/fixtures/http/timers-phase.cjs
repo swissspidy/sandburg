@@ -134,6 +134,29 @@ const afterBlock = (done) => setTimeout(() => {
     done();
   }, 200);
 }, 1);
+// A timer set after a busy stretch counts from its end: one set before it with a longer delay comes
+// first.
+const busyThenShort = (done) => setTimeout(() => {
+  const log = [];
+  setTimeout(() => log.push('A'), 10);
+  hold(20);
+  setTimeout(() => log.push('B'), 1);
+  setTimeout(() => {
+    out.push(`set after a busy stretch: ${log.join(', ')}`);
+    done();
+  }, 50);
+}, 1);
+// Small numbers to clearTimeout() (another timer's, the browser's own) leave a timer whose number was
+// not taken alone, as in Node.
+const smallNumbers = (done) => {
+  let fired = false;
+  setTimeout(() => (fired = true), 10);
+  for (let n = 1; n <= 5000; n++) clearTimeout(n);
+  setTimeout(() => {
+    out.push(`numbers 1 to 5000 cleared: it fired ${fired}`);
+    done();
+  }, 50);
+};
 const step = (fn) => new Promise((done) => fn(done));
 void (async () => {
   await step(chained);
@@ -145,5 +168,7 @@ void (async () => {
   await step((done) => fs.readFile(__filename, () => run('from an I/O callback', 5, done)));
   await step(together);
   await step(afterBlock);
+  await step(busyThenShort);
+  await step(smallNumbers);
   console.log(out.join('\n'));
 })();
