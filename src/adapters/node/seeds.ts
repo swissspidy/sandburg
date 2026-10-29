@@ -30,6 +30,24 @@ const nextSeedDirs = (version: string) => [Number.parseInt(version, 10) >= 16 ? 
 const seeding = new Map<string, Promise<void>>();
 
 /**
+ * Starts the seed run for `key` unless one has run in this process. A seed run that stored its cache
+ * is forgotten once it has: a later app finds the cache, or, if it was removed since (.sandburg
+ * cleared while the process kept running), seeds again. One that stored nothing is not run again.
+ */
+function startSeed(key: string, stored: () => Promise<boolean>, run: () => Promise<unknown>, log: (line: string) => void): void {
+  if (seeding.has(key)) return;
+  const running: Promise<void> = run()
+    .catch((e: Error) => log(`seeding failed: ${e.message}`))
+    .then(async () => {
+      if ((await stored()) && seeding.get(key) === running) seeding.delete(key);
+    });
+  seeding.set(key, running);
+}
+
+/** The seed run for `key` this process started and has not forgotten, until it has ended (and its cache was checked). */
+export const seedRun = (key: string): Promise<void> | undefined => seeding.get(key);
+
+/**
  * The App Router's seed fits apps with an app directory, the Pages Router's those without: webpack
  * names a module by the index of the loader rule that compiled it (`??ruleSet[1].rules[9]…`), and
  * Next.js has more rules with an app directory, so a Pages Router app found none of its modules in
@@ -94,7 +112,8 @@ export async function viteSeedCache(project: Project, installKey: string, option
   // time a seed run takes, so waiting would only gain for large packages. Later apps use the seed.
   if (options?.runSeed && !seeding.has(seed.key)) {
     log(`pre-bundling the app's packages in a seed run, for later apps with the same packages and config`);
-    seeding.set(seed.key, options.runSeed(seed.project, {}).catch((e: Error) => log(`seeding failed: ${e.message}`)));
+    const runSeed = options.runSeed.bind(options);
+    startSeed(seed.key, stored, () => runSeed(seed.project, {}), log);
   }
   return { key: seed.key, ready: false };
 }
@@ -114,7 +133,8 @@ export async function nextSeedCache(resolved: Record<string, string>, router: Ne
   if (await stored()) return { key, ready: true, dirs };
   if (options?.runSeed && !seeding.has(key)) {
     log(`seeding the webpack cache for next@${versions.next} beside this app (once per set of versions and router)`);
-    seeding.set(key, options.runSeed(nextSeedProject(versions, router), {}).catch((e: Error) => log(`seeding failed: ${e.message}`)));
+    const runSeed = options.runSeed.bind(options);
+    startSeed(key, stored, () => runSeed(nextSeedProject(versions, router), {}), log);
   }
   return { key, ready: false, dirs };
 }
