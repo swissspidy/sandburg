@@ -9,8 +9,11 @@ const SLACK = 1000;
 let log;
 const note = (name) => log.push({ name, t: performance.now() });
 const cases = [];
-/** checks: [event, after, ms]: `event` comes `ms` (to ms + SLACK) after `after` (names, or name#n for the nth). */
-const add = (name, setup, client, checks = []) => cases.push({ name, setup, client, checks });
+/**
+ * checks: [event, after, ms]: `event` comes `ms` (to ms + SLACK) after `after` (names, or name#n for the nth).
+ * window: how long the case's events are noted (what comes later is left out, not reported late).
+ */
+const add = (name, setup, client, checks = [], window = 1200) => cases.push({ name, setup, client, checks, window });
 // Its 'timeout' events (listening for them keeps the socket), and its end.
 const timeouts = (req, res) => {
   req.on('timeout', (s) => note(`req timeout socket=${s === req.socket}`));
@@ -50,10 +53,11 @@ add('req.setTimeout mid-body', (s) => s.on('request', (req, res) => { watch(req,
 add('writes keep it alive', (s) => { s.timeout = 200; s.on('request', (req, res) => { watch(req, res); res.writeHead(200); let n = 0; const i = setInterval(() => { res.write('x'); note(`write ${++n}`); if (n === 4) clearInterval(i); }, 100); }); }, get(), [['client res aborted', 'write 4', 200]]);
 // So does each chunk of the body. The chunks come 100 ms apart, 400 ms in all (the timeout 300), each
 // written once the server read the one before: its 'data' listener works 100 ms, then the client
-// writes the next. No timer of the program spaces them, so a loop turn that starts late (with the
-// idle timer due beside a client's interval, as both were) does not time the body out between chunks.
+// writes the next. No timer of the program spaces them: a loop turn that starts late times the body
+// out between chunks only when it is 300 ms late (the idle timeout), where a client's 100 ms interval,
+// due beside the idle timer, made it 100 ms. Its client error comes ~700 ms in: its window is that and SLACK.
 let bodyRequest;
-add('body keeps it alive', (s) => { s.timeout = 300; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); const end = Date.now() + 100; while (Date.now() < end); if (Number(d) < 3) bodyRequest.write(String(Number(d) + 1)); }); req.on('end', () => res.end('ok')); }); }, get('POST', (r) => { bodyRequest = r; r.write('0'); }), [['client error', 'data 3', 400]]);
+add('body keeps it alive', (s) => { s.timeout = 300; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); const end = Date.now() + 100; while (Date.now() < end); if (Number(d) < 3) bodyRequest.write(String(Number(d) + 1)); }); req.on('end', () => res.end('ok')); }); }, get('POST', (r) => { bodyRequest = r; r.write('0'); }), [['client error', 'data 3', 400]], 700 + SLACK);
 // A 'data' listener that takes long (300 ms, the timeout 200): its idle time counts from its end.
 add('slow data listener', (s) => { s.timeout = 200; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); if (String(d) === '1') { const end = Date.now() + 300; while (Date.now() < end); } }); }); }, get('POST', (r) => { r.write('0'); setTimeout(() => r.write('1'), 100); }), [['client error', 'data 1', 500]]);
 add('fires again after activity', (s) => { s.setTimeout(200, () => note('server timeout')); s.on('request', (req, res) => { watch(req, res); timeouts(req, res); res.writeHead(200); setTimeout(() => { res.write('x'); note('write'); }, 300); setTimeout(() => res.end(), 700); }); }, get(), [['res timeout', 'request', 200], ['res timeout#2', 'write', 200]]);
@@ -94,7 +98,7 @@ async function main() {
     c.setup(s);
     await new Promise((r) => s.listen(port, r));
     c.client(port);
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, c.window));
     const mine = log;
     log = [];
     const bad = late(mine, c.checks);

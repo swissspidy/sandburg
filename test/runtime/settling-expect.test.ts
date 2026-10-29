@@ -182,8 +182,9 @@ test('a failing assertion fails as it would without the checks beside it: same m
   const plain = await timed(() => expect(page.locator('h1')).toHaveText('fixed', { timeout: 1_200 }));
   assert.ok(probed.error && plain.error);
   // The call log counts Playwright's attempts ("13 × locator resolved to …"), which vary with the
-  // machine's speed, and indents the line under a count by the count's width: both are left out.
-  const strip = (m: string) => m.replace(/\u001b\[[0-9;]*m/g, '').replace(/\d+ × /g, 'N × ').replace(/^ +/gm, '');
+  // machine's speed, and indents the line under a count by the count's width: both are left out
+  // (only there: any other indentation is compared).
+  const strip = (m: string) => m.replace(/\u001b\[[0-9;]*m/g, '').replace(/^( *)\d+ × (.*)\n */gm, '$1N × $2\n');
   assert.equal(strip('    5 × locator resolved to <h1>broken</h1>\n      - unexpected value "broken"'), strip('    13 × locator resolved to <h1>broken</h1>\n       - unexpected value "broken"'));
   assert.equal(strip(probed.error.message), strip(plain.error.message));
   // At its own timeout (1.2 s), not the configured 10 s.
