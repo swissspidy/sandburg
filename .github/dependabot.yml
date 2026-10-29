@@ -40,6 +40,11 @@ updates:
       # type: the semver-major rule alone let 7 through in a grouped update (#34).
       - dependency-name: typescript
         versions: [">= 7"]
+      # The lockfile fixtures (monorepo-workspaces, pnpm-lock-app) pin versions older than their ranges'
+      # latest on purpose: the monorepo tests tell a lockfile that is honoured from one that is not by
+      # those versions (#110). Only these fixtures depend directly on ms and escape-html.
+      - dependency-name: ms
+      - dependency-name: escape-html
 
   - package-ecosystem: github-actions
     # / is the workflows and the repository's own action (action.yml); the local composite actions pin
