@@ -36,6 +36,8 @@ export type FromWorker =
   /** How many of this runtime's processes (it and its child processes, at any depth) are still starting: see process-tree.ts. */
   | { type: 'starting'; count: number }
   | { type: 'tree'; id: number; files: Record<string, { base64: string }> }
+  /** project-reads' answer: null reads when they are not tracked; `installed` in the order asked. */
+  | { type: 'project-reads'; id: number; reads: string[] | null; installed: boolean[] }
   /** read-cache's answer: the files, and their bytes as a bundle when asked (cache-tree.ts); `unchanged` as tree's. */
   | { type: 'cache'; id: number; files: CacheEntry[]; bundle: ArrayBuffer | null; unchanged?: boolean };
 
@@ -201,6 +203,8 @@ export type ToWorker =
   | { type: 'write-file'; path: string; content: string }
   /** The project's files whose path matches `match`, outside node_modules and dot directories (an app's databases). */
   | { type: 'read-tree'; id: number; match: string }
+  /** The project's files the runtime's processes read, and whether each package is installed where its file imports it from. */
+  | { type: 'project-reads'; id: number; packages: { name: string; from: string }[] }
   /** A dev server's cache under `dirs`, to keep for the next run: its files, and with `bytes` their bytes (see cache-tree.ts). */
   | { type: 'read-cache'; id: number; dirs: string[]; bytes: boolean; ifChanged?: boolean }
   | { type: 'ws-open'; id: number; port: number; url: string; headers: [string, string][]; protocols: string[] }

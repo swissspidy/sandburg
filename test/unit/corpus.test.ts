@@ -23,3 +23,29 @@ test('corpus/ is the generator\'s output, byte for byte, and nothing else', asyn
   assert.deepEqual(onDisk.toSorted(), [...expected.keys()].toSorted(), 'the same files');
   for (const path of onDisk) assert.equal(await readFile(join(corpus, path), 'utf8'), expected.get(path), path);
 });
+
+test("the source check (src/source-check.ts) flags each corpus app's seeded syntax error and undeclared import, at its line, and nothing else", async () => {
+  const { checkSourcesHere } = await import('../../src/source-check.ts');
+  const { loadProject } = await import('../../src/project.ts');
+  const { UNDECLARED } = await import('../../scripts/corpus/stacks.ts');
+  const index = JSON.parse(await readFile(join(corpus, '_corpus.json'), 'utf8')) as { apps: AppMeta[] };
+  const flagged: string[] = [];
+  const expected: string[] = [];
+  for (const { id } of index.apps) {
+    const meta = JSON.parse(await readFile(join(corpus, id, 'meta.json'), 'utf8')) as AppMeta;
+    const project = await loadProject(join(corpus, id));
+    for (const f of await checkSourcesHere(project.files)) flagged.push(`${id} ${f.rule} ${f.file}:${f.line}${f.rule === 'undeclared-import' ? ` ${f.message}` : ''}`);
+    // Where the generator seeded the app's fault: the line it wrote (v6's nanoid, v7's dayjs).
+    const seeded = meta.fault === 'syntax' ? /^\s*const broken = ;$/ : meta.fault === 'undeclared-import' ? new RegExp(`^\\s*import .* from '(nanoid|${UNDECLARED})';$`) : null;
+    if (!seeded) continue;
+    for (const [file, content] of Object.entries(project.files).sort(([a], [b]) => (a < b ? -1 : 1))) {
+      if (typeof content !== 'string' || file === 'checks.spec.ts') continue;
+      content.split('\n').forEach((line, i) => {
+        const m = seeded.exec(line);
+        if (m) expected.push(`${id} ${meta.fault === 'syntax' ? 'compile-error' : 'undeclared-import'} ${file}:${i + 1}${m[1] ? ` ${m[1]}` : ''}`);
+      });
+    }
+  }
+  assert.equal(expected.length, index.apps.filter((a) => a.fault === 'syntax' || a.fault === 'undeclared-import').length, 'one seeded line per such app');
+  assert.deepEqual(flagged, expected);
+});

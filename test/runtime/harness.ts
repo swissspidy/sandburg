@@ -53,7 +53,13 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
     if (m.type === 'ready') w.postMessage({ type: 'run', main });
     else if (m.type === 'log') out[m.stream] += m.text;
     else if (m.type === 'fatal') { out.fatal = m.stack || m.message; finish(); }
-    else if (m.type === 'exit') { out.ends.push(['exit', m.code]); out.exit = m.code; if (!requests.length) done(); }
+    else if (m.type === 'exit') {
+      out.ends.push(['exit', m.code]);
+      out.exit = m.code;
+      // With reads: the project files the runtime records as read (worker.ts, project-reads), asked once the program is over.
+      if (!requests.length) extra.reads ? w.postMessage({ type: 'project-reads', id: 1, packages: [] }) : done();
+    }
+    else if (m.type === 'project-reads') { out.reads = m.reads; done(); }
     else if (m.type === 'listening') {
       // The ports the page was told of.
       out.listening.push(m.port);
@@ -397,7 +403,7 @@ export class RuntimeHarness {
     return (this.server.address() as AddressInfo).port;
   }
 
-  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string>; /** As runInstalled's. */ prepare?: number; helperDelay?: number } = {}) {
+  run(files: Record<string, string>, main: string, requests: { url: string; method?: string }[] = [], execArgv?: string[], options: { spares?: number; until?: (state: RunState) => boolean; /** Ms the run is kept once it is over, for what comes after. */ linger?: number; /** The program's environment. */ env?: Record<string, string>; /** As runInstalled's. */ prepare?: number; helperDelay?: number; /** Ask, once the program exits, which project files the runtime records as read (`reads`). */ reads?: boolean } = {}) {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();
@@ -414,6 +420,8 @@ export class RuntimeHarness {
       ends: [string, number][];
       /** The responses for requests the page did not make ([type, id]). */
       stray: [string, number][];
+      /** With `reads`: the project files the runtime recorded as read (relative to /app). */
+      reads?: string[] | null;
     }>, until);
   }
 

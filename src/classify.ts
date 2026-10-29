@@ -5,6 +5,7 @@
  */
 import { builtinModules } from 'node:module';
 import type { CheckResult, Failure, PageError, PhaseName, PhaseRecord, ProbeVerdict } from './types.ts';
+import { describeFinding, type SourceFinding } from './source-check.ts';
 
 /** Node's built-in modules (`sqlite` is only listed with its prefix, as node:sqlite). */
 const NODE_BUILTINS = [...builtinModules.filter((m) => !m.startsWith('node:')), 'sqlite'];
@@ -62,6 +63,8 @@ export interface ClassifyInput {
   appPath?: string | null;
   /** Dependency names declared in package.json (dependencies and devDependencies). */
   declaredDependencies: string[];
+  /** What checking the project's sources found, when the ready phase stalled long enough to check them (source-check.ts). */
+  sourceFindings?: SourceFinding[] | null;
   /** Set when the orchestrator or browser itself failed (crash, offline cache miss). */
   infraError: { phase: PhaseName; message: string } | null;
   /**
@@ -92,6 +95,11 @@ export function classify(input: ClassifyInput): Failure | null {
   if (failedPhase?.status === 'timeout' && devError && !matchSignature([devError])) {
     return failure('app-bug', failedPhase.name, 'compile-error', devError, [devError]);
   }
+  // A ready phase that timed out with nothing better to say: what the source check found in the app's
+  // files (one it read does not parse, or imports a package neither declared nor installed), as
+  // SolidStart hangs on either and says nothing. Not when Sandburg's side or the runtime says why.
+  const source = sourceTimeout(failedPhase, input, output);
+  if (source) return source;
   if (failedPhase?.status === 'timeout') {
     return failure('timeout', failedPhase.name, 'phase-deadline', failedPhase.error?.message ?? `${failedPhase.name} timed out`, []);
   }
@@ -143,13 +151,35 @@ export function classify(input: ClassifyInput): Failure | null {
     // The dev server could not render the app's page on the server: the error page (a 500) is all the page shows.
     const ssr = failedPhase.name === 'ready' ? serverRenderError(output.slice(input.readyOutputFrom ?? 0), input.appPath ?? null) : null;
     if (ssr) return failure('app-bug', 'ready', ssr.rule, ssr.message, [ssr.message, ...evidence]);
-    return failure('unknown', failedPhase.name, 'unmatched', message, evidence);
+    // What the source check found is not this failure's cause (the app's own error is): it is only noted.
+    const read = failedPhase.name === 'ready' && input.sourceFindings?.[0];
+    return failure('unknown', failedPhase.name, 'unmatched', message, read ? [...evidence, `the app also read ${read.file}, ${whatIsWrong(read)}`] : evidence);
   }
 
   const evidence = [...failedChecks.map((c) => `${c.name}: ${c.message ?? c.status}`), ...appErrors];
   const sig = matchSignature(appErrors);
   if (sig) return failure('runtime-unsupported', 'checks', sig, failedChecks[0].message ?? 'check failed', evidence);
   return failure('app-bug', 'checks', 'blocking-check-failed', `${failedChecks.length} blocking check(s) failed`, evidence);
+}
+
+/** What is wrong with a file the source check found, in words. */
+function whatIsWrong(found: SourceFinding): string {
+  return found.rule === 'compile-error' ? `which does not parse: ${describeFinding(found)}` : `which imports "${found.message}", a package it neither declares nor has installed (${found.file}:${found.line})`;
+}
+
+/**
+ * A ready phase that timed out, as what the source check found in a file the app read (ADR 0067),
+ * with evidence that says so. Null for anything but a ready timeout, with nothing found, or when
+ * Sandburg's side or the runtime says why: an infra error or a broken download (in the phase's error,
+ * the runtime's errors or its output), a runtime signature (a built-in it lacks), a WebAssembly
+ * trap in its output, or a probe that found the project unsupported.
+ */
+function sourceTimeout(failedPhase: PhaseRecord | undefined, input: ClassifyInput, output: string[]): Failure | null {
+  const found = failedPhase?.name === 'ready' && failedPhase.status === 'timeout' ? input.sourceFindings?.[0] : undefined;
+  if (!found) return null;
+  const said = [failedPhase!.error?.message ?? '', ...(input.runtimeErrors ?? []), ...output.map(unprefixed)];
+  if (input.infraError || input.probe?.verdict === 'unsupported' || said.some((t) => INFRA_SIGNATURE.test(t) || WASM_TRAP.test(t)) || matchSignature(said)) return null;
+  return failure('app-bug', 'ready', found.rule, describeFinding(found), [`ready timed out; the app read ${found.file}, ${whatIsWrong(found)}`, ...input.pageErrors.filter((e) => e.source === 'app').map((e) => e.message)]);
 }
 
 /** How the browser, esbuild, Vite and Node report an import that resolves to nothing. */
@@ -167,6 +197,9 @@ function undeclaredImport(errors: string[], declared: string[]): string | null {
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 
+/** A line of the runtime's output as the program wrote it: without colours and the stream's `[runtime:stdout] ` or `[runtime:stderr] `. */
+const unprefixed = (line: string) => line.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, '');
+
 /**
  * Vite's report of a module it could not compile: "[vite] Internal server error: <message>" (or
  * "Pre-transform error"), then "Plugin: …" and "File: /app/<path>:<line>:<column>". Only files of
@@ -174,8 +207,8 @@ const ANSI = /\x1b\[[0-9;]*m/g;
  */
 function devServerCompileError(lines: string[]): string | null {
   // Without the stream, and the prefix of a process that concurrently runs ("[client] ").
-  const unprefixed = lines.map((l) => l.replace(ANSI, '').replace(/^\[runtime:std(?:err|out)\]\s?/, ''));
-  const clean = unprefixed.map((l) => l.replace(/^\[[\w@:./-]{1,40}\]\s/, ''));
+  const plain = lines.map(unprefixed);
+  const clean = plain.map((l) => l.replace(/^\[[\w@:./-]{1,40}\]\s/, ''));
   for (let i = 0; i < clean.length; i++) {
     const head = /(?:Internal server error|Pre-transform error): (.+)/.exec(clean[i]);
     if (!head) continue;
@@ -191,7 +224,7 @@ function devServerCompileError(lines: string[]): string | null {
       const span = /╭─\[\s*\/?app\/(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
       if (span) frame ??= { path: span[1], loc: span[2] };
       // Before and after a process prefix is removed: "[client] [PARSE_ERROR] …" and "[PARSE_ERROR] …".
-      const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(unprefixed[j]);
+      const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(plain[j]);
       if (code) coded ??= code[1].trim();
     }
     if (frame && (!at || (at.path === frame.path && !at.loc))) at = frame;
@@ -237,11 +270,12 @@ const stackOf = (e: PageError) => e.stack ?? (thrown(e.message) && /\n\s+at /.te
  * Whether a console error reports a thrown error: its first line names one ("TypeError: …", Angular's
  * "ERROR TypeError: …", "Uncaught (in promise) TypeError: …", Nuxt's "[nuxt] error caught during app
  * initialization TypeError: …", "DOMException: …"). Not a warning that carries a component stack
- * (React's "Warning: Each child in a list …", or the same without "Warning:" in React 19).
+ * (React's "Warning: Each child in a list …", or the same without "Warning:" in React 19), nor a path
+ * whose last segment is named like one ("Loaded module src/components/Error: ok").
  */
 function thrown(text: string): boolean {
   const first = text.split('\n', 1)[0];
-  return !/^Warning:/.test(first) && /\b\w*(?:Error|Exception)\b:/.test(first);
+  return !/^Warning:/.test(first) && /(?<![/\\])\b\w*(?:Error|Exception)\b:/.test(first);
 }
 
 function hasProjectStack(errors: PageError[]): boolean {

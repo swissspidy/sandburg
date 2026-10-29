@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import { Vfs } from '../../src/node-runtime/vfs.ts';
+import { Vfs, installedFrom } from '../../src/node-runtime/vfs.ts';
 
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -51,4 +51,28 @@ test('a large installed file written over with the bytes it had is no change to 
   assert.equal(vfs.trackedChanged(), false);
   vfs.write('/app/node_modules/.cache/x/big.bin', new Uint8Array(4));
   assert.equal(vfs.trackedChanged(), true);
+});
+
+test("the project's files read are recorded once tracked (not node_modules, nor what is only written or listed); a package is installed from a file's directory up", () => {
+  const vfs = new Vfs(() => new TextEncoder().encode('{}'));
+  vfs.addRemote('/app/node_modules/h3/package.json', 2);
+  vfs.addRemote('/app/packages/web/node_modules/zod/package.json', 2);
+  vfs.mkdir('/app/src', true);
+  vfs.write('/app/src/a.ts', new TextEncoder().encode('a'));
+  vfs.write('/app/src/b.ts', new TextEncoder().encode('b'));
+  vfs.read('/app/src/a.ts');
+  assert.equal(vfs.projectReads(), null, 'not tracked yet');
+  vfs.trackReads('/app');
+  vfs.read('/app/src/b.ts');
+  vfs.read('/app/src/b.ts');
+  vfs.read('/app/node_modules/h3/package.json');
+  vfs.readdir('/app/src');
+  vfs.stat('/app/src/a.ts');
+  vfs.write('/app/src/c.ts', new TextEncoder().encode('c'));
+  assert.deepEqual(vfs.projectReads(), ['src/b.ts']);
+  // Installed where the file imports it from: its directory or one above it, up to the root.
+  assert.equal(installedFrom(vfs, '/app', 'h3', 'server/api/hello.ts'), true);
+  assert.equal(installedFrom(vfs, '/app', 'zod', 'packages/web/src/main.ts'), true);
+  assert.equal(installedFrom(vfs, '/app', 'zod', 'src/main.ts'), false);
+  assert.equal(installedFrom(vfs, '/app', 'dayjs', 'src/main.ts'), false);
 });

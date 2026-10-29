@@ -193,6 +193,111 @@ export default defineConfig({
   assert.ok(ready.durationMs < 30_000, `ready took ${ready.durationMs} ms`);
 });
 
+test("after a cold start's 500, the app's own POST to its page's URL that answers 500 fails the ready phase fast", async () => {
+  // The page answers 500 once (a cold start), then a blank page whose script posts to its own URL
+  // (as a server action, htmx or Turbo does), which answers 500: Chromium logs "Failed to load
+  // resource: … 500" for the page's load and again for the POST, both with the page's URL.
+  const server = `let gets = 0;
+require('http').createServer((req, res) => {
+  res.setHeader('content-type', 'text/html');
+  if (req.method === 'POST') { res.statusCode = 500; return res.end(''); }
+  if (++gets === 1) { res.statusCode = 500; return res.end(''); }
+  res.end('<!doctype html><html><body><script>fetch(location.href, { method: "POST" })</script></body></html>');
+}).listen(3000);`;
+  const files = { 'package.json': JSON.stringify({ name: 'post-500', private: true, scripts: { dev: 'node server.js' } }), 'server.js': server };
+  const result = await session.run(projectFromFiles(files, { name: 'post-500', path: `${fixtureDir}#post-500` }), { outDir, timeouts: { ready: 60_000 } });
+  const ready = result.phases.find((p) => p.name === 'ready');
+  assert.equal(ready?.status, 'failed', JSON.stringify(result.failure));
+  assert.match(result.failure?.message ?? '', /^app did not render after a console error: Failed to load resource: the server responded with a status of 500 /);
+  assert.ok(ready.durationMs < 30_000, `ready took ${ready.durationMs} ms`);
+});
+
+/** A server-only app: its dev script runs `server`; `files` are its other files. */
+function serverApp(name: string, server: string, files: Record<string, string> = {}, pkg: object = {}) {
+  const main = server.startsWith('import ') ? 'server.mjs' : 'server.js';
+  return projectFromFiles({ 'package.json': JSON.stringify({ name, private: true, scripts: { dev: `node ${main}` }, ...pkg }), [main]: server, ...files }, { name, path: `${fixtureDir}#${name}` });
+}
+const PAGE = '<!doctype html><html><body><h1>The page</h1></body></html>';
+/** A route the run never asks for imports this file, with an undeclared import: reachable from the dev script's file, never read. */
+const UNREAD = { 'lib/report.js': "import { faker } from '@faker-js/faker';\nexport default faker;\n" };
+const REPORT_ROUTE = "if (req.url === '/report') return void (await import('./lib/report.js'));";
+
+test('the source check never fails a slow app: one still compiling its page, one whose page streams slowly, one whose tools read broken files they do not run', async () => {
+  // `next dev` says it is compiling once, then nothing until it answers, here after 28 s.
+  const compiling = serverApp(
+    'slow-compile',
+    `console.log(' ○ Compiling / ...');
+const ready = Date.now() + 28_000;
+require('http').createServer(async (req, res) => {
+  ${REPORT_ROUTE}
+  await new Promise((r) => setTimeout(r, Math.max(0, ready - Date.now())));
+  res.setHeader('content-type', 'text/html');
+  res.end(${JSON.stringify(PAGE)});
+}).listen(3000);`,
+    UNREAD,
+  );
+  // A server render that streams the page's start at once and the rest when its data comes, 28 s later.
+  const slowStream = (name: string, before: string, files: Record<string, string>) =>
+    serverApp(
+      name,
+      `${before}require('http').createServer(async (req, res) => {
+  ${REPORT_ROUTE}
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.write('<!doctype html><html><body>');
+  await new Promise((r) => setTimeout(r, 28_000));
+  res.end('<h1>The page</h1></body></html>');
+}).listen(3000);`,
+      files,
+    );
+  // As Tailwind's content scan or a dependency optimizer's crawl: every file of lib/ read as text, none run.
+  const scan = "const { readdirSync, readFileSync } = require('fs');\nfor (const f of readdirSync('lib')) readFileSync(`lib/${f}`, 'utf8');\n";
+  const projects = [
+    compiling,
+    slowStream('slow-stream', '', UNREAD),
+    slowStream('scanned-undeclared', scan, UNREAD),
+    slowStream('scanned-syntax', scan, { 'lib/report.js': 'export const broken = ;\n' }),
+  ];
+  for (const project of projects) {
+    const result = await session.run(project, { outDir, timeouts: { ready: 60_000 } });
+    const ready = result.phases.find((p) => p.name === 'ready');
+    assert.equal(ready?.status, 'ok', `${project.name}: ${JSON.stringify(result.failure)}`);
+    assert.ok(ready.durationMs > 25_000, `${project.name}: ready took ${ready.durationMs} ms`);
+  }
+});
+
+test('a page that hangs on a file its server read times out, classified by the source check; an undeclared package npm installed anyway is not the fault', async () => {
+  // SolidStart's way: the page answers 200, streams its start, renders with a module that does not
+  // parse (the error swallowed), never ends, and nothing is logged.
+  const hang = serverApp(
+    'streams-forever',
+    `require('http').createServer(async (req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.write('<!doctype html><html><head><title>x</title></head><body>');
+  await import('./lib/render.js').catch(() => {});
+}).listen(3000);`,
+    { 'lib/render.js': 'export const broken = ;\n' },
+  );
+  const hung = await session.run(hang, { outDir, timeouts: { ready: 30_000 } });
+  assert.equal(hung.phases.find((p) => p.name === 'ready')?.status, 'timeout', JSON.stringify(hung.failure));
+  assert.deepEqual([hung.failure?.class, hung.failure?.rule, hung.failure?.message], ['app-bug', 'compile-error', 'lib/render.js:1:23: Unexpected ";"']);
+  assert.equal(hung.failure?.evidence[0], 'ready timed out; the app read lib/render.js, which does not parse: lib/render.js:1:23: Unexpected ";"');
+  // Its server imports ms, which it does not declare: debug, which it does, depends on it, and npm
+  // hoists it (as Nuxt's h3). The page hangs as above: a timeout, and only that.
+  const phantom = serverApp(
+    'hoisted-import',
+    `import ms from 'ms';
+import { createServer } from 'node:http';
+createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.write('<!doctype html><html><body><!-- ' + ms(1000) + ' -->');
+}).listen(3000);`,
+    {},
+    { dependencies: { debug: '4.4.3' } },
+  );
+  const waited = await session.run(phantom, { outDir, timeouts: { ready: 30_000 } });
+  assert.deepEqual([waited.phases.find((p) => p.name === 'ready')?.status, waited.failure?.class, waited.failure?.rule], ['timeout', 'timeout', 'phase-deadline']);
+});
+
 test('a ready deadline produces a timeout', async () => {
   const result = await session.run(counter, { outDir, readySelector: '#never', timeouts: { ready: 3000 } });
   assert.equal(result.status, 'error');
