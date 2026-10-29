@@ -133,6 +133,7 @@ test('timers: all an immediate queued (nextTick, promises, at any depth) runs be
 
 test('timers: timers due together run in one timers phase, a task each; an immediate one queues waits for them all', async () => {
   assert.deepEqual(await run('timers-phase.cjs'), [
+    'set in a timers phase: A1, B1, A2, end A, B2, end B',
     '5 ms: a, tick from a, promise from a, b, tick from b, c, imm from a',
     '0 ms: a, tick from a, promise from a, b, tick from b, c, imm from a',
     'from an immediate: a, tick from a, promise from a, b, tick from b, c, imm from a',

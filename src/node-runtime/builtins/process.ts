@@ -302,18 +302,20 @@ async function runTurn() {
   }
 }
 /**
- * The loop's timers phase: `first` (a timer whose browser timer fired), then each timer due by then,
- * in order, a task each. A timer one of them sets runs on a later one, as in Node, and so does one
- * they refresh (it is due later now). What they queue (an immediate) waits for its end.
+ * The loop's timers phase: each timer due by then (`first` too, a timer whose browser timer fired: it
+ * may fire after one due before it), in the order they came due, a task each. A timer one of them sets
+ * runs on a later one, as in Node, and so does one they refresh (it is due later now). What they
+ * queue (an immediate) waits for its end.
  */
 async function timersPhase(first?: Timeout) {
-  if (first) {
-    runOne(first.run);
-    await nextTask();
+  const due = takeDueTimers();
+  if (first && !due.includes(first)) {
+    due.push(first);
+    due.sort((a, b) => a.due - b.due);
   }
-  for (const [timer, due] of takeDueTimers().map((t) => [t, t.due] as const)) {
+  for (const [timer, at] of due.map((t) => [t, t.due] as const)) {
     if (stopped) return;
-    if (timer.due !== due) continue;
+    if (timer.due !== at) continue;
     runOne(timer.run);
     await nextTask();
   }

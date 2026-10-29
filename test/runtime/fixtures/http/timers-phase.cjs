@@ -21,4 +21,21 @@ const run = (name, ms, done) => {
     done();
   }, ms + 50);
 };
-run('5 ms', 5, () => run('0 ms', 0, () => setImmediate(() => run('from an immediate', 5, () => fs.readFile(__filename, () => run('from an I/O callback', 5, () => console.log(out.join('\n'))))))));
+// Timers that timers of one phase set (after an await), in turn: in the order they came due.
+const chained = (done) => {
+  const log = [];
+  const tick = (name) => new Promise((resolve) => setTimeout(() => {
+    log.push(name);
+    resolve();
+  }, 1));
+  const chain = async (name) => {
+    await tick(name + '1');
+    await tick(name + '2');
+    log.push('end ' + name);
+  };
+  void Promise.all([chain('A'), chain('B')]).then(() => {
+    out.push(`set in a timers phase: ${log.join(', ')}`);
+    done();
+  });
+};
+chained(() => run('5 ms', 5, () => run('0 ms', 0, () => setImmediate(() => run('from an immediate', 5, () => fs.readFile(__filename, () => run('from an I/O callback', 5, () => console.log(out.join('\n')))))))));
