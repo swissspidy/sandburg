@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MIN_READ_MS, READ_TIMEOUT_MAX_MS, readTimeoutMs, sameFiles, settledCache, unsettled, type CacheLook } from '../../src/adapters/node/cache-settle.ts';
+import { DISPOSE_PHASE_MS, MIN_READ_MS, MIN_SEND_MS, READ_TIMEOUT_MAX_MS, readTimeoutMs, SEND_MARGIN_MS, sameFiles, sendTimeoutMs, settledCache, unsettled, type CacheLook } from '../../src/adapters/node/cache-settle.ts';
 import type { CacheEntry } from '../../src/node-runtime/cache-tree.ts';
 
 const WAIT = ['.next/dev/cache/webpack/client-development/index.pack.gz', '.next/dev/cache/webpack/server-development/index.pack.gz'];
@@ -36,20 +36,21 @@ test('two looks found the same files only with the same paths, sizes and mtimes,
  * after), `reads` the reads of its bytes ('timeout': no answer; else the files the read found). The
  * clock moves only by the waits between looks (`intervalMs`) and each look's own time (`lookMs`).
  */
-function scripted(lists: (CacheEntry[] | null)[] | ((t: number) => CacheEntry[] | null), reads: (CacheEntry[] | 'timeout' | 'throw')[], lookMs = 10) {
+function scripted(lists: (CacheEntry[] | null | 'throw')[] | ((t: number) => CacheEntry[] | null), reads: (CacheEntry[] | 'timeout' | 'throw')[], lookMs = 10) {
   let t = 0;
   let l = 0;
   let r = 0;
-  const calls: { bytes: boolean; timeoutMs: number }[] = [];
+  const calls: { bytes: boolean; timeoutMs: number; at: number }[] = [];
   const look: CacheLook<{ files: CacheEntry[]; bytes: boolean }> = async (bytes, timeoutMs) => {
-    calls.push({ bytes, timeoutMs });
+    calls.push({ bytes, timeoutMs, at: t });
     if (!bytes) {
       t += lookMs;
       const files = typeof lists === 'function' ? lists(t) : lists[Math.min(l++, lists.length - 1)];
+      if (files === 'throw') throw new TypeError('the worker went away\n    at readCache');
       return files && { files, bytes };
     }
     const read = reads[Math.min(r++, reads.length - 1)];
-    if (read === 'throw') throw new Error('the worker went away');
+    if (read === 'throw') throw new Error('the worker went away\n    at readCache');
     t += read === 'timeout' ? timeoutMs : lookMs;
     return read === 'timeout' ? null : { files: read, bytes };
   };
@@ -136,4 +137,32 @@ test('a read is not started with less than MIN_READ_MS left: the cache says so i
   const settled = await settledCache(WAIT, s.look, { ...s.clock, graceMs: 500 });
   assert.equal(settled.why, 'after 40 s, no time was left to read its files');
   assert.deepEqual(s.calls.filter((c) => c.bytes), []);
+});
+
+test('a look started after the deadline is given no more than the time left until the grace ends', async () => {
+  // Never settled (a file missing): looks go on until the deadline, the last one starting after it.
+  const s = scripted([[both[0]]], [both]);
+  await settledCache(WAIT, s.look, s.clock);
+  const looks = s.calls.filter((c) => !c.bytes);
+  assert.ok(looks.every((c) => c.timeoutMs <= 45_000 - c.at), JSON.stringify(looks.slice(-2)));
+  const last = looks.at(-1)!;
+  assert.ok(last.at > 40_000 && last.timeoutMs < 5000, JSON.stringify(last));
+});
+
+test('a look or read that threw: its error, in one line, with the reason it got no answer', async () => {
+  const looks = scripted(['throw'], [both]);
+  assert.equal((await settledCache(WAIT, looks.look, looks.clock)).why, 'after 40 s, a look at it got no answer (TypeError: the worker went away)');
+  const reads = scripted([both], ['throw']);
+  assert.equal((await settledCache(WAIT, reads.look, reads.clock)).why, 'after 40 s, reading its files got no answer (Error: the worker went away)');
+  // A look that timed out (no error) says only that.
+  const timeouts = scripted([both], ['timeout']);
+  assert.equal((await settledCache(WAIT, timeouts.look, timeouts.clock)).why, 'after 40 s, reading its files got no answer');
+});
+
+test("an upload of a cache gets what is left of the dispose phase but a margin, or nothing when that is too little", () => {
+  assert.equal(sendTimeoutMs(1000, 1000), DISPOSE_PHASE_MS - SEND_MARGIN_MS);
+  assert.equal(sendTimeoutMs(1000, 1000 + 45_000), DISPOSE_PHASE_MS - SEND_MARGIN_MS - 45_000);
+  assert.equal(sendTimeoutMs(0, DISPOSE_PHASE_MS - SEND_MARGIN_MS - MIN_SEND_MS), MIN_SEND_MS);
+  assert.equal(sendTimeoutMs(0, DISPOSE_PHASE_MS - SEND_MARGIN_MS - MIN_SEND_MS + 1), null);
+  assert.equal(sendTimeoutMs(0, DISPOSE_PHASE_MS), null);
 });

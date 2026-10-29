@@ -43,6 +43,27 @@ export type CacheLook<T extends { files: CacheEntry[] }> = (bytes: boolean, time
 /** A read of a cache's bytes is not started with less time left than this. */
 export const MIN_READ_MS = 1000;
 
+/** How long a run's dispose phase may take (the node adapter's timeouts.dispose, index.ts): a seed run stores its cache in it. */
+export const DISPOSE_PHASE_MS = 60_000;
+
+/** What a cache's upload leaves of the dispose phase, for the tab to close (session.ts) after its answer. */
+export const SEND_MARGIN_MS = 3000;
+
+/** An upload is not started with less time left than this. */
+export const MIN_SEND_MS = 1000;
+
+/**
+ * How long the upload of a cache may take, for a dispose that started at `startedAt` (ms, the clock of
+ * `now`): what is left of DISPOSE_PHASE_MS but SEND_MARGIN_MS, or null when that is under MIN_SEND_MS.
+ */
+export function sendTimeoutMs(startedAt: number, now: number): number | null {
+  const left = DISPOSE_PHASE_MS - SEND_MARGIN_MS - (now - startedAt);
+  return left >= MIN_SEND_MS ? left : null;
+}
+
+/** An error's first line (with its name), for a reason in one line. */
+export const firstLine = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message.split('\n')[0]}` : String(e).split('\n')[0]);
+
 /**
  * Waits for a cache that waits for `waitFor` (a seed's) to settle (see unsettled), then reads its bytes:
  * the snapshot read, or why there is none. A read that got no answer (its worker busy with the dev
@@ -60,13 +81,22 @@ export async function settledCache<T extends { files: CacheEntry[] }>(
   const deadline = now() + deadlineMs;
   const answeredBy = deadline + graceMs;
   const left = () => answeredBy - now();
-  const lookAt = (bytes: boolean, timeoutMs: number) => look(bytes, Math.max(0, Math.min(timeoutMs, left()))).catch(() => null);
+  // The last look's or read's error, if it threw: said with the reason it got no answer.
+  let error: string | null = null;
+  const lookAt = (bytes: boolean, timeoutMs: number) => {
+    error = null;
+    return look(bytes, Math.max(0, Math.min(timeoutMs, left()))).catch((e: unknown) => {
+      error = firstLine(e);
+      return null;
+    });
+  };
+  const noAnswer = (why: string) => (error === null ? why : `${why} (${error})`);
   let last = (await lookAt(false, 5000))?.files ?? null;
   let why = 'it was not looked at';
   while (now() < deadline) {
     await sleep(intervalMs);
     const next = (await lookAt(false, 5000))?.files ?? null;
-    const unsettledWhy = unsettled(waitFor, next, last);
+    const unsettledWhy = next === null ? noAnswer('a look at it got no answer') : unsettled(waitFor, next, last);
     last = next;
     if (unsettledWhy !== null) {
       why = unsettledWhy;
@@ -78,7 +108,7 @@ export async function settledCache<T extends { files: CacheEntry[] }>(
     }
     const cache = await lookAt(true, readTimeoutMs(next!));
     if (!cache) {
-      why = 'reading its files got no answer';
+      why = noAnswer('reading its files got no answer');
       continue;
     }
     // One that changed again as its bytes were read is not stored: it may hold a pack webpack was still

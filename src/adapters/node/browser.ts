@@ -14,7 +14,7 @@ import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-
 import { Registry } from './browser-npm/registry.ts';
 import { UnsupportedSpecError } from './browser-npm/resolve.ts';
 import { bundleHeader } from '../../bundle-format.ts';
-import { settledCache } from './cache-settle.ts';
+import { firstLine, sendTimeoutMs, settledCache } from './cache-settle.ts';
 
 export interface HostInstall {
   key: string;
@@ -377,6 +377,7 @@ export function createAdapter(): RuntimeAdapter {
     },
 
     async dispose() {
+      const disposing = performance.now();
       // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
       // A cache that waits (a seed's) and is not stored says why, in the run's console: a seed run
       // passes without one, and later apps then compile from scratch.
@@ -412,12 +413,16 @@ export function createAdapter(): RuntimeAdapter {
           (digests
             ? Object.keys(digests).length !== files.length || (await Promise.all(files.map(async ([path, bytes]) => digests[path] === (await sha256(bytes))))).includes(false)
             : Object.keys(devCache.files).length !== files.length || files.some(([path, bytes]) => !sameBytes(devCache!.files[path], bytes)));
-        if (changed && devCache.token) {
+        // The upload ends inside the dispose phase (the tab closes after it): a seed's cache may be large.
+        const sendMs = changed && devCache.token ? sendTimeoutMs(disposing, performance.now()) : null;
+        if (changed && devCache.token && sendMs === null) {
+          if (waitFor) unstored('no time was left to send it');
+        } else if (changed && devCache.token) {
           // A Blob, not the ArrayBuffer: DevTools (Playwright's Network domain) is handed an ArrayBuffer
           // body as the request's post data, which took a 27 MB cache's upload from 0.4 to 1.6 s.
-          const sent = await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', headers: { 'x-sandburg-token': devCache.token, 'content-type': 'application/octet-stream' }, body: new Blob([cache!.bundle!]) }).then(
+          const sent = await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', headers: { 'x-sandburg-token': devCache.token, 'content-type': 'application/octet-stream' }, body: new Blob([cache!.bundle!]), signal: AbortSignal.timeout(sendMs!) }).then(
             (r) => (r.ok ? null : `the host answered ${r.status}`),
-            (e: unknown) => `sending it failed: ${e instanceof Error ? e.message : String(e)}`,
+            (e: unknown) => `sending it failed: ${(e as Error)?.name === 'TimeoutError' ? `it timed out after ${Math.round(sendMs! / 1000)} s` : firstLine(e)}`,
           );
           if (sent && waitFor) unstored(sent);
         } else if (waitFor && complete && !devCache.token) unstored('the run has no token to store it');
