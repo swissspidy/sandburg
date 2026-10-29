@@ -128,11 +128,11 @@ test('http: server timeout options: their defaults, what is refused, and setTime
 
 test("http: a server's connections: 'connection', getConnections(), close() closing the idle ones, closeIdleConnections() and closeAllConnections()", async () => {
   assert.deepEqual(await run('server-close.cjs'), [
-    'close(): request /ok, request /held, >100 connections=2 closed=none, connections 2, >300 connections=2 closed=/ok, >1500 connections=2 closed=/ok',
-    'closeIdleConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, >300 connections=2 closed=/ok, >1500 connections=2 closed=/ok',
-    'closeAllConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, client error /held socket hang up, >300 connections=2 closed=/held+/ok, >1500 connections=2 closed=/held+/ok',
-    'close(), all idle: request /ok, >100 connections=1 closed=none, connections 1, closed, >300 connections=1 closed=/ok, >1500 connections=1 closed=/ok',
-    'close(), then closeAllConnections(): request /ok, request /held, >100 connections=2 closed=none, connections 2, closed, client error /held socket hang up, immediate, >300 connections=2 closed=/held+/ok, >1500 connections=2 closed=/held+/ok',
+    'close(): request /ok, request /held, before: connections=2 closed=none, connections 2, socket close, after: connections=2 closed=/ok',
+    'closeIdleConnections(): request /ok, request /held, before: connections=2 closed=none, connections 2, socket close, after: connections=2 closed=/ok',
+    'closeAllConnections(): request /ok, request /held, before: connections=2 closed=none, connections 2, client error /held socket hang up, socket close, socket close, after: connections=2 closed=/held+/ok',
+    'close(), all idle: request /ok, before: connections=1 closed=none, connections 1, closed, socket close, after: connections=1 closed=/ok',
+    'close(), then closeAllConnections(): request /ok, request /held, before: connections=2 closed=none, connections 2, closed, client error /held socket hang up, immediate, socket close, socket close, after: connections=2 closed=/held+/ok',
   ]);
 });
 

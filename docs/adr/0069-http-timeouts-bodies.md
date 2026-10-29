@@ -239,7 +239,8 @@ output of its `fixtures/http` program:
   sibling's forged response for another's request, ignored (`forged-response.cjs`).
 - A server's action from an I/O callback (an IPC message) reaches its client after its own side
   closed (`from-io.cjs`).
-- A server's connections (`server-close.cjs`; its 'close' on a tick after the last one closed), Expect and informational responses (`expect.cjs`,
+- A server's connections (`server-close.cjs`: acting once its requests came, each close within 1 s of
+  the action, and its 'close' on a tick after the last one closed), Expect and informational responses (`expect.cjs`,
   and across runtimes in `streamed-body.cjs`), and `unref()` (`server-unref.cjs`).
 - Streamed bodies by echo, a client gone mid-body, and timeouts across runtimes, in four
   topologies: one runtime, a child's server, a child's client, and siblings through their parent
@@ -247,7 +248,7 @@ output of its `fixtures/http` program:
 - Framing and `'data'` timing (`body-framing.cjs`), and backpressure in one runtime and to a child
   (`backpressure*.cjs`).
 - Server timeouts and requestTimeout (`server-timeouts.cjs`), keep-alive by agent
-  (`keep-alive.cjs`), and options (`server-options.cjs`). These and `close-waits.cjs` print what
+  (`keep-alive.cjs`), and options (`server-options.cjs`). These, `close-waits.cjs` and `server-close.cjs` print what
   happened in order, and check each timed event against what it times: at least its timeout after
   it, and within a generous bound (1 s and more), so that a loaded machine does not fail them.
 
