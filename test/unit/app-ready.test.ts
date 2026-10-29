@@ -2,7 +2,8 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Frame } from 'playwright-core';
-import { failFastOnAppError, failFastOnRuntimeFetch, waitForRender } from '../../src/orchestrator/app-ready.ts';
+import { failFastOnAppError, failFastOnRuntimeFetch, relevantFindings, waitForRender, watchSources } from '../../src/orchestrator/app-ready.ts';
+import type { SourceFinding } from '../../src/source-check.ts';
 import type { RunState } from '../../src/orchestrator/run-state.ts';
 import type { ConsoleEntry, PageError } from '../../src/types.ts';
 
@@ -11,7 +12,8 @@ const runState = () => ({
   network: { failed: [] as { url: string; reason: string }[] },
   console: [] as Partial<ConsoleEntry>[],
   pageErrors: [] as Partial<PageError>[],
-  documents: [] as { url: string; status: number; frame?: unknown }[],
+  documents: [] as { url: string; status: number; frame?: unknown; at?: number }[],
+  sourceFindings: null as SourceFinding[] | null,
 });
 const asRun = (run: ReturnType<typeof runState>) => run as unknown as RunState;
 
@@ -182,6 +184,67 @@ test("only the app's frame's page counts: not a frame the app embeds, nor the ho
   assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
 });
 
+test("after a cold start's 500, the app's own request to its page's URL that answers 500 still fails the phase (a POST: a server action, htmx, Turbo)", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  // What Chromium 153 logs, in this order (Playwright's response and console events): the frame's page
+  // answers 500, then 200 when loaded again, whose script then fetches the same URL with POST and gets a 500.
+  const failedLoad = () => run.console.push({ source: 'app', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)', url: 'http://app.test/' });
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app, at: Date.now() });
+  failedLoad();
+  await advance(t, 1_000);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app, at: Date.now() });
+  await advance(t, 1_000);
+  failedLoad();
+  await advance(t, 7_900);
+  assert.equal(phase.settled, 'pending');
+  await advance(t, 300);
+  assert.equal(phase.error?.message, 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Internal Server Error) (http://app.test/)');
+});
+
+test("after a cold start's 500, an error the 500 page logged itself gets its grace from the recheck, as the page is another one by then", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app, at: Date.now() });
+  // The error page's own script logs an error a second later, while the 500 waits to be checked
+  // again; then the page loads again and answers 200 (at 6 s).
+  await advance(t, 1_000);
+  run.console.push({ source: 'app', type: 'error', text: 'Hydration failed: the error page', url: 'http://app.test/' });
+  await advance(t, 5_000);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app, at: Date.now() });
+  // The recheck at 8 s finds the page recovered: the error's grace runs from then (16 s), not from 0 s.
+  await advance(t, 7_900);
+  assert.equal(phase.settled, 'pending');
+  await advance(t, 2_400);
+  assert.equal(phase.error?.message, 'app did not render after a console error: Hydration failed: the error page (http://app.test/)');
+});
+
+test("each of the page's own 5xx loads accounts for one of Chromium's console errors for its URL, no more", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const app = {} as Frame;
+  const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run), undefined, app));
+  const failedLoad = (status: number) => run.console.push({ source: 'app', type: 'error', text: `Failed to load resource: the server responded with a status of ${status} (x)`, url: 'http://app.test/' });
+  // The host page's report of the same URL (its own request) is not one of the app frame's.
+  run.console.push({ source: 'host', type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (x)', url: 'http://app.test/' });
+  // Two cold-start 5xx loads, then a 200: their two console errors are the page's.
+  run.documents.push({ url: 'http://app.test/', status: 502, frame: app });
+  failedLoad(502);
+  run.documents.push({ url: 'http://app.test/', status: 500, frame: app });
+  failedLoad(500);
+  run.documents.push({ url: 'http://app.test/', status: 200, frame: app });
+  await advance(t, 10_000);
+  assert.equal(phase.settled, 'pending');
+  // A third is not.
+  failedLoad(500);
+  await advance(t, 8_200);
+  assert.match(phase.error?.message ?? '', /^app did not render after a console error: Failed to load resource: .* 500 /);
+});
+
 test("without the app's frame, the host page's documents are left out", async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const run = runState();
@@ -189,6 +252,83 @@ test("without the app's frame, the host page's documents are left out", async (t
   const phase = watched(failFastOnAppError(new Promise(() => {}), asRun(run)));
   await advance(t, 8_200);
   assert.equal(phase.error?.message, 'app did not render: its page answered HTTP 500 (http://app.test/)');
+});
+
+test("what bears on the app: findings in files its processes read, and undeclared imports of packages not installed where they are imported", () => {
+  const syntax: SourceFinding = { rule: 'compile-error', file: 'src/a.ts', line: 1, column: 1, message: 'x' };
+  const h3: SourceFinding = { rule: 'undeclared-import', file: 'server/api/hello.ts', line: 1, message: 'h3' };
+  const faker: SourceFinding = { rule: 'undeclared-import', file: 'lib/report.js', line: 1, message: '@faker-js/faker' };
+  const dayjs: SourceFinding = { rule: 'undeclared-import', file: 'src/a.ts', line: 2, message: 'dayjs' };
+  // `installed` answers the undeclared imports in order: h3 (hoisted by npm), faker, dayjs.
+  const answer = { reads: ['src/a.ts', 'server/api/hello.ts', 'package.json'], installed: [true, false, false] };
+  assert.deepEqual(relevantFindings([syntax, h3, faker, dayjs], answer), [syntax, dayjs]);
+  // A runtime that does not record reads: nothing bears on the app.
+  assert.deepEqual(relevantFindings([syntax], { reads: null, installed: [] }), []);
+  assert.deepEqual(relevantFindings([syntax], null), []);
+});
+
+test("the sources are checked once, after 20 s without the app rendering, and what bears on the app is kept, matched again every 2 s, until the phase is over; it never fails the phase", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const found: SourceFinding = { rule: 'undeclared-import', file: 'lib/report.js', line: 1, message: '@faker-js/faker' };
+  let checks = 0;
+  let matched = 0;
+  let reads = ['server.js'];
+  const relevant = async (f: SourceFinding[]) => (matched++, relevantFindings(f, { reads, installed: f.map(() => false) }));
+  const over = new AbortController();
+  let told: AbortSignal | null = null;
+  watchSources(asRun(run), async (signal) => ((told = signal), checks++, [found]), relevant, over.signal);
+  await advance(t, 19_900);
+  assert.deepEqual([checks, run.sourceFindings], [0, null]);
+  await advance(t, 200);
+  assert.deepEqual([checks, matched, run.sourceFindings], [1, 1, []]);
+  // A route that imports it runs: the file is read, and it bears on the app (at the next match).
+  reads = ['server.js', 'lib/report.js'];
+  await advance(t, 2_000);
+  assert.deepEqual(run.sourceFindings, [found]);
+  // The phase is over (it timed out, or the app rendered): the check is told (it is stopped if still running),
+  // no more matching, and the check is not run again.
+  assert.equal(told!.aborted, false);
+  over.abort();
+  assert.equal(told!.aborted, true);
+  const after = matched;
+  await advance(t, 30_000);
+  assert.deepEqual([checks, matched], [1, after]);
+});
+
+test("what the runtime says after the phase is over is not kept: the findings stay as they were when it ended", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const run = runState();
+  const found: SourceFinding = { rule: 'compile-error', file: 'src/a.ts', line: 1, column: 1, message: 'x' };
+  let answer!: (f: SourceFinding[]) => void;
+  const over = new AbortController();
+  watchSources(asRun(run), async () => [found], () => new Promise((r) => (answer = r)), over.signal);
+  await advance(t, 20_100);
+  // The phase ends while the runtime is still being asked; its answer comes after.
+  over.abort();
+  answer([found]);
+  await advance(t, 5_000);
+  assert.equal(run.sourceFindings, null);
+});
+
+test('an app that renders within 20 s never has its sources checked; a check that finds nothing, or fails, leaves nothing', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  let checks = 0;
+  const relevant = async (f: SourceFinding[]) => f;
+  const quick = new AbortController();
+  watchSources(asRun(runState()), async () => (checks++, []), relevant, quick.signal);
+  await advance(t, 19_000);
+  quick.abort();
+  await advance(t, 30_000);
+  assert.equal(checks, 0);
+  for (const check of [async () => [] as SourceFinding[], () => Promise.reject(new Error('esbuild'))]) {
+    const run = runState();
+    const over = new AbortController();
+    watchSources(asRun(run), check, relevant, over.signal);
+    await advance(t, 30_000);
+    assert.deepEqual(run.sourceFindings, []);
+    over.abort();
+  }
 });
 
 /**

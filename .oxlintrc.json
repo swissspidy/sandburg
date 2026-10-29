@@ -120,6 +120,7 @@
         "src/adapters/node/resolver.ts",
         "src/orchestrator/memory.ts",
         "src/reference/docker.ts",
+        "src/source-check.ts",
         "scripts/**",
         "test/**",
         "integrations/harbor/fence.mjs"

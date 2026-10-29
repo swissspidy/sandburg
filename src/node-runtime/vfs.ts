@@ -55,8 +55,14 @@ export type WatchListener = (event: 'rename' | 'change', path: string) => void;
 /** Remote files this large are held weakly once read (see Vfs.read). */
 const KEEP_REMOTE_BELOW = 4 << 20;
 
+/** At most this many project files are recorded as read (see trackReads). */
+const READS_MAX = 20_000;
+
 export class Vfs {
   private files = new Map<string, FileNode>();
+  /** The project's files read since trackReads, relative to its root (not node_modules). */
+  private reads: Set<string> | null = null;
+  private readsUnder = '';
   private dirs = new Map<string, Set<string>>([['/', new Set()]]);
   private dirMtimes = new Map<string, number>();
   private inos = 1;
@@ -146,10 +152,26 @@ export class Vfs {
     throw new FsError('ENOENT', syscall, path);
   }
 
+  /**
+   * Records which of the project's files (under `root`, outside node_modules) are read from now on:
+   * what the app's processes loaded (a thread's and a child process's reads come here), which a
+   * diagnosis can tell from files nothing ran (see projectReads).
+   */
+  trackReads(root: string): void {
+    this.reads = new Set();
+    this.readsUnder = `${norm(root)}/`;
+  }
+
+  /** The project's files read since trackReads, relative to its root, or null when reads are not tracked. */
+  projectReads(): string[] | null {
+    return this.reads ? [...this.reads] : null;
+  }
+
   read(path: string): Uint8Array {
     path = norm(path);
     const f = this.files.get(path);
     if (!f) throw new FsError(this.dirs.has(path) ? 'EISDIR' : 'ENOENT', 'open', path);
+    if (this.reads && this.reads.size < READS_MAX && path.startsWith(this.readsUnder) && !/\/node_modules\//.test(path)) this.reads.add(path.slice(this.readsUnder.length));
     if (f.data) return f.data;
     // A remote file is an installed one, which the host serves the same each time: a large one
     // (a WebAssembly binary, read once to compile it: swc's 29 MB, beside its compiled code) is
@@ -342,4 +364,18 @@ function base(path: string): string {
 
 function join(a: string, b: string): string {
   return a === '/' ? `/${b}` : `${a}/${b}`;
+}
+
+/**
+ * Whether package `name` is installed where project file `from` (relative to `root`) imports it
+ * from: a node_modules/<name>/package.json in its directory or one above it, up to the root, as
+ * Node and bundlers resolve it (npm hoists what dependencies need there).
+ */
+export function installedFrom(vfs: Vfs, root: string, name: string, from: string): boolean {
+  const parts = from.split('/').slice(0, -1);
+  for (let n = parts.length; n >= 0; n--) {
+    const dir = [norm(root), ...parts.slice(0, n)].join('/');
+    if (vfs.exists(`${dir}/node_modules/${name}/package.json`)) return true;
+  }
+  return false;
 }
