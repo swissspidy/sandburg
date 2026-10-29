@@ -26,7 +26,7 @@ async function run(main: string, others: string[] = [], env: Record<string, stri
 const STREAMED = [
   'client /echo: got A, got B, got C, got ., client end',
   'client /continue: information 100 {}, information 103 {"link":"</a.css>; rel=preload"}, got ok, client end',
-  'client /mid: client error socket hang up',
+  'client /mid: got A',
   'client /timeout: got late, client end',
   'client /idle: client error socket hang up',
   'server request /echo content-length=- transfer-encoding=chunked, data a, data b, data c, end, req close',

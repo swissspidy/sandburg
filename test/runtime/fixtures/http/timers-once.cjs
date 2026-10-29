@@ -13,7 +13,15 @@ setTimeout(() => {
 }, 1);
 setTimeout(() => log.push('B'), 1);
 setTimeout(() => log.push('C'), 1);
-setTimeout(() => {
+// Each part printed once its last event came (and a little later: anything after shows).
+const once = (last, fn) => {
+  const poll = setInterval(() => {
+    if (!log.includes(last)) return;
+    clearInterval(poll);
+    setTimeout(fn, 20);
+  }, 5);
+};
+once('immediate from A', () => {
   console.log(log.join(', '));
   log.length = 0;
   busy();
@@ -25,5 +33,5 @@ setTimeout(() => {
   }, 1);
   b = setTimeout(() => log.push('B'), 1);
   setTimeout(() => log.push('C'), 1);
-  setTimeout(() => console.log(log.join(', ')), 100);
-}, 100);
+  once('B', () => console.log(log.join(', ')));
+});

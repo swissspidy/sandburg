@@ -7,6 +7,8 @@ const handler = (req, res) => {
   if (req.url === '/hold') { res.writeHead(200); res.write('a'); return; }
   req.on('end', () => res.end('ok'));
 };
+/** The longest a case may take (it takes a few ms). */
+const BOUND = 3000;
 const cases = [];
 const add = (name, url, act, opts = {}) => cases.push({ name, url, act, opts });
 // When: 'sync' right after creating, 'socket' on its socket event, 'later' 20ms after, 'response' in its response callback, 'end' after its response ended.
@@ -24,10 +26,25 @@ function run(c) {
   // Each from a timer's callback, as a program's code mostly runs (not a promise's continuation).
   return new Promise((done) => setTimeout(() => {
     const log = [];
-    const push = (s) => log.push(s);
+    // The case is over once the request closed, the immediate its action queued ran, and its response
+    // (if any) closed: what came by then, or a TIMING failure if that takes too long.
+    let response = false;
+    let over = false;
+    const finish = (late) => {
+      if (over) return;
+      over = true;
+      clearTimeout(bound);
+      done(`${c.name}: ${log.join(',')}${late ? ` | TIMING: not over in ${BOUND} ms` : ''}`);
+    };
+    const bound = setTimeout(() => finish(true), BOUND);
+    const push = (s) => {
+      log.push(s);
+      if (log.includes('close') && log.includes('immediate') && (!response || log.includes('res close'))) finish(false);
+    };
     const req = http.request(`http://localhost:${PORT}${c.url}`, { method: c.opts.post ? 'POST' : 'GET' });
     req.on('socket', () => { push('socket'); if (c.opts.when === 'socket') act(); });
     req.on('response', (res) => {
+      response = true;
       push('response');
       res.on('aborted', () => push('res aborted'));
       res.on('error', (e) => push('res error ' + e.message));
@@ -63,7 +80,6 @@ function run(c) {
     }
     if (c.opts.when === 'sync') act();
     if (c.opts.when === 'later') setTimeout(act, 20);
-    setTimeout(() => done(`${c.name}: ${log.join(',')}`), 150);
   }, 1));
 }
 

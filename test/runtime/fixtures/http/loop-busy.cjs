@@ -31,8 +31,13 @@ const cases = {
       setImmediate(() => log.push('I3'));
       process.nextTick(() => log.push('tick0'));
     });
-    // T0 and I1.inner come in either order in Node (as 1 ms passed or not): only the rest is compared.
-    setTimeout(() => console.log('order: ' + log.filter((e) => e !== 'I1.inner').join(' ')), 200);
+    // T0 and I1.inner come in either order in Node (as 1 ms passed or not): only the rest is compared,
+    // once all came (and a little later: anything after shows).
+    const poll = setInterval(() => {
+      if (log.length < 8) return;
+      clearInterval(poll);
+      setTimeout(() => console.log('order: ' + log.filter((e) => e !== 'I1.inner').join(' ')), 20);
+    }, 5);
   },
 };
 if (process.argv[2]) cases[process.argv[2]]();

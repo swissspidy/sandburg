@@ -250,6 +250,9 @@ output of its `fixtures/http` program:
 - Server timeouts and requestTimeout (`server-timeouts.cjs`), keep-alive by agent
   (`keep-alive.cjs`), and options (`server-options.cjs`). These, `close-waits.cjs` and `server-close.cjs` print what
   happened in order, and check each timed event against what it times: at least its timeout after
-  it, and within a generous bound (1 s and more), so that a loaded machine does not fail them.
+  it, and within a generous bound (1 s and more), so that a loaded machine does not fail them. The
+  others end each case on its last events (a TIMING failure past 3 s), and take each step once the
+  one before it came, not at fixed times: on a late loop, timers due together run in one phase
+  before what they queued, in Node as here, and a case cut at a fixed time misses its last events.
 
 Each fix was mutation-checked against these tests.

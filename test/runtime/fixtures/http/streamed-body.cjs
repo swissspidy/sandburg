@@ -23,7 +23,8 @@ function serve(report) {
       req.on('end', () => res.end('ok'));
     } else if (req.url === '/timeout') res.setTimeout(150, () => { log.push('res timeout'); res.end('late'); });
     else if (req.url === '/idle') req.socket.setTimeout(150);
-    else req.on('data', (d) => log.push(`data ${d}`));
+    // (Its client goes once this server has seen the chunk: it echoes it.)
+    else req.on('data', (d) => { log.push(`data ${d}`); res.writeHead(200); res.write(String(d).toUpperCase()); });
   }).on('checkContinue', (req, res) => {
     res.writeContinue();
     res.writeEarlyHints({ link: '</a.css>; rel=preload' });
@@ -36,13 +37,33 @@ async function client() {
     const log = [];
     const r = http.request(`http://localhost:${PORT}${path}`, { method: 'POST', headers }, (res) => {
       res.on('data', (d) => { log.push(`got ${d}`); r.emit('echo', String(d)); });
-      res.on('end', () => log.push('client end'));
+      res.on('end', () => {
+        log.push('client end');
+        settle();
+      });
       res.on('error', () => {});
     });
     r.on('error', (e) => log.push('client error ' + e.message));
     r.on('information', (info) => log.push(`information ${info.statusCode} ${JSON.stringify(info.headers)}`));
     act(r, log);
-    setTimeout(() => { lines.push(`client ${path}: ${log.join(', ')}`); done(); }, 500);
+    // Over once its response ended, it failed or the request closed (destroyed once a response
+    // started, it does neither), and a little later (anything after shows), or a TIMING failure if
+    // that takes too long.
+    let over = false;
+    const settle = () => {
+      if (over) return;
+      over = true;
+      setTimeout(() => finish(false), 20);
+    };
+    const finish = (late) => {
+      clearTimeout(bound);
+      over = true;
+      lines.push(`client ${path}: ${log.join(', ')}${late ? ' | TIMING: not over in 3000 ms' : ''}`);
+      done();
+    };
+    const bound = setTimeout(() => finish(true), 3000);
+    r.on('close', settle);
+    r.on('error', settle);
   });
   await one('/echo', (r) => {
     const next = ['b', 'c'];
@@ -57,7 +78,7 @@ async function client() {
     r.on('continue', () => r.end('after continue'));
     r.flushHeaders();
   }, { expect: '100-continue' });
-  await one('/mid', (r) => { r.write('a'); setTimeout(() => r.destroy(), 100); });
+  await one('/mid', (r) => { r.write('a'); r.once('echo', () => r.destroy()); });
   await one('/timeout', (r) => r.write('a'));
   await one('/idle', (r) => r.write('a'));
   return lines.join('\n');
@@ -69,7 +90,19 @@ else {
   const server = [];
   const print = (out) => console.log(out + '\n' + server.map((s) => 'server ' + s).join('\n'));
   const children = [];
-  const end = (out) => setTimeout(() => { print(out); for (const c of children) c.kill(); process.exit(0); }, 100);
+  // Once the server reported each of its four requests (it does after each closed), or TIMING.
+  const SERVER_LINES = 4;
+  const end = (out) => {
+    const started = Date.now();
+    const poll = setInterval(() => {
+      const late = Date.now() - started > 3000;
+      if (server.length < SERVER_LINES && !late) return;
+      clearInterval(poll);
+      print(out + (late ? '\nTIMING: the server reported ' + server.length + ' of ' + SERVER_LINES + ' in 3000 ms' : ''));
+      for (const c of children) c.kill();
+      process.exit(0);
+    }, 10);
+  };
   const onServer = (m, start) => (m === 'listening' ? start() : server.push(m));
   const forkClient = () => { const c = fork(__filename, ['client']); children.push(c); c.on('message', end); };
   if (topology === 'here') serve((m) => onServer(m, () => client().then(end)));

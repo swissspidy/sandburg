@@ -10,22 +10,29 @@ if (process.argv[2] === 'child') {
   return;
 }
 const log = [];
+// Printed once both ends closed (or a TIMING failure if that takes too long).
+const print = (late) => {
+  console.log(log.join('\n') + (late ? '\nTIMING: not over in 3000 ms' : ''));
+  process.exit(0);
+};
+const push = (s) => {
+  log.push(s);
+  // (And a little later: anything after them would show.)
+  if (log.includes('client close') && log.includes('server req close')) setTimeout(() => print(false), 20);
+};
 let held;
 http.createServer((req, res) => {
   held = res;
-  req.on('aborted', () => log.push('server aborted'));
-  req.on('close', () => log.push('server req close'));
-  res.on('close', () => log.push('server res close'));
+  req.on('aborted', () => push('server aborted'));
+  req.on('close', () => push('server req close'));
+  res.on('close', () => push('server res close'));
 }).listen(3084, () => {
   const c = http.get('http://localhost:3084/');
-  c.on('error', (e) => log.push('client error ' + e.message));
-  c.on('close', () => log.push('client close'));
+  c.on('error', (e) => push('client error ' + e.message));
+  c.on('close', () => push('client close'));
   fork(__filename, ['child']).on('message', () => {
-    log.push('message');
+    push('message');
     held.destroy();
-    setTimeout(() => {
-      console.log(log.join('\n'));
-      process.exit(0);
-    }, 100);
+    setTimeout(() => print(true), 3000).unref();
   });
 });

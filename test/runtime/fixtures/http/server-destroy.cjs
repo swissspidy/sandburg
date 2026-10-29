@@ -1,8 +1,15 @@
 // The server destroys its request (read or not, with an error or not): when its events come.
 const http = require('http');
 let log, how;
+// Over once the immediate the action queued ran and the request closed, and its response too where it
+// does (not a request read to its end, then destroyed: closed already, it emits nothing).
+let over = () => {};
+const terminal = (url) => ['immediate', 'req close', ...(url === '/read' && how.startsWith('destroy') ? [] : ['res close'])];
 http.createServer((req, res) => {
-  const push = (s) => log.push(s);
+  const push = (s) => {
+    log.push(s);
+    over();
+  };
   req.on('aborted', () => push('aborted'));
   req.on('error', (e) => push('error ' + e.message));
   req.on('close', () => push('req close'));
@@ -23,11 +30,16 @@ http.createServer((req, res) => {
   const lines = [];
   for (const url of ['/', '/read']) for (how of ['destroy', 'destroyErr', 'socket', 'res']) {
     log = [];
-    await new Promise((done) => {
+    const late = await new Promise((done) => {
+      const bound = setTimeout(() => done(true), 3000);
+      over = () => {
+        if (!terminal(url).every((e) => log.includes(e))) return;
+        clearTimeout(bound);
+        done(false);
+      };
       http.get('http://localhost:3095' + url).on('error', () => {});
-      setTimeout(done, 100);
     });
-    lines.push(`${url} ${how}: ${log.join(',')}`);
+    lines.push(`${url} ${how}: ${log.join(',')}${late ? ' | TIMING: not over in 3000 ms' : ''}`);
   }
   console.log(lines.join('\n'));
   process.exit(0);

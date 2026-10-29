@@ -16,10 +16,15 @@ const run = (name, ms, done) => {
     process.nextTick(() => log.push('tick from b'));
   }, ms);
   setTimeout(() => log.push('c'), ms);
-  setTimeout(() => {
-    out.push(`${name}: ${log.join(', ')}`);
-    done();
-  }, ms + 50);
+  // Once its last events came (and a little later: anything after shows).
+  const poll = setInterval(() => {
+    if (!['imm from a', 'c', 'tick from b'].every((e) => log.includes(e))) return;
+    clearInterval(poll);
+    setTimeout(() => {
+      out.push(`${name}: ${log.join(', ')}`);
+      done();
+    }, 20);
+  }, 5);
 };
 // Timers that timers of one phase set (after an await), in turn: in the order they came due.
 const chained = (done) => {

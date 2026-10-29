@@ -19,12 +19,22 @@ const run = (name, setup, headers, client) => new Promise((done) => {
     r.on('information', (info) => log.push(`client information ${info.statusCode} ${info.statusMessage} ${JSON.stringify(info.headers)}`));
     r.on('error', (e) => log.push('client error ' + e.message));
     client(r);
-    setTimeout(() => {
-      lines.push(`${name}: ${log.join(', ')}`);
+    // Over once the client's response ended or it failed, and a little later (anything after shows),
+    // or a TIMING failure if that takes too long.
+    const finish = (late) => {
+      clearInterval(poll);
+      lines.push(`${name}: ${log.join(', ')}${late ? ' | TIMING: not over in 3000 ms' : ''}`);
       s.closeAllConnections();
       s.close();
       done();
-    }, 300);
+    };
+    const started = Date.now();
+    const poll = setInterval(() => {
+      if (log.some((e) => e.startsWith('client response') || e.startsWith('client error'))) {
+        clearInterval(poll);
+        setTimeout(() => finish(false), 20);
+      } else if (Date.now() - started > 3000) finish(true);
+    }, 10);
   });
 });
 const echo = (log) => (req, res) => {
