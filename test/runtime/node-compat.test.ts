@@ -663,12 +663,13 @@ test('http: a request ended after it has its socket goes out once, to another or
   const out = await h.run(
     {
       'main.js': `
-        // Ended in its 'socket' listener, a tick after it, or with a body after it: one request each, as in Node.
+        // Ended in its 'socket' listener, a tick after it, or with a body after it (a POST), or a GET 20 ms
+        // after: one request each, as in Node.
         const http = require('http');
         const counted = new Map();
         http.createServer((req, res) => {
           const key = new URL(req.url, 'http://x').searchParams.get('key');
-          if (req.method === 'GET') return res.end(String(counted.get(key) ?? 0));
+          if (new URL(req.url, 'http://x').searchParams.get('read') === '1') return res.end(String(counted.get(key) ?? 0));
           counted.set(key, (counted.get(key) ?? 0) + 1);
           req.resume();
           req.on('end', () => res.end('counted'));
@@ -677,17 +678,18 @@ test('http: a request ended after it has its socket goes out once, to another or
           'end() on socket': (req) => req.on('socket', () => req.end()),
           'end() a tick after socket': (req) => req.on('socket', () => setTimeout(() => req.end(), 0)),
           'end(body) after socket': (req) => req.on('socket', () => setTimeout(() => req.end('body'), 0)),
+          'GET end() 20 ms after socket': (req) => req.on('socket', () => setTimeout(() => req.end(), 20)),
         };
         const key = (name) => encodeURIComponent(name);
         const run = async () => {
           const lines = [];
           for (const [where, base] of [['remote', process.env.REMOTE], ['own', 'http://localhost:3019/']]) {
           for (const [name, act] of Object.entries(cases)) await new Promise((done) => {
-            const req = http.request(base + '?key=' + key(name), { method: 'POST' }, (res) => { res.resume(); res.on('end', done); });
+            const req = http.request(base + '?key=' + key(name), { method: name.startsWith('GET') ? 'GET' : 'POST' }, (res) => { res.resume(); res.on('end', done); });
             req.on('error', (e) => { console.log(name + ': error ' + e.message); done(); });
             act(req);
           });
-          for (const name of Object.keys(cases)) lines.push(where + ', ' + name + ': ' + await new Promise((done) => http.get(base + '?key=' + key(name), (res) => {
+          for (const name of Object.keys(cases)) lines.push(where + ', ' + name + ': ' + await new Promise((done) => http.get(base + '?read=1&key=' + key(name), (res) => {
             let b = '';
             res.on('data', (d) => (b += d));
             res.on('end', () => done(b));
@@ -703,7 +705,7 @@ test('http: a request ended after it has its socket goes out once, to another or
     { env: { REMOTE: `http://fetch.localhost:${h.port}/__test/count` } },
   );
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
-  assert.deepEqual(out.stdout.trim().split('\n'), ['remote', 'own'].flatMap((where) => ['end() on socket', 'end() a tick after socket', 'end(body) after socket'].map((name) => `${where}, ${name}: 1`)));
+  assert.deepEqual(out.stdout.trim().split('\n'), ['remote', 'own'].flatMap((where) => ['end() on socket', 'end() a tick after socket', 'end(body) after socket', 'GET end() 20 ms after socket'].map((name) => `${where}, ${name}: 1`)));
 });
 
 /**

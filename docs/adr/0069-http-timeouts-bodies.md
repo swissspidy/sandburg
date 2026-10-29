@@ -194,7 +194,9 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
   `res.setTimeout(ms, cb)` and a server's `req.setTimeout(ms, cb)` set their connection's timeout
   and add `cb` as a 'timeout' listener. What is read (a body chunk) or written (a response's
   output) starts the idle time over; a body chunk's, as in Node, once its 'data' listeners returned (a
-  slow one does not time the connection out). The timer does not keep the process alive. With no
+  slow one does not time the connection out). A known difference: a body read with 'readable' and
+  `read()` counts as activity when it came, before its listener runs (it emits later), so a listener
+  slower than the timeout times the connection out, where Node's does not. The timer does not keep the process alive. With no
   keepAliveTimeout and no `server.timeout`, a connection no client keeps a time for (a page's
   request; an agent that keeps its sockets with no timeout) is closed once its response ended: Node's
   agent would reuse its one socket, which a connection here is not, and kept, they would add up while
