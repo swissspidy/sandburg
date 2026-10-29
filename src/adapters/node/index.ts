@@ -32,6 +32,7 @@ import { DEV_CACHE_DIRS, devCacheKey, compileWrites, TOKEN_TTL_MS, SOURCE_BODY_M
 import { markDirty, recordLoad, readList, prefetchers, preloadUrl, preloadBundle } from './preload.ts';
 import { readAhead, pushAhead } from './read-ahead.ts';
 import { nextRouter, viteSeedCache, nextSeedCache } from './seeds.ts';
+import { DISPOSE_PHASE_MS } from './cache-settle.ts';
 
 // Compiles of code the runtime sends, kept on disk as transforms are (compile-store.ts), by the
 // compiler's own sources too (a change to compile.ts is another directory, as for the per-project cache).
@@ -277,7 +278,7 @@ export const node: AdapterDescriptor = {
   // A cold npm install of a Next.js app and its first webpack compile take a while.
   // expect: routes compile on first request (next dev), which is slower in the browser.
   // dispose: a seed run waits for webpack to store its cache (see nextSeedCache).
-  timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000, dispose: 60_000 },
+  timeouts: { install: 600_000, start: 180_000, ready: 240_000, check: 60_000, expect: 20_000, dispose: DISPOSE_PHASE_MS },
   probe(project: Project) {
     // A dependency neither install can give it (git, a URL, a directory outside the project) is said
     // here, before anything is installed. A local package that is not there is the install's to report.

@@ -8,13 +8,13 @@ import type { FileTree, Framework, InstallReport } from '../../types.ts';
 import { frameworkInfo } from '../../framework.ts';
 import { connectServiceWorker, registerServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort, type CacheSnapshot } from './process.ts';
-import type { CacheEntry } from '../../node-runtime/cache-tree.ts';
 import { WORKSPACE_FILE, type WorkspaceInfo } from '../../node-runtime/links.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
 import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-npm/install.ts';
 import { Registry } from './browser-npm/registry.ts';
 import { UnsupportedSpecError } from './browser-npm/resolve.ts';
 import { bundleHeader } from '../../bundle-format.ts';
+import { firstLine, sendTimeoutMs, settledCache } from './cache-settle.ts';
 
 export interface HostInstall {
   key: string;
@@ -129,11 +129,6 @@ function bundleFiles(bundle: ArrayBuffer): [string, Uint8Array][] {
   const { header, body } = bundleHeader<[string, string, number]>(new Uint8Array(bundle));
   let at = body;
   return header.map(([, path, size]) => [path, new Uint8Array(bundle, (at += size) - size, size)]);
-}
-
-/** Whether two looks at a cache found the same files, none written in between (same sizes and mtimes). */
-function sameFiles(a: CacheEntry[], b: CacheEntry[] | undefined): boolean {
-  return !!b && a.length === b.length && a.every(([path, size, mtimeMs], i) => b[i][0] === path && b[i][1] === size && b[i][2] === mtimeMs);
 }
 
 /** Whether a file the run started with (text, or binary as base64) has these bytes. */
@@ -382,31 +377,28 @@ export function createAdapter(): RuntimeAdapter {
     },
 
     async dispose() {
+      const disposing = performance.now();
       // Keep the dev server's dependency cache for the next run, once it is complete (Vite writes _metadata.json last).
+      // A cache that waits (a seed's) and is not stored says why, in the run's console: a seed run
+      // passes without one, and later apps then compile from scratch.
+      const unstored = (why: string) => console.warn(`[sandburg] the dev server's cache (${devCache!.key}) was not stored: ${why}`);
+      if (proc && devCache?.waitFor && proc.failure) unstored(`the dev server failed: ${proc.failure.message.split('\n')[0]}`);
       if (proc && devCache && !proc.failure) {
         const p = proc;
         const { dirs, waitFor, digests } = devCache;
-        // A look gives up after 5 s.
-        const look = (bytes: boolean, ifChanged = false) => Promise.race([p.readCache(dirs, { bytes, ifChanged }), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+        // A look gives up after 5 s (a read of the bytes of a large cache, longer: see readTimeoutMs).
+        const look = (bytes: boolean, ifChanged = false, timeoutMs = 5000) => Promise.race([p.readCache(dirs, { bytes, ifChanged }), new Promise<null>((r) => setTimeout(() => r(null), timeoutMs))]);
         let cache: CacheSnapshot | null;
         /** Whether the cache is complete: for one that waits (waitFor), its tree settled (every file there, none mid-write, unchanged since the last look). */
         let complete = false;
         if (waitFor) {
-          // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment):
-          // its list of files and sizes, then its bytes once. At most 40 s, however long each look takes.
-          // webpack writes each pack under a temporary name (<name>_), then renames it.
-          const deadline = performance.now() + 40_000;
-          let last = await look(false);
-          while (performance.now() < deadline && !complete) {
-            await new Promise((r) => setTimeout(r, 250));
-            const next = await look(false);
-            const names = new Set(next?.files.map(([path]) => path));
-            complete = !!next && waitFor.every((f) => names.has(f)) && !next.files.some(([path]) => path.endsWith('_')) && sameFiles(next.files, last?.files);
-            last = next;
-          }
-          cache = complete ? await look(true) : null;
-          // One that changed again as its bytes were read is not stored: it may hold a pack webpack was still writing.
-          complete = !!cache && sameFiles(cache.files, last?.files);
+          // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment),
+          // then its bytes, read again until they are of a settled tree: at most 40 s (see settledCache).
+          const settled = await settledCache(waitFor, (bytes, timeoutMs) => look(bytes, false, timeoutMs));
+          cache = settled.cache ?? null;
+          complete = !!cache;
+          if (settled.why) unstored(settled.why);
+          else if (!cache?.bundle) unstored('its files were read without their bytes');
         } else {
           // A cache restored from an earlier run, whose directories the runtime tracked (see start), is
           // read only if the run changed a file there: null when it did not (nothing to store).
@@ -421,11 +413,19 @@ export function createAdapter(): RuntimeAdapter {
           (digests
             ? Object.keys(digests).length !== files.length || (await Promise.all(files.map(async ([path, bytes]) => digests[path] === (await sha256(bytes))))).includes(false)
             : Object.keys(devCache.files).length !== files.length || files.some(([path, bytes]) => !sameBytes(devCache!.files[path], bytes)));
-        if (changed && devCache.token) {
+        // The upload ends inside the dispose phase (the tab closes after it): a seed's cache may be large.
+        const sendMs = changed && devCache.token ? sendTimeoutMs(disposing, performance.now()) : null;
+        if (changed && devCache.token && sendMs === null) {
+          if (waitFor) unstored('no time was left to send it');
+        } else if (changed && devCache.token) {
           // A Blob, not the ArrayBuffer: DevTools (Playwright's Network domain) is handed an ArrayBuffer
           // body as the request's post data, which took a 27 MB cache's upload from 0.4 to 1.6 s.
-          await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', headers: { 'x-sandburg-token': devCache.token, 'content-type': 'application/octet-stream' }, body: new Blob([cache!.bundle!]) }).catch(() => {});
-        }
+          const sent = await fetch(`${hostBase()}/dev-cache/${devCache.key}`, { method: 'POST', headers: { 'x-sandburg-token': devCache.token, 'content-type': 'application/octet-stream' }, body: new Blob([cache!.bundle!]), signal: AbortSignal.timeout(sendMs!) }).then(
+            (r) => (r.ok ? null : `the host answered ${r.status}`),
+            (e: unknown) => `sending it failed: ${(e as Error)?.name === 'TimeoutError' ? `it timed out after ${Math.round(sendMs! / 1000)} s` : firstLine(e)}`,
+          );
+          if (sent && waitFor) unstored(sent);
+        } else if (waitFor && complete && !devCache.token) unstored('the run has no token to store it');
       }
       proc?.terminate();
       proc = null;

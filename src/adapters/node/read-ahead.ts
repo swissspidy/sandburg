@@ -25,6 +25,8 @@ const AHEAD_FILES = 512;
 
 /** File names by directory, sorted, per install. */
 const directories = new Map<string, Promise<Map<string, string[]>>>();
+// An install found removed may be made again with other files (Installer.install).
+installer.onForget((key) => directories.delete(key));
 
 function directoriesOf(key: string): Promise<Map<string, string[]>> {
   let dirs = directories.get(key);

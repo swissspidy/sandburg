@@ -8,7 +8,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir, readFile, rm } from 'node:fs/promises';
+import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Session } from '../../src/orchestrator/session.ts';
@@ -44,6 +44,32 @@ async function nextSeeds(): Promise<Map<string, string[]>> {
   return seeds;
 }
 
+/**
+ * The Next.js seed runs' results (.sandburg/seeds) since `since` (ms), for a failure to say what they
+ * did: each one's project (its router), status, failure, and why its cache was not stored if its page
+ * said so (browser.ts's dispose).
+ */
+async function seedRuns(since: number): Promise<string> {
+  const dir = fileURLToPath(new URL('../../.sandburg/seeds', import.meta.url));
+  const lines: string[] = [];
+  for (const run of await readdir(dir).catch(() => [] as string[])) {
+    const result = await readFile(join(dir, run, 'result.json'), 'utf8')
+      .then((t) => JSON.parse(t) as { project?: { path?: string }; status?: string; startedAt?: string; finishedAt?: string; failure?: { message?: string } | null; console?: { text?: string }[] })
+      .catch(() => null);
+    if (!result) {
+      // A run that wrote no result (it did not end): listed if its directory was made during the test.
+      if (((await stat(join(dir, run)).catch(() => null))?.mtimeMs ?? 0) >= since) lines.push(`${run}: no result`);
+      continue;
+    }
+    // A Next.js seed run started during the test (one without a start time counts if it is a Next.js seed's).
+    const started = result.startedAt === undefined ? Number.NaN : Date.parse(result.startedAt);
+    if (!result.project?.path?.startsWith('sandburg:next-') || started < since) continue;
+    const unstored = (result.console ?? []).map((c) => c.text ?? '').filter((t) => t.includes('was not stored'));
+    lines.push(`${run} ${result.project?.path}: ${result.status} ${result.startedAt} to ${result.finishedAt}${result.failure ? `, ${result.failure.message}` : ''}${unstored.length ? `; ${unstored.join('; ')}` : ''}`);
+  }
+  return `seed runs (${lines.length}):\n${lines.join('\n')}`;
+}
+
 /** The key of a Next.js seed (nextSeedKey in src/adapters/node/index.ts): a digest of public inputs. */
 function seedKey(resolved: Record<string, string>, router: 'app' | 'pages'): string {
   const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
@@ -52,6 +78,7 @@ function seedKey(resolved: Record<string, string>, router: 'app' | 'pages'): str
 
 // First: later tests start from the seed it stores.
 test('the first Next.js app of each router starts a seed run beside it, which stores all of webpack\'s cache, and the app cannot write it first', async () => {
+  const began = Date.now();
   for (const file of (await nextSeeds()).keys()) await Promise.all([rm(file, { force: true }), rm(`${file}.bin`, { force: true })]);
   // The versions each app's install resolved, from which its page could compute its seed's key.
   const resolved = new Map<string, Record<string, string>>();
@@ -92,7 +119,7 @@ test('the first Next.js app of each router starts a seed run beside it, which st
   // One for the App Router, one for the Pages Router (webpack's names for modules differ between them).
   const stored = await nextSeeds();
   const seeds = [...stored.values()];
-  assert.equal(seeds.length, 2);
+  if (seeds.length !== 2) assert.fail(`${seeds.length} seeds stored, not 2: ${[...stored.keys()].join(', ') || 'none'}\n${await seedRuns(began)}`);
   for (const seed of seeds) {
     for (const compiler of ['client', 'server']) assert.ok(seed.includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), seed.join('\n'));
     // Not while webpack was still writing a pack (under <name>_).
