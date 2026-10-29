@@ -158,8 +158,9 @@ function make(repeat: boolean) {
         queueMicrotask(toPoll);
       }
     };
-    // While a turn of immediates is posted or going, it waits for the turn's end (see takeDueTimers).
-    const t: Timeout = new Timeout(() => (turnPosted ? void dueTimers.push(t) : fire()), Math.max(1, Number(ms) || 1), repeat);
+    // While a turn is posted or going, it waits for the turn's end (see takeDueTimers); else it starts a
+    // timers phase of its own, with the others due by then.
+    const t: Timeout = new Timeout(() => (turnPosted || turnRunning ? void dueTimers.push(t) : void runTimers(t)), Math.max(1, Number(ms) || 1), repeat);
     t.run = fire;
     return t;
   };
@@ -296,17 +297,43 @@ async function runTurn() {
     } while ((ioQueue.length || immediateQueue.length || closeQueue.length) && !dueTimers.length && !byIdDue());
   } finally {
     turnPosted = false;
-    // The loop's next timers phase. A timer one of them sets runs on a later one, as in Node, and so
-    // does one they refresh (it is due later now).
-    for (const [timer, due] of takeDueTimers().map((t) => [t, t.due] as const)) {
-      if (timer.due !== due) continue;
-      runOne(timer.run);
-      await nextTask();
-    }
-    phase = 'poll';
-    turnRunning = false;
-    if (turnPosted || ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
+    await timersPhase();
+    endTurn();
   }
+}
+/**
+ * The loop's timers phase: `first` (a timer whose browser timer fired), then each timer due by then,
+ * in order, a task each. A timer one of them sets runs on a later one, as in Node, and so does one
+ * they refresh (it is due later now). What they queue (an immediate) waits for its end.
+ */
+async function timersPhase(first?: Timeout) {
+  if (first) {
+    runOne(first.run);
+    await nextTask();
+  }
+  for (const [timer, due] of takeDueTimers().map((t) => [t, t.due] as const)) {
+    if (stopped) return;
+    if (timer.due !== due) continue;
+    runOne(timer.run);
+    await nextTask();
+  }
+}
+/** A timer whose browser timer fired while no turn was posted or going: a timers phase of its own. */
+async function runTimers(first: Timeout) {
+  turnRunning = true;
+  try {
+    await timersPhase(first);
+  } finally {
+    endTurn();
+  }
+}
+/** A turn or timers phase ended: the next turn it asked for, or the timers that came due meanwhile. */
+function endTurn() {
+  phase = 'poll';
+  turnRunning = false;
+  if (stopped) return;
+  if (turnPosted || ioQueue.length || immediateQueue.length || closeQueue.length || nextIoQueue.length) postTurn();
+  else if (dueTimers.length) void runTimers(dueTimers.shift()!);
 }
 /** Whether a timeout has come due (its browser timer has not run it yet). */
 function byIdDue(): boolean {
