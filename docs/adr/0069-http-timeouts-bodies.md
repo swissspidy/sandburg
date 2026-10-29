@@ -62,8 +62,9 @@ queued meanwhile wait for the next turn.
   the timers phase runs on a later one, as in Node. So does one that an earlier timer of the phase
   refreshed: it is due later now.
 - **A timer outside a turn starts a timers phase.** A timer whose browser timer fires while no turn
-  is posted or going runs, then every other timer due by then, a task each, before the turn an
-  immediate of theirs asked for. Before this, the second of two timers due together waited for that
+  is posted or going runs with every other timer due by then, in the order they came due (a browser
+  may fire a timer after one due before it), a task each, before the turn an immediate of theirs
+  asked for. Before this, the second of two timers due together waited for that
   turn (its immediate came between them).
 - **One turn at a time.** A turn asked for while one goes (a timer of its timers phase queued an
   immediate) starts as that one ends. Before this, two turns could overlap and run the same due
@@ -230,7 +231,8 @@ output of its `fixtures/http` program:
   before the next iteration's (`microtasks.cjs`).
 - `server.close(cb)` with a connection that outlives a response (`close-waits.cjs`).
 - Timers due together run in one timers phase, a task each, before an immediate one of them queued,
-  whether set from the main script, an immediate or an I/O callback (`timers-phase.cjs`).
+  whether set from the main script, an immediate or an I/O callback, and those that timers of a phase
+  set in turn run in the order they came due (`timers-phase.cjs`).
 - Timers due together at a turn's end fire once each, in order, when one queues an immediate, and
   one that another refreshed waits its time again (`timers-once.cjs`).
 - Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`), and a
