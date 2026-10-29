@@ -4,11 +4,11 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { Installer, recordIdentity, sideInstall } from '../../src/adapters/node/install.ts';
+import { Installer, recordIdentity, recordOf, sideInstall } from '../../src/adapters/node/install.ts';
 import { Resolver } from '../../src/adapters/node/resolver.ts';
-import { CompileCache } from '../../src/adapters/node/compile-cache.ts';
+import { COMPILER, CompileCache } from '../../src/adapters/node/compile-cache.ts';
 import { ESM_MARKER } from '../../src/node-runtime/names.ts';
 import type { Project } from '../../src/types.ts';
 import { tempDir } from './temp-dir.ts';
@@ -112,7 +112,7 @@ test('installs at once after a removal start one install', async () => {
 
 test('a side install removed from disk is installed again', async () => {
   const root = tempDir('sandburg-revalidate-');
-  const sides = { root: join(root, 'side-installs'), store: join(root, 'store'), resolver: new Resolver(join(root, 'installs'), ['--ignore-scripts']) };
+  const sides = { root: join(root, 'side-installs'), store: join(root, 'store'), resolver: new Resolver(join(root, 'installs'), ['--ignore-scripts']), recordOf };
   const manifest = { name: 'sandburg-side-test', private: true, dependencies: {} };
   const dir = await sideInstall(sides, manifest, ['--ignore-scripts'], () => {});
   assert.ok(existsSync(join(dir, '.sandburg-complete')));
@@ -122,25 +122,23 @@ test('a side install removed from disk is installed again', async () => {
   assert.ok(existsSync(join(dir, '.sandburg-complete')));
 });
 
-test("a project's compiles kept in memory are dropped once their file is removed", async () => {
+test("a project's compiles kept in memory are written again once their file is removed", async () => {
   const dir = tempDir('sandburg-revalidate-');
   const key = 'f'.repeat(24);
+  const file = join(dir, `compiled-${COMPILER}-${key}.bin`);
   const cache = new CompileCache(() => dir);
   await cache.record(key, 'cjs', false, '/[eval]', 'module.exports = 1;', 'compiled');
   await cache.flush();
-  assert.equal(await cache.has(key), true);
+  assert.ok(existsSync(file));
   rmSync(dir, { recursive: true, force: true });
-  assert.equal(await cache.has(key), false);
-  assert.equal(await cache.bundle(key), null);
-  // Recorded and not yet written: kept, the file is not there yet.
-  await cache.record(key, 'cjs', false, '/[eval]', 'module.exports = 2;', 'compiled 2');
+  // Still true (each is the output for its code), and written back.
   assert.equal(await cache.has(key), true);
-  // Read from a file that is then removed: dropped too.
   await cache.flush();
+  assert.ok(existsSync(file));
+  // Read by a later cache from that file: the same compiles.
   const later = new CompileCache(() => dir);
   assert.equal(await later.has(key), true);
-  rmSync(dir, { recursive: true, force: true });
-  assert.equal(await later.has(key), false);
+  assert.equal((await later.bundle(key))?.equals((await cache.bundle(key))!), true);
 });
 
 test("a combined key keeps its parts when one is installed again: it is served from the part's new install", async () => {
@@ -172,4 +170,108 @@ test('a record\'s identity keeps file IDs above 2^53 and nanosecond times apart,
   // No inode numbers (0 on some file systems): a record made again still differs by its times.
   assert.notEqual(recordIdentity({ ...base, ino: 0n }), recordIdentity({ ...base, ino: 0n, mtimeNs: base.mtimeNs + 1n, birthtimeNs: base.birthtimeNs + 1n }));
   assert.equal(recordIdentity(base), recordIdentity({ ...base }));
+});
+
+/** An Installer whose first record is taken after the install's .sandburg-complete was removed (.sandburg cleared during a run). */
+class ClearedWhileRecording extends Installer {
+  private cleared = false;
+  protected override recordOf(dir: string): Promise<string | null> {
+    if (!this.cleared) {
+      this.cleared = true;
+      rmSync(dir, { recursive: true, force: true });
+    }
+    return super.recordOf(dir);
+  }
+}
+
+test('an install whose record is gone before it is taken is checked again when asked for, and made again', async () => {
+  const installer = new ClearedWhileRecording(join(tempDir('sandburg-revalidate-'), 'installs'));
+  const first = await installer.install(project('cleared-early'), {}, () => {});
+  assert.equal(existsSync(first.dir), false);
+  const again = await installer.install(project('cleared-early'), {}, () => {});
+  assert.notEqual(again, first);
+  assert.ok(existsSync(join(again.dir, '.sandburg-complete')));
+  // And then answered from memory, while its record stays.
+  assert.equal(await installer.install(project('cleared-early'), {}, () => {}), again);
+});
+
+test('a side install whose record is gone before it is taken is made again when asked for', async () => {
+  const root = tempDir('sandburg-revalidate-');
+  let cleared = false;
+  const sides = {
+    root: join(root, 'side-installs'),
+    store: join(root, 'store'),
+    resolver: new Resolver(join(root, 'installs'), ['--ignore-scripts']),
+    recordOf: (dir: string) => {
+      if (!cleared) {
+        cleared = true;
+        rmSync(dir, { recursive: true, force: true });
+      }
+      return recordOf(dir);
+    },
+  };
+  const manifest = { name: 'sandburg-side-early', private: true, dependencies: {} };
+  const dir = await sideInstall(sides, manifest, ['--ignore-scripts'], () => {});
+  assert.equal(existsSync(dir), false);
+  assert.equal(await sideInstall(sides, manifest, ['--ignore-scripts'], () => {}), dir);
+  assert.ok(existsSync(join(dir, '.sandburg-complete')));
+});
+
+test('side installs of Installers on other roots are each their own', async () => {
+  const manifest = { name: 'sandburg-side-roots', private: true, dependencies: {} };
+  // Records taken, per root: one when a side install is made, one each time it is asked for again.
+  const sidesOf = (root: string) => {
+    const sides = { root: join(root, 'side-installs'), store: join(root, 'store'), resolver: new Resolver(join(root, 'installs'), ['--ignore-scripts']), taken: 0, recordOf: (dir: string) => (sides.taken++, recordOf(dir)) };
+    return sides;
+  };
+  const [a, b] = [sidesOf(tempDir('sandburg-revalidate-')), sidesOf(tempDir('sandburg-revalidate-'))];
+  const inA = await sideInstall(a, manifest, ['--ignore-scripts'], () => {});
+  const inB = await sideInstall(b, manifest, ['--ignore-scripts'], () => {});
+  assert.ok(inA.startsWith(a.root) && inB.startsWith(b.root) && existsSync(join(inB, '.sandburg-complete')));
+  // Asked for again, alternately: each is answered from memory after one record, not made again.
+  for (let i = 0; i < 3; i++) {
+    assert.equal(await sideInstall(a, manifest, ['--ignore-scripts'], () => {}), inA);
+    assert.equal(await sideInstall(b, manifest, ['--ignore-scripts'], () => {}), inB);
+  }
+  assert.deepEqual([a.taken, b.taken], [4, 4]);
+});
+
+test("a record is told by its id, not by the file system's inode numbers or times", () => {
+  const dir = tempDir('sandburg-revalidate-');
+  const file = join(dir, '.sandburg-complete');
+  writeFileSync(file, `2026-10-29T00:00:00.000Z layout 17 record ${'a'.repeat(32)}\n`);
+  const { atime, mtime } = statSync(file);
+  return (async () => {
+    const first = await recordOf(dir);
+    assert.equal(first, `record:${'a'.repeat(32)}`);
+    // Made again with the same inode, size and times (inode reuse, coarse times): another id.
+    writeFileSync(file, `2026-10-29T00:00:00.000Z layout 17 record ${'b'.repeat(32)}\n`);
+    utimesSync(file, atime, mtime);
+    assert.notEqual(await recordOf(dir), first);
+    // The same record with other times (an unstable stat): the same.
+    writeFileSync(file, `2026-10-29T00:00:00.000Z layout 17 record ${'a'.repeat(32)}\n`);
+    utimesSync(file, new Date(0), new Date(0));
+    assert.equal(await recordOf(dir), first);
+    rmSync(file);
+    assert.equal(await recordOf(dir), null);
+  })();
+});
+
+test("an older version's record (no id) is told by its stat, and its install is used as it is", async () => {
+  const installs = join(tempDir('sandburg-revalidate-'), 'installs');
+  const { dir } = await new Installer(installs).install(project('older'), {}, () => {});
+  writeFileSync(join(dir, '.sandburg-complete'), '2026-01-01T00:00:00.000Z layout 17\n');
+  assert.match((await recordOf(dir))!, /^stat:/);
+  assert.equal(await recordOf(dir), await recordOf(dir));
+  const installer = new Installer(installs);
+  const forgotten: string[] = [];
+  installer.onForget((k) => forgotten.push(k));
+  const info = await installer.install(project('older'), {}, () => {});
+  assert.equal(info.fromCache, true);
+  assert.equal(await installer.install(project('older'), {}, () => {}), info);
+  assert.deepEqual(forgotten, []);
+  // Removed: made again, with an id.
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal((await installer.install(project('older'), {}, () => {})).fromCache, false);
+  assert.match((await recordOf(dir))!, /^record:/);
 });

@@ -15,7 +15,7 @@ const root = tempDir('sandburg-forget-');
 process.env.SANDBURG_INSTALL_DIR = join(root, '.sandburg', 'installs');
 const { serve } = await import('../../src/adapters/node/index.ts');
 const { Installer, sharedInstaller } = await import('../../src/adapters/node/install.ts');
-const { preloadBundle, preloadList, preloadUrl } = await import('../../src/adapters/node/preload.ts');
+const { preloadBundle, preloadUrl, recordLoad } = await import('../../src/adapters/node/preload.ts');
 const { nextSeedCache, seedRun } = await import('../../src/adapters/node/seeds.ts');
 const { devCacheRoot } = await import('../../src/adapters/node/installs.ts');
 
@@ -55,10 +55,6 @@ function bundled(body: string | Uint8Array): [string, string][] {
   return (JSON.parse(bytes.subarray(4, 4 + length).toString()) as [string, string, number][]).map(([, rel, size]) => [rel, bytes.subarray(at, (at += size)).toString()]);
 }
 
-const waitFor = async (done: () => boolean | Promise<boolean>) => {
-  for (let i = 0; i < 200 && !(await done()); i++) await new Promise((r) => setTimeout(r, 10));
-};
-
 test("read-ahead: an install removed and made again is listed again, not from this process's listing", async () => {
   const key = await made('listed', { 'node_modules/icons/a.js': 'a', 'node_modules/icons/b.js': 'b', 'node_modules/icons/c.js': 'c' });
   const before = await get(key, 'node_modules/icons/a.js', 'ahead=1');
@@ -76,16 +72,16 @@ test("read-ahead: an install removed and made again is listed again, not from th
 
 test('preload: an install removed and made again gets a bundle of its files, not the one built before', async () => {
   const key = await made('preloaded', { 'node_modules/p/package.json': '{"name":"p","version":"1.0.0"}', 'node_modules/p/data.txt': 'first' });
-  assert.equal((await get(key, 'node_modules/p/data.txt'))?.status, 200);
-  await waitFor(async () => (await preloadList(key)).has('f:node_modules/p/data.txt'));
+  // A run loads the file (as serve records it, awaited here).
+  await recordLoad(key, 'f', 'node_modules/p/data.txt');
   const url = (await preloadUrl(key, {}))!;
   const [, , hash] = /\/preload\/([0-9a-f]{24})\/([0-9a-f]+)$/.exec(url)!;
   assert.deepEqual(bundled((await preloadBundle(key, hash))!), [['node_modules/p/data.txt', 'first']]);
 
   rmSync(join(root, '.sandburg'), { recursive: true, force: true });
   assert.equal(await made('preloaded', { 'node_modules/p/package.json': '{"name":"p","version":"1.0.0"}', 'node_modules/p/data.txt': 'second' }), key);
-  assert.equal((await get(key, 'node_modules/p/data.txt'))?.status, 200);
-  await waitFor(async () => (await preloadList(key)).has('f:node_modules/p/data.txt'));
+  // A run loads the file (as serve records it, awaited here).
+  await recordLoad(key, 'f', 'node_modules/p/data.txt');
   const again = (await preloadUrl(key, {}))!;
   // The same files, so the same URL: its bundle is built again, from the install as it is now.
   assert.equal(again, url);

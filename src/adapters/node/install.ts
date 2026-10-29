@@ -71,20 +71,34 @@ let shared: Installer | undefined;
 export const tmpSuffix = () => `${process.pid}-${randomBytes(6).toString('hex')}`;
 
 /**
- * The identity of an install's (or side install's) .sandburg-complete, or null when it has none: a
- * new install of the same key (after the directory was removed) has another. One stat, as BigInts:
- * file IDs can be above 2^53 (NTFS, ReFS, some Linux file systems) and times are finer than a
- * double's milliseconds keep. A file system without inode numbers (0) still has the record's times.
+ * What an install (or side install) writes to its .sandburg-complete when it is finished: when, its
+ * layout, and a random record id that no other install of the same key has (see recordOf).
  */
-async function recordOf(dir: string): Promise<string | null> {
-  const st = await stat(join(dir, '.sandburg-complete'), { bigint: true }).catch(() => null);
-  return st && recordIdentity(st);
+const completeRecord = () => `${new Date().toISOString()} layout ${LAYOUT_VERSION} record ${randomBytes(16).toString('hex')}\n`;
+
+/**
+ * The identity of an install's (or side install's) .sandburg-complete, or null when it has none: a
+ * new install of the same key (after the directory was removed) has another. Its record id, read from
+ * the small file, which no file system's inode reuse, coarse times or unstable file IDs change. A
+ * record written before ids were (an older version's) is told by its stat instead, as BigInts.
+ */
+export async function recordOf(dir: string): Promise<string | null> {
+  const file = join(dir, '.sandburg-complete');
+  const text = await readFile(file, 'utf8').catch(() => null);
+  if (text === null) return null;
+  const id = / record ([0-9a-f]{32})\b/.exec(text)?.[1];
+  if (id) return `record:${id}`;
+  const st = await stat(file, { bigint: true }).catch(() => null);
+  return st && `stat:${recordIdentity(st)}`;
 }
 
-/** A record's identity from its stat (recordOf). */
+/** An older record's identity from its stat (recordOf). */
 export function recordIdentity(st: Pick<BigIntStats, 'dev' | 'ino' | 'size' | 'mtimeNs' | 'birthtimeNs'>): string {
   return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.birthtimeNs}`;
 }
+
+/** Stands for a finished install whose record was already gone when it was taken: matches no record, so the next ask checks again. */
+const NO_RECORD = '';
 
 interface Manifest {
   dependencies?: Record<string, string>;
@@ -116,7 +130,7 @@ export class Installer {
     this.root = root;
     this.store = join(root, '..', 'store');
     this.resolver = new Resolver(root, ['--package-lock-only', ...INSTALL_FLAGS]);
-    this.sides = { root: join(root, '..', 'side-installs'), store: this.store, resolver: this.resolver };
+    this.sides = { root: join(root, '..', 'side-installs'), store: this.store, resolver: this.resolver, recordOf: (dir) => this.recordOf(dir) };
     // As npm's resolution picks each package: it is unpacked, and what wasiBindingsFor and
     // wasmBuildsFor will ask about it (whether its napi-rs bindings have a WASI build, the
     // WebAssembly build that replaces it) is under way. Guesses: npm may pick another version.
@@ -193,15 +207,15 @@ export class Installer {
     // since (.sandburg cleared while the process kept running), or removed and made again by another
     // process, is forgotten, with what this process kept of it, and installed again.
     const known = this.settled.get(key);
-    if (pending && known !== undefined && (await recordOf(join(this.root, key))) !== known) {
+    if (pending && known !== undefined && (await this.recordOf(join(this.root, key))) !== known) {
       if (this.pending.get(key) === pending) this.forget(key);
       pending = this.pending.get(key);
     }
     if (!pending) {
       // Its record is taken before anyone is answered, so that a removal after the answer is seen.
       const started: Promise<InstallInfo> = this.doInstall(key, manifest, lock, log).then(async (info) => {
-        const record = await recordOf(info.dir);
-        if (record !== null && this.pending.get(key) === started) this.settled.set(key, record);
+        const record = await this.recordOf(info.dir);
+        if (this.pending.get(key) === started) this.settled.set(key, record ?? NO_RECORD);
         return info;
       });
       this.pending.set(key, (pending = started));
@@ -210,6 +224,11 @@ export class Installer {
       });
     }
     return pending;
+  }
+
+  /** The identity of the record of the install in `dir` (recordOf), as installs and side installs take it. */
+  protected recordOf(dir: string): Promise<string | null> {
+    return recordOf(dir);
   }
 
   /** `listener` is told the key of each install found removed (and of each combined key that has it), to drop what it keeps of it. */
@@ -278,7 +297,7 @@ export class Installer {
       // The index is written with the install (see loadIndex): this process walked it anyway.
       const index = walkIndex(tmp);
       await writeFile(join(tmp, INDEX_FILE), JSON.stringify(index));
-      await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
+      await writeFile(join(tmp, '.sandburg-complete'), completeRecord());
       if (await settle(tmp, dir, done)) this.indexes.set(key, Promise.resolve(index));
     }
     const resolved: Record<string, string> = {};
@@ -688,16 +707,18 @@ async function sweepSideInstalls(root: string): Promise<void> {
 export function sideInstall(sides: Sides, manifest: object, flags: string[], log: (line: string) => void): Promise<string> {
   const root = sides.root;
   const key = createHash('sha256').update(`layout:${LAYOUT_VERSION}\0`).update(JSON.stringify([manifest, flags])).digest('hex').slice(0, 24);
-  let pending = sideInstalls.get(key);
+  // By directory: Installers on other roots (tests, another SANDBURG_INSTALL_DIR) have their own.
+  const id = join(root, key);
+  let pending = sideInstalls.get(id);
   // A finished side install removed since, or made again (as installs, see Installer.install), is installed again.
-  const record = sideDone.get(key);
+  const record = sideDone.get(id);
   if (pending && record !== undefined) {
     const known = pending;
-    return recordOf(join(root, key)).then((now) => {
+    return sides.recordOf(id).then((now) => {
       if (now === record) return known;
-      if (sideInstalls.get(key) === known) {
-        sideInstalls.delete(key);
-        sideDone.delete(key);
+      if (sideInstalls.get(id) === known) {
+        sideInstalls.delete(id);
+        sideDone.delete(id);
       }
       return sideInstall(sides, manifest, flags, log);
     });
@@ -721,7 +742,7 @@ export function sideInstall(sides: Sides, manifest: object, flags: string[], log
           await runNpm(['install', ...flags], tmp, log);
         }
         await mkdir(join(tmp, 'node_modules'), { recursive: true });
-        await writeFile(join(tmp, '.sandburg-complete'), `${new Date().toISOString()} layout ${LAYOUT_VERSION}\n`);
+        await writeFile(join(tmp, '.sandburg-complete'), completeRecord());
         // Another process may have finished the same side install first.
         await rename(tmp, dir).catch(async (e) => {
           if (!(await access(join(dir, '.sandburg-complete')).then(() => true, () => false))) throw e;
@@ -732,20 +753,21 @@ export function sideInstall(sides: Sides, manifest: object, flags: string[], log
       return dir;
     })().then(async (dir) => {
       // Taken before anyone is answered, as an install's record (Installer.install).
-      const done = await recordOf(dir);
-      if (done !== null && sideInstalls.get(key) === started) sideDone.set(key, done);
+      const done = await sides.recordOf(dir);
+      if (sideInstalls.get(id) === started) sideDone.set(id, done ?? NO_RECORD);
       return dir;
     });
     const started = pending;
-    sideInstalls.set(key, started);
+    sideInstalls.set(id, started);
     started.catch(() => {
-      if (sideInstalls.get(key) === started) sideInstalls.delete(key);
+      if (sideInstalls.get(id) === started) sideInstalls.delete(id);
     });
   }
   return pending;
 }
+/** Side installs made or being made, by directory. */
 const sideInstalls = new Map<string, Promise<string>>();
-/** Keys of `sideInstalls` whose side install finished, and its record's identity (recordOf). */
+/** Directories of `sideInstalls` whose side install finished, and its record's identity (recordOf). */
 const sideDone = new Map<string, string>();
 
 /** Where side installs are kept, and how they are made. */
@@ -753,6 +775,8 @@ export interface Sides {
   root: string;
   store: string;
   resolver: Resolver;
+  /** How a finished side install's record is taken (recordOf; the Installer's). */
+  recordOf: (dir: string) => Promise<string | null>;
 }
 
 /**

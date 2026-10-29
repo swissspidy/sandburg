@@ -110,11 +110,15 @@ export class CompileCache {
 
   /**
    * Whether earlier runs of the project compiled anything. Compiles kept in memory whose file was
-   * removed since (.sandburg cleared while the process kept running) are dropped: the file is read again.
+   * removed since (.sandburg cleared while the process kept running) are written again: each is the
+   * host's output for its code and this compiler, as true as before.
    */
   async has(key: string): Promise<boolean> {
     if (this.stored.has(key) && !this.dirty.has(key) && !(await access(this.file(key)).then(() => true, () => false))) {
-      if (this.stored.has(key) && !this.dirty.has(key)) this.drop(key);
+      if (this.stored.delete(key)) {
+        this.dirty.add(key);
+        this.flushing ??= setTimeout(() => void this.flush(), 2000);
+      }
     }
     return (await this.load(key)).size > 0;
   }
