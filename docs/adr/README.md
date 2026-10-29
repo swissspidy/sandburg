@@ -71,3 +71,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0065](0065-ci-on-macos-and-windows.md) | CI on macOS and Windows, and what it found: npm on Windows, lockfiles through a symlink, macOS's free memory | Accepted |
 | [0066](0066-fidelity-v7-fixes.md) | What fidelity study v7 found: shadow roots, Solid's hydration, fail-fast and classification | Accepted |
 | [0068](0068-uncaught-exceptions-and-signals.md) | Uncaught exceptions, unhandled rejections and signals as in Node; signals stop a command cleanly | Accepted |
+| [0070](0070-wasm-memory-growth-race.md) | The rolldown trap: V8 sees shared memory growth late; modules with shared memory are guarded | Accepted |
