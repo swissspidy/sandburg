@@ -215,22 +215,26 @@ function devServerCompileError(lines: string[]): string | null {
     // The location: a "File:" line below, else the path the message starts with ("/app/src/x.tsx: … (2:14)").
     let at: { path: string; loc: string } | null = null;
     // Vite 8 (oxc, rolldown): "Transform failed with 1 error:", then "[PARSE_ERROR] <message>" and a
-    // code frame headed "╭─[ app/src/App.tsx:3:1 ]".
+    // code frame headed with the file and its location. Its path is relative to the working directory
+    // the transform sees: "╭─[ app/src/App.tsx:3:1 ]" (to "/", rolldown's WebAssembly build up to
+    // 1.2.15) or "╭─[ src/App.tsx:3:1 ]" (to the dev server's, /app or a folder in it, from 1.2.16 and
+    // in native builds).
     let frame: { path: string; loc: string } | null = null;
     let coded: string | null = null;
     for (let j = i + 1; j < Math.min(clean.length, i + 12) && !at; j++) {
       const file = /^\s*File: \/app\/(\S+?)(:\d+:\d+)?$/.exec(clean[j].trim() ? clean[j] : '');
       if (file) at = { path: file[1], loc: file[2] ?? '' };
-      const span = /╭─\[\s*\/?app\/(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
+      const span = /╭─\[\s*(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
       if (span) frame ??= { path: span[1], loc: span[2] };
       // Before and after a process prefix is removed: "[client] [PARSE_ERROR] …" and "[PARSE_ERROR] …".
       const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(plain[j]);
       if (code) coded ??= code[1].trim();
     }
-    if (frame && (!at || (at.path === frame.path && !at.loc))) at = frame;
+    if (frame && !at) at = { path: frame.path.replace(/^\/?app\//, ''), loc: frame.loc };
+    else if (frame && at && !at.loc && sameFile(at.path, frame.path)) at = { path: at.path, loc: frame.loc };
     const inline = /^\/app\/([^\s:]+)(:\d+:\d+)?:?\s+(.*?)(?:\s+\((\d+):(\d+)\))?$/.exec(head[1].trim());
     if (!at && inline) at = { path: inline[1], loc: inline[2] ?? (inline[4] ? `:${inline[4]}:${inline[5]}` : '') };
-    if (!at || /(^|\/)node_modules\//.test(at.path)) continue;
+    if (!at || /(^|\/)node_modules\//.test(at.path) || at.path.startsWith('../')) continue;
     const message = inline && inline[1] === at.path ? inline[3] + (inline[4] ? ` (${inline[4]}:${inline[5]})` : '') : /^Transform failed with \d+ errors?:$/.test(head[1].trim()) && coded ? coded : head[1].trim();
     return `${at.path}${at.loc}: ${message}`;
   }
@@ -244,6 +248,15 @@ function devServerCompileError(lines: string[]): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Whether a code frame's path names the project's file at `path` (relative to /app): the frame's
+ * path is absolute, or relative to "/", to /app, or to a folder in it (a dev server started in
+ * client/), so /app/<path> ends with it.
+ */
+function sameFile(path: string, framePath: string): boolean {
+  return `/app/${path}`.endsWith(`/${framePath.replace(/^\//, '')}`);
 }
 
 function matchSignature(texts: string[]): string | null {
