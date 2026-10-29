@@ -70,6 +70,11 @@ queued meanwhile wait for the next turn.
   each run (its time from then, as Node's), so the loop runs it with the timeouts due with it, in the
   order they were set, and cancels its browser timer as it does theirs. Its handle (its number) stays
   the same across runs; `clearTimeout()` with an unknown number does nothing, as in Node.
+- **A timer cleared or refreshed while it waits for a turn's end does not run then.** One whose
+  browser timer fired while a turn went waits for its end; cleared, it no longer waits, and only
+  those still set and due run. Before this (since timers first waited for turns, in this change, not
+  on main), one refreshed meanwhile (a socket's idle timeout, by what came in that turn) ran at the
+  turn's end, its new time not come yet.
 - **Handles are not browser timer ids.** A timer's handle counts from 2^30, and the runtime clears its
   own browser timers with the browser's `clearTimeout` (a unit test finds any other). Before this, the
   runtime cleared a browser timer of its own (a read report's) with the program's `clearTimeout`, and
@@ -181,7 +186,9 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
   `res.setTimeout(ms, cb)` and a server's `req.setTimeout(ms, cb)` set their connection's timeout
   and add `cb` as a 'timeout' listener. What is read (a body chunk) or written (a response's
   output) starts the idle time over; a body chunk's, as in Node, once its 'data' listeners returned (a
-  slow one does not time the connection out). The timer does not keep the process alive.
+  slow one does not time the connection out). The timer does not keep the process alive. With no
+  keepAliveTimeout and no `server.timeout`, a page's request (no client here to close its connection)
+  has its connection closed once its response ended: kept, they would add up while the server runs.
 - **When it fires** (Node's `socketOnTimeout`): 'timeout' with the socket, on the request while its
   body is still coming, on the response until it finished, and on the server. When none of them
   listens, the connection is destroyed. Its client sees "socket hang up", or its response cut short.
