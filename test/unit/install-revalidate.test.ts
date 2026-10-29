@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { Installer, sideInstall } from '../../src/adapters/node/install.ts';
+import { Installer, recordIdentity, sideInstall } from '../../src/adapters/node/install.ts';
 import { Resolver } from '../../src/adapters/node/resolver.ts';
 import { CompileCache } from '../../src/adapters/node/compile-cache.ts';
 import { ESM_MARKER } from '../../src/node-runtime/names.ts';
@@ -141,4 +141,35 @@ test("a project's compiles kept in memory are dropped once their file is removed
   assert.equal(await later.has(key), true);
   rmSync(dir, { recursive: true, force: true });
   assert.equal(await later.has(key), false);
+});
+
+test("a combined key keeps its parts when one is installed again: it is served from the part's new install", async () => {
+  const installs = join(tempDir('sandburg-revalidate-'), 'installs');
+  const { key, dir } = await new Installer(installs).install(project('combined'), {}, () => {});
+  write(dir, { 'node_modules/p/package.json': '{"name":"p"}', 'node_modules/p/index.js': 'module.exports = "first";' });
+  rmSync(join(dir, '.sandburg-index.json'));
+  const installer = new Installer(installs);
+  await installer.install(project('combined'), {}, () => {});
+  // A run of a project with a client/ package holds the combined key.
+  const combined = installer.combine([{ dir: 'client', key }]);
+  assert.match((await installer.file(combined, 'client/node_modules/p/index.js'))!.body.toString(), /first/);
+
+  rmSync(dir, { recursive: true, force: true });
+  await new Installer(installs).install(project('combined'), {}, () => {});
+  write(dir, { 'node_modules/p/package.json': '{"name":"p"}', 'node_modules/p/index.js': 'module.exports = "second";', 'node_modules/p/raw.txt': 'raw' });
+  rmSync(join(dir, '.sandburg-index.json'));
+  await installer.install(project('combined'), {}, () => {});
+
+  assert.match((await installer.file(combined, 'client/node_modules/p/index.js'))!.body.toString(), /second/);
+  assert.equal((await installer.raw(combined, 'client/node_modules/p/raw.txt'))?.body.toString(), 'raw');
+  assert.ok('client/node_modules/p/raw.txt' in (await installer.index(combined)));
+});
+
+test('a record\'s identity keeps file IDs above 2^53 and nanosecond times apart, and works without inode numbers', () => {
+  const base = { dev: 2049n, ino: 2n ** 53n, size: 36n, mtimeNs: 1_761_730_000_000_000_001n, birthtimeNs: 1_761_730_000_000_000_001n };
+  assert.notEqual(recordIdentity(base), recordIdentity({ ...base, ino: 2n ** 53n + 1n }));
+  assert.notEqual(recordIdentity(base), recordIdentity({ ...base, mtimeNs: base.mtimeNs + 1n }));
+  // No inode numbers (0 on some file systems): a record made again still differs by its times.
+  assert.notEqual(recordIdentity({ ...base, ino: 0n }), recordIdentity({ ...base, ino: 0n, mtimeNs: base.mtimeNs + 1n, birthtimeNs: base.birthtimeNs + 1n }));
+  assert.equal(recordIdentity(base), recordIdentity({ ...base }));
 });

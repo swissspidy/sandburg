@@ -9,7 +9,7 @@
  * lowered so AsyncLocalStorage works; see src/node-runtime/async-context.ts).
  */
 import { spawn } from 'node:child_process';
-import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, statSync, type BigIntStats } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, cp, lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
@@ -72,11 +72,18 @@ export const tmpSuffix = () => `${process.pid}-${randomBytes(6).toString('hex')}
 
 /**
  * The identity of an install's (or side install's) .sandburg-complete, or null when it has none: a
- * new install of the same key (after the directory was removed) has another.
+ * new install of the same key (after the directory was removed) has another. One stat, as BigInts:
+ * file IDs can be above 2^53 (NTFS, ReFS, some Linux file systems) and times are finer than a
+ * double's milliseconds keep. A file system without inode numbers (0) still has the record's times.
  */
 async function recordOf(dir: string): Promise<string | null> {
-  const st = await stat(join(dir, '.sandburg-complete')).catch(() => null);
-  return st && `${st.dev}:${st.ino}:${st.mtimeMs}`;
+  const st = await stat(join(dir, '.sandburg-complete'), { bigint: true }).catch(() => null);
+  return st && recordIdentity(st);
+}
+
+/** A record's identity from its stat (recordOf). */
+export function recordIdentity(st: Pick<BigIntStats, 'dev' | 'ino' | 'size' | 'mtimeNs' | 'birthtimeNs'>): string {
+  return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.birthtimeNs}`;
 }
 
 interface Manifest {
@@ -215,12 +222,10 @@ export class Installer {
     this.pending.delete(key);
     this.settled.delete(key);
     this.indexes.delete(key);
+    // A combined key that has the install keeps its parts: a run still holding it is served from the
+    // install as it is made again. What was kept under it is dropped (its listeners are told).
     const keys = [key];
-    for (const [combined, parts] of this.combined) {
-      if (!parts.some((p) => p.key === key)) continue;
-      this.combined.delete(combined);
-      keys.push(combined);
-    }
+    for (const [combined, parts] of this.combined) if (parts.some((p) => p.key === key)) keys.push(combined);
     for (const [id, body] of this.memory) {
       if (!id.startsWith(`${key}\0`)) continue;
       this.memory.delete(id);
