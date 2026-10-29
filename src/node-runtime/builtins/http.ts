@@ -1246,7 +1246,7 @@ class ClientRequest extends Writable {
       consumed: (n: number) => this.#consumed(n),
       // As Node's: 'continue' for a 100, and 'information' for each.
       info: (status: number, statusText: string, headers: [string, string][]) => {
-        if (this.destroyed || res || status < 100 || status > 199) return;
+        if (this.destroyed || res || !Number.isInteger(status) || status < 100 || status > 199) return;
         if (status === 100) this.emit('continue');
         const msg = new IncomingMessage(this.method, this.path, headers, 0);
         this.emit('information', { statusCode: status, statusMessage: statusText, httpVersion: '1.1', httpVersionMajor: 1, httpVersionMinor: 1, headers: msg.headers, rawHeaders: msg.rawHeaders });

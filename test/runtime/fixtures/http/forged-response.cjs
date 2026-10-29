@@ -1,6 +1,7 @@
 // A runtime's messages about a request it does not answer are not taken: a sibling that posts a
 // response (start, informational, chunk, end) for a request its parent sent to another child's server
-// does not reach the client, which gets the server's own. (In Node no program can post one: the same.)
+// does not reach the client, which gets the server's own; nor does an informational response that is not
+// 1xx from the server's own runtime. (In Node no program can post one: the same.)
 const http = require('http');
 const { fork } = require('child_process');
 const role = process.argv[2];
@@ -13,7 +14,11 @@ if (role === 'server') {
   http.createServer((req, res) => {
     // (The runtime takes the message, and so the request, before this program's listener sees it.)
     setImmediate(() => process.send({ id }));
-    process.once('message', () => res.end('real'));
+    process.once('message', () => {
+      // Its own runtime may send informational responses for it, but only 1xx ones are.
+      if (id !== null) for (const status of [200, 302, 99, 150.5]) globalThis.postMessage({ type: 'response-info', id, status, statusText: 'Not informational', headers: [['x-info', String(status)]] });
+      setTimeout(() => res.end('real'), 20);
+    });
   }).listen(3093, () => process.send('ready'));
 } else if (role === 'forger') {
   process.send('ready');
