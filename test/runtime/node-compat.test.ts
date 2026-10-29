@@ -1095,12 +1095,14 @@ test("http: a request's timeout counts idle time: not while its response keeps c
 
 test("http: a response's start is activity for its request's timeout", async () => {
   const out = await h.run({ 'main.js': `
-        // The response's start is activity too: headers late in the timeout (300 of 400 ms), the body 300 ms
-        // after. Reported once the request closed.
+        // The response's start is activity too: headers halfway into the timeout (1 of 2 s), the body after
+        // the timeout would have come without them (2.1 s), each a second from the next deadline (a late
+        // loop runs timers due together in one phase: close ones could come in either order). Reported once
+        // the request closed.
         const http = require('http');
         http.createServer((req, res) => {
-          setTimeout(() => res.flushHeaders(), 300);
-          setTimeout(() => res.end('late'), 600);
+          setTimeout(() => res.flushHeaders(), 1000);
+          setTimeout(() => res.end('late'), 2100);
         }).listen(3018, () => {
           const log = [];
           const req = http.get('http://localhost:3018/', (res) => {
@@ -1109,7 +1111,7 @@ test("http: a response's start is activity for its request's timeout", async () 
             res.on('data', (d) => (body += d));
             res.on('end', () => log.push('end ' + body));
           });
-          req.setTimeout(400, () => log.push('timeout'));
+          req.setTimeout(2000, () => log.push('timeout'));
           req.on('close', () => {
             console.log(log.concat('req close').join(' | '));
             process.exit(0);
