@@ -132,6 +132,7 @@ export function launchOptions(options: SessionOptions): LaunchOptions {
   const features = playwrightDisabledFeatures();
   return {
     headless: options.headless ?? true,
+    ...(options.handleSignals === false && { handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false }),
     chromiumSandbox: browserSandbox(options),
     args: [
       SITE_ISOLATION,

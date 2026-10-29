@@ -21,9 +21,10 @@ import { installAsyncContext } from './async-context.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverEvents, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
-import { ExitError, NODE_VERSION, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
+import { ExitError, NODE_VERSION, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
 import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
+import { createUncaught } from './uncaught.ts';
 import { LIBS_KEY, type RuntimeLib } from './libs.ts';
 import { Vfs } from './vfs.ts';
 import { parseWorkspace, safeLinks, setLinks, WORKSPACE_FILE } from './links.ts';
@@ -565,47 +566,37 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // esbuild's transforms on the host's native esbuild (see native-transform.ts), when there is a host.
   if (!pageCompiler && !pack) Object.defineProperty(g, NATIVE_TRANSFORM, { value: createNativeTransform({ base, hostVersion: __SANDBURG_ESBUILD__, fetch: globalThis.fetch.bind(globalThis), post: postViaChannel, pending: pendingWork }) });
 
-  // Uncaught errors and rejections go through process events, as in Node.
+  // Uncaught errors and rejections go through process events, as in Node (uncaught.ts).
+  // Node's options that set the process up (--unhandled-rejections, warnings), and NODE_NO_WARNINGS.
+  const options = nodeOptions((proc.execArgv as string[] | undefined) ?? [], proc.env as Record<string, string>);
+  const flag = (name: string) => options.flags.includes(name);
+  if (flag('--no-warnings') || (proc.env as Record<string, string>).NODE_NO_WARNINGS === '1') proc.off('warning', proc[WARNING_PRINTER] as () => void);
+  if (flag('--no-deprecation')) proc.noDeprecation = true;
+  if (flag('--throw-deprecation')) proc.throwDeprecation = true;
+  if (flag('--trace-deprecation')) proc.traceDeprecation = true;
+  if (flag('--trace-warnings')) proc.traceProcessWarnings = true;
+  uncaught = createUncaught({
+    proc,
+    write,
+    exited,
+    fatal: postFatal,
+    over: () => hasExited,
+    workerThread: !!thread && !thread.process,
+    mode: options.unhandledRejections,
+  });
   self.addEventListener('error', (e) => {
+    e.preventDefault();
+    if ((proc.env as Record<string, string>).SANDBURG_DEBUG_ERRORS && !(e.error instanceof ExitError)) write('stderr', `[sandburg] uncaught: ${e.error?.stack ?? e.message}\n`);
     // process.exit() from a callback (timer, I/O) ends the process there too.
-    if (e.error instanceof ExitError) {
-      e.preventDefault();
-      return exited(e.error.code);
-    }
-    // In a worker thread an uncaught exception ends the thread ('error' on its Worker), as in Node.
-    if (thread && !proc.listenerCount('uncaughtException')) {
-      e.preventDefault();
-      return postFatal(e.error ?? e.message);
-    }
-    if ((proc.env as Record<string, string>).SANDBURG_DEBUG_ERRORS) write('stderr', `[sandburg] uncaught: ${e.error?.stack ?? e.message}\n`);
-    if (proc.listenerCount('uncaughtException')) {
-      e.preventDefault();
-      // process.exit() in a handler ends the process with its code.
-      try {
-        proc.emit('uncaughtException', e.error, 'uncaughtException');
-      } catch (err) {
-        if (err instanceof ExitError) return exited(err.code);
-        throw err;
-      }
-    }
+    uncaught.uncaught(e.error ?? e.message, 'uncaughtException');
   });
   self.addEventListener('unhandledrejection', (e) => {
-    if (e.reason instanceof ExitError) {
-      e.preventDefault();
-      return exited(e.reason.code);
-    }
-    if (proc.listenerCount('unhandledRejection')) {
-      e.preventDefault();
-      // process.exit() in it: the ExitError is uncaught ('error' above), which ends the process.
-      proc.emit('unhandledRejection', e.reason, e.promise);
-    } else if (thread && e.reason instanceof WebAssembly.RuntimeError) {
-      // A trap in a promise callback ends the thread (and its process) like one in any other callback.
-      e.preventDefault();
-      postFatal(e.reason);
-    } else {
-      write('stderr', `Uncaught (in promise) ${e.reason?.stack ?? e.reason}\n`);
-    }
+    e.preventDefault();
+    // A trap in a promise callback ends the thread (and its process) like one in any other callback.
+    if (thread && e.reason instanceof WebAssembly.RuntimeError && !proc.listenerCount('unhandledRejection')) return postFatal(e.reason);
+    uncaught.unhandledRejection(e.reason, e.promise);
   });
+  self.addEventListener('rejectionhandled', (e) => uncaught.rejectionHandled(e.promise));
   serverEvents.on('listening', (port: number | string, ephemeral?: boolean) => {
     announce(port, ephemeral);
     serversChanged();
@@ -656,7 +647,8 @@ function exitWhenIdle() {
       proc.emit('beforeExit', code);
       if (busy()) return;
       nativeClearInterval(timer);
-      (proc.exit as (c: number) => void)(Number(proc.exitCode ?? 0));
+      // process.exit() with no code: exitCode, as it is (undefined in the 'exit' listeners when unset).
+      (proc.exit as () => void)();
     } catch (e) {
       nativeClearInterval(timer);
       exited(e instanceof ExitError ? e.code : 1);
@@ -696,17 +688,16 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
     // --require / --import (loaded in order, before the entry).
     for (const p of msg.preload ?? []) moduleSystem.Module._load(p, null, false);
     const exports = moduleSystem.Module._load(msg.main, null, true);
-    // An async main module (top-level await): a rejection ends the process like an uncaught exception.
+    // An async main module (top-level await): its rejection is uncaught, as an ES module's evaluation's is in Node.
     const tla = (exports as Record<string, unknown> | null)?.__sandburg_tla as Promise<unknown> | undefined;
-    if (tla && typeof tla.then === 'function') {
-      tla.catch((e: unknown) => {
-        if (e instanceof ExitError) return exited(e.code);
-        postFatal(e);
-      });
-    }
+    if (tla && typeof tla.then === 'function') tla.catch((e: unknown) => uncaught.uncaught(e, 'unhandledRejection'));
   } catch (e) {
-    if (e instanceof ExitError) return exited(e.code);
-    postFatal(e);
+    // As in Node: the 'uncaughtException' listeners the entry added take its throw, and the process
+    // goes on (its timers fire). An ES module's evaluation is a promise there: its throw comes once
+    // the current microtasks ran, as a rejection.
+    // process.exit() there ends the process at once, whatever the entry.
+    if (e instanceof ExitError || !moduleSystem.Module.mainModule?.esm) return void uncaught.uncaught(e, 'uncaughtException');
+    void Promise.resolve().then(() => uncaught.uncaught(e, 'unhandledRejection'));
   }
 }
 
@@ -765,6 +756,9 @@ function cancelRequest(id: number) {
 
 /** Whether the program exited (see exited). */
 let hasExited = false;
+
+/** What the runtime does with an uncaught exception or rejection (see uncaught.ts). */
+let uncaught: ReturnType<typeof createUncaught>;
 
 /**
  * The program exited (process.exit, or its event loop drained), once: what it scheduled no longer
