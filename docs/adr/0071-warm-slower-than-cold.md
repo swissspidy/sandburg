@@ -106,7 +106,7 @@ round 1 (ENOENT on `.sandburg/installs/<key>/node_modules/next/package.json`). A
 `sandburg batch`, now runs in a process of its own. The state that outlives the stores is
 module-level (the installer in `src/adapters/node/install.ts`, and the read-ahead and dev-cache
 maps), so a library user who removes `.sandburg/` between two sessions in one process meets the
-same: a library bug, tracked in an issue (link to follow) and not fixed here.
+same: a library bug, tracked in [#117](https://github.com/swissspidy/sandburg/issues/117) and not fixed here.
 
 ## Decision
 

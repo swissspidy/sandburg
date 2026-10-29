@@ -136,7 +136,8 @@ if (!items.length) refuse(`no apps in ${corpus}${args.only ? ` matching ${args.o
 /**
  * One pass, in a process of its own, as `sandburg batch` runs: what a process keeps in memory of the
  * stores (the installs it knows, the seeds it ran) would otherwise outlive a cold pass's removal of
- * .sandburg/, and make a warm pass warmer than a batch of its own would be.
+ * .sandburg/, and make a warm pass warmer than a batch of its own would be (a library bug:
+ * https://github.com/swissspidy/sandburg/issues/117).
  */
 function pass(mode: 'cold' | 'warm'): Promise<Pass> {
   const argv = [import.meta.filename, corpus, '--pass', mode, '--parallel', String(parallel), ...(args.only ? ['--only', args.only] : [])];
