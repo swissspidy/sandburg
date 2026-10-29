@@ -24,3 +24,52 @@ export function unsettled(waitFor: string[], next: CacheEntry[] | null, last: Ca
   if (!sameFiles(next, last ?? undefined)) return 'its files were still changing';
   return null;
 }
+
+/** How long a read of a cache's bytes may take: 5 s, and half a second more for each MB the last look listed. */
+export function readTimeoutMs(files: CacheEntry[]): number {
+  const bytes = files.reduce((n, [, size]) => n + size, 0);
+  return 5000 + Math.ceil(bytes / (1 << 20)) * 500;
+}
+
+/** A look at a cache: its files, and its bytes when asked for (null: no answer within `timeoutMs`). */
+export type CacheLook<T extends { files: CacheEntry[] }> = (bytes: boolean, timeoutMs: number) => Promise<T | null>;
+
+/**
+ * Waits for a cache that waits for `waitFor` (a seed's) to settle (see unsettled), then reads its bytes:
+ * the snapshot read, or why there is none once `deadlineMs` passed. A read that got no answer (its
+ * worker busy with the dev server and webpack's packing), or that found the files changed (the tree
+ * looked settled in a quiet moment before the next write), goes back to waiting: neither gives up
+ * before the deadline. One look every `intervalMs`.
+ */
+export async function settledCache<T extends { files: CacheEntry[] }>(
+  waitFor: string[],
+  look: CacheLook<T>,
+  { deadlineMs = 40_000, intervalMs = 250, now = () => performance.now(), sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) } = {},
+): Promise<{ cache: T; why?: undefined } | { cache?: undefined; why: string }> {
+  const deadline = now() + deadlineMs;
+  let last = (await look(false, 5000))?.files ?? null;
+  let why = 'it was not looked at';
+  while (now() < deadline) {
+    await sleep(intervalMs);
+    const next = (await look(false, 5000))?.files ?? null;
+    const unsettledWhy = unsettled(waitFor, next, last);
+    last = next;
+    if (unsettledWhy !== null) {
+      why = unsettledWhy;
+      continue;
+    }
+    const cache = await look(true, readTimeoutMs(next!));
+    if (!cache) {
+      why = 'reading its files got no answer';
+      continue;
+    }
+    // One that changed again as its bytes were read is not stored: it may hold a pack webpack was still writing.
+    if (!sameFiles(cache.files, next!)) {
+      why = 'it changed as its files were read';
+      last = cache.files;
+      continue;
+    }
+    return { cache };
+  }
+  return { why: `after ${deadlineMs / 1000} s, ${why}` };
+}

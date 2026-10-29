@@ -14,7 +14,7 @@ import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-
 import { Registry } from './browser-npm/registry.ts';
 import { UnsupportedSpecError } from './browser-npm/resolve.ts';
 import { bundleHeader } from '../../bundle-format.ts';
-import { sameFiles, unsettled } from './cache-settle.ts';
+import { settledCache } from './cache-settle.ts';
 
 export interface HostInstall {
   key: string;
@@ -381,35 +381,23 @@ export function createAdapter(): RuntimeAdapter {
       // A cache that waits (a seed's) and is not stored says why, in the run's console: a seed run
       // passes without one, and later apps then compile from scratch.
       const unstored = (why: string) => console.warn(`[sandburg] the dev server's cache (${devCache!.key}) was not stored: ${why}`);
-      if (proc && devCache?.waitFor && proc.failure) unstored(`the dev server failed: ${proc.failure.message}`);
+      if (proc && devCache?.waitFor && proc.failure) unstored(`the dev server failed: ${proc.failure.message.split('\n')[0]}`);
       if (proc && devCache && !proc.failure) {
         const p = proc;
         const { dirs, waitFor, digests } = devCache;
-        // A look gives up after 5 s.
-        const look = (bytes: boolean, ifChanged = false) => Promise.race([p.readCache(dirs, { bytes, ifChanged }), new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
+        // A look gives up after 5 s (a read of the bytes of a large cache, longer: see readTimeoutMs).
+        const look = (bytes: boolean, ifChanged = false, timeoutMs = 5000) => Promise.race([p.readCache(dirs, { bytes, ifChanged }), new Promise<null>((r) => setTimeout(() => r(null), timeoutMs))]);
         let cache: CacheSnapshot | null;
         /** Whether the cache is complete: for one that waits (waitFor), its tree settled (every file there, none mid-write, unchanged since the last look). */
         let complete = false;
         if (waitFor) {
-          // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment):
-          // its list of files and sizes, then its bytes once. At most 40 s, however long each look takes.
-          // webpack writes each pack under a temporary name (<name>_), then renames it.
-          const deadline = performance.now() + 40_000;
-          let last = await look(false);
-          let why: string | null = 'it was not looked at';
-          while (performance.now() < deadline && !complete) {
-            await new Promise((r) => setTimeout(r, 250));
-            const next = await look(false);
-            why = unsettled(waitFor, next?.files ?? null, last?.files);
-            complete = why === null;
-            last = next;
-          }
-          cache = complete ? await look(true) : null;
-          // One that changed again as its bytes were read is not stored: it may hold a pack webpack was still writing.
-          complete = !!cache && sameFiles(cache.files, last?.files);
-          if (why !== null) unstored(`after 40 s, ${why}`);
-          else if (!cache) unstored('reading its files got no answer');
-          else if (!complete) unstored('it changed as its files were read');
+          // Until the files are there and the tree stops changing (webpack stores its cache after an idle moment),
+          // then its bytes, read again until they are of a settled tree: at most 40 s (see settledCache).
+          const settled = await settledCache(waitFor, (bytes, timeoutMs) => look(bytes, false, timeoutMs));
+          cache = settled.cache ?? null;
+          complete = !!cache;
+          if (settled.why) unstored(settled.why);
+          else if (!cache?.bundle) unstored('its files were read without their bytes');
         } else {
           // A cache restored from an earlier run, whose directories the runtime tracked (see start), is
           // read only if the run changed a file there: null when it did not (nothing to store).
