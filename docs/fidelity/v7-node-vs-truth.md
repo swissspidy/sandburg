@@ -153,7 +153,9 @@ server starts; better-sqlite3 needs its install script), or in a container.
   The checks phase of those 100 apps is longer than in v6 (275 s against 184 s cold), with the
   same answers.
 - Warm medians for Vue, Astro and Angular are higher than cold, most likely a scheduling effect: the
-  warm pass ran most of them while the Lit, Nuxt and SolidStart timeouts held the other tabs.
+  warm pass ran most of them while the Lit, Nuxt and SolidStart timeouts held the other tabs. It is
+  the warm pass's order: it started the passing apps of the fast stacks last ([ADR 0071](../adr/0071-warm-slower-than-cold.md));
+  in the same order, warm is faster on every stack ([v7.1](v7.1-node-vs-truth.md)).
 
 ## Reproduce
 

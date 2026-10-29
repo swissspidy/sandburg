@@ -35,6 +35,8 @@ Options:
   --parallel <n>       batch/compare: tabs at a time (default: one per core, up to 8)
   --no-prewarm         batch/compare: do not warm up common stacks first (only runs when their
                        installs are missing)
+  --no-longest-first   batch: start the projects in the order found, not ordered by earlier
+                       batches (for timings to compare between batches; not for compare)
   --out <dir>          Results directory (default: .sandburg/runs)
   --cache <dir>        HTTP cache directory (default: .sandburg/cache)
   --store <dir>        Snapshot store directory (default: .sandburg/store)
@@ -66,6 +68,7 @@ const OPTIONS = {
   'checks-in': { type: 'string', default: 'host' },
   parallel: { type: 'string', default: String(defaultParallel()) },
   prewarm: { type: 'boolean', default: true },
+  'longest-first': { type: 'boolean', default: true },
   out: { type: 'string' },
   cache: { type: 'string' },
   store: { type: 'string' },
@@ -231,6 +234,7 @@ async function command(argv: string[]): Promise<number> {
           ...runOptions,
           parallel,
           prewarm: values.prewarm,
+          longestFirst: values['longest-first'],
           log: (line) => console.error(line),
           onResult: (r, item) => {
             if (!values.json) console.log(`${r.status.padEnd(6)} ${(r.timings.totalMs / 1000).toFixed(1).padStart(6)}s  ${item.label}${r.failure ? `  [${r.failure.class}: ${r.failure.rule}]` : ''}`);

@@ -102,7 +102,7 @@ const { summary, results } = await runBatch(session, items, { parallel: 4 });
 await session.close();
 ```
 
-`runBatch` takes `RunOptions` and `parallel`, `prewarm`, `batchDir`, `onResult` and `log`, and
+`runBatch` takes `RunOptions` and `parallel`, `prewarm`, `batchDir`, `longestFirst`, `onResult` and `log`, and
 returns `{ summary, results }`. `summary` is the `BatchSummary` it writes to `summary.json`: totals and
 one compact `BatchRunSummary` per run (status, failure class and rule, times). The full `RunResult` of
 each run (checks, evidence, console, network) is in `results` and in the run's own `result.json`. `compare` runs the same
