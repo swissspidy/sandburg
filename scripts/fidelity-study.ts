@@ -24,7 +24,9 @@
  *   corpus, its apps, --parallel, --only, the commit): the same command again goes on from the first
  *   pass it does not have, and one with other arguments, or at another commit, is refused. --out
  *   may not be under .sandburg/, which a cold pass removes.
- * - --report: no runs; the table and the JSON from the passes kept at --out.
+ * - --report: no runs; the table and the JSON from the passes kept at --out, as they were run (their
+ *   corpus, apps and the apps' meta.json, --parallel, --only and commit), over every round kept
+ *   unless --rounds says how many.
  * - --only: the apps whose framework (meta.json) matches, e.g. 'vue|static|lit'.
  * - --out writes <out>.json (cold) and <out>-warm.json (warm), each app with its phases, when it
  *   started and ended (ms from its pass's start), `neighbours`: the mean number of other runs open
@@ -41,13 +43,14 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Session } from '../src/index.ts';
 import { discoverProjects, runBatch, type BatchItem } from '../src/orchestrator/batch.ts';
+import { readPass, writePass } from './study-pass.ts';
 import type { RunResult } from '../src/types.ts';
 
 const { values: args, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     parallel: { type: 'string', default: '3' },
-    rounds: { type: 'string', default: '1' },
+    rounds: { type: 'string' },
     only: { type: 'string' },
     out: { type: 'string' },
     report: { type: 'boolean', default: false },
@@ -55,14 +58,18 @@ const { values: args, positionals } = parseArgs({
     pass: { type: 'string' },
   },
 });
-const corpus = resolve(positionals[0] ?? 'corpus');
-const parallel = Number(args.parallel);
-const rounds = Number(args.rounds);
 
 /** Exits with a usage error (64), as the CLI does. */
 function refuse(message: string): never {
   console.error(`fidelity-study: ${message}`);
   process.exit(64);
+}
+
+/** A positive whole number of the option's, or a refusal. */
+function count(name: string, value: string): number {
+  const n = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(n) || n < 1) refuse(`--${name} ${value}: a positive whole number`);
+  return n;
 }
 
 interface Meta {
@@ -94,6 +101,8 @@ interface Pass {
 interface Params {
   corpus: string;
   apps: string[];
+  /** Each app's meta.json as the pass ran it (a report counts by these, not by today's corpus). */
+  meta: Record<string, Meta>;
   parallel: number;
   only: string | null;
   commit: string | null;
@@ -126,12 +135,35 @@ if (args.out) {
 }
 if (args.report && !args.out) refuse('--report reads the passes kept at --out');
 
+// With --out, each pass is kept as it ends (<out>-passes.jsonl), and a study run again with the same
+// arguments goes on from the first pass it does not have (a warm pass on the stores its cold pass left).
+const kept = args.out ? `${args.out}-passes.jsonl` : null;
+const done = kept
+  ? (await readFile(kept, 'utf8').catch(() => ''))
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Kept)
+  : [];
+for (const d of done) if (!d.params?.meta) refuse(`${kept} holds a ${d.mode} pass (round ${d.round}) kept without its parameters: use another --out, or remove it`);
+if (args.report && !done.length) refuse(`${kept} holds no passes`);
+
+// A study runs the corpus as it is now; a report is of the passes kept, as they were run (their
+// corpus, apps, parallelism, filter and commit, and their apps' meta.json).
+const ran = args.report ? done[0].params : null;
+const corpus = ran?.corpus ?? resolve(positionals[0] ?? 'corpus');
+const parallel = ran?.parallel ?? count('parallel', args.parallel);
+const only = ran ? ran.only : (args.only ?? null);
 const items: (BatchItem & { meta: Meta })[] = [];
-for (const item of await discoverProjects(corpus)) {
-  const meta = JSON.parse(await readFile(join(item.project, 'meta.json'), 'utf8')) as Meta;
-  if (!args.only || new RegExp(args.only).test(meta.framework)) items.push({ ...item, meta });
+if (ran) for (const label of ran.apps) items.push({ project: join(corpus, label), label, meta: ran.meta[label] });
+else {
+  for (const item of await discoverProjects(corpus)) {
+    const meta = JSON.parse(await readFile(join(item.project, 'meta.json'), 'utf8')) as Meta;
+    if (!only || new RegExp(only).test(meta.framework)) items.push({ ...item, meta: { framework: meta.framework, fault: meta.fault, expected: meta.expected } });
+  }
 }
-if (!items.length) refuse(`no apps in ${corpus}${args.only ? ` matching ${args.only}` : ''}`);
+if (!items.length) refuse(`no apps in ${corpus}${only ? ` matching ${only}` : ''}`);
+// A report has every round kept, unless told how many.
+const rounds = args.rounds !== undefined ? count('rounds', args.rounds) : ran ? Math.max(...done.map((d) => d.round)) : 1;
 
 /**
  * One pass, in a process of its own, as `sandburg batch` runs: what a process keeps in memory of the
@@ -140,18 +172,8 @@ if (!items.length) refuse(`no apps in ${corpus}${args.only ? ` matching ${args.o
  * https://github.com/swissspidy/sandburg/issues/117).
  */
 function pass(mode: 'cold' | 'warm'): Promise<Pass> {
-  const argv = [import.meta.filename, corpus, '--pass', mode, '--parallel', String(parallel), ...(args.only ? ['--only', args.only] : [])];
-  const child = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'inherit'] });
-  let out = '';
-  child.stdout.on('data', (d: Buffer) => (out += d));
-  return new Promise((done, fail) => {
-    child.on('error', fail);
-    child.on('exit', (code) => {
-      const line = out.split('\n').find((l) => l.startsWith('PASS '));
-      if (line) done(JSON.parse(line.slice(5)) as Pass);
-      else fail(new Error(`${mode} pass ended (exit ${code}) without a result`));
-    });
-  });
+  const argv = [import.meta.filename, corpus, '--pass', mode, '--parallel', String(parallel), ...(only ? ['--only', only] : [])];
+  return readPass<Pass>(spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'inherit'] }), `the ${mode} pass`);
 }
 
 /** One pass in this process: a batch in a fresh session, in the corpus's order, its summaries in a directory of its own. */
@@ -202,7 +224,8 @@ async function runPass(mode: 'cold' | 'warm'): Promise<Pass> {
 }
 
 if (args.pass) {
-  console.log('PASS ' + JSON.stringify(await runPass(args.pass === 'cold' ? 'cold' : 'warm')));
+  await writePass(await runPass(args.pass === 'cold' ? 'cold' : 'warm'));
+  // The session's handles would keep the process open.
   process.exit(0);
 }
 
@@ -213,29 +236,23 @@ const commit = (() => {
     return null;
   }
 })();
-const params: Params = { corpus, apps: items.map((i) => i.label), parallel, only: args.only ?? null, commit };
+const params: Params = ran ?? { corpus, apps: items.map((i) => i.label), meta: Object.fromEntries(items.map((i) => [i.label, i.meta])), parallel, only, commit };
 
 /** The first way two passes' parameters differ, or null. */
 function mismatch(a: Params, b: Params): string | null {
   if (a.corpus !== b.corpus) return `the corpus (${a.corpus}, not ${b.corpus})`;
   if (a.apps.join('\n') !== b.apps.join('\n')) return `the apps (${a.apps.length} of them, not these ${b.apps.length})`;
+  const changed = a.apps.find((app) => JSON.stringify(a.meta[app]) !== JSON.stringify(b.meta[app]));
+  if (changed) return `another meta.json of ${changed} (${JSON.stringify(a.meta[changed])}, not ${JSON.stringify(b.meta[changed])})`;
   if (a.parallel !== b.parallel) return `--parallel ${a.parallel}, not ${b.parallel}`;
   if (a.only !== b.only) return `--only ${a.only ?? '(none)'}, not ${b.only ?? '(none)'}`;
   if (a.commit !== b.commit) return `commit ${a.commit ?? '(unknown)'}, not ${b.commit ?? '(unknown)'}`;
   return null;
 }
 
-const kept = args.out ? `${args.out}-passes.jsonl` : null;
-const done = kept
-  ? (await readFile(kept, 'utf8').catch(() => ''))
-      .split('\n')
-      .filter(Boolean)
-      .map((l) => JSON.parse(l) as Kept)
-  : [];
-// A report is of the passes kept, whatever this checkout's commit; a study goes on only from passes run as it would run them.
-const want = args.report && done.length ? { ...params, commit: done[0].params?.commit ?? null } : params;
+// A study goes on only from passes run as it would run them; a report's passes agree with each other.
 for (const d of done) {
-  const why = d.params ? mismatch(d.params, want) : 'nothing (a pass kept without its parameters)';
+  const why = mismatch(d.params, params);
   if (why) refuse(`${kept} holds a ${d.mode} pass (round ${d.round}) run with ${why}: use another --out, or remove it`);
 }
 
@@ -337,7 +354,7 @@ if (args.out) {
     pass: mode,
     parallel,
     rounds,
-    commit: want.commit,
+    commit: params.commit,
     order: 'corpus order in both passes (longestFirst: false)',
     times: "an app's totalMs, phases and cpu: the medians of its passing rounds (null if none passed)",
     wallMs: wall(mode),

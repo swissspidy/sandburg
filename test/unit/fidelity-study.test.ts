@@ -1,7 +1,7 @@
 /** scripts/fidelity-study.ts: what it refuses before it runs anything, and its report from kept passes. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,9 +38,19 @@ const run = (app: string, result: 'pass' | 'fail', totalMs: number) => ({
   cpu: 50,
 });
 
+const meta = {
+  '000-static': { framework: 'static', fault: 'none', expected: 'pass' },
+  '001-static': { framework: 'static', fault: 'crash', expected: 'fail' },
+};
+
 /** A kept pass, as the script appends it to <out>-passes.jsonl. */
-const kept = (dir: string, mode: 'cold' | 'warm', params: Record<string, unknown>, times: [number, number]) =>
-  JSON.stringify({ round: 1, mode, params: { corpus: dir, apps: ['000-static', '001-static'], parallel: 3, only: null, commit: 'abc', ...params }, pass: { wallMs: 9000, runs: [run('000-static', 'pass', times[0]), run('001-static', 'fail', times[1])] } }) + '\n';
+const kept = (dir: string, mode: 'cold' | 'warm', params: Record<string, unknown>, times: [number, number], round = 1) =>
+  JSON.stringify({
+    round,
+    mode,
+    params: { corpus: dir, apps: ['000-static', '001-static'], meta, parallel: 3, only: null, commit: 'abc', ...params },
+    pass: { wallMs: 9000, runs: [run('000-static', 'pass', times[0]), run('001-static', 'fail', times[1])] },
+  }) + '\n';
 
 async function study(cwd: string, args: string[], extra: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return promisify(execFile)(process.execPath, [script, ...args], { cwd, env: { ...env, ...extra } }).then(
@@ -60,9 +70,29 @@ test('fidelity-study refuses to go on from passes kept with other arguments, and
   writeFileSync(`${out}-passes.jsonl`, kept(dir, 'cold', { apps: ['000-static'] }, [1000, 5000]));
   assert.match((await study(dir, [dir, '--out', out])).stderr, /run with the apps \(1 of them, not these 2\)/);
 
+  // The corpus's labels changed since the pass ran.
+  writeFileSync(`${out}-passes.jsonl`, kept(dir, 'cold', { parallel: 3, meta: { ...meta, '001-static': { ...meta['001-static'], expected: 'pass' } } }, [1000, 5000]));
+  assert.match((await study(dir, [dir, '--out', out])).stderr, /run with another meta\.json of 001-static/);
+
   // A pass kept by an earlier version of the script, without what it ran with.
   writeFileSync(`${out}-passes.jsonl`, JSON.stringify({ round: 1, mode: 'cold', pass: { wallMs: 1, runs: [] } }) + '\n');
   assert.match((await study(dir, [dir, '--out', out])).stderr, /without its parameters/);
+});
+
+test('fidelity-study refuses a --parallel or --rounds that is not a positive whole number', async () => {
+  const dir = corpus();
+  for (const [option, value] of [
+    ['--parallel', '0'],
+    ['--parallel', 'three'],
+    ['--parallel', '1.5'],
+    ['--rounds', '0'],
+    ['--rounds', '-1'],
+    ['--rounds', '1e3'],
+  ]) {
+    const r = await study(dir, [dir, `${option}=${value}`]);
+    assert.equal(r.code, 64, `${option} ${value}`);
+    assert.match(r.stderr, new RegExp(`${option} ${value.replace('.', '\\.')}: a positive whole number`));
+  }
 });
 
 test('fidelity-study refuses an --out under .sandburg/ and stores a cold pass would not remove', async () => {
@@ -95,7 +125,27 @@ test('fidelity-study --report renders the kept passes: medians of the apps that 
     ],
   );
 
+  // Every round kept, unless told how many; by the apps' meta.json as the passes ran them, not today's.
+  writeFileSync(`${out}-passes.jsonl`, kept(dir, 'cold', {}, [2000, 6000]) + kept(dir, 'warm', {}, [1000, 4000]) + kept(dir, 'cold', {}, [4000, 6000], 2) + kept(dir, 'warm', {}, [3000, 4000], 2));
+  writeFileSync(join(dir, '000-static', 'meta.json'), JSON.stringify({ framework: 'vue', fault: 'none', expected: 'fail' }));
+  const all = await study(dir, ['--report', '--out', out]);
+  assert.match(all.stdout, /\| static \| 2 \| 2 \/ 2 \| 0 \/ 0 \| 1\/1 \/ 1\/1 \| 3\.0 s → 2\.0 s \| 0 of 1 \|/);
+  assert.match(all.stdout, /2 rounds, 2 apps/);
+  assert.match((await study(dir, ['--report', '--rounds', '1', '--out', out])).stdout, /\| 2\.0 s → 1\.0 s \|/);
+
   // A report needs every pass it reports.
   writeFileSync(`${out}-passes.jsonl`, kept(dir, 'cold', {}, [2000, 6000]));
   assert.match((await study(dir, [dir, '--report', '--out', out])).stderr, /has no warm pass for round 1/);
+});
+
+test("a pass's result line reaches the study whole, however large, and only from a child that exited with 0", async () => {
+  const { readPass } = await import('../../scripts/study-pass.ts');
+  const module = new URL('../../scripts/study-pass.ts', import.meta.url).href;
+  // ~1 MB, far more than a pipe holds: the child exits as soon as its line is written.
+  const child = (exit: number) =>
+    spawn(process.execPath, ['--input-type=module', '-e', `import { writePass } from '${module}'; await writePass({ runs: Array.from({ length: 20000 }, (_, i) => ({ app: 'app-' + i, phases: { checks: i } })) }); process.exit(${exit});`], { stdio: ['ignore', 'pipe', 'inherit'], env });
+  const pass = await readPass<{ runs: { app: string }[] }>(child(0), 'the test pass');
+  assert.equal(pass.runs.length, 20000);
+  assert.equal(pass.runs.at(-1)!.app, 'app-19999');
+  await assert.rejects(readPass(child(3), 'the test pass'), /the test pass ended \(exit 3\) without a result/);
 });

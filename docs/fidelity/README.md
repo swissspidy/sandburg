@@ -71,7 +71,8 @@ to install and is the same either way (in v7.1, at parallel 3, every stack is fa
 - keeps each pass as it ends (`<out>-passes.jsonl`), with the corpus, apps, `--parallel`,
   `--only` and commit it ran with: the same command again goes on from there, one with other
   arguments or at another commit is refused, and `--report` renders the table and the JSON from
-  the kept passes without running anything. It refuses an `--out` under `.sandburg/`, and a run with
+  the kept passes without running anything (every round kept, and the apps' labels as the passes
+  ran them). It refuses an `--out` under `.sandburg/`, and a run with
   `SANDBURG_INSTALL_DIR` or `NODE_COMPILE_CACHE` set (stores a cold pass would not remove).
 
 ```sh
