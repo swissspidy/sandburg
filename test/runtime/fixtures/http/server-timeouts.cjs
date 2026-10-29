@@ -80,9 +80,11 @@ function late(entries, checks) {
   for (const [event, after, ms] of checks) {
     const e = find(event);
     const a = find(after);
-    const gap = e && a ? Math.round(e.t - a.t) : NaN;
-    // A timer may fire a little early by the clock it is measured against (1 ms granularity).
-    if (!(gap >= ms - 2 && gap <= ms + SLACK)) bad.push(`${event} ${gap} ms after ${after} (expected ${ms} to ${ms + SLACK})`);
+    const gap = e && a ? e.t - a.t : NaN;
+    // A timer may fire up to 1 ms early by performance.now(): the resolution of the clock timers
+    // count on (Node's take their start from libuv's loop time, in whole milliseconds). Unrounded:
+    // rounding would let it be 1.5 ms early.
+    if (!(gap >= ms - 1 && gap <= ms + SLACK)) bad.push(`${event} ${Math.round(gap)} ms after ${after} (expected ${ms} to ${ms + SLACK})`);
   }
   return bad;
 }
