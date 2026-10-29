@@ -221,7 +221,8 @@ function devServerCompileError(lines: string[]): string | null {
     // in native builds).
     let frame: { path: string; loc: string } | null = null;
     let coded: string | null = null;
-    for (let j = i + 1; j < Math.min(clean.length, i + 12) && !at; j++) {
+    // To the next error's report (a code frame can be long), and no further than 60 lines.
+    for (let j = i + 1; j < Math.min(clean.length, i + 60) && !at && !/(?:Internal server error|Pre-transform error): /.test(clean[j]); j++) {
       const file = /^\s*File: \/app\/(\S+?)(:\d+:\d+)?$/.exec(clean[j].trim() ? clean[j] : '');
       if (file) at = { path: file[1], loc: file[2] ?? '' };
       const span = /╭─\[\s*(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
@@ -230,9 +231,11 @@ function devServerCompileError(lines: string[]): string | null {
       const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(plain[j]);
       if (code) coded ??= code[1].trim();
     }
-    // A frame alone counts only for a project file: relative, or absolute under /app (not another
-    // absolute path, nor a virtual module's "\0…" or "virtual:…" id).
-    if (frame && !at && !/\0|^[\w-]+:/.test(frame.path) && (!frame.path.startsWith('/') || frame.path.startsWith('/app/'))) at = { path: frame.path.replace(/^\/?app\//, ''), loc: frame.loc };
+    // Without "File:", a frame alone names a project file only where its path says where it is:
+    // relative to "/" ("app/…") or absolute under /app. One relative to the dev server's folder
+    // ("src/App.tsx") may be in any folder of the project (a dev server started in client/), so it
+    // names none; another absolute path, or a virtual module's "\0…" or "virtual:…" id, is not the app's.
+    if (frame && !at && !/\0/.test(frame.path) && /^\/?app\//.test(frame.path)) at = { path: frame.path.replace(/^\/?app\//, ''), loc: frame.loc };
     else if (frame && at && !at.loc && sameFile(at.path, frame.path)) at = { path: at.path, loc: frame.loc };
     const inline = /^\/app\/([^\s:]+)(:\d+:\d+)?:?\s+(.*?)(?:\s+\((\d+):(\d+)\))?$/.exec(head[1].trim());
     if (!at && inline) at = { path: inline[1], loc: inline[2] ?? (inline[4] ? `:${inline[4]}:${inline[5]}` : '') };

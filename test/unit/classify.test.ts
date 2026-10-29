@@ -217,11 +217,31 @@ test("a Vite 8 code frame's location is found whether its path is relative to / 
   }
   // A frame of another file does not lend its location to the file "File:" names.
   assert.equal(oxc('src/main.tsx:3:1')?.message, `src/App.tsx: ${message}`);
-  // Without "File:", the frame alone names the file, in either shape; one outside the project is not the app's.
+  // Without "File:", a frame alone names the file where its path says where it is (relative to "/", or
+  // absolute under /app); one relative to the dev server's folder may be in any folder (client/), so it
+  // names none, and one outside the project is not the app's.
   const frameOnly = (framePath: string) =>
     classify(input({ phases: failedAt('ready', '500'), runtimeOutput: ['[vite] Internal server error: Transform failed with 1 error:', '[PARSE_ERROR] Unexpected token', `   ╭─[ ${framePath} ]`, ' 3 │ }'] }));
   assert.equal(frameOnly('app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
-  assert.equal(frameOnly('src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
+  assert.notEqual(frameOnly('src/App.tsx:3:1')?.rule, 'compile-error');
+  // "File:" is found past a long code frame, up to the next error's report.
+  const long = (between: number, next = false) =>
+    classify(
+      input({
+        phases: failedAt('ready', '500'),
+        runtimeOutput: [
+          '[client] [vite] Internal server error: Transform failed with 1 error:',
+          '[client] [PARSE_ERROR] Unexpected token',
+          '[client]    ╭─[ src/App.tsx:3:1 ]',
+          ...Array.from({ length: between }, (_, n) => `[client] ${n + 1} │ x`),
+          ...(next ? ['[client] [vite] Internal server error: Transform failed with 1 error:'] : []),
+          '[client]   File: /app/client/src/App.tsx',
+        ],
+      }),
+    );
+  assert.equal(long(30)?.message, 'client/src/App.tsx:3:1: Unexpected token');
+  // Not another error's "File:".
+  assert.notEqual(long(2, true)?.message, 'client/src/App.tsx:3:1: Unexpected token');
   for (const framePath of ['../shared/x.ts:3:1', '../node_modules/x/index.js:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', framePath);
   assert.equal(frameOnly('/app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
   // An absolute path outside /app, or a virtual module's id, is not a project file.
