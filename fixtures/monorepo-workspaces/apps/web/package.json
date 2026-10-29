@@ -8,6 +8,6 @@
   "dependencies": {
     "@acme/greet": "^1.0.0",
     "@acme/format": "file:../../shared/format",
-    "ms": "^2.1.1"
+    "ms": "^2.1.3"
   }
 }

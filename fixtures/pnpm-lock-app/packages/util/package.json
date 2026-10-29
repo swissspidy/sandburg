@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
-    "escape-html": "^1.0.0"
+    "escape-html": "^1.0.3"
   }
 }

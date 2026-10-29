@@ -7,6 +7,6 @@
   "dependencies": {
     "@acme/util": "workspace:*",
     "local-lib": "link:./lib",
-    "ms": "^2.0.0"
+    "ms": "^2.1.3"
   }
 }

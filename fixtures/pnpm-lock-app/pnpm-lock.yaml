@@ -15,25 +15,25 @@ importers:
         specifier: link:./lib
         version: link:lib
       ms:
-        specifier: ^2.0.0
-        version: 2.0.0
+        specifier: ^2.1.3
+        version: 2.1.3
 
   packages/util:
     dependencies:
       escape-html:
-        specifier: ^1.0.0
-        version: 1.0.2
+        specifier: ^1.0.3
+        version: 1.0.3
 
 packages:
 
-  escape-html@1.0.2:
-    resolution: {integrity: sha512-J5ahyCRC4liskWVAfkmosNWfG0eHQxI0W+Ko7k3cZaYVMfgt05dwZ68vw6S/TZM1BPvuTv3kq6CRCb7WWtBUVA==}
+  escape-html@1.0.3:
+    resolution: {integrity: sha512-NiSupZ4OeuGwr68lGIeym/ksIZMJodUGOSCZ/FSnTxcrekbvqrgdUxlJOMpijaKZVjAJrWrGs/6Jy8OMuyj9ow==}
 
-  ms@2.0.0:
-    resolution: {integrity: sha512-Tpp60P6IUJDTuOq/5Z8cdskzJujfwqfOTkrwIwj7IRISpnkJnT6SyJ4PCPnGMoFjC9ddhal5KVIYtAt97ix05A==}
+  ms@2.1.3:
+    resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
 snapshots:
 
-  escape-html@1.0.2: {}
+  escape-html@1.0.3: {}
 
-  ms@2.0.0: {}
+  ms@2.1.3: {}
