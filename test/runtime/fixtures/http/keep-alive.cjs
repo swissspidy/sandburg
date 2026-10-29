@@ -4,7 +4,7 @@
 const http = require('http');
 const lines = [];
 /** [ms, latest ms]: when the server's side of the connection ends after the response went. */
-const run = (name, agent, listen, [min, max]) => new Promise((done) => {
+const run = (name, agent, listen, [min, max], keepAliveTimeout = 2000) => new Promise((done) => {
   const log = [];
   let sent = 0;
   let end = NaN;
@@ -16,8 +16,8 @@ const run = (name, agent, listen, [min, max]) => new Promise((done) => {
     });
     res.end('ok', () => (sent = performance.now()));
   });
-  // 2 s: the client's hint is 2, which a Node agent keeps a second less.
-  s.keepAliveTimeout = 2000;
+  // The client's hint is its whole seconds, which a Node agent keeps a second less.
+  s.keepAliveTimeout = keepAliveTimeout;
   if (listen) s.on('timeout', (sock) => {
     log.push('server timeout');
     end = performance.now() - sent;
@@ -36,8 +36,8 @@ const run = (name, agent, listen, [min, max]) => new Promise((done) => {
 void (async () => {
   const part = process.env.PART;
   if (part !== '2') {
-    // The hint, a second less: 1 s.
-    await run('global agent', undefined, false, [1000, 1900]);
+    // The hint (4 s), a second less: 3 s, not the server's 4 s (or 5 s with its buffer).
+    await run('global agent', undefined, false, [3000, 3900], 4000);
     await run('new Agent()', new http.Agent(), false, [0, 500]);
     await run('agent: false', false, false, [0, 500]);
   }

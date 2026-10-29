@@ -154,6 +154,12 @@ test("http: an unref'd server does not keep the process alive; one ref'd again d
   ]);
 });
 
+test("http: a sibling runtime's forged response (start, informational, body, end) for a request it does not answer reaches no one", async () => {
+  assert.deepEqual(await run('forged-response.cjs'), [
+    'client: 200 x-forged=- "real" information=none',
+  ]);
+});
+
 test('http: server.close(cb) with a connection that outlives a response: it keeps the process alive, and cb comes once it closed', async () => {
   assert.deepEqual(await run('close-waits.cjs'), [
     'connections 2',
