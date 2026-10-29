@@ -108,4 +108,5 @@ running process meets the same, which is not a supported use.
 - `longestFirst` stays the batch's default: it moves time between apps, not wall time (above), and
   ADR 0039's gain is for the batches whose last app would otherwise keep the cores idle.
 - Angular, at parallel 3, failed in `ready` in 4 of 40 runs (3 cold, 1 warm) of the measurements
-  above: the intermittent rolldown trap ADR 0066 left open. It is not a cold/warm effect.
+  above, and 2 of 24 cold runs in v7.1: the intermittent rolldown trap, guarded against since by
+  ADR 0070. It is not a cold/warm effect.
