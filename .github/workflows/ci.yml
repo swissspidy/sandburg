@@ -175,4 +175,5 @@ jobs:
           path: |
             .sandburg/runs
             .sandburg/test-runs
+            .sandburg/seeds
           retention-days: 7
