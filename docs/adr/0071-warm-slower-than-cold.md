@@ -52,16 +52,23 @@ parallel 1, none.
 ## Why v7 showed it
 
 1. **The warm pass ran in another order.** A batch starts first the apps that took longest in the
-   latest batches' summaries (`longestFirst`, ADR 0039). v7's cold pass had no
-   history and ran in corpus order. Its warm pass read the cold pass's summaries (same
-   `.sandburg/batches`) and started the 240 s timeouts and the apps that wait in failing checks
-   first, and the fast apps (Vue, static, Express, Astro, Angular) last, beside each other.
-2. **At parallel 3, an app's time is mostly its neighbours'.** The same app takes 2–3× as long at
-   parallel 3 as alone (static 1.8 → 4.1 s, Angular 10.4 → 25.0 s cold). A warm pass keeps its
-   neighbours busier: their installs, which mostly wait on the network and disk, are gone, and what
-   is left is start and ready, which load the CPU. The fast stacks gain least from a warm store, so
-   for them the denser neighbours can outweigh it; the stacks with long cold installs or starts
-   (Vite + React, Svelte) gained enough to show the drop anyway.
+   latest batches' summaries (`longestFirst`, ADR 0039). v7's cold pass had no history and ran in
+   corpus order. Its warm pass read the cold pass's summaries (same `.sandburg/batches`) and
+   started the 240 s timeouts and the apps that wait in failing checks first, and the passing apps
+   of the fast stacks (Vue, static, Express, Astro, Angular) last, beside each other. Reproduced on
+   main: on the same warm stores, two `sandburg batch corpus --parallel 3` runs, the first in corpus
+   order and the second longest-first from the first's summary. Median of the passing apps,
+   corpus order → longest first: Vue 2.1 → 4.4 s, static 0.9 → 2.4 s, Express + SQLite
+   2.8 → 5.7 s, Angular 5.9 → 7.9 s, Astro 4.8 → 8.2 s, SvelteKit 4.3 → 7.4 s, Next.js 8.0 → 7.9 s;
+   wall time 565 → 559 s. That is v7's pattern, with no cold pass in it.
+2. **At parallel 3, an app's time is mostly what runs beside it.** The same app takes 2–3× as long
+   at parallel 3 as alone (static 1.8 → 4.1 s, Angular 10.4 → 25.0 s cold, in the 32-app set). In
+   corpus order a fast app runs beside apps that wait in a failing assertion or an install; last in
+   a longest-first batch, it runs beside other passing apps, each busy in its own checks. The number
+   of open neighbours is alike (static 5.0 and 4.6); the time goes to the checks phase (static
+   0.45 → 1.70 s, Vue 0.58 → 1.69 s), and to ready and start. The stacks with long cold installs or
+   starts (Vite + React 10.3 → 4.1 s, Svelte) gained enough from the warm stores to show a drop
+   anyway.
 3. **"Cold" was mostly warm.** Only a stack's first app installs from scratch: the other apps of
    the stack install from the store it filled, and Vite, Vite + React and Next.js are warmed up
    before the batch starts. v7's cold Angular median (7.5 s) is that of apps installing from the
@@ -88,12 +95,17 @@ running process meets the same, which is not a supported use.
 - `sandburg batch --no-longest-first` does the same for the CLI (`longestFirst: false`).
 - docs/fidelity/README.md says how to run and read the passes: compare per app at parallel 1 or
   where the CPU use is alike; at parallel 3 the batch's wall time is the measure.
+- v7's corpus is run again this way, as v7.1 (docs/fidelity/v7.1-node-vs-truth.md).
 
 ## Consequences
 
 - v8's cold and warm tables compare like with like: the same apps beside the same neighbours,
   with phases to show where a difference comes from.
-- Per-app medians at parallel 3 still depend on neighbours, and a warm batch's light apps can still
-  show a slower median than cold. The study's tables say so, and carry the CPU use beside them.
+- Per-app medians at parallel 3 still depend on what runs beside each app: a cold and a warm pass
+  in the same order still differ in it (a cold pass's apps install), so the study's tables carry
+  the CPU use beside the medians. In v7.1 (docs/fidelity/v7.1-node-vs-truth.md) warm is faster
+  than cold on all 14 stacks, and no passing app is more than 1.2× slower warm (0 of 139).
+- `longestFirst` stays the batch's default: it moves time between apps, not wall time (above), and
+  ADR 0039's gain is for the batches whose last app would otherwise keep the cores idle.
 - Angular, at parallel 3, failed in `ready` in 4 of 40 runs (3 cold, 1 warm) of the measurements
   above: the intermittent rolldown trap ADR 0066 left open. It is not a cold/warm effect.
