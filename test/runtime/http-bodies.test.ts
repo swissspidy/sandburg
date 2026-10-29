@@ -161,6 +161,21 @@ test("http: a sibling runtime's forged response (start, informational, body, end
   ]);
 });
 
+test("http: with keepAliveTimeout 0 (and no server.timeout), a page request's connection closes once its response ended", async () => {
+  // A page's requests have no client here to close their connection: kept, they would add up (and keep
+  // the server's connections counted) while it runs.
+  const out = await h.run({ 'main.js': `
+        const http = require('http');
+        const s = http.createServer((req, res) => {
+          if (req.url !== '/count') return res.end('ok');
+          s.getConnections((e, n) => res.end(String(n)));
+        });
+        s.keepAliveTimeout = 0;
+        s.listen(3000);` }, '/app/main.js', [{ url: '/a' }, { url: '/b' }, { url: '/count' }]);
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.responses.map((r) => r.body), ['ok', 'ok', '1']);
+});
+
 test('http: server.close(cb) with a connection that outlives a response: it keeps the process alive, and cb comes once it closed', async () => {
   assert.deepEqual(await run('close-waits.cjs'), [
     'connections 2',
