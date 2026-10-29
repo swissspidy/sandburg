@@ -76,20 +76,45 @@ export const tmpSuffix = () => `${process.pid}-${randomBytes(6).toString('hex')}
  */
 const completeRecord = () => `${new Date().toISOString()} layout ${LAYOUT_VERSION} record ${randomBytes(16).toString('hex')}\n`;
 
+/** The layout an install's (or side install's) .sandburg-complete records, or null for none. */
+export const recordLayout = (record: string): number | null => {
+  const layout = /\blayout (\d+)\b/.exec(record)?.[1];
+  return layout === undefined ? null : Number(layout);
+};
+
+/** The file system's reads of a record (recordOf); tests stand in their own. */
+interface RecordReads {
+  readFile: (file: string, encoding: 'utf8') => Promise<string>;
+  stat: (file: string, options: { bigint: true }) => Promise<BigIntStats>;
+}
+
+/** An error that says the record is not there (its file, or a directory above it). */
+const isGone = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException | null)?.code ?? '');
+
 /**
- * The identity of an install's (or side install's) .sandburg-complete, or null when it has none: a
- * new install of the same key (after the directory was removed) has another. Its record id, read from
- * the small file, which no file system's inode reuse, coarse times or unstable file IDs change. A
- * record written before ids were (an older version's) is told by its stat instead, as BigInts.
+ * The identity of an install's (or side install's) .sandburg-complete: null when it has none, or
+ * undefined when it could not be told (EMFILE on a busy host, EACCES; see checkRecord). A new install
+ * of the same key (after the directory was removed) has another. Its record id, read from the small
+ * file, which no file system's inode reuse, coarse times or unstable file IDs change. A record written
+ * before ids were (an older version's) is told by its stat instead, as BigInts. When the file cannot be
+ * read, its stat only tells whether it is gone: its identity would never be the record id kept.
  */
-export async function recordOf(dir: string): Promise<string | null> {
+export async function recordOf(dir: string, fs: RecordReads = { readFile, stat }): Promise<string | null | undefined> {
   const file = join(dir, '.sandburg-complete');
-  const text = await readFile(file, 'utf8').catch(() => null);
-  if (text === null) return null;
-  const id = / record ([0-9a-f]{32})\b/.exec(text)?.[1];
+  let text: string | null = null;
+  try {
+    text = await fs.readFile(file, 'utf8');
+  } catch (e) {
+    if (isGone(e)) return null;
+  }
+  const id = text === null ? undefined : / record ([0-9a-f]{32})\b/.exec(text)?.[1];
   if (id) return `record:${id}`;
-  const st = await stat(file, { bigint: true }).catch(() => null);
-  return st && `stat:${recordIdentity(st)}`;
+  try {
+    const st = await fs.stat(file, { bigint: true });
+    return text === null ? undefined : `stat:${recordIdentity(st)}`;
+  } catch (e) {
+    return isGone(e) ? null : undefined;
+  }
 }
 
 /** An older record's identity from its stat (recordOf). */
@@ -99,6 +124,22 @@ export function recordIdentity(st: Pick<BigIntStats, 'dev' | 'ino' | 'size' | 'm
 
 /** Stands for a finished install whose record was already gone when it was taken: matches no record, so the next ask checks again. */
 const NO_RECORD = '';
+/** Stands for a finished install whose record could not be told when it was taken: the next ask reads it again, and keeps it. */
+const UNKNOWN_RECORD = '?';
+
+/**
+ * What a finished install (or side install) whose record was `known` does with the record read now:
+ * used as it is when the record is the same or cannot be told now (a transient error is not a removal);
+ * used and its record kept when it could not be told before; else forgotten and made again.
+ */
+function checkRecord(known: string, now: string | null | undefined): 'keep' | 'adopt' | 'forget' {
+  if (now === undefined || now === known) return 'keep';
+  if (known === UNKNOWN_RECORD && now !== null) return 'adopt';
+  return 'forget';
+}
+
+/** What a finished install's record taken at once (`now`) is kept as. */
+const settledAs = (now: string | null | undefined): string => (now === undefined ? UNKNOWN_RECORD : (now ?? NO_RECORD));
 
 interface Manifest {
   dependencies?: Record<string, string>;
@@ -157,11 +198,11 @@ export class Installer {
     for (const name of await readdir(this.root).catch(() => [] as string[])) {
       if (!/^[0-9a-f]{24}$/.test(name)) continue;
       const done = await readFile(join(this.root, name, '.sandburg-complete'), 'utf8').catch(() => '');
-      const layout = /layout (\d+)/.exec(done)?.[1];
+      const layout = recordLayout(done);
       // A day without changes (new transforms are written into an install as it is used), so another
       // Sandburg process still on that layout is not using it.
       const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
-      if (layout && Number(layout) !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
+      if (layout !== null && layout !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
     }
     await sweepSideInstalls(join(this.root, '..', 'side-installs'));
     await sweepStore(this.store);
@@ -207,15 +248,20 @@ export class Installer {
     // since (.sandburg cleared while the process kept running), or removed and made again by another
     // process, is forgotten, with what this process kept of it, and installed again.
     const known = this.settled.get(key);
-    if (pending && known !== undefined && (await this.recordOf(join(this.root, key))) !== known) {
-      if (this.pending.get(key) === pending) this.forget(key);
-      pending = this.pending.get(key);
+    if (pending && known !== undefined) {
+      const now = await this.recordOf(join(this.root, key));
+      const check = checkRecord(known, now);
+      if (check === 'adopt' && this.settled.get(key) === known) this.settled.set(key, now!);
+      if (check === 'forget') {
+        if (this.pending.get(key) === pending) this.forget(key);
+        pending = this.pending.get(key);
+      }
     }
     if (!pending) {
       // Its record is taken before anyone is answered, so that a removal after the answer is seen.
       const started: Promise<InstallInfo> = this.doInstall(key, manifest, lock, log).then(async (info) => {
         const record = await this.recordOf(info.dir);
-        if (this.pending.get(key) === started) this.settled.set(key, record ?? NO_RECORD);
+        if (this.pending.get(key) === started) this.settled.set(key, settledAs(record));
         return info;
       });
       this.pending.set(key, (pending = started));
@@ -227,7 +273,7 @@ export class Installer {
   }
 
   /** The identity of the record of the install in `dir` (recordOf), as installs and side installs take it. */
-  protected recordOf(dir: string): Promise<string | null> {
+  protected recordOf(dir: string): Promise<string | null | undefined> {
     return recordOf(dir);
   }
 
@@ -326,7 +372,7 @@ export class Installer {
     for (const key of await readdir(this.root).catch(() => [] as string[])) {
       if (!/^[0-9a-f]{24}$/.test(key)) continue;
       const done = await readFile(join(this.root, key, '.sandburg-complete'), 'utf8').catch(() => '');
-      if (!done.includes(`layout ${LAYOUT_VERSION}`)) continue;
+      if (recordLayout(done) !== LAYOUT_VERSION) continue;
       let other: Manifest;
       try {
         other = JSON.parse(await readFile(join(this.root, key, 'package.json'), 'utf8')) as Manifest;
@@ -693,7 +739,7 @@ async function sweepSideInstalls(root: string): Promise<void> {
     const dir = join(root, name);
     const done = await readFile(join(dir, '.sandburg-complete'), 'utf8').catch(() => null);
     // Side installs from before the layout was recorded are of an older layout too.
-    const stale = name.includes('.tmp-') || (done !== null && /layout (\d+)/.exec(done)?.[1] !== String(LAYOUT_VERSION));
+    const stale = name.includes('.tmp-') || (done !== null && recordLayout(done) !== LAYOUT_VERSION);
     const st = await lstat(dir).catch(() => null);
     if (st && stale && st.mtimeMs < day) await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -715,7 +761,9 @@ export function sideInstall(sides: Sides, manifest: object, flags: string[], log
   if (pending && record !== undefined) {
     const known = pending;
     return sides.recordOf(id).then((now) => {
-      if (now === record) return known;
+      const check = checkRecord(record, now);
+      if (check === 'adopt' && sideDone.get(id) === record) sideDone.set(id, now!);
+      if (check !== 'forget') return known;
       if (sideInstalls.get(id) === known) {
         sideInstalls.delete(id);
         sideDone.delete(id);
@@ -754,7 +802,7 @@ export function sideInstall(sides: Sides, manifest: object, flags: string[], log
     })().then(async (dir) => {
       // Taken before anyone is answered, as an install's record (Installer.install).
       const done = await sides.recordOf(dir);
-      if (sideInstalls.get(id) === started) sideDone.set(id, done ?? NO_RECORD);
+      if (sideInstalls.get(id) === started) sideDone.set(id, settledAs(done));
       return dir;
     });
     const started = pending;
@@ -776,7 +824,7 @@ export interface Sides {
   store: string;
   resolver: Resolver;
   /** How a finished side install's record is taken (recordOf; the Installer's). */
-  recordOf: (dir: string) => Promise<string | null>;
+  recordOf: (dir: string) => Promise<string | null | undefined>;
 }
 
 /**

@@ -5,8 +5,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { Installer, recordIdentity, recordOf, sideInstall } from '../../src/adapters/node/install.ts';
+import { Installer, recordIdentity, recordLayout, recordOf, sideInstall } from '../../src/adapters/node/install.ts';
 import { Resolver } from '../../src/adapters/node/resolver.ts';
 import { COMPILER, CompileCache } from '../../src/adapters/node/compile-cache.ts';
 import { ESM_MARKER } from '../../src/node-runtime/names.ts';
@@ -175,7 +176,7 @@ test('a record\'s identity keeps file IDs above 2^53 and nanosecond times apart,
 /** An Installer whose first record is taken after the install's .sandburg-complete was removed (.sandburg cleared during a run). */
 class ClearedWhileRecording extends Installer {
   private cleared = false;
-  protected override recordOf(dir: string): Promise<string | null> {
+  protected override recordOf(dir: string): Promise<string | null | undefined> {
     if (!this.cleared) {
       this.cleared = true;
       rmSync(dir, { recursive: true, force: true });
@@ -274,4 +275,72 @@ test("an older version's record (no id) is told by its stat, and its install is 
   rmSync(dir, { recursive: true, force: true });
   assert.equal((await installer.install(project('older'), {}, () => {})).fromCache, false);
   assert.match((await recordOf(dir))!, /^record:/);
+});
+
+/** A file system error with `code`, as fs/promises rejects with. */
+const failing = (code: string) => () => Promise.reject(Object.assign(new Error(`${code}: simulated`), { code }));
+
+test("a record that cannot be read (EMFILE, EACCES) is not taken for a removed one; one that is not there is", async () => {
+  const dir = tempDir('sandburg-revalidate-');
+  writeFileSync(join(dir, '.sandburg-complete'), `2026-10-29T00:00:00.000Z layout 17 record ${'c'.repeat(32)}\n`);
+  assert.equal(await recordOf(dir), `record:${'c'.repeat(32)}`);
+  // Not told: the read fails, and the stat fails too or says it is there.
+  assert.equal(await recordOf(dir, { readFile: failing('EMFILE'), stat: failing('EMFILE') }), undefined);
+  assert.equal(await recordOf(dir, { readFile: failing('EMFILE'), stat }), undefined);
+  assert.equal(await recordOf(dir, { readFile: failing('EACCES'), stat }), undefined);
+  assert.equal(await recordOf(dir, { readFile, stat: failing('EMFILE') }), `record:${'c'.repeat(32)}`);
+  // Gone: the read or the stat says so.
+  assert.equal(await recordOf(dir, { readFile: failing('ENOENT'), stat }), null);
+  assert.equal(await recordOf(dir, { readFile: failing('EMFILE'), stat: failing('ENOENT') }), null);
+  assert.equal(await recordOf(dir, { readFile: failing('ENOTDIR'), stat }), null);
+  // On the file system: a directory in its place cannot be read, and is there; a file above it means none.
+  rmSync(join(dir, '.sandburg-complete'));
+  mkdirSync(join(dir, '.sandburg-complete'));
+  assert.equal(await recordOf(dir), undefined);
+  writeFileSync(join(dir, 'file'), '');
+  assert.equal(await recordOf(join(dir, 'file')), null);
+});
+
+/** An Installer whose records cannot be read while `busy` (EMFILE), as on a busy host. */
+class Busy extends Installer {
+  busy = false;
+  protected override recordOf(dir: string): Promise<string | null | undefined> {
+    return this.busy ? recordOf(dir, { readFile: failing('EMFILE'), stat: failing('EMFILE') }) : super.recordOf(dir);
+  }
+}
+
+test('an install whose record cannot be read is used as it is, not forgotten or made again; one removed still is', async () => {
+  const installer = new Busy(join(tempDir('sandburg-revalidate-'), 'installs'));
+  const forgotten: string[] = [];
+  installer.onForget((k) => forgotten.push(k));
+  const first = await installer.install(project('busy'), {}, () => {});
+  installer.busy = true;
+  assert.equal(await installer.install(project('busy'), {}, () => {}), first);
+  installer.busy = false;
+  assert.equal(await installer.install(project('busy'), {}, () => {}), first);
+  assert.deepEqual(forgotten, []);
+  rmSync(first.dir, { recursive: true, force: true });
+  const again = await installer.install(project('busy'), {}, () => {});
+  assert.equal(again.fromCache, false);
+  assert.deepEqual(forgotten, [first.key]);
+});
+
+test('an install whose record cannot be read when it finishes keeps the record read later, and is still checked', async () => {
+  const installer = new Busy(join(tempDir('sandburg-revalidate-'), 'installs'));
+  installer.busy = true;
+  const first = await installer.install(project('busy-early'), {}, () => {});
+  installer.busy = false;
+  // Read now: kept, not a reason to install again.
+  assert.equal(await installer.install(project('busy-early'), {}, () => {}), first);
+  assert.equal(await installer.install(project('busy-early'), {}, () => {}), first);
+  // And a removal after that is seen.
+  rmSync(first.dir, { recursive: true, force: true });
+  assert.equal((await installer.install(project('busy-early'), {}, () => {})).fromCache, false);
+});
+
+test("a record's layout is its number, not a prefix of a longer one", () => {
+  assert.equal(recordLayout('2026-10-29T00:00:00.000Z layout 17 record x\n'), 17);
+  assert.equal(recordLayout('2026-10-29T00:00:00.000Z layout 170\n'), 170);
+  assert.equal(recordLayout('layout x\n'), null);
+  assert.equal(recordLayout(''), null);
 });
