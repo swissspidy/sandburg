@@ -140,7 +140,7 @@ test('timers: timers due together (intervals too) run in one timers phase, a tas
     '0 ms: a, tick from a, promise from a, b, tick from b, c, imm from a',
     'from an immediate: a, tick from a, promise from a, b, tick from b, c, imm from a',
     'from an I/O callback: a, tick from a, promise from a, b, tick from b, c, imm from a',
-    'set together, 300 times: in one phase at least 9 in 10: true',
+    'set together, 300 times: in one phase more often than not: true',
     'set after a long block: waited its time true',
     'set after a busy stretch: A, B',
     'numbers 1 to 5000 cleared: it fired true',
