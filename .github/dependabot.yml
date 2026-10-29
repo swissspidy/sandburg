@@ -42,7 +42,7 @@ updates:
         versions: [">= 7"]
       # The lockfile fixtures (monorepo-workspaces, pnpm-lock-app) pin versions older than their ranges'
       # latest on purpose: the monorepo tests tell a lockfile that is honoured from one that is not by
-      # those versions (#110). Only these fixtures depend on ms and escape-html.
+      # those versions (#110). Only these fixtures depend directly on ms and escape-html.
       - dependency-name: ms
       - dependency-name: escape-html
 
