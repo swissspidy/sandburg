@@ -223,6 +223,11 @@ test("a Vite 8 code frame's location is found whether its path is relative to / 
   assert.equal(frameOnly('app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
   assert.equal(frameOnly('src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
   assert.notEqual(frameOnly('../node_modules/x/index.js:3:1')?.message, 'node_modules/x/index.js:3:1: Unexpected token');
+  assert.equal(frameOnly('/app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
+  // An absolute path outside /app, or a virtual module's id, is not a project file.
+  for (const framePath of ['/usr/lib/x.js:3:1', '\0virtual:foo:3:1', 'virtual:foo:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', JSON.stringify(framePath));
+  // The match is on whole path segments: "pp.tsx" is not App.tsx.
+  assert.equal(oxc('pp.tsx:3:1')?.message, `src/App.tsx: ${message}`);
 });
 
 test('ng serve waiting after a failed first build is an app bug at the error\'s location', () => {

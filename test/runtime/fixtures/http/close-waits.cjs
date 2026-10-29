@@ -3,7 +3,7 @@
 // its buffer after the response, 6 s), before the socket's own 'close'.
 //
 // "After the response" is when the server's response finished: Node arms the connection's keep-alive
-// timeout then (resOnFinish), and res.end()'s callback runs right after. Not when the client got the
+// timeout then (resOnFinish), and res.end()'s callback runs just before it, in the same tick. Not when the client got the
 // response, which comes later (on a loopback, ~2 ms here and more on Windows): from there the 6 s
 // read short. The one tolerance is 1 ms, the resolution of the clock timers count on: Node's timers
 // take their start from libuv's loop time in whole milliseconds (uv_now()), so a timer may fire up to

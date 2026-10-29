@@ -230,7 +230,9 @@ function devServerCompileError(lines: string[]): string | null {
       const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(plain[j]);
       if (code) coded ??= code[1].trim();
     }
-    if (frame && !at) at = { path: frame.path.replace(/^\/?app\//, ''), loc: frame.loc };
+    // A frame alone counts only for a project file: relative, or absolute under /app (not another
+    // absolute path, nor a virtual module's "\0…" or "virtual:…" id).
+    if (frame && !at && !/\0|^[\w-]+:/.test(frame.path) && (!frame.path.startsWith('/') || frame.path.startsWith('/app/'))) at = { path: frame.path.replace(/^\/?app\//, ''), loc: frame.loc };
     else if (frame && at && !at.loc && sameFile(at.path, frame.path)) at = { path: at.path, loc: frame.loc };
     const inline = /^\/app\/([^\s:]+)(:\d+:\d+)?:?\s+(.*?)(?:\s+\((\d+):(\d+)\))?$/.exec(head[1].trim());
     if (!at && inline) at = { path: inline[1], loc: inline[2] ?? (inline[4] ? `:${inline[4]}:${inline[5]}` : '') };
