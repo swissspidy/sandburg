@@ -129,6 +129,8 @@ failure, instead of after 245 s.
 
 ## The rolldown trap is Sandburg's, and not yet fixed
 
+(ADR 0070 found its cause, a V8 race that Node 24 has too, and guards against it.)
+
 Under Sandburg, 134 trapped in three of four cold batch runs. Run alone it passed three of three
 cold runs, and alone with four CPU spinners it trapped in two of three, with 14 GB of memory free.
 The same rolldown 1.2.8 WebAssembly build under Node 24, outside Sandburg (`NAPI_RS_FORCE_WASI=true
