@@ -38,7 +38,6 @@
  * Set SANDBURG_CHROMIUM to use a Chromium other than Playwright's.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -46,6 +45,7 @@ import { parseArgs } from 'node:util';
 import { Session } from '../src/index.ts';
 import { discoverProjects, runBatch, type BatchItem } from '../src/orchestrator/batch.ts';
 import { readPass, writePass } from './study-pass.ts';
+import { treeDigest } from './study-tree.ts';
 import type { RunResult } from '../src/types.ts';
 
 const { values: args, positionals } = parseArgs({
@@ -111,8 +111,8 @@ interface Params {
   /** The stores' directory (.sandburg/ under the study's working directory), which the cold pass removes and fills. */
   store?: string;
   /**
-   * A digest of the uncommitted changes (git status and git diff) to the corpus (when it is in the
-   * repository), src/ and scripts/, or null outside a git checkout.
+   * A digest of the uncommitted changes (git status, git diff and untracked files' contents) to the
+   * corpus (when it is in the repository), src/ and scripts/, or null outside a git checkout (study-tree.ts).
    */
   tree?: string | null;
 }
@@ -249,19 +249,8 @@ const commit = (() => {
   }
 })();
 // What a commit does not say: uncommitted edits to what the runs run (an app's files, its checks, Sandburg).
-const tree = (() => {
-  const inRepo = relative(repo, corpus);
-  const paths = ['src', 'scripts', ...(inRepo.startsWith('..') || isAbsolute(inRepo) ? [] : [inRepo || '.'])];
-  try {
-    return createHash('sha256')
-      .update(git('status', '--porcelain', '--', ...paths))
-      .update(git('diff', 'HEAD', '--', ...paths))
-      .digest('hex')
-      .slice(0, 16);
-  } catch {
-    return null;
-  }
-})();
+const inRepo = relative(repo, corpus);
+const tree = treeDigest(repo, ['src', 'scripts', ...(inRepo.startsWith('..') || isAbsolute(inRepo) ? [] : [inRepo || '.'])]);
 const params: Params = ran ?? { corpus, apps: items.map((i) => i.label), meta: Object.fromEntries(items.map((i) => [i.label, i.meta])), parallel, only, commit, store: resolve('.sandburg'), tree };
 
 /** The first way two passes' parameters differ, or null. */

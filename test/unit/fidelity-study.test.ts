@@ -175,3 +175,31 @@ test("a pass's result line reaches the study whole, however large, and only from
   assert.equal(pass.runs.at(-1)!.app, 'app-19999');
   await assert.rejects(readPass(child(3), 'the test pass'), /the test pass ended \(exit 3\) without a result/);
 });
+
+test("the tree digest changes with an untracked file's contents, not with ignored files, and is the same twice over", async () => {
+  const { treeDigest } = await import('../../scripts/study-tree.ts');
+  const repo = tempDir('sandburg-study-tree-');
+  const git = (...a: string[]) => promisify(execFile)('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...a], { cwd: repo });
+  await git('init', '-q');
+  mkdirSync(join(repo, 'corpus', '000-static'), { recursive: true });
+  writeFileSync(join(repo, '.gitignore'), 'node_modules/\n');
+  writeFileSync(join(repo, 'corpus', '000-static', 'meta.json'), '{}');
+  await git('add', '.');
+  await git('commit', '-q', '-m', 'corpus');
+  // An app the corpus has, not yet committed.
+  mkdirSync(join(repo, 'corpus', '001-static'));
+  writeFileSync(join(repo, 'corpus', '001-static', 'checks.spec.ts'), 'export default {};\n');
+
+  const before = treeDigest(repo, ['corpus']);
+  assert.match(before!, /^[0-9a-f]{16}$/);
+  assert.equal(treeDigest(repo, ['corpus']), before, 'an unchanged tree, the same digest');
+
+  mkdirSync(join(repo, 'corpus', '001-static', 'node_modules'));
+  writeFileSync(join(repo, 'corpus', '001-static', 'node_modules', 'x.js'), '1');
+  assert.equal(treeDigest(repo, ['corpus']), before, 'an ignored file does not count');
+
+  writeFileSync(join(repo, 'corpus', '001-static', 'checks.spec.ts'), 'export default { other: () => {} };\n');
+  assert.notEqual(treeDigest(repo, ['corpus']), before, "the untracked file's edit counts");
+
+  assert.equal(treeDigest(tempDir('sandburg-study-no-git-'), ['corpus']), null, 'outside a checkout');
+});
