@@ -41,7 +41,7 @@ const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=op
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 30;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-const LAYOUT_VERSION = 17;
+export const LAYOUT_VERSION = 17;
 
 export interface InstallInfo {
   key: string;
@@ -130,7 +130,10 @@ const UNKNOWN_RECORD = '?';
 /**
  * What a finished install (or side install) whose record was `known` does with the record read now:
  * used as it is when the record is the same or cannot be told now (a transient error is not a removal);
- * used and its record kept when it could not be told before; else forgotten and made again.
+ * used and its record kept when it could not be told before; else forgotten and made again. Adopting
+ * after an unknown record takes whichever finished install of the key is there by then (one another
+ * process made again in between, from the same key, has the same dependencies): a removal after that
+ * is seen.
  */
 function checkRecord(known: string, now: string | null | undefined): 'keep' | 'adopt' | 'forget' {
   if (now === undefined || now === known) return 'keep';
@@ -363,7 +366,7 @@ export class Installer {
    * itself, versions that installs share stay the ones npm picked for the first. The packages
    * themselves come from the package store.
    */
-  private async startFromClosest(manifest: Manifest, tmp: string, hasLock: boolean): Promise<{ key: string; shared: number } | null> {
+  protected async startFromClosest(manifest: Manifest, tmp: string, hasLock: boolean): Promise<{ key: string; shared: number } | null> {
     if (hasLock) return null;
     const wanted = { ...manifest.dependencies, ...manifest.devDependencies };
     const names = Object.keys(wanted);

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { Installer, recordIdentity, recordLayout, recordOf, sideInstall } from '../../src/adapters/node/install.ts';
+import { Installer, LAYOUT_VERSION, recordIdentity, recordLayout, recordOf, sideInstall } from '../../src/adapters/node/install.ts';
 import { Resolver } from '../../src/adapters/node/resolver.ts';
 import { COMPILER, CompileCache } from '../../src/adapters/node/compile-cache.ts';
 import { ESM_MARKER } from '../../src/node-runtime/names.ts';
@@ -331,8 +331,16 @@ test('an install whose record cannot be read when it finishes keeps the record r
   const first = await installer.install(project('busy-early'), {}, () => {});
   installer.busy = false;
   // Read now: kept, not a reason to install again.
+  const forgotten: string[] = [];
+  installer.onForget((k) => forgotten.push(k));
   assert.equal(await installer.install(project('busy-early'), {}, () => {}), first);
   assert.equal(await installer.install(project('busy-early'), {}, () => {}), first);
+  assert.deepEqual(forgotten, []);
+  // The record read then is the one kept: another record in its place (made again elsewhere) is seen.
+  writeFileSync(join(first.dir, '.sandburg-complete'), `2026-10-29T00:00:00.000Z layout ${LAYOUT_VERSION} record ${'e'.repeat(32)}\n`);
+  const remade = await installer.install(project('busy-early'), {}, () => {});
+  assert.notEqual(remade, first);
+  assert.deepEqual(forgotten, [first.key]);
   // And a removal after that is seen.
   rmSync(first.dir, { recursive: true, force: true });
   assert.equal((await installer.install(project('busy-early'), {}, () => {})).fromCache, false);
@@ -343,4 +351,66 @@ test("a record's layout is its number, not a prefix of a longer one", () => {
   assert.equal(recordLayout('2026-10-29T00:00:00.000Z layout 170\n'), 170);
   assert.equal(recordLayout('layout x\n'), null);
   assert.equal(recordLayout(''), null);
+});
+
+test('a side install whose record cannot be read is used as it is; one read later is kept; one removed is made again', async () => {
+  const root = tempDir('sandburg-revalidate-');
+  const sides = {
+    root: join(root, 'side-installs'),
+    store: join(root, 'store'),
+    resolver: new Resolver(join(root, 'installs'), ['--ignore-scripts']),
+    busy: true,
+    // Records taken: one when a side install is made, one each time it is asked for again.
+    taken: 0,
+    recordOf: (dir: string) => {
+      sides.taken++;
+      return sides.busy ? recordOf(dir, { readFile: failing('EMFILE'), stat: failing('EMFILE') }) : recordOf(dir);
+    },
+  };
+  const manifest = { name: 'sandburg-side-busy', private: true, dependencies: {} };
+  // Not told when it finishes, then read (and kept), then not told again: each answered from memory.
+  const dir = await sideInstall(sides, manifest, ['--ignore-scripts'], () => {});
+  sides.busy = false;
+  assert.equal(await sideInstall(sides, manifest, ['--ignore-scripts'], () => {}), dir);
+  assert.equal(await sideInstall(sides, manifest, ['--ignore-scripts'], () => {}), dir);
+  sides.busy = true;
+  assert.equal(await sideInstall(sides, manifest, ['--ignore-scripts'], () => {}), dir);
+  assert.equal(sides.taken, 4);
+  // The record read later is the one kept: another record in its place (made again elsewhere) is seen.
+  sides.busy = false;
+  writeFileSync(join(dir, '.sandburg-complete'), `2026-10-29T00:00:00.000Z layout ${LAYOUT_VERSION} record ${'d'.repeat(32)}\n`);
+  assert.equal(await sideInstall(sides, manifest, ['--ignore-scripts'], () => {}), dir);
+  assert.equal(sides.taken, 6);
+  assert.equal(await sideInstall(sides, manifest, ['--ignore-scripts'], () => {}), dir);
+  assert.equal(sides.taken, 7);
+  // Removed: made again (a record for the new one, after the one that saw it gone).
+  sides.busy = false;
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(await sideInstall(sides, manifest, ['--ignore-scripts'], () => {}), dir);
+  assert.ok(existsSync(join(dir, '.sandburg-complete')));
+  assert.equal(sides.taken, 9);
+});
+
+/** The closest finished install a new one would start its resolution from (Installer.startFromClosest). */
+class Closest extends Installer {
+  closest(dependencies: Record<string, string>, tmp: string) {
+    return this.startFromClosest({ dependencies }, tmp, false);
+  }
+}
+
+test("a new install starts from the closest install of this layout, not one whose layout only starts with this one's number", async () => {
+  const installs = join(tempDir('sandburg-revalidate-'), 'installs');
+  const finished = (key: string, record: string) => {
+    write(join(installs, key), {
+      '.sandburg-complete': record,
+      'package.json': JSON.stringify({ name: 'sandburg-install', private: true, dependencies: { p: '^1.0.0' } }),
+      'package-lock.json': JSON.stringify({ name: 'sandburg-install', lockfileVersion: 3, packages: {} }),
+    });
+  };
+  // The later one is of another layout (ten times this one): never started from, though it is newer.
+  finished('a'.repeat(24), `2026-10-02T00:00:00.000Z layout ${LAYOUT_VERSION} record ${'1'.repeat(32)}\n`);
+  finished('b'.repeat(24), `2026-10-03T00:00:00.000Z layout ${LAYOUT_VERSION}0 record ${'2'.repeat(32)}\n`);
+  const tmp = tempDir('sandburg-revalidate-');
+  assert.deepEqual(await new Closest(installs).closest({ p: '^1.0.0' }, tmp), { key: 'a'.repeat(24), shared: 1 });
+  assert.ok(existsSync(join(tmp, 'package-lock.json')));
 });
