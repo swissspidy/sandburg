@@ -187,8 +187,10 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
   and add `cb` as a 'timeout' listener. What is read (a body chunk) or written (a response's
   output) starts the idle time over; a body chunk's, as in Node, once its 'data' listeners returned (a
   slow one does not time the connection out). The timer does not keep the process alive. With no
-  keepAliveTimeout and no `server.timeout`, a page's request (no client here to close its connection)
-  has its connection closed once its response ended: kept, they would add up while the server runs.
+  keepAliveTimeout and no `server.timeout`, a connection no client keeps a time for (a page's
+  request; an agent that keeps its sockets with no timeout) is closed once its response ended: Node's
+  agent would reuse its one socket, which a connection here is not, and kept, they would add up while
+  the server runs (Node: at most one open; here none).
 - **When it fires** (Node's `socketOnTimeout`): 'timeout' with the socket, on the request while its
   body is still coming, on the response until it finished, and on the server. When none of them
   listens, the connection is destroyed. Its client sees "socket hang up", or its response cut short.

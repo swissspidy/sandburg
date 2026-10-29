@@ -176,6 +176,10 @@ test("http: with keepAliveTimeout 0 (and no server.timeout), a page request's co
   assert.deepEqual(out.responses.map((r) => r.body), ['ok', 'ok', '1']);
 });
 
+test('http: with keepAliveTimeout 0, an agent that keeps its sockets with no timeout leaves at most one connection open (as Node, which reuses it)', async () => {
+  assert.deepEqual(await run('keep-alive-none.cjs'), ['at most 1 open: true']);
+});
+
 test('http: server.close(cb) with a connection that outlives a response: it keeps the process alive, and cb comes once it closed', async () => {
   assert.deepEqual(await run('close-waits.cjs'), [
     'connections 2',

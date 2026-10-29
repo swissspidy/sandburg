@@ -712,8 +712,10 @@ export class Server extends EventEmitter {
       const buffer = Number.isFinite(this.keepAliveTimeoutBuffer) && this.keepAliveTimeoutBuffer >= 0 ? this.keepAliveTimeoutBuffer : 1000;
       const client = bridge.idle === undefined ? null : clientIdle(bridge.idle, keepAlive);
       if (client === 0 || /^close$/i.test(String(req.headers.connection ?? ''))) return void socket.destroy();
-      // A page's request (no client here to close it), with nothing on the server's side to end it.
-      if (bridge.idle === undefined && !keepAlive && !this.timeout) return void socket.destroy();
+      // Kept by no client (a page's request; an agent that keeps its sockets with no timeout: Node's
+      // would reuse its one socket, which a connection here is not), with nothing on the server's side
+      // to end it either: closed now, else they add up while the server runs.
+      if (client === null && !keepAlive && !this.timeout) return void socket.destroy();
       if (keepAlive) socket.setTimeout(keepAlive + buffer);
       if (client !== null) timers.setTimeout(() => socket.destroy(), client).unref();
     });
