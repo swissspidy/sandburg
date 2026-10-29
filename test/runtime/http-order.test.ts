@@ -140,12 +140,18 @@ test('timers: timers due together (intervals too) run in one timers phase, a tas
     '0 ms: a, tick from a, promise from a, b, tick from b, c, imm from a',
     'from an immediate: a, tick from a, promise from a, b, tick from b, c, imm from a',
     'from an I/O callback: a, tick from a, promise from a, b, tick from b, c, imm from a',
-    'set together, 300 times: in one phase more often than not: true',
+    '200 lone timers, one after another: all fired true',
     'set after a long block: waited its time true',
     'set after a busy stretch: A, B',
     'numbers 1 to 5000 cleared: it fired true',
     'refreshed while due: waited its time true',
   ]);
+});
+
+// The runtime's own clock: Node, which takes timers' time from libuv's, parts them at a boundary of
+// that clock now and then (in 100 runs, 92 had 20 of 20, and one 8), so this is not Node's output.
+test('timers: timers set in the same millisecond (by performance.now()) run in one timers phase, 20 times of 20', async () => {
+  assert.deepEqual(await run('timers-together.cjs'), ['set in one millisecond, 20 times: in one phase 20 of 20']);
 });
 
 test('timers: timers due together at the end of a turn each fire once, in order, also when one queues an immediate; one refreshed by another waits again', async () => {

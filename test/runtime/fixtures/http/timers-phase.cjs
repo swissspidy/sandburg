@@ -100,29 +100,20 @@ const intervalFirst = (done) => {
   setTimeout(() => log.push('t'), 10);
   hold(20);
 };
-// Unheld, 300 times: timers set together are due together (their time, in whole ms), so the
-// first one's immediate comes after the others more often than not: in Node about 97 runs in 100 (a
-// slow machine parts more, at millisecond boundaries); due at their exact times, 15 in 100.
-const together = (done) => {
-  let parted = 0, n = 0;
-  const one = () => {
-    const log = [];
-    setTimeout(() => {
-      log.push('a');
-      setImmediate(() => log.push('imm'));
-    }, 0);
-    setTimeout(() => log.push('b'), 0);
-    setTimeout(() => log.push('c'), 0);
-    setTimeout(() => {
-      if (log.join() !== 'a,b,c,imm') parted++;
-      if (++n < 300) setImmediate(one);
-      else {
-        out.push(`set together, 300 times: in one phase more often than not: ${parted < 150}`);
-        done();
-      }
-    }, 5);
+// 200 timers one after another, each alone (nothing else would run it): each fires.
+const lone = (done) => {
+  let n = 0;
+  const bound = setTimeout(() => {
+    out.push(`200 lone timers, one after another: all fired false (${n})`);
+    done();
+  }, 5000);
+  const next = () => {
+    if (++n < 200) return void setTimeout(next, 1);
+    clearTimeout(bound);
+    out.push('200 lone timers, one after another: all fired true');
+    done();
   };
-  one();
+  setTimeout(next, 1);
 };
 // A timer set at the end of a long synchronous block (another set at its start) waits its time from
 // then, not from the block's start (a compile, as esbuild's: else it fires at once).
@@ -185,7 +176,7 @@ void (async () => {
   await step((done) => run('0 ms', 0, done));
   await step((done) => setImmediate(() => run('from an immediate', 5, done)));
   await step((done) => fs.readFile(__filename, () => run('from an I/O callback', 5, done)));
-  await step(together);
+  await step(lone);
   await step(afterBlock);
   await step(busyThenShort);
   await step(smallNumbers);

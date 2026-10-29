@@ -72,9 +72,11 @@ queued meanwhile wait for the next turn.
   the same across runs; `clearTimeout()` with an unknown number does nothing, as in Node.
 - **A timer cleared or refreshed while it waits for a turn's end does not run then.** One whose
   browser timer fired while a turn went waits for its end; cleared, it no longer waits, and only
-  those still set and due run. Before this (since timers first waited for turns, in this change, not
-  on main), one refreshed meanwhile (a socket's idle timeout, by what came in that turn) ran at the
-  turn's end, its new time not come yet.
+  those still set whose browser timer fired run (one refreshed is set again: its browser timer runs
+  it). Before this (since timers first waited for turns, in this change, not on main), one refreshed
+  meanwhile ran at the turn's end, its new time not come yet. Whether a timer is due is the browser's
+  to say once its timer fired: `performance.now()` may read a little behind the browser's clock, and
+  a phase that checked a fired timer's time by it could leave it to no one.
 - **Handles are not browser timer ids.** A timer's handle counts from 2^30, and the runtime clears its
   own browser timers with the browser's `clearTimeout` (a unit test finds any other). Before this, the
   runtime cleared a browser timer of its own (a read report's) with the program's `clearTimeout`, and
@@ -267,7 +269,10 @@ output of its `fixtures/http` program:
   whether set from the main script, an immediate or an I/O callback; an interval with them, set
   before or after; and those that timers of a phase set in turn run in the order they came due
   (`timers-phase.cjs`). Each case holds the loop past its timers' time once they are set: without
-  that, a millisecond boundary parts them in about 1 run in 100, in Node too.
+  that, a millisecond boundary parts them in about 1 run in 100, in Node too. Timers set in the same
+  millisecond of `performance.now()` run in one phase 20 times of 20 (`timers-together.cjs`): the
+  runtime's own clock, not Node's output (Node takes their time from libuv's clock, whose milliseconds
+  begin elsewhere: in 100 runs, 92 had 20 of 20). 200 lone timers, one after another, each fire.
 - Timers due together at a turn's end fire once each, in order, when one queues an immediate, and
   one that another refreshed waits its time again (`timers-once.cjs`).
 - Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`), and a
