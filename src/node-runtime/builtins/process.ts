@@ -47,13 +47,29 @@ export const CAPTURE_CALLBACK = Symbol('sandburg.uncaughtExceptionCapture');
 
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
-const nativeSetInterval = globalThis.setInterval.bind(globalThis);
-const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
 /** Reports an error as uncaught (the worker's 'error' event), as one thrown from a task would be. */
 const reportUncaught = globalThis.reportError?.bind(globalThis) ?? ((e: unknown) => queueMicrotask(() => { throw e; }));
 
+/**
+ * The loop's time, in whole ms, as Node's timers take it (libuv's cached loop time): the same for what
+ * one callback (and what it queued) sets, so that timers set together come due together.
+ */
+let cachedNow: number | null = null;
+function loopNow(): number {
+  if (cachedNow === null) {
+    cachedNow = Math.floor(performance.now());
+    queueMicrotask(() => (cachedNow = null));
+  }
+  return cachedNow;
+}
+let timerSeq = 0;
 class Timeout {
+  /** The browser's timer for its next firing (an interval's too: it is set again after each run). */
   private id: ReturnType<typeof nativeSetTimeout> | null = null;
+  /** Set and not cleared, nor fired (a timeout). */
+  private scheduled = false;
+  /** Its handle (byId, its number), the same across an interval's runs; and the order it was set in. */
+  readonly seq = ++timerSeq;
   private refed = true;
   private fn: () => void;
   private ms: number;
@@ -66,38 +82,46 @@ class Timeout {
   }
   /** Scheduled, and pending (in byId) until it fires or is cleared; a refresh() after it fired schedules it again. */
   private start() {
-    const fn = this.fn;
-    this.due = performance.now() + this.ms;
-    this.id = this.repeat ? nativeSetInterval(() => {
-      this.due += this.ms;
-      fn();
-    }, this.ms) : nativeSetTimeout(fn, this.ms);
-    byId.set(Number(this.id), this);
+    this.scheduled = true;
+    this.arm();
+    byId.set(this.seq, this);
+  }
+  private arm() {
+    this.due = loopNow() + this.ms;
+    this.id = nativeSetTimeout(() => {
+      this.id = null;
+      this.fn();
+    }, this.ms);
+  }
+  /** An interval that ran: its next run, its time from now (as Node's). */
+  rearm() {
+    if (!this.repeat || !this.scheduled) return;
+    this.cancelNative();
+    this.arm();
   }
   /** When it fires next (see takeDueTimers). */
   due = 0;
   /** Its callback, for the loop to run it as it comes due (see takeDueTimers). */
   run: () => void = () => {};
-  get repeats() {
-    return this.repeat;
-  }
-  /** A timeout the loop runs itself: the browser's timer for it no longer fires. */
+  /** A timer the loop runs itself: the browser's timer for it no longer fires. */
   cancelNative() {
-    if (this.id !== null && !this.repeat) nativeClearTimeout(this.id);
+    if (this.id !== null) nativeClearTimeout(this.id);
+    this.id = null;
   }
-  /** Scheduled and not cleared. */
+  /** Scheduled and not cleared (a timeout: not fired). */
   get pending() {
-    return this.id !== null;
+    return this.scheduled;
   }
   /** A timeout fired: no longer due (refresh() schedules it again). */
   fired() {
-    if (this.id !== null) byId.delete(Number(this.id));
+    this.scheduled = false;
+    byId.delete(this.seq);
   }
   clear() {
-    if (this.id === null) return;
-    byId.delete(Number(this.id));
-    (this.repeat ? nativeClearInterval : nativeClearTimeout)(this.id);
-    this.id = null;
+    if (!this.scheduled) return;
+    this.scheduled = false;
+    byId.delete(this.seq);
+    this.cancelNative();
   }
   ref() {
     this.refed = true;
@@ -110,7 +134,7 @@ class Timeout {
   hasRef() { return this.refed; }
   /** Whether it keeps the process alive (see activeHandles). */
   get alive() {
-    return this.refed && this.id !== null;
+    return this.refed && this.scheduled;
   }
   refresh() {
     this.clear();
@@ -122,7 +146,7 @@ class Timeout {
     return this;
   }
   [Symbol.toPrimitive]() {
-    return Number(this.id ?? 0);
+    return this.seq;
   }
   [Symbol.dispose]() {
     this.clear();
@@ -154,7 +178,9 @@ function make(repeat: boolean) {
       try {
         bound(...args);
       } finally {
-        // What it queued (process.nextTick, promises) still runs in it.
+        // An interval's next run, unless it cleared itself; what it queued (process.nextTick,
+        // promises) still runs in it.
+        if (repeat) t.rearm();
         queueMicrotask(toPoll);
       }
     };
@@ -167,11 +193,8 @@ function make(repeat: boolean) {
 }
 function clear(t: unknown) {
   if (t instanceof Timeout) t.clear();
-  else if (typeof t === 'number') {
-    const found = byId.get(t);
-    if (found) found.clear();
-    else nativeClearTimeout(t);
-  }
+  // Its number (an unknown one, as in Node, nothing).
+  else if (typeof t === 'number') byId.get(t)?.clear();
 }
 
 /**
@@ -268,13 +291,14 @@ function runOne(fn: () => void) {
  */
 function takeDueTimers(): Timeout[] {
   const due = dueTimers.splice(0);
-  const now = performance.now();
+  const now = Math.floor(performance.now());
   for (const t of byId.values()) {
-    if (t.repeats || t.due > now || due.includes(t)) continue;
+    if (t.due > now || due.includes(t)) continue;
     t.cancelNative();
     due.push(t);
   }
-  return due.sort((a, b) => a.due - b.due);
+  // In the order they came due, those due together in the order they were set (as Node's lists).
+  return due.sort((a, b) => a.due - b.due || a.seq - b.seq);
 }
 async function runTurn() {
   turnRunning = true;
@@ -311,7 +335,7 @@ async function timersPhase(first?: Timeout) {
   const due = takeDueTimers();
   if (first && !due.includes(first)) {
     due.push(first);
-    due.sort((a, b) => a.due - b.due);
+    due.sort((a, b) => a.due - b.due || a.seq - b.seq);
   }
   for (const [timer, at] of due.map((t) => [t, t.due] as const)) {
     if (stopped) return;
