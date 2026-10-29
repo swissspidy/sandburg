@@ -70,10 +70,13 @@ queued meanwhile wait for the next turn.
   each run (its time from then, as Node's), so the loop runs it with the timeouts due with it, in the
   order they were set, and cancels its browser timer as it does theirs. Its handle (its number) stays
   the same across runs; `clearTimeout()` with an unknown number does nothing, as in Node.
-- **Timers set together come due together.** A timer's time is the loop's time in whole ms, the same
-  for everything one callback and what it queued sets (as Node's cached loop time), plus its delay
-  (0 is 1, as in Node). Before this, timers set microseconds apart came due microseconds apart, and a
-  phase one of them started could leave the others to a later one.
+- **Timers set together come due together.** A timer's time is the time it is set at in whole ms (as
+  Node's), plus its delay (0 is 1, as in Node): timers set microseconds apart come due together
+  unless a millisecond boundary falls between them, as in Node. Before this, they came due
+  microseconds apart, and a phase one of them started could leave the others to a later one. That
+  time is not cached: a version that cached it for a callback's run gave a timer set at the end of a
+  long synchronous block (a compile, esbuild's Go runtime) the block's start, so it ran at once
+  instead of after its delay, and Vite apps' first starts hung in CI.
 - **One turn at a time.** A turn asked for while one goes (a timer of its timers phase queued an
   immediate) starts as that one ends. Before this, two turns could overlap and run the same due
   timer twice. esbuild-wasm's Go
