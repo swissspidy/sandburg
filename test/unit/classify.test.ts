@@ -217,13 +217,30 @@ test("a Vite 8 code frame's location is found whether its path is relative to / 
   }
   // A frame of another file does not lend its location to the file "File:" names.
   assert.equal(oxc('src/main.tsx:3:1')?.message, `src/App.tsx: ${message}`);
-  // Without "File:", a frame alone names the file where its path says where it is (relative to "/", or
-  // absolute under /app); one relative to the dev server's folder may be in any folder (client/), so it
-  // names none, and one outside the project is not the app's.
+  // Without "File:", a frame alone names a file only when it is absolute under /app. A relative one has
+  // no known origin ("/", /app, or a folder in it), so it names none, and one outside the project is not
+  // the app's.
   const frameOnly = (framePath: string) =>
     classify(input({ phases: failedAt('ready', '500'), runtimeOutput: ['[vite] Internal server error: Transform failed with 1 error:', '[PARSE_ERROR] Unexpected token', `   ╭─[ ${framePath} ]`, ' 3 │ }'] }));
-  assert.equal(frameOnly('app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
-  assert.notEqual(frameOnly('src/App.tsx:3:1')?.rule, 'compile-error');
+  // "app/routes/x.tsx" may be /app/app/routes/x.tsx (1.2.16, a project with an app/ folder), not /app/routes/x.tsx.
+  for (const framePath of ['app/src/App.tsx:3:1', 'app/routes/x.tsx:3:1', 'src/App.tsx:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', framePath);
+  // With "File:", an app/ frame is matched to it either way: relative to /app (1.2.16) or to "/" (1.2.15).
+  for (const framePath of ['app/routes/x.tsx:3:1', 'app/app/routes/x.tsx:3:1']) assert.equal(oxc(framePath, '/app/app/routes/x.tsx')?.message, `app/routes/x.tsx:3:1: ${message}`, framePath);
+  // Source text in a code frame that reads like a report header does not end the scan for "File:".
+  const quoted = classify(
+    input({
+      phases: failedAt('ready', '500'),
+      runtimeOutput: [
+        '[vite] Internal server error: Transform failed with 1 error:',
+        '[PARSE_ERROR] Unexpected token',
+        '   ╭─[ src/App.tsx:3:1 ]',
+        ' 2 │ const msg = "Internal server error: retry";',
+        ' 3 │ }',
+        '  File: /app/src/App.tsx',
+      ],
+    }),
+  );
+  assert.equal(quoted?.message, 'src/App.tsx:3:1: Unexpected token');
   // "File:" is found past a long code frame, up to the next error's report.
   const long = (between: number, next = false) =>
     classify(
