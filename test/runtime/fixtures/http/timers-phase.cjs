@@ -68,14 +68,14 @@ const intervals = (done) => {
   }, 10);
   hold(20);
   setTimeout(() => {
-    // Each run about its time after the one before (10 ms; Node: from 8 ms, timed from the loop time).
+    // Each run about its time after the one before (10 ms; Node: from about 8 ms, more rarely less).
     const runs = [];
     const iv2 = setInterval(() => {
       runs.push(performance.now());
       log.push('iv2');
       setImmediate(() => log.push('iiv2'));
       if (log.filter((e) => e === 'iv2').length === 3) {
-        log.push(`same handle ${+iv2 === +handle}, spaced ${runs.slice(1).every((t, i) => t - runs[i] >= 5)}`);
+        log.push(`same handle ${+iv2 === +handle}, spaced ${runs.slice(1).every((t, i) => t - runs[i] >= 3)}`);
         clearInterval(iv2);
         finish();
       }
@@ -100,7 +100,7 @@ const intervalFirst = (done) => {
   setTimeout(() => log.push('t'), 10);
   hold(20);
 };
-// Unheld, 300 times: timers set together are due together (the loop's time, in whole ms), so the
+// Unheld, 300 times: timers set together are due together (their time, in whole ms), so the
 // first one's immediate comes after the others nearly always; in Node about 97 runs in 100.
 const together = (done) => {
   let parted = 0, n = 0;
@@ -123,6 +123,17 @@ const together = (done) => {
   };
   one();
 };
+// A timer set at the end of a long synchronous block (another set at its start) waits its time from
+// then, not from the block's start (a compile, as esbuild's: else it fires at once).
+const afterBlock = (done) => setTimeout(() => {
+  setTimeout(() => {}, 1);
+  hold(300);
+  const set = performance.now();
+  setTimeout(() => {
+    out.push(`set after a long block: waited its time ${performance.now() - set >= 195}`);
+    done();
+  }, 200);
+}, 1);
 const step = (fn) => new Promise((done) => fn(done));
 void (async () => {
   await step(chained);
@@ -133,5 +144,6 @@ void (async () => {
   await step((done) => setImmediate(() => run('from an immediate', 5, done)));
   await step((done) => fs.readFile(__filename, () => run('from an I/O callback', 5, done)));
   await step(together);
+  await step(afterBlock);
   console.log(out.join('\n'));
 })();

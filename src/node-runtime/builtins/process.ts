@@ -51,16 +51,12 @@ const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
 const reportUncaught = globalThis.reportError?.bind(globalThis) ?? ((e: unknown) => queueMicrotask(() => { throw e; }));
 
 /**
- * The loop's time, in whole ms, as Node's timers take it (libuv's cached loop time): the same for what
- * one callback (and what it queued) sets, so that timers set together come due together.
+ * The time a timer is set at, in whole ms as Node's timers take it: timers set together come due
+ * together (unless a millisecond boundary falls between them, as in Node). Not cached: one set after a
+ * long synchronous block counts from its end, as in Node.
  */
-let cachedNow: number | null = null;
-function loopNow(): number {
-  if (cachedNow === null) {
-    cachedNow = Math.floor(performance.now());
-    queueMicrotask(() => (cachedNow = null));
-  }
-  return cachedNow;
+function timerNow(): number {
+  return Math.floor(performance.now());
 }
 let timerSeq = 0;
 class Timeout {
@@ -87,7 +83,7 @@ class Timeout {
     byId.set(this.seq, this);
   }
   private arm() {
-    this.due = loopNow() + this.ms;
+    this.due = timerNow() + this.ms;
     this.id = nativeSetTimeout(() => {
       this.id = null;
       this.fn();

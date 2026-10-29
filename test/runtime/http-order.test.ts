@@ -141,6 +141,7 @@ test('timers: timers due together (intervals too) run in one timers phase, a tas
     'from an immediate: a, tick from a, promise from a, b, tick from b, c, imm from a',
     'from an I/O callback: a, tick from a, promise from a, b, tick from b, c, imm from a',
     'set together, 300 times: in one phase at least 9 in 10: true',
+    'set after a long block: waited its time true',
   ]);
 });
 
