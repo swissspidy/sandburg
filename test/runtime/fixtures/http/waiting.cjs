@@ -34,13 +34,19 @@ http.createServer((req, res) => {
     push('destroy held');
     held.destroy();
   });
+  // Its connection closes as its response ended, not as a kept-alive one would (4 s later).
+  let ended = NaN;
   after('next end', 50, () => {
-    http.get('http://localhost:3081/close', { headers: { connection: 'close' } }, (res) => res.resume());
+    http.get('http://localhost:3081/close', { headers: { connection: 'close' } }, (res) => {
+      res.resume();
+      res.on('end', () => (ended = performance.now()));
+    });
   });
   after('server socket close /close', 50, () => {
     clearTimeout(bound);
+    const gap = performance.now() - 50 - ended;
     // (Its own step: not in Node's output before.)
-    console.log(log.filter((e) => e !== 'next end').join('\n'));
+    console.log(log.filter((e) => e !== 'next end').join('\n') + (gap <= 1000 ? '' : `\nTIMING: its connection closed ${Math.round(gap)} ms after the response (expected at most 1000)`));
     process.exit(0);
   });
 });
