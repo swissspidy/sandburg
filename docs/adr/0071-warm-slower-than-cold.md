@@ -17,6 +17,9 @@ which phase grew or what ran beside each app. v7 ran both passes with `sandburg 
 
 ## Measurements on main (ac9baea)
 
+All measurements here, and v7.1's, were made at ac9baea, before [#113](https://github.com/swissspidy/sandburg/pull/113)'s guard against the rolldown
+trap (ADR 0070).
+
 4-vCPU, 16 GB Linux machine, Node.js 24.22.2, Chromium for Playwright 1.64.1 with its OS sandbox on
 (as a non-root user). 32 corpus apps: 4 each of Vue, static HTML, Angular, Astro, SvelteKit, Vite +
 React and Svelte, and 2 each of Express + SQLite with a Vue and with a React client. In each of 5
@@ -108,5 +111,5 @@ running process meets the same, which is not a supported use.
 - `longestFirst` stays the batch's default: it moves time between apps, not wall time (above), and
   ADR 0039's gain is for the batches whose last app would otherwise keep the cores idle.
 - Angular, at parallel 3, failed in `ready` in 4 of 40 runs (3 cold, 1 warm) of the measurements
-  above, and 2 of 24 cold runs in v7.1: the intermittent rolldown trap, guarded against since by
-  ADR 0070. It is not a cold/warm effect.
+  above, and v7.1 recorded it in 2 of 24 cold runs (156 and 134): the intermittent rolldown trap,
+  which [#113](https://github.com/swissspidy/sandburg/pull/113) fixes (ADR 0070), after these measurements. It is not a cold/warm effect.
