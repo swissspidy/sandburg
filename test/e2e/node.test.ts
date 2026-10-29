@@ -8,7 +8,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir, readFile, rm } from 'node:fs/promises';
+import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Session } from '../../src/orchestrator/session.ts';
@@ -57,10 +57,13 @@ async function seedRuns(since: number): Promise<string> {
       .then((t) => JSON.parse(t) as { project?: { path?: string }; status?: string; startedAt?: string; finishedAt?: string; failure?: { message?: string } | null; console?: { text?: string }[] })
       .catch(() => null);
     if (!result) {
-      lines.push(`${run}: no result`);
+      // A run that wrote no result (it did not end): listed if its directory was made during the test.
+      if (((await stat(join(dir, run)).catch(() => null))?.mtimeMs ?? 0) >= since) lines.push(`${run}: no result`);
       continue;
     }
-    if (!result.project?.path?.startsWith('sandburg:next-') || Date.parse(result.startedAt ?? '') < since) continue;
+    // A Next.js seed run started during the test (one without a start time counts if it is a Next.js seed's).
+    const started = result.startedAt === undefined ? Number.NaN : Date.parse(result.startedAt);
+    if (!result.project?.path?.startsWith('sandburg:next-') || started < since) continue;
     const unstored = (result.console ?? []).map((c) => c.text ?? '').filter((t) => t.includes('was not stored'));
     lines.push(`${run} ${result.project?.path}: ${result.status} ${result.startedAt} to ${result.finishedAt}${result.failure ? `, ${result.failure.message}` : ''}${unstored.length ? `; ${unstored.join('; ')}` : ''}`);
   }
