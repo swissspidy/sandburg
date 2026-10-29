@@ -180,7 +180,8 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
   when the connection comes, so setting it later does not change existing connections.
   `res.setTimeout(ms, cb)` and a server's `req.setTimeout(ms, cb)` set their connection's timeout
   and add `cb` as a 'timeout' listener. What is read (a body chunk) or written (a response's
-  output) starts the idle time over. The timer does not keep the process alive.
+  output) starts the idle time over; a body chunk's, as in Node, once its 'data' listeners returned (a
+  slow one does not time the connection out). The timer does not keep the process alive.
 - **When it fires** (Node's `socketOnTimeout`): 'timeout' with the socket, on the request while its
   body is still coming, on the response until it finished, and on the server. When none of them
   listens, the connection is destroyed. Its client sees "socket hang up", or its response cut short.
