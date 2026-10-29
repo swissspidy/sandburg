@@ -66,6 +66,14 @@ queued meanwhile wait for the next turn.
   may fire a timer after one due before it), a task each, before the turn an immediate of theirs
   asked for. Before this, the second of two timers due together waited for that
   turn (its immediate came between them).
+- **Intervals are timers of the phase too.** An interval's browser timer is a timeout set again after
+  each run (its time from then, as Node's), so the loop runs it with the timeouts due with it, in the
+  order they were set, and cancels its browser timer as it does theirs. Its handle (its number) stays
+  the same across runs; `clearTimeout()` with an unknown number does nothing, as in Node.
+- **Timers set together come due together.** A timer's time is the loop's time in whole ms, the same
+  for everything one callback and what it queued sets (as Node's cached loop time), plus its delay
+  (0 is 1, as in Node). Before this, timers set microseconds apart came due microseconds apart, and a
+  phase one of them started could leave the others to a later one.
 - **One turn at a time.** A turn asked for while one goes (a timer of its timers phase queued an
   immediate) starts as that one ends. Before this, two turns could overlap and run the same due
   timer twice. esbuild-wasm's Go
@@ -153,7 +161,8 @@ nothing for 500 ms, stalls and then arrives intact, in one runtime and to a chil
   before `'request'`. Another expectation goes to `'checkExpectation'`, or is refused with 417.
 - **Informational responses.** `writeContinue()`, `writeProcessing()` and `writeEarlyHints()` send
   informational responses, between runtimes too (`response-info`/`lb-info`). The client emits
-  `'continue'` for a 100, and `'information'` for each.
+  `'continue'` for a 100, and `'information'` for each; a status that is not 1xx (an integer from 100
+  to 199) is not one, and is dropped.
 - **Senders are checked.** Messages about a request's body and its informational responses are only
   taken from the runtime the request went to.
 
@@ -231,12 +240,15 @@ output of its `fixtures/http` program:
   before the next iteration's (`microtasks.cjs`).
 - `server.close(cb)` with a connection that outlives a response (`close-waits.cjs`).
 - Timers due together run in one timers phase, a task each, before an immediate one of them queued,
-  whether set from the main script, an immediate or an I/O callback, and those that timers of a phase
-  set in turn run in the order they came due (`timers-phase.cjs`).
+  whether set from the main script, an immediate or an I/O callback; an interval with them, set
+  before or after; and those that timers of a phase set in turn run in the order they came due
+  (`timers-phase.cjs`). Each case holds the loop past its timers' time once they are set: without
+  that, a millisecond boundary parts them in about 1 run in 100, in Node too.
 - Timers due together at a turn's end fire once each, in order, when one queues an immediate, and
   one that another refreshed waits its time again (`timers-once.cjs`).
 - Which runtime a message about a request is taken from (`test/unit/peer-requests.test.ts`), and a
-  sibling's forged response for another's request, ignored (`forged-response.cjs`).
+  sibling's forged response for another's request, ignored, and a non-1xx informational response
+  from the server's own runtime, dropped (`forged-response.cjs`).
 - A server's action from an I/O callback (an IPC message) reaches its client after its own side
   closed (`from-io.cjs`).
 - A server's connections (`server-close.cjs`: acting once its requests came, each close within 1 s of
