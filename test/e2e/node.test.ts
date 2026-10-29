@@ -44,6 +44,27 @@ async function nextSeeds(): Promise<Map<string, string[]>> {
   return seeds;
 }
 
+/**
+ * The seed runs' results (.sandburg/seeds), for a failure to say what they did: each one's project (its router),
+ * status, failure, and why its cache was not stored if its page said so (browser.ts's dispose).
+ */
+async function seedRuns(): Promise<string> {
+  const dir = fileURLToPath(new URL('../../.sandburg/seeds', import.meta.url));
+  const lines: string[] = [];
+  for (const run of await readdir(dir).catch(() => [] as string[])) {
+    const result = await readFile(join(dir, run, 'result.json'), 'utf8')
+      .then((t) => JSON.parse(t) as { project?: { path?: string }; status?: string; startedAt?: string; finishedAt?: string; failure?: { message?: string } | null; console?: { text?: string }[] })
+      .catch(() => null);
+    if (!result) {
+      lines.push(`${run}: no result`);
+      continue;
+    }
+    const unstored = (result.console ?? []).map((c) => c.text ?? '').filter((t) => t.includes('was not stored'));
+    lines.push(`${run} ${result.project?.path}: ${result.status} ${result.startedAt} to ${result.finishedAt}${result.failure ? `, ${result.failure.message}` : ''}${unstored.length ? `; ${unstored.join('; ')}` : ''}`);
+  }
+  return `seed runs (${lines.length}):\n${lines.join('\n')}`;
+}
+
 /** The key of a Next.js seed (nextSeedKey in src/adapters/node/index.ts): a digest of public inputs. */
 function seedKey(resolved: Record<string, string>, router: 'app' | 'pages'): string {
   const versions = { next: resolved.next, react: resolved.react, 'react-dom': resolved['react-dom'] };
@@ -92,7 +113,7 @@ test('the first Next.js app of each router starts a seed run beside it, which st
   // One for the App Router, one for the Pages Router (webpack's names for modules differ between them).
   const stored = await nextSeeds();
   const seeds = [...stored.values()];
-  assert.equal(seeds.length, 2);
+  assert.equal(seeds.length, 2, `stored: ${[...stored.keys()].join(', ') || 'none'}\n${await seedRuns()}`);
   for (const seed of seeds) {
     for (const compiler of ['client', 'server']) assert.ok(seed.includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), seed.join('\n'));
     // Not while webpack was still writing a pack (under <name>_).

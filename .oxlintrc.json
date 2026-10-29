@@ -164,6 +164,7 @@
         "src/adapters/sw-bridge.ts",
         "src/adapters/node/browser.ts",
         "src/adapters/node/browser-npm/**",
+        "src/adapters/node/cache-settle.ts",
         "src/adapters/node/compile-worker.ts",
         "src/adapters/node/esm-names.ts",
         "src/adapters/node/install-rules.ts",
