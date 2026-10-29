@@ -180,12 +180,14 @@ async function guardInThread(bytes: Uint8Array, ms: number): Promise<string> {
      import(workerData.url).then((m) => parentPort.postMessage(String(m.guardSharedMemoryGrowth(workerData.bytes)?.length ?? null)));`,
     { eval: true, workerData: { bytes, url: new URL('../../src/node-runtime/wasm-grow-guard.ts', import.meta.url).href } },
   );
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await new Promise<string>((resolve) => {
       worker.once('message', resolve);
-      setTimeout(() => resolve('timeout'), ms);
+      timer = setTimeout(() => resolve('timeout'), ms);
     });
   } finally {
+    clearTimeout(timer);
     await worker.terminate();
   }
 }

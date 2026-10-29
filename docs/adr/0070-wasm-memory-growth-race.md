@@ -71,9 +71,12 @@ These were ruled out on the way:
 
 ## Decision
 
-**The runtime compiles every WebAssembly module with a shared memory guarded**
-(`node-runtime/wasm-grow-guard.ts`, installed in each runtime before the program runs). The
-rewrite changes function bodies only. Before each `memory.fill`, `memory.copy`, `memory.init` and
+**The runtime compiles WebAssembly modules with a shared memory guarded**
+(`node-runtime/wasm-grow-guard.ts`, installed in each runtime before the program runs), when it
+compiles them from bytes through `new WebAssembly.Module`, `WebAssembly.compile` or
+`WebAssembly.instantiate` and the rewrite can take them. Streaming compilation, modules the
+rewrite does not support or that are over its limits, and a guarded module that fails to compile
+use the original bytes (below). The rewrite changes function bodies only. Before each `memory.fill`, `memory.copy`, `memory.init` and
 atomic operation (`0xFE` prefix, fences aside), it checks whether the access ends past
 `memory.size`. If it does, it runs `memory.grow 0` first, which in V8 updates the current
 instance's size. The operands go
