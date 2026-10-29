@@ -22,10 +22,13 @@ const one = () => {
     timers.forEach(clearTimeout);
     return void setImmediate(one);
   }
-  setTimeout(() => {
+  // Once the immediate ran (not at a fixed time: a loaded machine runs the timers late).
+  const check = () => {
+    if (!log.includes('imm')) return void setTimeout(check, 5);
     if (log.join() === 'a,b,c,imm') joined++;
     if (++n < 20) setImmediate(one);
     else console.log(`set in one millisecond, 20 times: in one phase ${joined} of 20`);
-  }, 5);
+  };
+  setTimeout(check, 5);
 };
 one();
