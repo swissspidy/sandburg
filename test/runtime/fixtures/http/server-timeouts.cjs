@@ -48,8 +48,12 @@ add('req.setTimeout complete GET', (s) => s.on('request', (req, res) => { watch(
 add('req.setTimeout mid-body', (s) => s.on('request', (req, res) => { watch(req, res); timeouts(req, res); req.setTimeout(200, () => { note('req cb'); res.end('t'); }); }), get('POST', (r) => r.write('a')), [['req cb', 'request', 200]]);
 // Each write starts the idle time over: the timeout comes after the last.
 add('writes keep it alive', (s) => { s.timeout = 200; s.on('request', (req, res) => { watch(req, res); res.writeHead(200); let n = 0; const i = setInterval(() => { res.write('x'); note(`write ${++n}`); if (n === 4) clearInterval(i); }, 100); }); }, get(), [['client res aborted', 'write 4', 200]]);
-// So does each chunk of the body.
-add('body keeps it alive', (s) => { s.timeout = 200; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => note(`data ${d}`)); req.on('end', () => res.end('ok')); }); }, get('POST', (r) => { let n = 0; r.write('0'); const i = setInterval(() => { r.write(String(++n)); if (n === 3) clearInterval(i); }, 100); }), [['client error', 'data 3', 200]]);
+// So does each chunk of the body. The chunks come 100 ms apart, 400 ms in all (the timeout 300), each
+// written once the server read the one before: its 'data' listener works 100 ms, then the client
+// writes the next. No timer of the program spaces them, so a loop turn that starts late (with the
+// idle timer due beside a client's interval, as both were) does not time the body out between chunks.
+let bodyRequest;
+add('body keeps it alive', (s) => { s.timeout = 300; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); const end = Date.now() + 100; while (Date.now() < end); if (Number(d) < 3) bodyRequest.write(String(Number(d) + 1)); }); req.on('end', () => res.end('ok')); }); }, get('POST', (r) => { bodyRequest = r; r.write('0'); }), [['client error', 'data 3', 400]]);
 // A 'data' listener that takes long (300 ms, the timeout 200): its idle time counts from its end.
 add('slow data listener', (s) => { s.timeout = 200; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); if (String(d) === '1') { const end = Date.now() + 300; while (Date.now() < end); } }); }); }, get('POST', (r) => { r.write('0'); setTimeout(() => r.write('1'), 100); }), [['client error', 'data 1', 500]]);
 add('fires again after activity', (s) => { s.setTimeout(200, () => note('server timeout')); s.on('request', (req, res) => { watch(req, res); timeouts(req, res); res.writeHead(200); setTimeout(() => { res.write('x'); note('write'); }, 300); setTimeout(() => res.end(), 700); }); }, get(), [['res timeout', 'request', 200], ['res timeout#2', 'write', 200]]);
