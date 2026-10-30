@@ -1,5 +1,0 @@
----
-"sandburg": patch
----
-
-A seed run stores its dev-server cache more reliably, and says why when it does not. Reading the cache's files once it had settled gave up after one try when the read got no answer within 5 s (its worker busy with the dev server and webpack), or when the files changed as they were read; both now go back to waiting for the cache to settle and read it again, until the 40 s deadline. A read of a large cache may take longer (half a second more per MB, at most 15 s), and every look and read is answered by 5 s after the deadline, and its upload is given what is left of the seed run's 60 s dispose phase (less a margin), so that storing the cache ends inside it. A cache still not stored at the end says why, in one line of the seed run's console: the files it waits for never came or kept changing, reading them got no answer, they changed as they were read, they were read without their bytes, no time was left to send them, the dev server failed, or the upload failed, timed out or was refused (with the error's first line where there was one).
