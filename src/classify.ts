@@ -215,22 +215,35 @@ function devServerCompileError(lines: string[]): string | null {
     // The location: a "File:" line below, else the path the message starts with ("/app/src/x.tsx: … (2:14)").
     let at: { path: string; loc: string } | null = null;
     // Vite 8 (oxc, rolldown): "Transform failed with 1 error:", then "[PARSE_ERROR] <message>" and a
-    // code frame headed "╭─[ app/src/App.tsx:3:1 ]".
+    // code frame headed with the file and its location. Its path is relative to the working directory
+    // the transform sees: "╭─[ app/src/App.tsx:3:1 ]" (to "/", rolldown's WebAssembly build up to
+    // 1.2.15) or "╭─[ src/App.tsx:3:1 ]" (to the dev server's, /app or a folder in it, from 1.2.16 and
+    // in native builds).
     let frame: { path: string; loc: string } | null = null;
     let coded: string | null = null;
-    for (let j = i + 1; j < Math.min(clean.length, i + 12) && !at; j++) {
+    // To the next error's report (a code frame can be long), and no further than 60 lines. A report's
+    // line has Vite's tag, with the environment's from Vite 6 for a pre-transform error ("[vite] (client)
+    // Pre-transform error: …"); it is looked for before a process prefix is removed, which can take a
+    // leading "[vite] " with it.
+    for (let j = i + 1; j < Math.min(clean.length, i + 60) && !at && !/\[vite\] (?:\([\w$]+\) )?(?:Internal server error|Pre-transform error): /.test(plain[j]); j++) {
       const file = /^\s*File: \/app\/(\S+?)(:\d+:\d+)?$/.exec(clean[j].trim() ? clean[j] : '');
       if (file) at = { path: file[1], loc: file[2] ?? '' };
-      const span = /╭─\[\s*\/?app\/(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
+      const span = /╭─\[\s*(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);
       if (span) frame ??= { path: span[1], loc: span[2] };
       // Before and after a process prefix is removed: "[client] [PARSE_ERROR] …" and "[PARSE_ERROR] …".
       const code = /^\s*\[[A-Z_]+\] (.+)$/.exec(clean[j]) ?? /^\s*\[[A-Z_]+\] (.+)$/.exec(plain[j]);
       if (code) coded ??= code[1].trim();
     }
-    if (frame && (!at || (at.path === frame.path && !at.loc))) at = frame;
+    // Without "File:", a frame alone names a project file only when its path is absolute under /app. A
+    // relative one has no known origin: relative to "/" ("app/src/App.tsx", rolldown's WebAssembly build
+    // up to 1.2.15) or to the dev server's folder (1.2.16: "src/App.tsx" in /app or in client/, and
+    // "app/routes/x.tsx" for a project with an app/ folder), so it names none; another absolute path, or
+    // a virtual module's "\0…" or "virtual:…" id, is not the app's.
+    if (frame && !at && frame.path.startsWith('/app/')) at = { path: frame.path.slice('/app/'.length), loc: frame.loc };
+    else if (frame && at && !at.loc && sameFile(at.path, frame.path)) at = { path: at.path, loc: frame.loc };
     const inline = /^\/app\/([^\s:]+)(:\d+:\d+)?:?\s+(.*?)(?:\s+\((\d+):(\d+)\))?$/.exec(head[1].trim());
     if (!at && inline) at = { path: inline[1], loc: inline[2] ?? (inline[4] ? `:${inline[4]}:${inline[5]}` : '') };
-    if (!at || /(^|\/)node_modules\//.test(at.path)) continue;
+    if (!at || /(^|\/)node_modules\//.test(at.path) || at.path.startsWith('../')) continue;
     const message = inline && inline[1] === at.path ? inline[3] + (inline[4] ? ` (${inline[4]}:${inline[5]})` : '') : /^Transform failed with \d+ errors?:$/.test(head[1].trim()) && coded ? coded : head[1].trim();
     return `${at.path}${at.loc}: ${message}`;
   }
@@ -244,6 +257,16 @@ function devServerCompileError(lines: string[]): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Whether a code frame's path names the project's file at `path` (relative to /app): an absolute
+ * frame path is that file exactly; a relative one is relative to "/", to /app, or to a folder in it
+ * (a dev server started in client/), so /app/<path> ends with it.
+ */
+function sameFile(path: string, framePath: string): boolean {
+  if (framePath.startsWith('/')) return framePath === `/app/${path}`;
+  return `/app/${path}`.endsWith(`/${framePath}`);
 }
 
 function matchSignature(texts: string[]): string | null {

@@ -26,7 +26,9 @@ const run = (name, agent, listen, [min, max], keepAliveTimeout = 2000) => new Pr
   s.listen(0, () => {
     http.get(`http://localhost:${s.address().port}/`, { agent }, (res) => res.resume());
     setTimeout(() => {
-      const when = end >= min - 2 && end <= max ? '' : ` | TIMING: ${Math.round(end)} ms after the response (expected ${min} to ${max})`;
+      // 1 ms early at most: the resolution of the clock timers count on (Node's take their start
+      // from libuv's loop time, in whole milliseconds), against performance.now() from res.end()'s callback.
+      const when = end >= min - 1 && end <= max ? '' : ` | TIMING: ${Math.round(end)} ms after the response (expected ${min} to ${max})`;
       lines.push(`${name}: ${log.join(', ')}${when}`);
       s.close();
       done();

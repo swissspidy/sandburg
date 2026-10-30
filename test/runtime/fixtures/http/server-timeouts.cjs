@@ -57,9 +57,9 @@ add('writes keep it alive', (s) => { s.timeout = 200; s.on('request', (req, res)
 // out between chunks only when it is 300 ms late (the idle timeout), where a client's 100 ms interval,
 // due beside the idle timer, made it 100 ms. Its client error comes ~700 ms in: its window is that and SLACK.
 let bodyRequest;
-add('body keeps it alive', (s) => { s.timeout = 300; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); const end = Date.now() + 100; while (Date.now() < end); if (Number(d) < 3) bodyRequest.write(String(Number(d) + 1)); }); req.on('end', () => res.end('ok')); }); }, get('POST', (r) => { bodyRequest = r; r.write('0'); }), [['client error', 'data 3', 400]], 700 + SLACK);
+add('body keeps it alive', (s) => { s.timeout = 300; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); const end = performance.now() + 100; while (performance.now() < end); if (Number(d) < 3) bodyRequest.write(String(Number(d) + 1)); }); req.on('end', () => res.end('ok')); }); }, get('POST', (r) => { bodyRequest = r; r.write('0'); }), [['client error', 'data 3', 400]], 700 + SLACK);
 // A 'data' listener that takes long (300 ms, the timeout 200): its idle time counts from its end.
-add('slow data listener', (s) => { s.timeout = 200; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); if (String(d) === '1') { const end = Date.now() + 300; while (Date.now() < end); } }); }); }, get('POST', (r) => { r.write('0'); setTimeout(() => r.write('1'), 100); }), [['client error', 'data 1', 500]]);
+add('slow data listener', (s) => { s.timeout = 200; s.on('request', (req, res) => { watch(req, res); req.on('data', (d) => { note(`data ${d}`); if (String(d) === '1') { const end = performance.now() + 300; while (performance.now() < end); } }); }); }, get('POST', (r) => { r.write('0'); setTimeout(() => r.write('1'), 100); }), [['client error', 'data 1', 500]]);
 add('fires again after activity', (s) => { s.setTimeout(200, () => note('server timeout')); s.on('request', (req, res) => { watch(req, res); timeouts(req, res); res.writeHead(200); setTimeout(() => { res.write('x'); note('write'); }, 300); setTimeout(() => res.end(), 700); }); }, get(), [['res timeout', 'request', 200], ['res timeout#2', 'write', 200]]);
 add('set after the request came', (s) => s.on('request', (req, res) => { watch(req, res); s.setTimeout(100, () => note('server timeout')); setTimeout(() => res.end('ok'), 400); }), get());
 add('setTimeout(0) clears', (s) => s.on('request', (req, res) => { watch(req, res); res.setTimeout(200); setTimeout(() => res.setTimeout(0), 100); setTimeout(() => res.end('ok'), 500); }), get());
@@ -80,9 +80,11 @@ function late(entries, checks) {
   for (const [event, after, ms] of checks) {
     const e = find(event);
     const a = find(after);
-    const gap = e && a ? Math.round(e.t - a.t) : NaN;
-    // A timer may fire a little early by the clock it is measured against (1 ms granularity).
-    if (!(gap >= ms - 2 && gap <= ms + SLACK)) bad.push(`${event} ${gap} ms after ${after} (expected ${ms} to ${ms + SLACK})`);
+    const gap = e && a ? e.t - a.t : NaN;
+    // A timer may fire up to 1 ms early by performance.now(): the resolution of the clock timers
+    // count on (Node's take their start from libuv's loop time, in whole milliseconds). Unrounded:
+    // rounding would let it be 1.5 ms early.
+    if (!(gap >= ms - 1 && gap <= ms + SLACK)) bad.push(`${event} ${Math.round(gap)} ms after ${after} (expected ${ms} to ${ms + SLACK})`);
   }
   return bad;
 }

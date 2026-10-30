@@ -183,6 +183,108 @@ test('a project file Vite cannot compile is an app bug at its location; a depend
   assert.equal(prefixed?.message, 'client/src/App.tsx:3:1: Unexpected token');
 });
 
+test("a Vite 8 code frame's location is found whether its path is relative to / or to the dev server's folder", () => {
+  // What Vite logs for a TSX syntax error in the runtime. rolldown's WebAssembly build up to 1.2.15 heads
+  // the frame with a path relative to "/" ("app/src/App.tsx"); 1.2.16 with one relative to the dev
+  // server's folder ("src/App.tsx"), as native builds do.
+  const oxc = (framePath: string, file = '/app/src/App.tsx', prefix = '[runtime:stderr] ') =>
+    classify(
+      input({
+        phases: failedAt('ready', 'app did not render after a console error: Failed to load resource: the server responded with a status of 500 (Internal Server Error)'),
+        runtimeOutput: [
+          `${prefix}7:12:10 PM [vite] Internal server error: Transform failed with 1 error:`,
+          prefix,
+          `${prefix}\x1b[31m[PARSE_ERROR] \x1b[0mUnexpected token. Did you mean \`{'}'}\` or \`&rbrace;\`?`,
+          `${prefix}   \x1b[38;5;246m╭\x1b[0m\x1b[38;5;246m─\x1b[0m\x1b[38;5;246m[\x1b[0m ${framePath} \x1b[38;5;246m]\x1b[0m`,
+          `${prefix}   │`,
+          `${prefix} 3 │ }`,
+          `${prefix}───╯`,
+          prefix,
+          `${prefix}  Plugin: vite:oxc`,
+          `${prefix}  File: ${file}`,
+        ],
+      }),
+    );
+  const message = "Unexpected token. Did you mean `{'}'}` or `&rbrace;`?";
+  // Relative to "/" (rolldown 1.2.15), to /app (1.2.16), and absolute.
+  for (const framePath of ['app/src/App.tsx:3:1', 'src/App.tsx:3:1', '/app/src/App.tsx:3:1']) {
+    const f = oxc(framePath);
+    assert.deepEqual([f?.class, f?.rule, f?.message], ['app-bug', 'compile-error', `src/App.tsx:3:1: ${message}`], framePath);
+  }
+  // A dev server started in a folder of the project (a full-stack dev script): "File:" is relative to /app.
+  for (const framePath of ['app/client/src/App.tsx:3:1', 'src/App.tsx:3:1']) {
+    assert.equal(oxc(framePath, '/app/client/src/App.tsx', '[client] ')?.message, `client/src/App.tsx:3:1: ${message}`, framePath);
+  }
+  // A frame of another file does not lend its location to the file "File:" names.
+  assert.equal(oxc('src/main.tsx:3:1')?.message, `src/App.tsx: ${message}`);
+  // Without "File:", a frame alone names a file only when it is absolute under /app. A relative one has
+  // no known origin ("/", /app, or a folder in it), so it names none, and one outside the project is not
+  // the app's.
+  const frameOnly = (framePath: string) =>
+    classify(input({ phases: failedAt('ready', '500'), runtimeOutput: ['[vite] Internal server error: Transform failed with 1 error:', '[PARSE_ERROR] Unexpected token', `   ╭─[ ${framePath} ]`, ' 3 │ }'] }));
+  // "app/routes/x.tsx" may be /app/app/routes/x.tsx (1.2.16, a project with an app/ folder), not /app/routes/x.tsx.
+  for (const framePath of ['app/src/App.tsx:3:1', 'app/routes/x.tsx:3:1', 'src/App.tsx:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', framePath);
+  // With "File:", an app/ frame is matched to it either way: relative to /app (1.2.16) or to "/" (1.2.15).
+  for (const framePath of ['app/routes/x.tsx:3:1', 'app/app/routes/x.tsx:3:1']) assert.equal(oxc(framePath, '/app/app/routes/x.tsx')?.message, `app/routes/x.tsx:3:1: ${message}`, framePath);
+  // Source text in a code frame that reads like a report header does not end the scan for "File:".
+  const quoted = classify(
+    input({
+      phases: failedAt('ready', '500'),
+      runtimeOutput: [
+        '[vite] Internal server error: Transform failed with 1 error:',
+        '[PARSE_ERROR] Unexpected token',
+        '   ╭─[ src/App.tsx:3:1 ]',
+        ' 2 │ const msg = "Internal server error: retry";',
+        ' 3 │ }',
+        '  File: /app/src/App.tsx',
+      ],
+    }),
+  );
+  assert.equal(quoted?.message, 'src/App.tsx:3:1: Unexpected token');
+  // Vite 6+ logs a pre-transform error with its environment ("[vite] (client) Pre-transform error"): one
+  // without "File:" (a URL that does not load) does not take the next report's file and location.
+  const twoReports = classify(
+    input({
+      phases: failedAt('ready', '500'),
+      runtimeOutput: [
+        '[runtime:stderr] 7:12:10 PM [vite] (client) Pre-transform error: Failed to load url /src/missing.ts (resolved id: /src/missing.ts) in /app/src/main.tsx. Does the file exist?',
+        '[runtime:stderr] 7:12:10 PM [vite] (client) Pre-transform error: Transform failed with 1 error:',
+        '[runtime:stderr] [PARSE_ERROR] Unexpected token',
+        '[runtime:stderr]    ╭─[ src/Other.tsx:3:1 ]',
+        ...Array.from({ length: 15 }, (_, n) => `[runtime:stderr] ${n + 1} │ x`),
+        '[runtime:stderr]   File: /app/src/Other.tsx',
+      ],
+    }),
+  );
+  assert.equal(twoReports?.message, 'src/Other.tsx:3:1: Unexpected token');
+  // "File:" is found past a long code frame, up to the next error's report.
+  const long = (between: number, next = false) =>
+    classify(
+      input({
+        phases: failedAt('ready', '500'),
+        runtimeOutput: [
+          '[client] [vite] Internal server error: Transform failed with 1 error:',
+          '[client] [PARSE_ERROR] Unexpected token',
+          '[client]    ╭─[ src/App.tsx:3:1 ]',
+          ...Array.from({ length: between }, (_, n) => `[client] ${n + 1} │ x`),
+          ...(next ? ['[client] [vite] Internal server error: Transform failed with 1 error:'] : []),
+          '[client]   File: /app/client/src/App.tsx',
+        ],
+      }),
+    );
+  assert.equal(long(30)?.message, 'client/src/App.tsx:3:1: Unexpected token');
+  // Not another error's "File:".
+  assert.notEqual(long(2, true)?.message, 'client/src/App.tsx:3:1: Unexpected token');
+  for (const framePath of ['../shared/x.ts:3:1', '../node_modules/x/index.js:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', framePath);
+  assert.equal(frameOnly('/app/src/App.tsx:3:1')?.message, 'src/App.tsx:3:1: Unexpected token');
+  // An absolute path outside /app, or a virtual module's id, is not a project file.
+  for (const framePath of ['/usr/lib/x.js:3:1', '\0virtual:foo:3:1', 'virtual:foo:3:1']) assert.notEqual(frameOnly(framePath)?.rule, 'compile-error', JSON.stringify(framePath));
+  // The match is on whole path segments: "pp.tsx" is not App.tsx.
+  assert.equal(oxc('pp.tsx:3:1')?.message, `src/App.tsx: ${message}`);
+  // An absolute frame names one file exactly: /app/src/App.tsx is not /app/client/app/src/App.tsx.
+  assert.equal(oxc('/app/src/App.tsx:3:1', '/app/client/app/src/App.tsx', '[client] ')?.message, `client/app/src/App.tsx: ${message}`);
+});
+
 test('ng serve waiting after a failed first build is an app bug at the error\'s location', () => {
   const stderr = [
     "[runtime:stderr] ✘ [ERROR] TS2339: Property 'remainingCount' does not exist on type 'TaskStore'. [plugin angular-compiler]",

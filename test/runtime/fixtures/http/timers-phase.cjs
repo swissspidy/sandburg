@@ -100,13 +100,16 @@ const intervalFirst = (done) => {
   setTimeout(() => log.push('t'), 10);
   hold(20);
 };
-// 200 timers one after another, each alone (nothing else would run it): each fires.
+// 200 timers one after another, each alone (nothing else would run it): each fires. A lone timer whose
+// wakeup is lost stalls the chain for good, so one bound for all 200 catches it, even though the bound's
+// own timers phase runs the overdue one too. The bound is not how long 200 should take: a loaded runner
+// took 27 ms a timer (5.4 s); with nothing lost they end well within it, and it is cleared.
 const lone = (done) => {
   let n = 0;
   const bound = setTimeout(() => {
     out.push(`200 lone timers, one after another: all fired false (${n})`);
     done();
-  }, 5000);
+  }, 30000);
   const next = () => {
     if (++n < 200) return void setTimeout(next, 1);
     clearTimeout(bound);
@@ -150,22 +153,25 @@ const smallNumbers = (done) => {
   }, 50);
 };
 // A timer that came due while a turn went (an immediate held the loop past its time), refreshed by
-// the next immediate of that turn: due later now, it waits its time from the refresh.
+// a later immediate of that turn: due later now, it waits its time from the refresh. The timer is set
+// in the immediate that holds, so no timers phase comes between its setting and the refresh: a timer
+// of the program that fires late (a loaded runner) cannot let it run before it is refreshed.
 const refreshedWhileDue = (done) => {
   let refreshed = NaN;
-  const t = setTimeout(() => {
-    out.push(`refreshed while due: waited its time ${performance.now() - refreshed >= 98}`);
-    done();
-  }, 100);
-  setTimeout(() => {
-    setImmediate(() => hold(100));
-    // (Its time passed: the immediates after go on, and it waits for them.)
-    for (let i = 0; i < 50; i++) setImmediate(() => {});
-    setImmediate(() => {
-      t.refresh();
-      refreshed = performance.now();
-    });
-  }, 40);
+  let t;
+  setImmediate(() => {
+    t = setTimeout(() => {
+      out.push(`refreshed while due: waited its time ${performance.now() - refreshed >= 98}`);
+      done();
+    }, 100);
+    hold(150);
+  });
+  // (Its time passed: the immediates after go on, and it waits for them.)
+  for (let i = 0; i < 50; i++) setImmediate(() => {});
+  setImmediate(() => {
+    t.refresh();
+    refreshed = performance.now();
+  });
 };
 const step = (fn) => new Promise((done) => fn(done));
 void (async () => {
