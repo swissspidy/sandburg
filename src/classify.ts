@@ -221,8 +221,11 @@ function devServerCompileError(lines: string[]): string | null {
     // in native builds).
     let frame: { path: string; loc: string } | null = null;
     let coded: string | null = null;
-    // To the next error's report (a code frame can be long), and no further than 60 lines.
-    for (let j = i + 1; j < Math.min(clean.length, i + 60) && !at && !/\[vite\] (?:Internal server error|Pre-transform error): /.test(clean[j]); j++) {
+    // To the next error's report (a code frame can be long), and no further than 60 lines. A report's
+    // line has Vite's tag, with the environment's from Vite 6 for a pre-transform error ("[vite] (client)
+    // Pre-transform error: …"); it is looked for before a process prefix is removed, which can take a
+    // leading "[vite] " with it.
+    for (let j = i + 1; j < Math.min(clean.length, i + 60) && !at && !/\[vite\] (?:\([\w$]+\) )?(?:Internal server error|Pre-transform error): /.test(plain[j]); j++) {
       const file = /^\s*File: \/app\/(\S+?)(:\d+:\d+)?$/.exec(clean[j].trim() ? clean[j] : '');
       if (file) at = { path: file[1], loc: file[2] ?? '' };
       const span = /╭─\[\s*(\S+?)(:\d+:\d+)\s*\]/.exec(clean[j]);

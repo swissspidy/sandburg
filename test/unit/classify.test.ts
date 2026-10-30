@@ -241,6 +241,22 @@ test("a Vite 8 code frame's location is found whether its path is relative to / 
     }),
   );
   assert.equal(quoted?.message, 'src/App.tsx:3:1: Unexpected token');
+  // Vite 6+ logs a pre-transform error with its environment ("[vite] (client) Pre-transform error"): one
+  // without "File:" (a URL that does not load) does not take the next report's file and location.
+  const twoReports = classify(
+    input({
+      phases: failedAt('ready', '500'),
+      runtimeOutput: [
+        '[runtime:stderr] 7:12:10 PM [vite] (client) Pre-transform error: Failed to load url /src/missing.ts (resolved id: /src/missing.ts) in /app/src/main.tsx. Does the file exist?',
+        '[runtime:stderr] 7:12:10 PM [vite] (client) Pre-transform error: Transform failed with 1 error:',
+        '[runtime:stderr] [PARSE_ERROR] Unexpected token',
+        '[runtime:stderr]    ╭─[ src/Other.tsx:3:1 ]',
+        ...Array.from({ length: 15 }, (_, n) => `[runtime:stderr] ${n + 1} │ x`),
+        '[runtime:stderr]   File: /app/src/Other.tsx',
+      ],
+    }),
+  );
+  assert.equal(twoReports?.message, 'src/Other.tsx:3:1: Unexpected token');
   // "File:" is found past a long code frame, up to the next error's report.
   const long = (between: number, next = false) =>
     classify(
