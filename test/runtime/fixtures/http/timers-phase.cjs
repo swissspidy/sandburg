@@ -100,21 +100,19 @@ const intervalFirst = (done) => {
   setTimeout(() => log.push('t'), 10);
   hold(20);
 };
-// 200 timers one after another, each alone (nothing else would run it): each fires. A lone timer that
-// never fires stalls the chain: that is what is caught (no timer fired for 3 s), not how long 200 take,
-// which on a loaded runner can be far more than 200 ms.
+// 200 timers one after another, each alone (nothing else would run it): each fires. A lone timer whose
+// wakeup is lost stalls the chain for good, so one bound for all 200 catches it, even though the bound's
+// own timers phase runs the overdue one too. The bound is not how long 200 should take: a loaded runner
+// took 27 ms a timer (5.4 s); with nothing lost they end well within it, and it is cleared.
 const lone = (done) => {
   let n = 0;
-  let seen = 0;
-  const stall = setInterval(() => {
-    if (n !== seen) return void (seen = n);
-    clearInterval(stall);
+  const bound = setTimeout(() => {
     out.push(`200 lone timers, one after another: all fired false (${n})`);
     done();
-  }, 3000);
+  }, 30000);
   const next = () => {
     if (++n < 200) return void setTimeout(next, 1);
-    clearInterval(stall);
+    clearTimeout(bound);
     out.push('200 lone timers, one after another: all fired true');
     done();
   };
