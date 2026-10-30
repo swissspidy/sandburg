@@ -1,5 +1,0 @@
----
-"sandburg": patch
----
-
-The Docker reference no longer leaves containers behind: it pulls its image before the first container starts (a failed pull is an `infra` result, mount's deadline allows for the pull, and an image that does not exist is pulled once per batch), labels and `--rm`s every container, removes a run's containers by label on dispose (also one a timed-out mount was still creating, and stops a pull no run waits for) and, at startup, the containers and project copies of earlier processes of the same host, PID namespace and boot that are gone. Project copies live in a per-user directory, and containers run as the host user when it is not root. Ctrl-C or SIGTERM during `compare` removes the containers and project copies before exiting with 130 (143 for SIGTERM). Containers use bridge networking, and reach a loopback proxy through the host gateway when a probe container can connect to it there; `--network host` is the fallback. The README and ADR 0004 now say plainly that the Docker reference is not a security boundary.
