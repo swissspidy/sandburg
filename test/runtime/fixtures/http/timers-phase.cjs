@@ -100,16 +100,21 @@ const intervalFirst = (done) => {
   setTimeout(() => log.push('t'), 10);
   hold(20);
 };
-// 200 timers one after another, each alone (nothing else would run it): each fires.
+// 200 timers one after another, each alone (nothing else would run it): each fires. A lone timer that
+// never fires stalls the chain: that is what is caught (no timer fired for 3 s), not how long 200 take,
+// which on a loaded runner can be far more than 200 ms.
 const lone = (done) => {
   let n = 0;
-  const bound = setTimeout(() => {
+  let seen = 0;
+  const stall = setInterval(() => {
+    if (n !== seen) return void (seen = n);
+    clearInterval(stall);
     out.push(`200 lone timers, one after another: all fired false (${n})`);
     done();
-  }, 5000);
+  }, 3000);
   const next = () => {
     if (++n < 200) return void setTimeout(next, 1);
-    clearTimeout(bound);
+    clearInterval(stall);
     out.push('200 lone timers, one after another: all fired true');
     done();
   };
