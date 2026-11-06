@@ -252,8 +252,8 @@ export class RuntimeHarness {
       const body = this.installed(url.pathname);
       if (body || url.pathname.startsWith('/__sandburg/nm/')) {
         this.asked.push(`http ${url.pathname}${url.search}`);
-        // A report of what a run read, as the host takes it (src/adapters/node/index.ts).
-        if (/^\/__sandburg\/nm\/[0-9a-f]{24}\/read$/.test(url.pathname)) {
+        // A report of what a run read, or a note that a file sent ahead was, as the host takes them (src/adapters/node/index.ts).
+        if (/^\/__sandburg\/nm\/[0-9a-f]{24}\/read$/.test(url.pathname) || url.searchParams.get('used') === '1') {
           res.writeHead(204);
           return res.end();
         }

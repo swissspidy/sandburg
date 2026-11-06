@@ -8,17 +8,21 @@ import type { HostRequest, HostResponse } from '../../src/types.ts';
 type Serve = (req: HostRequest) => Promise<HostResponse | null>;
 
 /**
- * Queries a runtime adds only over its file channel (src/node-runtime/host-files.ts): a read-ahead
- * (`ahead`, `until`: a bundle of the file and the files after it, status 207) and a note that a file
- * sent ahead was read (`used`: status 204). A demo has no file channel (a static site serves no
- * WebSocket), so it asks for the same path with a plain GET, and the runtime takes only a 200.
+ * Queries a runtime adds to a file's path only on its file channel (src/node-runtime/host-files.ts),
+ * or over HTTP for a note once the channel has closed: a read-ahead (`ahead`, `until`: a bundle of
+ * the file and the files after it, status 207) and a note that a file sent ahead was read (`used`:
+ * status 204). A demo has no file channel (a static site serves no WebSocket), so it asks for the
+ * same path with a plain GET, and the runtime takes only a 200.
  */
 const CHANNEL_ONLY = ['ahead', 'until', 'used'];
 
+/** A report of what a run read (a note, over the channel or HTTP): a demo answers it itself (sw.js). */
+const READ_REPORT = /^\/__sandburg\/nm\/[0-9a-f]{24}\/read$/;
+
 /**
- * `serve`, recording each answer with `record` under its key. A GET over the file channel with a
- * channel-only query is recorded as the plain GET of its path answers: recorded as it was, a
- * read-ahead bundle or a note replaced the file's answer, and a demo read the file as missing.
+ * `serve`, recording each answer with `record` under its key. A GET with a channel-only query is
+ * recorded as the plain GET of its path answers: recorded as it was, a read-ahead bundle or a note
+ * replaced the file's answer, and a demo read the file as missing. A read report is not recorded.
  */
 export function recordingServe(serve: Serve, record: (key: string, res: HostResponse) => Promise<void>): Serve {
   return async (req) => {
@@ -28,8 +32,9 @@ export function recordingServe(serve: Serve, record: (key: string, res: HostResp
     // The runtime saves dev-server caches after a run; a demo has nowhere to keep them (sw.js answers the upload).
     if (!res || (req.method === 'POST' && req.path.startsWith('/__sandburg/dev-cache/'))) return res;
     if (req.method !== 'POST') {
-      const viaChannel = req.channel && CHANNEL_ONLY.some((name) => req.query.has(name));
-      const plain = viaChannel ? await serve({ ...req, query: new URLSearchParams(), channel: undefined }) : res;
+      if (READ_REPORT.test(req.path)) return res;
+      const channelOnly = CHANNEL_ONLY.some((name) => req.query.has(name));
+      const plain = channelOnly ? await serve({ ...req, query: new URLSearchParams(), channel: undefined }) : res;
       if (plain) await record(req.path, plain);
       return res;
     }

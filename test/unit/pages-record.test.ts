@@ -50,6 +50,24 @@ test('pages recording: a note that a file sent ahead was read does not replace t
   assert.equal(Buffer.from(entry.body).toString(), files['node_modules/dep/b.js']);
 });
 
+test('pages recording: a note sent over HTTP (the file channel closed) does not replace the file either', async () => {
+  const { recorded, serve: recording } = recorder();
+  await recording(get('node_modules/dep/b.js', '', undefined));
+  const note = await recording(get('node_modules/dep/b.js', 'used=1', undefined));
+  assert.equal(note?.status, 204);
+  const entry = recorded.get(`/__sandburg/nm/${key}/f/node_modules/dep/b.js`);
+  assert.equal(entry?.status, 200);
+  assert.equal(Buffer.from(entry.body).toString(), files['node_modules/dep/b.js']);
+});
+
+test('pages recording: a report of what a run read is not recorded, over the channel or HTTP', async () => {
+  const { recorded, serve: recording } = recorder();
+  const report = (over?: object) => ({ method: 'GET', path: `/__sandburg/nm/${key}/read`, query: new URLSearchParams({ files: 'f/node_modules/dep/a.js' }), body: async () => Buffer.alloc(0), channel: over });
+  assert.equal((await recording(report(channel)))?.status, 204);
+  assert.equal((await recording(report()))?.status, 204);
+  assert.equal(recorded.size, 0);
+});
+
 test('pages recording: a file only noted as read (it came in a read-ahead) is recorded too', async () => {
   const { recorded, serve: recording } = recorder();
   await recording(get('node_modules/dep/package.json', 'used=1', channel));
