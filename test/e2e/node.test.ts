@@ -173,10 +173,14 @@ test('a Next.js app whose next.config the seed is not for keeps a webpack cache 
   const custom = projectFromFiles({ ...plain.files, 'next.config.ts': 'export default { webpack: (config: unknown) => config };\n' }, { name: 'next-own-webpack-cache', path: 'next-own-webpack-cache' });
   const checks = ((await import(`${dir}/checks.spec.ts`)) as { default: Checks }).default;
   const installs: { name: string; filesBundle: string | null; keep?: { key: string } }[] = [];
+  // The custom app's own cache: removed after the test (taken here, before a run that fails could
+  // still store it), so that it starts from the seed when run again (alone).
+  let ownKey: string | undefined;
   const hostInstall = node.hostInstall!;
   node.hostInstall = async (project, log, options) => {
     const host = (await hostInstall.call(node, project, log, options)) as { filesBundle: string | null; devCache?: { keep?: { key: string } } };
     if (!options?.seed) installs.push({ name: project.name, filesBundle: host.filesBundle, keep: host.devCache?.keep });
+    if (project.name === custom.name) ownKey ??= host.devCache?.keep?.key;
     return host;
   };
   const cacheDir = fileURLToPath(new URL('../../.sandburg/dev-cache', import.meta.url));
@@ -186,8 +190,6 @@ test('a Next.js app whose next.config the seed is not for keeps a webpack cache 
     assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
     return installs.at(-1)!;
   };
-  // The custom app's own cache: removed after the test, so that it starts from the seed when run again (alone).
-  let ownKey: string | undefined;
   try {
     // The seed is for the fixture's config: it keeps nothing of its own.
     const fits = await run(plain);
@@ -195,7 +197,6 @@ test('a Next.js app whose next.config the seed is not for keeps a webpack cache 
     assert.equal(await storedAt(fits.keep.key), null);
     // Its first run starts from the seed, which webpack does not read, and keeps its own cache.
     const first = await run(custom);
-    ownKey = first.keep?.key;
     assert.ok(first.keep && first.filesBundle !== `/__sandburg/dev-cache/${first.keep.key}/bundle`, JSON.stringify(first));
     const kept = await storedAt(first.keep.key);
     assert.ok(kept !== null, 'the run kept a cache of its own');
