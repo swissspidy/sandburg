@@ -150,10 +150,11 @@ export function syncGet(url: string, binary: boolean): { status: number; body: U
 }
 
 /**
- * The preload bundle's files this runtime read, told to the host in batches over the file channel:
- * a bundle holds every file runs of the install ever loaded (and what was predicted for its first
- * run), and a warm next-app-router run read 16 of its 43 MB; the host's next bundle for the install
- * holds what runs read (see markRead in adapters/node/index.ts).
+ * The preload bundle's files this runtime read, told to the host in batches over the file channel
+ * (over HTTP once it has closed, or if it never opened): a bundle holds every file runs of the
+ * install ever loaded (and what was predicted for its first run), and a warm next-app-router run
+ * read 16 of its 43 MB; the host's next bundle for the install holds what runs read (see markRead
+ * in adapters/node/index.ts).
  */
 const reads = new Set<string>();
 let unreported: string[] = [];

@@ -252,6 +252,11 @@ export class RuntimeHarness {
       const body = this.installed(url.pathname);
       if (body || url.pathname.startsWith('/__sandburg/nm/')) {
         this.asked.push(`http ${url.pathname}${url.search}`);
+        // A report of what a run read, as the host takes it (src/adapters/node/index.ts).
+        if (/^\/__sandburg\/nm\/[0-9a-f]{24}\/read$/.test(url.pathname)) {
+          res.writeHead(204);
+          return res.end();
+        }
         res.writeHead(body ? 200 : 404, { 'content-type': 'application/octet-stream' });
         return res.end(body ?? 'not found');
       }
@@ -393,6 +398,7 @@ export class RuntimeHarness {
   }
 
   runWebSocket(files: Record<string, string>, main: string, url: string, protocols: string[], sends: string[]) {
+    this.dropChannels = 0;
     return this.page.evaluate(([f, m, u, p, s]) => (window as unknown as { runWs: Function }).runWs(f, m, u, p, s), [files, main, url, protocols, sends] as const) as Promise<{
       stdout: string;
       stderr: string;
