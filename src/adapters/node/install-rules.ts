@@ -408,8 +408,9 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
       '                return false;\n' +
       '            };\n' +
       '            let value = true;\n' +
-      '            // A file that cannot be read or written: read only, as before, rather than a failed compiler.\n' +
-      '            try { value = decide(); } catch {}\n' +
+      '            // A file that cannot be read or written: read only, as before, rather than a failed compiler (said, so\n' +
+      '            // that a seed or an app that stops storing its cache says why).\n' +
+      "            try { value = decide(); } catch (e) { console.warn('[sandburg] webpack\\'s cache is read only: ' + (e && e.message)); }\n" +
       '            Object.defineProperty(this, decided, { value });\n' +
       '            return this[decided];\n' +
       '        }\n',

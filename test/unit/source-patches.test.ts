@@ -485,7 +485,7 @@ test("Next.js' webpack cache stores only in a seed run, or in an app's run when 
       { default: { join } },
       dist,
       createRequire(import.meta.url),
-      { env, cwd: () => app },
+      { env },
     ) as { readonly: boolean };
     const first = cache.readonly;
     assert.equal(cache.readonly, first, 'decided once');
@@ -514,6 +514,25 @@ test("Next.js' webpack cache stores only in a seed run, or in an app's run when 
     assert.deepEqual([readonly('client', 'own'), readonly('client', 'own'), readonly('edge', 'own')], [true, true, true]);
     assert.equal(existsSync(join(runDir, 'keeps')), false);
     assert.equal(readFileSync(join(packs, 'index.pack.gz'), 'utf8'), 'seed');
+    // Decided once: what the decision left changing does not change it (webpack reads it again).
+    newRun();
+    const cache = new Function('dev', '__dirname', 'configVars', '_path', 'distDir', 'require', 'process', `${patched}\nreturn cache;`)(
+      true,
+      '/app/node_modules/next/dist/build',
+      'client',
+      { default: { join } },
+      distDir,
+      createRequire(import.meta.url),
+      { env: { SANDBURG_WEBPACK_CACHE: 'own', SANDBURG_WEBPACK_CACHE_DIR: '.next/dev/cache' } },
+    ) as { readonly: boolean };
+    assert.equal(cache.readonly, true);
+    rmSync(runDir, { recursive: true, force: true });
+    rmSync(join(distDir, 'cache', 'sandburg-webpack-versions'), { recursive: true, force: true });
+    assert.equal(cache.readonly, true);
+    assert.equal(readFileSync(join(packs, 'index.pack.gz'), 'utf8'), 'seed');
+    // The seed's marks again (removed above).
+    newRun();
+    assert.deepEqual([readonly('client', 'store'), readonly('edge', 'store')], [false, false]);
     // A cache elsewhere (a custom distDir) is only read.
     newRun();
     assert.equal(readonly('other', 'own', '.next/dev/cache', join(app, 'build')), true);
