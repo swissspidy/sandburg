@@ -19,13 +19,23 @@ import { devCacheRoot } from './installs.ts';
  * webpack cache it leaves (with the key Next.js derives the cache version from) is where every later
  * app with those versions starts. Webpack still checks each cached module against its files, so the
  * app's own modules are compiled; a different next.config gives a different cache version, and
- * webpack starts empty. The seed is the session's, never a project's: a project cannot write a cache
- * that another project's run starts from.
+ * webpack starts empty: such an app keeps a cache of its own (nextOwnCacheKey, under its own key), which
+ * its later runs start from instead. The seed is the session's, never a project's: a project cannot
+ * write a cache that another project's run starts from.
  *
  * The cache is in .next/cache, or in .next/dev/cache from Next.js 16 on (next dev builds into
  * .next/dev): a seed that kept .next/cache there kept nothing, and every app compiled from scratch.
  */
 const nextSeedDirs = (version: string) => [Number.parseInt(version, 10) >= 16 ? '.next/dev/cache' : '.next/cache'];
+
+/** The packs webpack stores last in a Next.js cache under `dirs`: a run that keeps the cache waits for them. */
+export const nextCachePacks = (dirs: string[]) => [`${dirs[0]}/webpack/client-development/index.pack.gz`, `${dirs[0]}/webpack/server-development/index.pack.gz`];
+
+/**
+ * The key of the webpack cache an app keeps of its own (when the seed is for another cache version):
+ * derived from the app's own dev-cache key (its install and files), so that only its own runs read it.
+ */
+export const nextOwnCacheKey = (devCacheKey: string) => createHash('sha256').update(`next-own\0${devCacheKey}`).digest('hex').slice(0, 24);
 
 const seeding = new Map<string, Promise<void>>();
 
