@@ -1,5 +1,13 @@
 # sandburg
 
+## 0.3.1
+
+### Patch Changes
+
+- [#129](https://github.com/swissspidy/sandburg/pull/129) [`0fedef3`](https://github.com/swissspidy/sandburg/commit/0fedef3dca32114f4f69220886129ba72075d839) Thanks [@swissspidy](https://github.com/swissspidy)! - A runtime whose file channel closes before it opens (a connection that fails, or a handshake the host does not answer) tries it again, up to four times, instead of running without it. What the run read of its install's preload bundle is still told to the host: it waits for the channel, and goes over HTTP once the channel is closed. Before, those reports were dropped, and the install's next preload bundle missed the files the run read first.
+
+- [#131](https://github.com/swissspidy/sandburg/pull/131) [`2364123`](https://github.com/swissspidy/sandburg/commit/2364123842099a2e0f8406d03f195473db87e9bd) Thanks [@swissspidy](https://github.com/swissspidy)! - A Next.js app whose next.config gives webpack another cache version than Sandburg's shared seed (a `webpack` function, rewrites, a `basePath`, …) keeps a webpack cache of its own, which its later runs start from. Before, webpack started empty in every run of such an app: a warm run of the App Router fixture with a `webpack` function took about 6.6 s, and takes about 4.3 s now, as one without. Apps the seed fits are unchanged. The app's own cache is keyed by its files, as its other dev caches are: a run after an edit starts from the seed again and keeps a new one.
+
 ## 0.3.0
 
 ### Minor Changes
