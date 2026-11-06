@@ -11,7 +11,7 @@ import { RUNTIME_MODULE, runtimeBootstrap } from '../../node-runtime/runtime-mod
 import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-wasm-bundle.ts';
 import { createHash } from 'node:crypto';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { findFullStack } from './scripts.ts';
 import { browserInstall, devScript, isSimple, packageDirs, nestedInstall, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
 import { planOf } from './local-packages.ts';
@@ -31,7 +31,7 @@ import { COMPILER } from './compile-cache.ts';
 import { DEV_CACHE_DIRS, devCacheKey, compileWrites, TOKEN_TTL_MS, SOURCE_BODY_MAX, issueCacheWrite, issueCompileWrite, granted, readDevCache, cacheDigests, compileCache, compileKeys, readableCaches, cacheBundle, takeCacheWrite, writeDevCache } from './dev-cache.ts';
 import { markDirty, recordLoad, readList, prefetchers, preloadUrl, preloadBundle } from './preload.ts';
 import { readAhead, pushAhead } from './read-ahead.ts';
-import { nextRouter, viteSeedCache, nextSeedCache } from './seeds.ts';
+import { nextRouter, viteSeedCache, nextSeedCache, nextCachePacks, nextOwnCacheKey } from './seeds.ts';
 import { DISPOSE_PHASE_MS } from './cache-settle.ts';
 
 // Compiles of code the runtime sends, kept on disk as transforms are (compile-store.ts), by the
@@ -347,14 +347,21 @@ export const node: AdapterDescriptor = {
     // The app's own cache from an earlier run: how many files, and their digests (devCacheDigests).
     const own = await devCacheDigests(cacheKey, cacheDirs);
     let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: {} };
+    let keep: NonNullable<HostInstall['devCache']>['keep'];
     if (project.framework === 'next') {
       const seed = await nextSeedCache(info.resolved, nextRouter(project), options, log);
       if (seed && options?.seed) {
         // The seed run keeps its webpack cache under the shared key.
-        devCache = { key: seed.key, dirs: seed.dirs, files: {}, token: write(seed.key, seed.dirs), waitFor: [`${seed.dirs[0]}/webpack/client-development/index.pack.gz`, `${seed.dirs[0]}/webpack/server-development/index.pack.gz`] };
+        devCache = { key: seed.key, dirs: seed.dirs, files: {}, token: write(seed.key, seed.dirs), waitFor: nextCachePacks(seed.dirs) };
       } else if (seed?.ready) {
-        readableCaches.set(seed.key, seed.dirs);
-        filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
+        // The app starts from the webpack cache an earlier run of its own kept, if one did (the seed
+        // was for another cache version: its next.config), else from the seed. If that cache is not
+        // for the app's cache version, webpack keeps this run's, which the page stores under `keep`.
+        const ownKey = nextOwnCacheKey(cacheKey);
+        const from = (await stat(join(devCacheRoot(), `${ownKey}.json`)).then(() => true, () => false)) ? ownKey : seed.key;
+        readableCaches.set(from, seed.dirs);
+        filesBundle = `/__sandburg/dev-cache/${from}/bundle`;
+        keep = { key: ownKey, dirs: seed.dirs, waitFor: nextCachePacks(seed.dirs), token: write(ownKey, seed.dirs), flag: `${posix.dirname(seed.dirs[0])}/sandburg` };
       }
     }
     // A Vite app without a cache of its own starts from the seed for its packages and config.
@@ -379,6 +386,7 @@ export const node: AdapterDescriptor = {
       devCache = { ...devCache, files: await readDevCache(cacheKey, cacheDirs) };
     }
     if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
+    if (keep) devCache.keep = keep;
     grantReads(key, options?.sandbox);
     // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
     const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};

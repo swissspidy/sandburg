@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { transformForRuntime } from '../../src/adapters/node/install.ts';
-import { readdirSync, readFileSync } from 'node:fs';
+import { SOURCE_PATCHES } from '../../src/adapters/node/install-rules.ts';
+import { tempDir } from './temp-dir.ts';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import './await-context-stub.ts'; // compiled code runs here
@@ -451,5 +454,107 @@ test("the source-map patch applies to Next.js' plugin as published (15.5, 16.4; 
     assert.notEqual(drifted, source, file);
     const untouched = await transformForRuntime(drifted, path, esm);
     assert.doesNotMatch(untouched, /SandburgSourceMaps|sandburg: see SOURCE_PATCHES/, file);
+  }
+});
+
+// Next.js 16.4.3's webpack cache options (dist/build/webpack-config.js), as published.
+const NEXT_WEBPACK_CACHE = `const cache = {
+        type: 'filesystem',
+        maxMemoryGenerations: dev ? 0 : Infinity,
+        version: \`\${__dirname}|\${"16.4.3"}|\${configVars}\`,
+        cacheDirectory: _path.default.join(distDir, 'cache', 'webpack'),
+        compression: dev ? 'gzip' : false
+    };
+`;
+
+test("Next.js' webpack cache stores only in a seed run, or in an app's run when the cache it started from is for another version", async () => {
+  const file = 'node_modules/next/dist/build/webpack-config.js';
+  assert.match(await transformForRuntime(NEXT_WEBPACK_CACHE, file, false), /get readonly\(\) \{\n.*sandburg\.webpackCacheReadonly/);
+  const patched = SOURCE_PATCHES.filter((p) => p.file.test(file)).reduce((code, p) => code.replace(p.from, p.to), NEXT_WEBPACK_CACHE);
+  const root = tempDir('sandburg-webpack-cache-');
+  const app = join(root, 'app');
+  const distDir = join(app, '.next', 'dev');
+  const runDir = join(distDir, 'sandburg');
+  // The cache object of one compiler (its version is `configVars`), in a run of `mode`.
+  const readonly = (configVars: string, mode: string | undefined, cacheDir = '.next/dev/cache', dist = distDir) => {
+    const env: Record<string, string> = mode ? { SANDBURG_WEBPACK_CACHE: mode, SANDBURG_WEBPACK_CACHE_DIR: cacheDir } : {};
+    const cache = new Function('dev', '__dirname', 'configVars', '_path', 'distDir', 'require', 'process', `${patched}\nreturn cache;`)(
+      true,
+      '/app/node_modules/next/dist/build',
+      configVars,
+      { default: { join } },
+      dist,
+      createRequire(import.meta.url),
+      { env },
+    ) as { readonly: boolean };
+    const first = cache.readonly;
+    assert.equal(cache.readonly, first, 'decided once');
+    return first;
+  };
+  // Each run starts with the cache (in .next/dev/cache) and without the run's own marks (.next/dev/sandburg).
+  const newRun = () => rmSync(runDir, { recursive: true, force: true });
+  const packs = join(distDir, 'cache', 'webpack', 'client-development');
+  const seeded = () => {
+    mkdirSync(packs, { recursive: true });
+    writeFileSync(join(packs, 'index.pack.gz'), 'seed');
+  };
+  const realCwd = process.cwd;
+  process.cwd = () => app;
+  try {
+    // Without a mode (a host that sets none) webpack stores, and nothing is written.
+    assert.equal(readonly('client', undefined), false);
+    assert.equal(existsSync(join(distDir, 'cache')), false);
+    assert.equal(readonly('client', 'read'), true);
+    // A seed run stores, and marks each version: the client's and the server's are one.
+    seeded();
+    newRun();
+    assert.deepEqual([readonly('client', 'store'), readonly('client', 'store'), readonly('edge', 'store')], [false, false, false]);
+    // An app the seed is for reads it.
+    newRun();
+    assert.deepEqual([readonly('client', 'own'), readonly('client', 'own'), readonly('edge', 'own')], [true, true, true]);
+    assert.equal(existsSync(join(runDir, 'keeps')), false);
+    assert.equal(readFileSync(join(packs, 'index.pack.gz'), 'utf8'), 'seed');
+    // Decided once: what the decision left changing does not change it (webpack reads it again).
+    newRun();
+    const cache = new Function('dev', '__dirname', 'configVars', '_path', 'distDir', 'require', 'process', `${patched}\nreturn cache;`)(
+      true,
+      '/app/node_modules/next/dist/build',
+      'client',
+      { default: { join } },
+      distDir,
+      createRequire(import.meta.url),
+      { env: { SANDBURG_WEBPACK_CACHE: 'own', SANDBURG_WEBPACK_CACHE_DIR: '.next/dev/cache' } },
+    ) as { readonly: boolean };
+    assert.equal(cache.readonly, true);
+    rmSync(runDir, { recursive: true, force: true });
+    rmSync(join(distDir, 'cache', 'sandburg-webpack-versions'), { recursive: true, force: true });
+    assert.equal(cache.readonly, true);
+    assert.equal(readFileSync(join(packs, 'index.pack.gz'), 'utf8'), 'seed');
+    // The seed's marks again (removed above).
+    newRun();
+    assert.deepEqual([readonly('client', 'store'), readonly('edge', 'store')], [false, false]);
+    // A cache elsewhere (a custom distDir) is only read.
+    newRun();
+    assert.equal(readonly('other', 'own', '.next/dev/cache', join(app, 'build')), true);
+    // An app the seed is not for keeps its own: the seed's packs and marks are removed, its compilers all store.
+    newRun();
+    assert.deepEqual([readonly('custom-client', 'own'), readonly('custom-client', 'own'), readonly('custom-edge', 'own')], [false, false, false]);
+    assert.equal(existsSync(join(runDir, 'keeps')), true);
+    assert.equal(existsSync(packs), false);
+    // Its later runs read what it kept.
+    newRun();
+    assert.deepEqual([readonly('custom-client', 'own'), readonly('custom-edge', 'own')], [true, true]);
+    // A run whose first compiler reads does not remove what a later one would not read.
+    newRun();
+    assert.deepEqual([readonly('custom-client', 'own'), readonly('another-edge', 'own')], [true, true]);
+    // Marks that cannot be written: read only, not a failed compiler.
+    newRun();
+    rmSync(join(distDir, 'cache'), { recursive: true, force: true });
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, 'cache'), 'a file');
+    assert.equal(readonly('client', 'store'), true);
+  } finally {
+    process.cwd = realCwd;
+    rmSync(root, { recursive: true, force: true });
   }
 });

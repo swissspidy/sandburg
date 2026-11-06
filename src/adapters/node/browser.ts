@@ -40,6 +40,13 @@ export interface HostInstall {
     waitFor?: string[];
     /** The run's capability to store the cache under `key`, once (see cacheWrites in index.ts). */
     token?: string;
+    /**
+     * Next.js' webpack cache of the project's own, which the run stores (instead of the cache above)
+     * if webpack keeps it: when the cache the run started from (the seed, or its own from an earlier
+     * run) was made for another cache version (its next.config), webpack stores this run's and marks
+     * `flag` (see SOURCE_PATCHES in install-rules.ts).
+     */
+    keep?: { key: string; dirs: string[]; waitFor: string[]; token: string; flag: string };
   };
   /** Where the runtime records what the host compiles for it, and a bundle of what earlier runs of the project had compiled (see compile-cache.ts). */
   compileCache?: { key: string; bundle: string | null; token?: string } | null;
@@ -303,9 +310,10 @@ export function createAdapter(): RuntimeAdapter {
         execArgv,
         files,
         // PORT only for a single server: the servers of a dev script listen where it says.
-        // SANDBURG_WEBPACK_CACHE_READONLY: webpack reads its cache (a seed) but does not store it, unless
-        // this run keeps the cache (a seed run waits for its files); see SOURCE_PATCHES in install.ts.
-        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...frameworkInfo(ctx.framework)?.node?.env, ...(devCache?.waitFor ? {} : { SANDBURG_WEBPACK_CACHE_READONLY: '1' }) },
+        // SANDBURG_WEBPACK_CACHE: whether webpack stores its cache (it reads it in any case): a run that
+        // keeps the cache does (a seed run waits for its files), an app with a cache to start from does
+        // if that cache is not for its cache version (keep), others do not; see SOURCE_PATCHES in install-rules.ts.
+        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...frameworkInfo(ctx.framework)?.node?.env, SANDBURG_WEBPACK_CACHE: devCache?.waitFor ? 'store' : devCache?.keep ? 'own' : 'read', ...(devCache?.keep ? { SANDBURG_WEBPACK_CACHE_DIR: devCache.keep.dirs[0] } : {}) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,
@@ -382,6 +390,13 @@ export function createAdapter(): RuntimeAdapter {
       // A cache that waits (a seed's) and is not stored says why, in the run's console: a seed run
       // passes without one, and later apps then compile from scratch.
       const unstored = (why: string) => console.warn(`[sandburg] the dev server's cache (${devCache!.key}) was not stored: ${why}`);
+      // A run whose webpack kept a cache of its own (it marked keep's flag) stores that instead, and
+      // waits for it as a seed run does.
+      if (proc && devCache?.keep && !proc.failure) {
+        const { keep } = devCache;
+        const marked = await Promise.race([proc.readCache([keep.flag], { bytes: false }), new Promise<null>((r) => setTimeout(() => r(null), 5000))]).catch(() => null);
+        if (marked?.files.some(([path]) => path === `${keep.flag}/keeps`)) devCache = { key: keep.key, dirs: keep.dirs, files: {}, waitFor: keep.waitFor, token: keep.token };
+      }
       if (proc && devCache?.waitFor && proc.failure) unstored(`the dev server failed: ${proc.failure.message.split('\n')[0]}`);
       if (proc && devCache && !proc.failure) {
         const p = proc;

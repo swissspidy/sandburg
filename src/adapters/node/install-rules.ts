@@ -360,11 +360,60 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
       'async function sandburgBundleConfigFile(fileName, isESM) {\n',
   },
   {
-    // Next.js' webpack cache: read-only unless the run keeps it (a seed run). next dev gzips its cache
-    // packs as it stores them, 2.1 s of a warm run's main thread, for a cache no later run reads.
+    // Next.js' webpack cache: read-only unless the run keeps it. next dev gzips its cache packs as it
+    // stores them, 2.1 s of a warm run's main thread, which only a run that keeps its cache pays.
+    // SANDBURG_WEBPACK_CACHE: `store` (a seed run), `own` (an app that has a seed: it keeps its own
+    // cache only if the cache it started from was made for another cache version, which Next.js
+    // derives from next.config, so that webpack started empty), `read`. A kept cache is marked with
+    // each compiler's version (sandburg-webpack-versions/<its digest> beside the cache: the client's
+    // and the server's are one, the edge's another), and a run that keeps one with sandburg/keeps: the
+    // page stores it under the app's own key (keep in browser.ts), once webpack has stored the packs
+    // that replace those it started from. A getter: the version and the directory are the object's
+    // own, and webpack reads `readonly` once they are there.
     file: /(^|\/)node_modules\/next\/dist\/build\/webpack-config\.js$/,
     from: /compression: dev \? 'gzip' : false\n/,
-    to: "compression: dev ? 'gzip' : false,\n        readonly: process.env.SANDBURG_WEBPACK_CACHE_READONLY === '1' // sandburg: see SOURCE_PATCHES\n",
+    to:
+      "compression: dev ? 'gzip' : false,\n" +
+      '        get readonly() { // sandburg: see SOURCE_PATCHES\n' +
+      "            // Decided once (webpack reads it more than once, and the first decision writes the marks).\n" +
+      "            const decided = Symbol.for('sandburg.webpackCacheReadonly');\n" +
+      '            if (Object.prototype.hasOwnProperty.call(this, decided)) return this[decided];\n' +
+      '            const decide = () => {\n' +
+      '                const mode = process.env.SANDBURG_WEBPACK_CACHE;\n' +
+      "                if (mode !== 'store' && mode !== 'own') return mode === 'read';\n" +
+      "                const fs = require('fs'), path = require('path'), dir = path.dirname(this.cacheDirectory);\n" +
+      "                const marker = path.join(dir, 'sandburg-webpack-versions', require('crypto').createHash('sha256').update(this.version).digest('hex').slice(0, 24));\n" +
+      "                if (mode === 'own') {\n" +
+      "                    // A cache elsewhere than where the page looks for it (a custom distDir): read only, as before.\n" +
+      "                    if (dir !== path.resolve(process.env.SANDBURG_WEBPACK_CACHE_DIR || '')) return true;\n" +
+      '                    // The run decides once, at its first compiler (the client and the server have one version): it\n' +
+      '                    // reads (a compiler started from packs for its version; then none removes them), or it keeps.\n' +
+      "                    const run = path.join(dir, '..', 'sandburg');\n" +
+      "                    if (!fs.existsSync(path.join(run, 'keeps'))) {\n" +
+      "                        if (fs.existsSync(marker) || fs.existsSync(path.join(run, 'reads'))) {\n" +
+      '                            fs.mkdirSync(run, { recursive: true });\n' +
+      "                            fs.writeFileSync(path.join(run, 'reads'), '');\n" +
+      '                            return true;\n' +
+      '                        }\n' +
+      '                        // The packs it started from are for another version, which webpack does not read: removed\n' +
+      '                        // (with their marks), so that the page waits for the packs webpack stores.\n' +
+      '                        fs.rmSync(this.cacheDirectory, { recursive: true, force: true });\n' +
+      '                        fs.rmSync(path.dirname(marker), { recursive: true, force: true });\n' +
+      '                        fs.mkdirSync(run, { recursive: true });\n' +
+      "                        fs.writeFileSync(path.join(run, 'keeps'), '');\n" +
+      '                    }\n' +
+      '                }\n' +
+      '                fs.mkdirSync(path.dirname(marker), { recursive: true });\n' +
+      "                fs.writeFileSync(marker, '');\n" +
+      '                return false;\n' +
+      '            };\n' +
+      '            let value = true;\n' +
+      '            // A file that cannot be read or written: read only, as before, rather than a failed compiler (said, so\n' +
+      '            // that a seed or an app that stops storing its cache says why).\n' +
+      "            try { value = decide(); } catch (e) { console.warn('[sandburg] webpack\\'s cache is read only: ' + (e && e.message)); }\n" +
+      '            Object.defineProperty(this, decided, { value });\n' +
+      '            return this[decided];\n' +
+      '        }\n',
   },
   {
     // next dev's source maps (`eval-source-map`) for the project's own modules only. Its maps of

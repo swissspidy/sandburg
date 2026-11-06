@@ -165,6 +165,53 @@ test('a Next.js 16 app (App Router, API route) runs on the node runtime', async 
   assert.equal(result.checks.filter((c) => c.kind === 'functional' && c.status === 'passed').length, 3);
 });
 
+// After the tests that count the stored seeds: an app's own webpack cache is stored as a seed is.
+test('a Next.js app whose next.config the seed is not for keeps a webpack cache of its own, which its later runs start from', async () => {
+  const dir = fixture('next-app-router');
+  const plain = await loadProject(dir);
+  // A webpack function: another cache version than the seed's (Next.js derives it from next.config).
+  const custom = projectFromFiles({ ...plain.files, 'next.config.ts': 'export default { webpack: (config: unknown) => config };\n' }, { name: 'next-own-webpack-cache', path: 'next-own-webpack-cache' });
+  const checks = ((await import(`${dir}/checks.spec.ts`)) as { default: Checks }).default;
+  const installs: { name: string; filesBundle: string | null; keep?: { key: string } }[] = [];
+  // The custom app's own cache: removed after the test (taken here, before a run that fails could
+  // still store it), so that it starts from the seed when run again (alone).
+  let ownKey: string | undefined;
+  const hostInstall = node.hostInstall!;
+  node.hostInstall = async (project, log, options) => {
+    const host = (await hostInstall.call(node, project, log, options)) as { filesBundle: string | null; devCache?: { keep?: { key: string } } };
+    if (!options?.seed) installs.push({ name: project.name, filesBundle: host.filesBundle, keep: host.devCache?.keep });
+    if (project.name === custom.name) ownKey ??= host.devCache?.keep?.key;
+    return host;
+  };
+  const cacheDir = fileURLToPath(new URL('../../.sandburg/dev-cache', import.meta.url));
+  const storedAt = (key: string) => stat(join(cacheDir, `${key}.json`)).then((s) => s.mtimeMs, () => null);
+  const run = async (project: typeof plain) => {
+    const result = await session.run(project, { checks, outDir });
+    assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+    return installs.at(-1)!;
+  };
+  try {
+    // The seed is for the fixture's config: it keeps nothing of its own.
+    const fits = await run(plain);
+    assert.ok(fits.keep, 'the app has a seed to start from (the first test stores it)');
+    assert.equal(await storedAt(fits.keep.key), null);
+    // Its first run starts from the seed, which webpack does not read, and keeps its own cache.
+    const first = await run(custom);
+    assert.ok(first.keep && first.filesBundle !== `/__sandburg/dev-cache/${first.keep.key}/bundle`, JSON.stringify(first));
+    const kept = await storedAt(first.keep.key);
+    assert.ok(kept !== null, 'the run kept a cache of its own');
+    const paths = Object.keys(JSON.parse(await readFile(join(cacheDir, `${first.keep.key}.json`), 'utf8')) as object);
+    for (const compiler of ['client', 'server']) assert.ok(paths.includes(`.next/dev/cache/webpack/${compiler}-development/index.pack.gz`), paths.join('\n'));
+    // A later run starts from it, and stores nothing (its cache is for its version).
+    const second = await run(custom);
+    assert.equal(second.filesBundle, `/__sandburg/dev-cache/${first.keep.key}/bundle`);
+    assert.equal(await storedAt(first.keep.key), kept);
+  } finally {
+    node.hostInstall = hostInstall;
+    if (ownKey) for (const name of [`${ownKey}.json`, `${ownKey}.json.bin`, `${ownKey}.json.digests`]) await rm(join(cacheDir, name), { force: true });
+  }
+});
+
 test('an Express server runs on the node runtime', async () => {
   const dir = fixture('node-express');
   const result = await session.run(dir, { checks: `${dir}/checks.spec.ts`, outDir });
