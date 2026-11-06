@@ -186,6 +186,8 @@ test('a Next.js app whose next.config the seed is not for keeps a webpack cache 
     assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
     return installs.at(-1)!;
   };
+  // The custom app's own cache: removed after the test, so that it starts from the seed when run again (alone).
+  let ownKey: string | undefined;
   try {
     // The seed is for the fixture's config: it keeps nothing of its own.
     const fits = await run(plain);
@@ -193,6 +195,7 @@ test('a Next.js app whose next.config the seed is not for keeps a webpack cache 
     assert.equal(await storedAt(fits.keep.key), null);
     // Its first run starts from the seed, which webpack does not read, and keeps its own cache.
     const first = await run(custom);
+    ownKey = first.keep?.key;
     assert.ok(first.keep && first.filesBundle !== `/__sandburg/dev-cache/${first.keep.key}/bundle`, JSON.stringify(first));
     const kept = await storedAt(first.keep.key);
     assert.ok(kept !== null, 'the run kept a cache of its own');
@@ -204,6 +207,7 @@ test('a Next.js app whose next.config the seed is not for keeps a webpack cache 
     assert.equal(await storedAt(first.keep.key), kept);
   } finally {
     node.hostInstall = hostInstall;
+    if (ownKey) for (const name of [`${ownKey}.json`, `${ownKey}.json.bin`, `${ownKey}.json.digests`]) await rm(join(cacheDir, name), { force: true });
   }
 });
 
