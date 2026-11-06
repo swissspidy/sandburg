@@ -175,6 +175,8 @@ export class RuntimeHarness {
   classicRuntime = false;
   /** File channels waiting to be accepted, while the harness holds them (runInstalled's holdChannel); null when it does not. */
   private held: (() => void)[] | null = null;
+  /** File channels still to fail, as a connection does before it opens (runInstalled's dropChannels). */
+  private dropChannels = 0;
   /** Requests to /__test/hold-closed waiting for more of /__test/hold's responses to close. */
   private holdWaiters = new Set<() => void>();
   /** Requests /__test/count took (all but those reading the count), by its `key`. */
@@ -250,6 +252,11 @@ export class RuntimeHarness {
       const body = this.installed(url.pathname);
       if (body || url.pathname.startsWith('/__sandburg/nm/')) {
         this.asked.push(`http ${url.pathname}${url.search}`);
+        // A report of what a run read, or a note that a file sent ahead was, as the host takes them (src/adapters/node/index.ts).
+        if (/^\/__sandburg\/nm\/[0-9a-f]{24}\/read$/.test(url.pathname) || url.searchParams.get('used') === '1') {
+          res.writeHead(204);
+          return res.end();
+        }
         res.writeHead(body ? 200 : 404, { 'content-type': 'application/octet-stream' });
         return res.end(body ?? 'not found');
       }
@@ -377,6 +384,10 @@ export class RuntimeHarness {
         const ahead = body && r.query.get('ahead') === '1' ? (r.path.includes('/t/') ? this.pushed(r.path) : this.ahead(r.path, r.query.get('until'))) : null;
         return ahead ? { status: 207, body: ahead } : body ? { status: 200, body } : null;
       });
+      if (this.dropChannels > 0) {
+        this.dropChannels--;
+        return void socket.destroy();
+      }
       if (this.held) this.held.push(accept);
       else accept();
     });
@@ -387,6 +398,7 @@ export class RuntimeHarness {
   }
 
   runWebSocket(files: Record<string, string>, main: string, url: string, protocols: string[], sends: string[]) {
+    this.dropChannels = 0;
     return this.page.evaluate(([f, m, u, p, s]) => (window as unknown as { runWs: Function }).runWs(f, m, u, p, s), [files, main, url, protocols, sends] as const) as Promise<{
       stdout: string;
       stderr: string;
@@ -424,6 +436,7 @@ export class RuntimeHarness {
     const { until, ...rest } = options;
     this.asked = [];
     this.release();
+    this.dropChannels = 0;
     return this.until(this.page.evaluate(([f, m, r, a]) => (window as unknown as { runNode: Function }).runNode(f, m, r, a), [files, main, requests, { ...(execArgv ? { execArgv } : {}), ...rest }] as const) as Promise<{
       stdout: string;
       stderr: string;
@@ -448,13 +461,15 @@ export class RuntimeHarness {
    * file channel (with `holdChannel`, opened only once the program asks for it: see CHANNEL_OPEN).
    * `prepare`: the page prepares the runtime that long before its init message, as a host page does.
    * `helperDelay`: its file helper then spins that long before it handles a message (one slow to start).
+   * `dropChannels`: that many of the run's file channels fail before they open (their connection is closed).
    * `asked` records what the host was asked for.
    */
-  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; compileAhead?: string[]; prepare?: number; helperDelay?: number; holdChannel?: boolean; until?: (state: RunState) => boolean } = {}) {
+  runInstalled(files: Record<string, string>, install: Install, main: string, options: { prefetch?: boolean; compileAhead?: string[]; prepare?: number; helperDelay?: number; holdChannel?: boolean; dropChannels?: number; until?: (state: RunState) => boolean } = {}) {
     this.install = install;
     this.asked = [];
     this.release();
     if (options.holdChannel) this.held = [];
+    this.dropChannels = options.dropChannels ?? 0;
     const nodeModules = Object.fromEntries(Object.entries(install.files).map(([rel, text]) => [rel, Buffer.byteLength(text)]));
     const extra = { installKey: INSTALL_KEY, nodeModules, preload: `/__sandburg/preload/${INSTALL_KEY}/${'b'.repeat(16)}`, prefetch: !!options.prefetch, ...(options.compileAhead ? { compileAhead: options.compileAhead } : {}), ...(options.prepare ? { prepare: options.prepare } : {}), ...(options.helperDelay ? { helperDelay: options.helperDelay } : {}) };
     return this.until(this.page.evaluate(([f, m, e]) => (window as unknown as { runNode: Function }).runNode(f, m, [], e), [files, main, extra] as const) as Promise<{

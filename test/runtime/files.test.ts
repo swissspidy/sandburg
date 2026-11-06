@@ -70,6 +70,24 @@ test('installed files: what a runtime read before its file channel opened is tol
   assert.deepEqual(h.asked.filter((a) => a.startsWith('ws ')), [`ws /__sandburg/nm/${INSTALL_KEY}/read?files=${encodeURIComponent('f/node_modules/bundled/package.json\nt/node_modules/bundled/index.js')}`]);
 });
 
+test('installed files: a file channel that fails before it opens is tried again, and what was read is told over it', async () => {
+  // Its connection closes before the host answers. Before, the helper dropped the run's first reports
+  // and the run went on over HTTP without a channel: the test above failed so on a loaded Windows runner.
+  const main = { 'main.js': `${CHANNEL_OPEN}\nconsole.log(require('bundled'));\nsetInterval(() => {}, 1000);\nsetTimeout(channelOpen, 700);` };
+  const out = await h.runInstalled(main, install, '/app/main.js', { holdChannel: true, dropChannels: 2, until: ({ asked, stdout }) => asked.some((a) => a.includes('/read?')) && stdout === 'from the bundle\n' });
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'from the bundle\n');
+  assert.deepEqual(h.asked.filter((a) => a.includes('/read?')), [`ws /__sandburg/nm/${INSTALL_KEY}/read?files=${encodeURIComponent('f/node_modules/bundled/package.json\nt/node_modules/bundled/index.js')}`]);
+});
+
+test('installed files: what was read is told over HTTP when the file channel never opens', async () => {
+  const main = { 'main.js': `console.log(require('bundled'));\nsetInterval(() => {}, 1000);` };
+  const out = await h.runInstalled(main, install, '/app/main.js', { dropChannels: Infinity, until: ({ asked, stdout }) => asked.some((a) => a.includes('/read?')) && stdout === 'from the bundle\n' });
+  assert.equal(out.fatal, null);
+  assert.equal(out.stdout, 'from the bundle\n');
+  assert.deepEqual(h.asked.filter((a) => a.includes('/read?')), [`http /__sandburg/nm/${INSTALL_KEY}/read?files=${encodeURIComponent('f/node_modules/bundled/package.json\nt/node_modules/bundled/index.js')}`]);
+});
+
 test('installed files: raw files read one after another come with the files after them in their directory', async () => {
   const icons = {
     files: {

@@ -68,6 +68,8 @@ async function host(request, url) {
   const path = url.pathname.slice(url.pathname.indexOf('/__sandburg/'));
   // The runtime saves dev-server caches after a run; a demo has nowhere to keep them.
   if (request.method === 'POST' && path.startsWith('/__sandburg/dev-cache/')) return new Response('saved');
+  // What a run read (its notes, over HTTP without a file channel): a demo builds no next bundle.
+  if (request.method === 'GET' && (/^\/__sandburg\/nm\/[0-9a-f]{24}\/read$/.test(path) || (/^\/__sandburg\/nm\/[0-9a-f]{24}\/[ft]\//.test(path) && url.search === '?used=1'))) return new Response(null, { status: 204 });
   const name = path.slice('/__sandburg/'.length);
   if (request.method === 'GET' && Object.hasOwn(RUNTIME_FILES, name)) return runtimeFile(name);
   const body = request.method === 'POST' ? await request.arrayBuffer() : null;
