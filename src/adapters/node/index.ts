@@ -358,7 +358,7 @@ export const node: AdapterDescriptor = {
         // was for another cache version: its next.config), else from the seed. If that cache is not
         // for the app's cache version, webpack keeps this run's, which the page stores under `keep`.
         const ownKey = nextOwnCacheKey(cacheKey);
-        const from = (await devCacheDigests(ownKey, seed.dirs)).count ? ownKey : seed.key;
+        const from = (await stat(join(devCacheRoot(), `${ownKey}.json`)).then(() => true, () => false)) ? ownKey : seed.key;
         readableCaches.set(from, seed.dirs);
         filesBundle = `/__sandburg/dev-cache/${from}/bundle`;
         keep = { key: ownKey, dirs: seed.dirs, waitFor: nextCachePacks(seed.dirs), token: write(ownKey, seed.dirs), flag: `${posix.dirname(seed.dirs[0])}/sandburg` };

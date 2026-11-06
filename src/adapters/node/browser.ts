@@ -313,7 +313,7 @@ export function createAdapter(): RuntimeAdapter {
         // SANDBURG_WEBPACK_CACHE: whether webpack stores its cache (it reads it in any case): a run that
         // keeps the cache does (a seed run waits for its files), an app with a cache to start from does
         // if that cache is not for its cache version (keep), others do not; see SOURCE_PATCHES in install-rules.ts.
-        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...frameworkInfo(ctx.framework)?.node?.env, SANDBURG_WEBPACK_CACHE: devCache?.waitFor ? 'store' : devCache?.keep ? 'own' : 'read' },
+        env: { ...DEV_ENV, ...RUNTIME_ENV, ...(host.start && 'shell' in host.start ? {} : { PORT: '3000' }), ...frameworkInfo(ctx.framework)?.node?.env, SANDBURG_WEBPACK_CACHE: devCache?.waitFor ? 'store' : devCache?.keep ? 'own' : 'read', ...(devCache?.keep ? { SANDBURG_WEBPACK_CACHE_DIR: devCache.keep.dirs[0] } : {}) },
         installKey: host.key,
         preload: host.preload ?? null,
         filesBundle: host.filesBundle ?? null,

@@ -384,6 +384,8 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
       "                const fs = require('fs'), path = require('path'), dir = path.dirname(this.cacheDirectory);\n" +
       "                const marker = path.join(dir, 'sandburg-webpack-versions', require('crypto').createHash('sha256').update(this.version).digest('hex').slice(0, 24));\n" +
       "                if (mode === 'own') {\n" +
+      "                    // A cache elsewhere than where the page looks for it (a custom distDir): read only, as before.\n" +
+      "                    if (dir !== path.resolve(process.env.SANDBURG_WEBPACK_CACHE_DIR || '')) return true;\n" +
       '                    // The run decides once, at its first compiler (the client and the server have one version): it\n' +
       '                    // reads (a compiler started from packs for its version; then none removes them), or it keeps.\n' +
       "                    const run = path.join(dir, '..', 'sandburg');\n" +
@@ -405,7 +407,10 @@ export const SOURCE_PATCHES: { file: RegExp; from: string | RegExp; to: string }
       "                fs.writeFileSync(marker, '');\n" +
       '                return false;\n' +
       '            };\n' +
-      '            Object.defineProperty(this, decided, { value: decide() });\n' +
+      '            let value = true;\n' +
+      '            // A file that cannot be read or written: read only, as before, rather than a failed compiler.\n' +
+      '            try { value = decide(); } catch {}\n' +
+      '            Object.defineProperty(this, decided, { value });\n' +
       '            return this[decided];\n' +
       '        }\n',
   },

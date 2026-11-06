@@ -33,9 +33,11 @@ export const nextCachePacks = (dirs: string[]) => [`${dirs[0]}/webpack/client-de
 
 /**
  * The key of the webpack cache an app keeps of its own (when the seed is for another cache version):
- * derived from the app's own dev-cache key (its install and files), so that only its own runs read it.
+ * derived from the app's own dev-cache key (its install and files), so that only its own runs read it,
+ * and, as a seed's, from the runtime's and the transform's versions (a patch of Next.js' loaders
+ * changes what webpack's packs hold, not its cache version).
  */
-export const nextOwnCacheKey = (devCacheKey: string) => createHash('sha256').update(`next-own\0${devCacheKey}`).digest('hex').slice(0, 24);
+export const nextOwnCacheKey = (devCacheKey: string) => createHash('sha256').update(`next-own\0${devCacheKey}\0${NODE_VERSION}\0${TRANSFORM_VERSION}`).digest('hex').slice(0, 24);
 
 const seeding = new Map<string, Promise<void>>();
 
