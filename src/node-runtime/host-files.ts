@@ -309,8 +309,11 @@ const workerHref = globalThis.location?.href;
 
 const nativeWorkerPost = NativeWorker?.prototype.postMessage;
 
-const DIGEST_HELPER = `let socket = null, ids = 0, notes = [];
+const DIGEST_HELPER = `let socket = null, ids = 0, notes = [], noteBase = null, closed = false;
 const asked = new Map();
+// A note the socket cannot take (it closed, or never opened) goes over HTTP: the host takes the same
+// URLs there (adapters/node/index.ts), and what a run read is its install's next bundle.
+const noteOverHttp = (note) => void fetch(new URL(note, noteBase)).catch(() => {});
 const settle = (shared, status, body) => {
   const state = new Int32Array(shared, 0, 3);
   if (body) new Uint8Array(shared, ${CHANNEL_MAILBOX_HEADER}).set(body);
@@ -319,11 +322,16 @@ const settle = (shared, status, body) => {
   Atomics.store(state, 0, 1);
   Atomics.notify(state, 0);
 };
-// Called once per helper (a second socket's old onclose would clear the new one's notes).
-function open(url, ready) {
+// Called once per helper, and again by itself for a socket that closed before it opened (a
+// connection that failed, or a handshake the host did not answer): tried at most 4 times, its notes
+// waiting meanwhile, and the runtime's requests over HTTP (ready stays 0).
+function open(url, ready, tries = 1) {
+  noteBase ??= url.replace(/^ws/, 'http');
+  let opened = false;
   socket = new WebSocket(url);
   socket.binaryType = 'arraybuffer';
   socket.onopen = () => {
+    opened = true;
     Atomics.store(ready, 0, 1);
     Atomics.notify(ready, 0);
     for (const note of notes) socket.send('0 ' + note);
@@ -338,6 +346,9 @@ function open(url, ready) {
     settle(shared, head.getUint32(4, true), new Uint8Array(data, ${ANSWER_HEADER}));
   };
   socket.onclose = () => {
+    if (!opened && tries < 4) return void setTimeout(() => open(url, ready, tries + 1), 100 * 2 ** tries);
+    closed = true;
+    for (const note of notes) noteOverHttp(note);
     notes = [];
     Atomics.store(ready, 0, 2);
     Atomics.notify(ready, 0);
@@ -352,10 +363,13 @@ const handle = async ({ data }, from = 'root') => {
   if (spawnerMessage(data, from)) return;
   if (data.channel) return open(data.channel, new Int32Array(data.ready));
   if (data.port) return void (data.port.onmessage = (e) => handle(e, null));
-  // A note sent before the socket opens waits for it (what a run read first is what its next run needs most).
+  // A note sent before the socket opens waits for it (what a run read first is what its next run needs
+  // most); one the socket will not take goes over HTTP.
   if (data.note) {
-    if (socket && socket.readyState === 0 && notes.length < 256) notes.push(data.note);
-    return void (socket && socket.readyState === 1 && socket.send('0 ' + data.note));
+    if (socket && socket.readyState === 1) return void socket.send('0 ' + data.note);
+    if (closed || notes.length >= 256) return void (noteBase && noteOverHttp(data.note));
+    if (socket) notes.push(data.note);
+    return;
   }
   if (data.get) {
     if (!socket || socket.readyState !== 1) return settle(data.shared, 0, null);
