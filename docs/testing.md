@@ -1,7 +1,7 @@
 # Testing
 
-The suites, what they need and how long they take are in the README (Development) and in
-[ADR 0043](adr/0043-test-suites.md); CI runs each e2e file as its own job and reports its times
+The suites and what they need are in [CONTRIBUTING.md](../CONTRIBUTING.md#running-the-tests), and how
+long they take in [ADR 0043](adr/0043-test-suites.md); CI runs each e2e file as its own job and reports its times
 (`scripts/test-times.ts`, budgets in `test/budgets.json`). This page is about keeping them reliable.
 
 ## Looking for flaky tests

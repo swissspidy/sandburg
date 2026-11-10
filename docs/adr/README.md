@@ -21,7 +21,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0015](0015-static-demos.md) | Static demos on GitHub Pages replay the host | Accepted |
 | [0016](0016-faster-batches.md) | Fail-fast checks, shared Vite seeds, warm-ups | Accepted |
 | [0017](0017-runtime-profile.md) | What a CPU profile of the runtime showed | Accepted |
-| [0018](0018-browser-install.md) | npm install in the browser (opt-in) | Accepted |
+| [0018](0018-browser-install.md) | npm install in the browser (opt-in) | Accepted; amended by [ADR 0064](0064-monorepos-and-local-packages.md) (workspaces and `file:`/`link:` packages inside the project are installed, pnpm and yarn lockfiles pin versions) |
 | [0019](0019-latest-versions.md) | Fixtures test the latest version of every framework | Accepted |
 | [0020](0020-compile-in-the-page.md) | With a browser install, the page compiles too | Accepted |
 | [0021](0021-generate-in-the-browser.md) | Generate an app in the browser, and run it there | Accepted |
@@ -57,7 +57,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0051](0051-wasm-tools-work.md) | The WebAssembly tools' work: esbuild's transforms on the host, Vite's config bundle kept | Accepted |
 | [0052](0052-deferred-framework-imports.md) | Framework modules loaded at first use; what is left in Next.js, Angular and Nuxt runs | Accepted |
 | [0053](0053-invariants-api-and-structure.md) | Security invariants as lint rules, an API report, and the host's largest modules split | Accepted |
-| [0054](0054-security-review-round-4.md) | Security review (round 4): registry-only installs, parser fuzzing, the boundary map | Accepted; amended by [ADR 0061](0061-chromium-sandbox.md) (the boundary its map leaves out, between the app and the machine: Chromium's OS sandbox, now on by default, and site isolation) and [ADR 0064](0064-monorepos-and-local-packages.md) (packages inside the project are linked, never given to npm) |
+| [0054](0054-security-review-round-4.md) | Security review (round 4): registry-only installs, parser fuzzing, the boundary map | Accepted; amended by [ADR 0061](0061-chromium-sandbox.md) (the boundary its map leaves out, between the app and the machine: Chromium's OS sandbox, now on by default, and site isolation); and by [ADR 0064](0064-monorepos-and-local-packages.md) (`file:`, `link:` and `workspace:` packages inside the project are linked by Sandburg, never given to npm; paths outside it stay refused) |
 | [0055](0055-known-bugs-round-5.md) | Known bugs (round 5): a dev script's page port, requests no app made, late allocators | Accepted |
 | [0056](0056-architecture-rules-and-contracts.md) | The architecture as checked rules, one table per framework, contracts in one module each | Accepted |
 | [0057](0057-native-awaits-and-the-runtime-warm-path.md) | Native awaits that carry the async context; the runtime's warm path against Node's | Accepted |
@@ -68,7 +68,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0062](0062-ci-setup-and-coverage.md) | CI: one Chromium setup, a browser cache, and the runs that were missing | Accepted |
 | [0063](0063-synchronous-child-processes.md) | Synchronous child processes | Accepted |
 | [0064](0064-monorepos-and-local-packages.md) | Monorepos and local packages; pnpm and yarn lockfiles | Accepted |
-| [0065](0065-ci-on-macos-and-windows.md) | CI on macOS and Windows, and what it found: npm on Windows, lockfiles through a symlink, macOS's free memory | Accepted |
+| [0065](0065-ci-on-macos-and-windows.md) | CI on macOS and Windows | Accepted |
 | [0066](0066-fidelity-v7-fixes.md) | What fidelity study v7 found: shadow roots, Solid's hydration, fail-fast and classification | Accepted |
 | [0067](0067-diagnosis-followups.md) | Diagnosis follow-ups: a page's later 5xx, error-named paths, and checking the sources of an app that hangs | Accepted |
 | [0068](0068-uncaught-exceptions-and-signals.md) | Uncaught exceptions, unhandled rejections and signals as in Node; signals stop a command cleanly | Accepted |

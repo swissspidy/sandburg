@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Check the README's "What runs" table first: it lists what is supported and what is not (native addons without a WebAssembly build, synchronous child processes, non-Node programs, non-registry dependencies).
+        Check the README's "What runs" table first: it lists what is supported and what is not (native addons without a WebAssembly build, servers started synchronously, non-Node programs, dependencies that are neither npm registry versions nor packages inside the project).
   - type: textarea
     id: problem
     attributes:

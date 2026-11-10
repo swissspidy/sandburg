@@ -5,5 +5,6 @@ bump (patch, minor or major; Sandburg is 0.x, so a breaking change is a minor) a
 for the changelog. Commit the file it writes here.
 
 The Release workflow collects the changesets on `main` into a "Version packages" pull request, which
-bumps `package.json` and writes `CHANGELOG.md`. Merging that pull request publishes the new version to
-npm and creates its GitHub release (docs/adr/0022-npm-package.md).
+bumps `package.json` and writes `CHANGELOG.md`. Merging that pull request stages the new version on
+npm, tags it and creates its GitHub release; the version goes public once a maintainer approves the
+staged publish on npmjs.com (docs/adr/0022-npm-package.md).
