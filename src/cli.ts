@@ -216,7 +216,8 @@ async function command(argv: string[]): Promise<number> {
       );
       if (refused) console.error(`--save-files: nothing written: ${refused}`);
       else if (saved) {
-        const skipped = await writeAppFiles(resolve(target), saved);
+        // The paths are the project's: a workspace package's project is its monorepo.
+        const skipped = await writeAppFiles(project.path, saved);
         if (skipped.length) console.error(`--save-files: not written: ${skipped.map((s) => `${s.path} (${s.reason})`).join(', ')}`);
       }
       const dir = relative(process.cwd(), join(values.out ?? '.sandburg/runs', result.runId));

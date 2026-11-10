@@ -327,7 +327,8 @@ export const node: AdapterDescriptor = {
       const script = devScript(project);
       if (cmd && (!script || isSimple(project, script))) {
         const main = cmd.bin ? await resolveBin(info.dir, cmd.bin) : cmd.file;
-        if (!main) throw new Error(`the dev script runs "${cmd.bin}", which no installed package provides`);
+        // The app's fault, as in the page (browser.ts): classified by its code.
+        if (!main) throw Object.assign(new Error(`the dev script runs "${cmd.bin}", which no installed package provides`), { code: 'APP' });
         start = { main, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
       } else if (script) {
         start = { shell: script, command: script, tsRunner: false };

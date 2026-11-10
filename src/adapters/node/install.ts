@@ -310,44 +310,55 @@ export class Installer {
     const exists = await access(done).then(() => true, () => false);
     if (!exists) {
       const tmp = `${dir}.tmp-${tmpSuffix()}`;
-      await mkdir(tmp, { recursive: true });
-      await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
-      if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
-      const base = await this.startFromClosest(manifest, tmp, lock !== null);
-      if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
-      // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
-      // when the lockfile has what the store does not handle.
-      const flags = INSTALL_FLAGS;
-      const m = manifest as Manifest;
-      const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
-      if (!(await this.resolver.resolve(tmp, log))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
-      // The resolved tree holds only registry packages: a transitive git, directory, or
-      // off-registry-host tarball dependency (a registry package may declare one) is refused before
-      // anything is unpacked or the full npm install fetches it.
-      // npm writes one even for a project without dependencies: none means nothing was checked.
-      const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
-      if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
-      assertRegistryLockfile(resolvedLock);
-      // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
-      // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
-      const packages = installedPackages(JSON.parse(resolvedLock));
-      const sides = this.sides;
-      const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
-      additions.catch(() => {});
-      if (!(await installFromLockfile(tmp, this.store, log))) await runNpm(['install', ...flags], tmp, log);
-      await ahead;
-      // npm creates no node_modules for a project without dependencies; the steps below read it.
-      await mkdir(join(tmp, 'node_modules'), { recursive: true });
-      // They change different directories: the bindings are new top-level packages, the builds go
-      // inside the packages they replace.
-      const [placeBindings, placeBuilds] = await additions;
-      await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
-      await writeBinIndex(tmp);
-      // The index is written with the install (see loadIndex): this process walked it anyway.
-      const index = walkIndex(tmp);
-      await writeFile(join(tmp, INDEX_FILE), JSON.stringify(index));
-      await writeFile(join(tmp, '.sandburg-complete'), completeRecord());
-      if (await settle(tmp, dir, done)) this.indexes.set(key, Promise.resolve(index));
+      // What still writes into tmp when a step fails; waited for before tmp is removed.
+      const writing: Promise<unknown>[] = [];
+      try {
+        await mkdir(tmp, { recursive: true });
+        await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
+        if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
+        const base = await this.startFromClosest(manifest, tmp, lock !== null);
+        if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
+        // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
+        // when the lockfile has what the store does not handle.
+        const flags = INSTALL_FLAGS;
+        const m = manifest as Manifest;
+        const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
+        writing.push(ahead);
+        if (!(await this.resolver.resolve(tmp, log))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
+        // The resolved tree holds only registry packages: a transitive git, directory, or
+        // off-registry-host tarball dependency (a registry package may declare one) is refused before
+        // anything is unpacked or the full npm install fetches it.
+        // npm writes one even for a project without dependencies: none means nothing was checked.
+        const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
+        if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
+        assertRegistryLockfile(resolvedLock);
+        // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
+        // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
+        const packages = installedPackages(JSON.parse(resolvedLock));
+        const sides = this.sides;
+        const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
+        additions.catch(() => {});
+        writing.push(additions);
+        if (!(await installFromLockfile(tmp, this.store, log))) await runNpm(['install', ...flags], tmp, log);
+        await ahead;
+        // npm creates no node_modules for a project without dependencies; the steps below read it.
+        await mkdir(join(tmp, 'node_modules'), { recursive: true });
+        // They change different directories: the bindings are new top-level packages, the builds go
+        // inside the packages they replace.
+        const [placeBindings, placeBuilds] = await additions;
+        await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
+        await writeBinIndex(tmp);
+        // The index is written with the install (see loadIndex): this process walked it anyway.
+        const index = walkIndex(tmp);
+        await writeFile(join(tmp, INDEX_FILE), JSON.stringify(index));
+        await writeFile(join(tmp, '.sandburg-complete'), completeRecord());
+        if (await settle(tmp, dir, done)) this.indexes.set(key, Promise.resolve(index));
+      } catch (err) {
+        // A failed install's directory is nobody's: sweep() only knows complete installs by their key.
+        await Promise.allSettled(writing);
+        await rm(tmp, { recursive: true, force: true }).catch(() => {});
+        throw err;
+      }
     }
     const resolved: Record<string, string> = {};
     for (const name of Object.keys((manifest as { dependencies: object }).dependencies)) {

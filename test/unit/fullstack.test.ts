@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expandScript, findFullStack, matchProxy, readViteProxy, splitWords } from '../../src/adapters/node/scripts.ts';
+import { startCommand } from '../../src/adapters/node/plan.ts';
+import { projectFromFiles } from '../../src/project.ts';
 
 const pkg = (scripts: Record<string, string>, extra: object = {}) => JSON.stringify({ scripts, ...extra });
 
@@ -100,4 +102,18 @@ test('a workspace package\'s script, by name or path: npm -w, pnpm --filter, yar
   // Every workspace's script is not one script: left as a command (not the root's own script, again).
   assert.deepEqual(expandScript(files, '', 'npm run dev --workspaces').map((l) => [l.dir, l.command]), [['', 'npm run dev --workspaces']]);
   assert.deepEqual(expandScript(files, '', 'npm run dev -w missing'), []);
+});
+
+test("a runner's flags and their values are not its entry file", () => {
+  const start = (dev: string) => {
+    const cmd = startCommand(projectFromFiles({ 'package.json': pkg({ dev }) }, { name: 'app', path: 'app' }));
+    return cmd && [cmd.file, ...cmd.argv];
+  };
+  assert.deepEqual(start('node -r dotenv/config server.js 3000'), ['server.js', '3000']);
+  assert.deepEqual(start('node --env-file .env --watch server.js'), ['server.js']);
+  assert.deepEqual(start('node --import tsx server.ts'), ['server.ts']);
+  assert.deepEqual(start('nodemon --watch src src/index.js'), ['src/index.js']);
+  assert.deepEqual(start('nodemon --exec tsx server.ts'), ['server.ts']);
+  assert.deepEqual(start('tsx watch --tsconfig tsconfig.server.json ./server.ts'), ['server.ts']);
+  assert.deepEqual(start('tsx --watch server.ts'), ['server.ts']);
 });

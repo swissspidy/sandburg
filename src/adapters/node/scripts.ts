@@ -217,16 +217,22 @@ export function isTsRunner(command: string): boolean {
   return /^(tsx|ts-node|ts-node-dev|ts-node-esm|esno|esr)$/.test(words[0] ?? '') || (words[0] === 'nodemon' && /\.[cm]?ts$/.test(words[words.length - 1] ?? ''));
 }
 
-/** The file a server runner starts (`node --watch server/index.js` → server/index.js). */
-function serverEntry(leaf: Leaf): string | null {
-  const [cmd, ...args] = leaf.words;
-  if (!SERVER_RUNNERS.test(cmd)) return null;
+/**
+ * What a runner's arguments leave once its flags, their values and tsx's `watch` are taken out: the
+ * entry file, then the program's own arguments (`node -r dotenv/config server.js 3000` → server.js, 3000).
+ */
+export function runnerPositionals(cmd: string, args: string[]): string[] {
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === 'watch' && positional.length === 0 && (cmd === 'tsx' || cmd === 'esno')) continue;
-    // Flags that take a value.
-    if (/^(--watch-path|--exec|-e|-r|--require|--import|--loader|--env-file|--inspect-port|-w|--watch|--ext|--ignore|-i|--delay|--signal|-x|--tsconfig|-P|--project)$/.test(a) && cmd !== 'node') {
+    // Flags that take a value. --watch names a path for nodemon and ts-node-dev; for the others it
+    // is node's own switch.
+    if (/^(--watch-path|--exec|-e|--ext|--ignore|-i|--delay|--signal|-x|--tsconfig|-P|--project|--inspect-port)$/.test(a) && cmd !== 'node') {
+      i++;
+      continue;
+    }
+    if (/^(-w|--watch)$/.test(a) && /^(nodemon|ts-node-dev|node-dev)$/.test(cmd)) {
       i++;
       continue;
     }
@@ -237,7 +243,14 @@ function serverEntry(leaf: Leaf): string | null {
     if (a.startsWith('-')) continue;
     positional.push(a);
   }
-  return positional[0] ?? null;
+  return positional;
+}
+
+/** The file a server runner starts (`node --watch server/index.js` → server/index.js). */
+function serverEntry(leaf: Leaf): string | null {
+  const [cmd, ...args] = leaf.words;
+  if (!SERVER_RUNNERS.test(cmd)) return null;
+  return runnerPositionals(cmd, args)[0] ?? null;
 }
 
 function isVite(leaf: Leaf): boolean {

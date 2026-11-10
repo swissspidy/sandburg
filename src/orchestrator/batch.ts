@@ -308,7 +308,9 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
     speedup: runsMs ? Math.round((sum(results.map((r) => r.timings.totalMs)) / runsMs) * 100) / 100 : 0,
     runs: results.map((r, i) => ({
       label: items[i].label,
-      project: r.project.path,
+      // The directory or file the item named, which history() looks up: a workspace package's own
+      // directory, where its project's path is its monorepo's.
+      project: runKey(items[i].project) ?? r.project.path,
       runId: r.runId,
       snapshotId: r.project.snapshotId,
       runtime: r.runtime.name,
@@ -358,7 +360,15 @@ async function history(items: BatchItem[], batchDir: string, outOfBrowser: boole
       }
     }
   }
-  return items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined));
+  return items.map((item) => {
+    const key = runKey(item.project);
+    return key === undefined ? undefined : took.get(key);
+  });
+}
+
+/** What a summary's run names its project by, when the item named a path. */
+function runKey(project: BatchItem['project']): string | undefined {
+  return typeof project === 'string' && !project.startsWith('snapshot:') ? resolve(project) : undefined;
 }
 
 /** The largest peak a batch expects of an app from its history (a renderer's memory is bounded well below this). */

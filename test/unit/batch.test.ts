@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { runBatch, type BatchItem } from '../../src/orchestrator/batch.ts';
 import type { RunOptions, Session } from '../../src/orchestrator/session.ts';
 import type { RunResult } from '../../src/types.ts';
+import { tempDir } from './temp-dir.ts';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -471,4 +472,26 @@ test('a batch orders its starts by the time earlier runs spent in their checks b
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("a summary names a run by the path its item gave, which the next batch's history looks up: a workspace package's own directory", async () => {
+  const dir = tempDir('sandburg-batch-');
+  const session = {
+    // A package of a monorepo is loaded as its monorepo: both projects have the monorepo's path.
+    run: async (project: string) =>
+      ({
+        runId: `r-${project}`,
+        status: 'passed',
+        failure: null,
+        project: { name: project, path: resolve('mono'), snapshotId: project },
+        runtime: { name: 'node' },
+        network: { cacheHits: 0, cacheMisses: 0, blocked: [] },
+        timings: { totalMs: project.endsWith('api') ? 900 : 10, phases: { checks: 1 } },
+      }) as unknown as RunResult,
+    browserSandbox: true,
+  } as unknown as Session;
+  const items: BatchItem[] = [{ project: 'mono/apps/web' }, { project: 'mono/apps/api' }];
+  const options = { parallel: 1, prewarm: false, batchDir: dir, availableMemory: () => 64 * 2 ** 30 };
+  const first = await runBatch(session, items, options);
+  assert.deepEqual(first.summary.runs.map((r) => r.project), [resolve('mono/apps/web'), resolve('mono/apps/api')]);
 });

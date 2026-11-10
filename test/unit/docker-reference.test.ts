@@ -344,3 +344,11 @@ test('disposeAll removes every mounted run and refuses new ones (Ctrl-C during c
   await assert.rejects(factory().mount(project, () => {}), /shutting down/);
   assert.deepEqual(readdirSync(workDir), []);
 });
+
+test('an Angular project with a start script and no dev script is one the reference runs', () => {
+  const run = dockerReference({ workDir: tempDir('sandburg-ref-'), docker: fakeDocker({}).docker })();
+  const project = (framework: Project['framework'], scripts: Record<string, string>) => ({ framework, packageJson: { scripts } }) as Project;
+  assert.deepEqual(run.probe(project('angular', { start: 'ng serve' })), { verdict: 'supported' });
+  assert.deepEqual(run.probe(project('angular', { build: 'ng build' })), { verdict: 'unsupported', reason: 'package.json has no "start" script' });
+  assert.deepEqual(run.probe(project('vite', { start: 'vite' })), { verdict: 'unsupported', reason: 'package.json has no "dev" script' });
+});
