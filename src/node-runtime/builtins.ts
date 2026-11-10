@@ -239,8 +239,8 @@ export function buildBuiltins() {
       brotliDecompressSync: zlibUnsupported('brotliDecompressSync'),
       brotliCompress: zlibUnsupported('brotliCompress'),
       brotliDecompress: zlibUnsupported('brotliDecompress'),
-      crc32: (data: Uint8Array | string) => {
-        let c = ~0;
+      crc32: (data: Uint8Array | string, value = 0) => {
+        let c = ~value;
         for (const b of typeof data === 'string' ? new TextEncoder().encode(data) : data) {
           c ^= b;
           for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
@@ -268,8 +268,10 @@ export function buildBuiltins() {
     'stream/consumers': () => ({
       text: async (s: AsyncIterable<Uint8Array | string>) => {
         let t = '';
-        for await (const c of s) t += typeof c === 'string' ? c : new TextDecoder().decode(c);
-        return t;
+        // One decoder for the stream: a character's bytes may come in two chunks.
+        const decoder = new TextDecoder();
+        for await (const c of s) t += typeof c === 'string' ? c : decoder.decode(c, { stream: true });
+        return t + decoder.decode();
       },
       buffer: async (s: AsyncIterable<Uint8Array>) => {
         const parts: Uint8Array[] = [];

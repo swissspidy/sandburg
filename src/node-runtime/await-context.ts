@@ -586,13 +586,6 @@ class Scanner {
     }
   }
 
-  private peek(): string {
-    let i = this.end;
-    const code = this.code;
-    while (i < code.length && (code[i] === ' ' || code[i] === '\n' || code[i] === '\t' || code[i] === '\r')) i++;
-    return code[i] ?? '';
-  }
-
   /**
    * Moves pending awaits on with the current token: at an await's depth, a token that cannot
    * continue its operand (a unary expression) ends it before the token.
@@ -831,7 +824,7 @@ function resetMember(m: Member): void {
   m.star = false;
 }
 
-/** The scan's insertions: each a number (position × 8 + kind) and the frame it belongs to, in growing typed arrays. */
+/** The scan's insertions: each a number (position × KINDS + kind) and the frame it belongs to, in growing typed arrays. */
 class EditList {
   private key = new Float64Array(1024);
   private frame = new Int32Array(1024);

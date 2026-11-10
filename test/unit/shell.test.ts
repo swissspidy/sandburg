@@ -84,6 +84,17 @@ test('NAME=value before a command sets it for that command; alone, or with expor
   const c = run('cross-env NODE_ENV=production node a.js && env DEBUG=1 node b.js');
   await c.exit;
   assert.deepEqual([c.ran[0].env.NODE_ENV, c.ran[1].env.DEBUG], ['production', '1']);
+  // What a command is run with reaches the script it runs, over the environment the shell started with.
+  const files = { '/app/package.json': JSON.stringify({ scripts: { serve: 'node server.js' } }) };
+  for (const script of ['NODE_ENV=production PORT=4000 npm run serve', 'cross-env NODE_ENV=production PORT=4000 npm run serve', 'NODE_ENV=production PORT=4000 sh -c "node server.js"']) {
+    const n = run(script, { files, env: { NODE_ENV: 'development', PORT: '3000' } });
+    await n.exit;
+    assert.deepEqual([n.ran[0].env.NODE_ENV, n.ran[0].env.PORT], ['production', '4000'], script);
+  }
+  // A bare assignment sets that variable alone: the next command list still has its own.
+  const b = run('A=1; NODE_ENV=production npm run serve', { files, env: { NODE_ENV: 'development' } });
+  await b.exit;
+  assert.deepEqual([b.ran[0].env.A, b.ran[0].env.NODE_ENV], ['1', 'production']);
 });
 
 test('sh -c and bash -c run their script in this shell', async () => {

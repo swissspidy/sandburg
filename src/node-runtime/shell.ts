@@ -162,7 +162,9 @@ function fileRunner(cmd: string, args: string[]): { argv: string[]; typescript: 
 export function runScript(script: string, cwd: string, env: Record<string, string>, host: ShellHost): { kill(): void } {
   const running = new Set<{ kill(): void }>();
   let killed = false;
-  const shellEnv = { ...env };
+  // What the script itself set (A=1, export B=2), over the environment of each command list: not a
+  // copy of `env`, which would undo what a list is run with (NODE_ENV=production npm run serve).
+  const shellEnv: Record<string, string> = {};
 
   const join = (dir: string, rel: string) => {
     if (rel.startsWith('/')) return normalize(rel);
@@ -281,13 +283,14 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
   /** Runs one command; calls done(exit code). */
   const command = (input: string[], dir: string, env: Record<string, string>, done: (code: number, cwd?: string) => void) => {
     const words = [...input];
-    const localEnv = { ...env };
+    const assigned: Record<string, string> = {};
     while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
       const w = words.shift()!;
-      localEnv[w.slice(0, w.indexOf('='))] = w.slice(w.indexOf('=') + 1);
+      assigned[w.slice(0, w.indexOf('='))] = w.slice(w.indexOf('=') + 1);
     }
+    const localEnv = { ...env, ...assigned };
     if (!words.length) {
-      Object.assign(shellEnv, localEnv);
+      Object.assign(shellEnv, assigned);
       return done(0);
     }
     const [cmd, ...args] = words;

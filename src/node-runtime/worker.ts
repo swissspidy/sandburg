@@ -23,7 +23,7 @@ import { trackPending } from './track-pending.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverConnections, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
-import { ExitError, NODE_VERSION, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
+import { ExitError, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
 import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { createUncaught } from './uncaught.ts';
@@ -1019,8 +1019,6 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   for (const bytes of early) socket.receive(bytes);
   early = null;
 }
-
-export const RUNTIME_NODE_VERSION = NODE_VERSION;
 
 // Ready for an init message (a parent keeps booted runtimes for its threads: see threads.ts).
 realPostMessage({ type: 'booted' });

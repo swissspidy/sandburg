@@ -452,6 +452,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     };
     promisified[base] = async (...args: unknown[]) => withoutStack(() => (fn as (...a: unknown[]) => unknown)(...args));
   }
+  // fs-extra looks for it when it loads, and warns without.
+  Object.assign(callbackified.realpath, { native: callbackified.realpath });
   // fs.read/fs.write callbacks take (err, bytes, buffer): the buffer read into, or the data written
   callbackified.read = (fd, ...args) => {
     const done = (typeof args.at(-1) === 'function' ? bindContext(args.pop() as never) : () => {}) as (e: unknown, n?: number, b?: unknown) => void;
@@ -492,8 +494,6 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     async [Symbol.asyncDispose]() { closeSync(this.fd); }
   }
   promisified.open = async (p, flags) => new FileHandle(openSync(p as PathLike, flags as string));
-  promisified.access = async (p) => accessSync(p as PathLike);
-  promisified.rm = async (p, o) => rmSync(p as PathLike, o as { recursive?: boolean; force?: boolean });
   promisified.exists = async (p) => sync.existsSync(p as PathLike);
 
   // --- streams and watchers --------------------------------------------------------

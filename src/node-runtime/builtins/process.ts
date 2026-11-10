@@ -9,7 +9,6 @@ import { bindContext } from '../async-context.ts';
 
 import { NODE_VERSION } from '../version.ts';
 
-export { NODE_VERSION };
 
 export class ExitError extends Error {
   code: number;
@@ -152,13 +151,20 @@ class Timeout {
   get alive() {
     return this.refed && this.scheduled;
   }
+  /** Cleared by the program (clearTimeout, close()): refresh() does not bring it back, as in Node. */
+  private destroyed = false;
+  destroy() {
+    this.destroyed = true;
+    this.clear();
+  }
   refresh() {
+    if (this.destroyed) return this;
     this.clear();
     this.start();
     return this;
   }
   close() {
-    this.clear();
+    this.destroy();
     return this;
   }
   [Symbol.toPrimitive]() {
@@ -208,9 +214,9 @@ function make(repeat: boolean) {
   };
 }
 function clear(t: unknown) {
-  if (t instanceof Timeout) t.clear();
+  if (t instanceof Timeout) t.destroy();
   // Its number (an unknown one, as in Node, nothing).
-  else if (typeof t === 'number') byId.get(t)?.clear();
+  else if (typeof t === 'number') byId.get(t)?.destroy();
 }
 
 /**
@@ -489,9 +495,11 @@ export function createProcess(opts: ProcessOptions) {
   const t0 = performance.now();
   const proc = new EventEmitter() as EventEmitter & Record<string | symbol, unknown>;
   const out = (name: 'stdout' | 'stderr') => {
+    // One decoder for the stream: a character's bytes may come in two chunks.
+    const decoder = new TextDecoder();
     const w = new Writable({
       write(chunk, _enc, cb) {
-        opts.write(name, typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+        opts.write(name, typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }));
         cb();
       },
     });

@@ -87,6 +87,9 @@ test('sqlite3: callbacks in order, this.lastID/changes, $params, errors', async 
           db.run('INSERT INTO t (name) VALUES (?)', ['ada'], function (err) { log.push(['insert', err, this.lastID, this.changes]); });
           db.run('INSERT INTO t (name) VALUES ($name)', { $name: 'bob' });
           db.run('INSERT INTO t (name) VALUES (?)', 'ada', (err) => log.push(['dup', err && err.code, err && err.message]));
+          // SQL that cannot be prepared calls back once, with why.
+          db.run('INSERT INTO missing VALUES (1)', (err) => log.push(['unprepared', err && err.message]));
+          db.all('SELECT nope FROM t', (err, rows) => log.push(['unprepared', err && err.message, rows]));
           db.get('SELECT name FROM t WHERE id = ?', 2, (err, row) => log.push(['get', row]));
           db.all('SELECT name FROM t ORDER BY id', (err, rows) => log.push(['all', rows.map((r) => r.name)]));
           db.each('SELECT id FROM t', (err, row) => log.push(['row', row.id]), (err, n) => log.push(['each', n]));
@@ -99,6 +102,8 @@ test('sqlite3: callbacks in order, this.lastID/changes, $params, errors', async 
   assert.deepEqual(JSON.parse(out.stdout.trim().split('\n').pop()!), [
     ['insert', null, 1, 1],
     ['dup', 'SQLITE_CONSTRAINT', 'SQLITE_CONSTRAINT: UNIQUE constraint failed: t.name'],
+    ['unprepared', 'SQLITE_ERROR: no such table: missing'],
+    ['unprepared', 'SQLITE_ERROR: no such column: nope', null],
     ['get', { name: 'bob' }],
     ['all', ['ada', 'bob']],
     ['row', 1],

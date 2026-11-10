@@ -188,6 +188,39 @@ test('timers: a throwing immediate leaves the rest of its batch to run; a timeou
   assert.equal(out.exit, 0);
 });
 
+test('a cleared timeout stays cleared when refreshed; output and exec decode a character split over chunks, in the encoding asked for; crc32 goes on from a value', async () => {
+  const out = await h.run(
+    {
+      'print.js': `process.stdout.write('héllo');`,
+      'main.js': `
+        const out = [];
+        const t = setTimeout(() => out.push('cleared timer fired'), 10);
+        clearTimeout(t);
+        t.refresh();
+        const zlib = require('zlib');
+        out.push(zlib.crc32('world', zlib.crc32('hello ')) === zlib.crc32('hello world'));
+        out.push(typeof require('fs').realpath.native);
+        const euro = Buffer.from('€');
+        process.stdout.write(euro.subarray(0, 1));
+        process.stdout.write(euro.subarray(1));
+        process.stdout.write('\\n');
+        const { text } = require('stream/consumers');
+        const { Readable } = require('stream');
+        text(Readable.from([euro.subarray(0, 2), euro.subarray(2)])).then((s) => {
+          out.push(s);
+          require('child_process').exec('node print.js', { encoding: 'latin1' }, (err, stdout) => {
+            out.push(err, stdout);
+            // After the cleared timer's time: timers run in the order they are due.
+            setTimeout(() => console.log(JSON.stringify(out)), 50);
+          });
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.stdout.trim().split('\n'), ['€', JSON.stringify([true, 'function', '€', null, 'hÃ©llo'])]);
+});
+
 test("process.exit in an 'exit' listener ends the process with its code, and 'exit' sees process.exitCode", async () => {
   const out = await h.run(
     {

@@ -431,8 +431,10 @@ export function createChildProcess(host: ChildProcessHost) {
   function collect(child: ChildProcess, options: SpawnOptions, cb?: (e: Error | null, out: string | Buffer, err: string | Buffer) => void) {
     const out: Buffer[] = [];
     const err: Buffer[] = [];
-    child.stdout?.on('data', (d: Buffer | string) => out.push(Buffer.from(d)));
-    child.stderr?.on('data', (d: Buffer | string) => err.push(Buffer.from(d)));
+    // The streams have the encoding asked for (setEncoding): a string is in it, not in UTF-8.
+    const bytes = (d: Buffer | string) => (typeof d === 'string' ? Buffer.from(d, (options.encoding as BufferEncoding) ?? 'utf8') : d);
+    child.stdout?.on('data', (d: Buffer | string) => out.push(bytes(d)));
+    child.stderr?.on('data', (d: Buffer | string) => err.push(bytes(d)));
     const text = (b: Buffer[]) => (options.encoding === 'buffer' ? Buffer.concat(b) : Buffer.concat(b).toString((options.encoding as BufferEncoding) ?? 'utf8'));
     let failed = false;
     child.on('error', (e) => {
