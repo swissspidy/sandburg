@@ -14,3 +14,4 @@ Fixes found by reading the whole project:
 - `exec` and `execFile` with an encoding other than UTF-8 (`latin1`, `hex`, `base64`) give the output in it once, not encoded twice.
 - The `sqlite3` package's stand-in calls back once, not twice, for SQL that cannot be prepared, and its later statements still run after a callback throws.
 - `process.stdout`, `process.stderr` and `stream/consumers`' `text()` keep a character whose bytes come in two chunks; `clearTimeout(t); t.refresh()` leaves the timer cleared; `zlib.crc32(data, value)` goes on from `value`; `fs.realpath.native` exists (fs-extra warned without it).
+- A SQLite database written right before `process.exit()` (a seed or migration script) is in its file for the next process. Before, a write in the last 20 ms of a process was lost.

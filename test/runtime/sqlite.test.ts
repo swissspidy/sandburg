@@ -74,6 +74,26 @@ test('better-sqlite3: statements, named/positional params, transactions, errors,
   assert.equal(r.header, 'SQLite format 3');
 });
 
+test('a database written right before process.exit() is in its file for the next process', async () => {
+  const out = await h.run(
+    {
+      ...fakePackage('better-sqlite3'),
+      'seed.js': `
+        const db = new (require('better-sqlite3'))('seed.db');
+        db.exec("CREATE TABLE t (name TEXT); INSERT INTO t VALUES ('ada'), ('bob')");
+        process.exit(0);`,
+      'main.js': `
+        require('child_process').execFile('node', ['seed.js'], (err) => {
+          const db = new (require('better-sqlite3'))('seed.db');
+          console.log(JSON.stringify([err, db.prepare('SELECT name FROM t').all()]));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout.trim().split('\n').pop()!), [null, [{ name: 'ada' }, { name: 'bob' }]]);
+});
+
 test('sqlite3: callbacks in order, this.lastID/changes, $params, errors', async () => {
   const out = await h.run(
     {

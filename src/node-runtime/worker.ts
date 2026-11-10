@@ -6,7 +6,7 @@
  * virtual servers.
  */
 import { Buffer } from 'buffer';
-import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
+import { flushDatabases, loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import { bundleCache, listCache } from './cache-tree.ts';
 import type { FromWorker, NetMessage, ToParent, ThreadInit, ToWorker, SharedPreload } from './messages.ts';
@@ -784,6 +784,11 @@ let uncaught: ReturnType<typeof createUncaught>;
 export function exited(code: number) {
   if (hasExited) return;
   hasExited = true;
+  try {
+    flushDatabases();
+  } catch {
+    // The process exits all the same.
+  }
   stopTimers();
   for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
   inflight.clear();

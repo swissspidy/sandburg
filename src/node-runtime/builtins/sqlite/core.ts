@@ -95,9 +95,24 @@ interface Shared {
   refs: number;
   dirty: boolean;
   timer: ReturnType<typeof setTimeout> | null;
+  /** Where it is written back to (see flushDatabases). */
+  files: FileAccess;
 }
 
 const shared = new Map<string, Shared>();
+
+/**
+ * Writes every changed database back to its file now: the process exits (process.exit() right after
+ * a write, as a seed script ends), and the timer that would have written it never fires. What an
+ * open transaction changed is not written, as a database file would not have it.
+ */
+export function flushDatabases(): void {
+  for (const s of shared.values()) {
+    if (!s.dirty || !s.path || sqlite().capi.sqlite3_get_autocommit(s.db.pointer) === 0) continue;
+    s.dirty = false;
+    s.files.write(s.path, sqlite().capi.sqlite3_js_db_export(s.db.pointer));
+  }
+}
 
 /** A database handle shared by every connection to the same file (or a private one for :memory:). */
 export class Handle {
@@ -122,7 +137,7 @@ export class Handle {
           if (rc !== 0) throw Object.assign(new Error('file is not a database'), { code: 'SQLITE_NOTADB' });
         }
       } else if (path) files.write(path, new Uint8Array());
-      s = { db, path, refs: 0, dirty: false, timer: null };
+      s = { db, path, refs: 0, dirty: false, timer: null, files };
       if (path) shared.set(path, s);
     }
     s.refs++;
