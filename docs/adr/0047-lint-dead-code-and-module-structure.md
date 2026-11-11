@@ -70,6 +70,11 @@ declaration that stays is not an import). `scripts/split-worker.ts` lists the mo
 split on top of other changes, check out the unsplit files and run it, then `npm run typecheck &&
 npm run lint`.
 
+The scripts that list the moves (`split-worker.ts`, `split-page-checks.ts`, `split-session.ts`,
+`split-node-adapter.ts`) were removed once the splits were long merged and their sources no longer had
+the declarations to move: they are in the history (`git log -- scripts/split-worker.ts`).
+`scripts/split-module.ts`, the tool, stays.
+
 | module | lines | what |
 | --- | --- | --- |
 | worker.ts | 2,136 → 848 | the message loop, the runtime's state, init, run, requests, WebSockets |

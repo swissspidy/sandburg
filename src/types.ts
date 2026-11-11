@@ -40,7 +40,6 @@ export interface PackageJson {
 /** Whether a runtime can run a project (the probe phase). */
 export type ProbeVerdict =
   | { verdict: 'supported' }
-  | { verdict: 'unknown'; reason: string }
   | { verdict: 'unsupported'; reason: string };
 
 /** Node-side half of a runtime adapter. */
@@ -53,18 +52,13 @@ export interface AdapterDescriptor {
   assets: Record<string, string>;
   /** Upstream origins the runtime itself needs (e.g. CDNs). */
   egress: string[];
-  /** Host sends COOP/COEP when true. */
   /**
-   * Serve the sandbox cross-origin isolated (SharedArrayBuffer, WebAssembly threads). 'credentialless'
-   * uses COEP: credentialless, so cross-origin no-cors resources (fonts, images) still load.
+   * Serve the sandbox cross-origin isolated (SharedArrayBuffer, WebAssembly threads), with COOP and
+   * COEP: credentialless, so cross-origin no-cors resources (fonts, images) still load. false: not isolated.
    */
-  crossOriginIsolation: boolean | 'credentialless';
+  crossOriginIsolation: false | 'credentialless';
   /** Default phase deadlines for this runtime (user options still win). */
   timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
-  /** Compile-time constants for the browser bundle (esbuild `define`): identifier → JSON value. */
-  bundleDefines?: Record<string, string>;
-  /** Module path aliases for bundling the browser entry. */
-  bundleAliases?: Record<string, string>;
   probe(project: Project): ProbeVerdict;
   /**
    * Host-side part of the install phase (e.g. npm install --ignore-scripts for the
@@ -136,9 +130,6 @@ export interface InstallReport {
   lockfileHonored: boolean;
   /** Package name → resolved version or range. */
   dependencies: Record<string, string>;
-  buildMs?: number | null;
-  /** Modules the adapter replaced with Sandburg stand-ins (a fidelity risk). */
-  shims?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +244,6 @@ export interface RunResult {
     loadMs: number | null;
     mountMs: number | null;
     installMs: number | null;
-    buildMs: number | null;
     startMs: number | null;
     readyMs: number | null;
     checksMs: number | null;

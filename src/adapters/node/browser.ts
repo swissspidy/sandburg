@@ -333,7 +333,6 @@ export function createAdapter(): RuntimeAdapter {
         resolution: host.lockfile ? 'lockfile' : Object.keys({ ...ctx.packageJson?.dependencies, ...resolved }).length ? 'range' : 'none',
         lockfileHonored: host.lockfile,
         dependencies: resolved,
-        buildMs: null,
       };
     },
 

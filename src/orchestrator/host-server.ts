@@ -54,7 +54,7 @@ const bundles = new Map<string, Promise<string>>();
 export function bundleHost(adapter: AdapterDescriptor): Promise<string> {
   let bundle = bundles.get(adapter.name);
   if (!bundle) {
-    const aliases: Record<string, string> = { 'sandburg:adapter': adapter.browserEntry, ...adapter.bundleAliases };
+    const aliases: Record<string, string> = { 'sandburg:adapter': adapter.browserEntry };
     bundle = esbuild
       .build({
         entryPoints: [HOST_ENTRY],
@@ -64,7 +64,6 @@ export function bundleHost(adapter: AdapterDescriptor): Promise<string> {
         platform: 'browser',
         target: 'es2022',
         logLevel: 'silent',
-        define: adapter.bundleDefines,
         plugins: [
           {
             name: 'sandburg-aliases',
@@ -297,7 +296,7 @@ export class HostServer {
     const headers: Record<string, string> = { 'cache-control': 'no-store' };
     if (adapter.crossOriginIsolation) {
       headers['cross-origin-opener-policy'] = 'same-origin';
-      headers['cross-origin-embedder-policy'] = adapter.crossOriginIsolation === 'credentialless' ? 'credentialless' : 'require-corp';
+      headers['cross-origin-embedder-policy'] = adapter.crossOriginIsolation;
     }
     const url = URL.parse(req.url ?? '/', 'http://x');
     if (!url) {

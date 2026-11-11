@@ -156,7 +156,7 @@ const HANGING_COMPARE = `
       const project = await loadProject(path);
       // A mount or install the signal's disposeAll cut short ends its run as an error result, as Session.run's does.
       const runtime = options.nodeRuntime?.();
-      const failure = runtime ? await runtime.mount(project, () => {}).then(() => runtime.install()).then(() => null, (e) => ({ class: 'infra', rule: 'infra-error', message: String(e) })) : null;
+      const failure = runtime ? await runtime.mount(project).then(() => runtime.install()).then(() => null, (e) => ({ class: 'infra', rule: 'infra-error', message: String(e) })) : null;
       return {
         runId: 'r', status: failure ? 'error' : 'passed', failure, checks: [],
         project: { name: project.name, path, framework: project.framework, snapshotId: 's' },

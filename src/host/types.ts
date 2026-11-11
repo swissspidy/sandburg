@@ -52,8 +52,6 @@ export interface Activity {
 
 interface StartResult {
   url: string;
-  /** False when start() already loaded the app into the frame (default: true, the host navigates to url). */
-  navigate?: boolean;
 }
 
 export class AdapterError extends Error {
@@ -73,7 +71,7 @@ export interface HostApi {
   install(hostData?: unknown): Promise<RpcResult<InstallReport>>;
   start(): Promise<RpcResult<StartResult>>;
   /** Runtime readiness, then load the app URL into the frame and wait for its load event. */
-  ready(url: string, navigate?: boolean): Promise<RpcResult<void>>;
+  ready(url: string): Promise<RpcResult<void>>;
   /**
    * Whether the app frame shows a rendered app (its document, read from the host page, as
    * waitForRender in session.ts reads it; host/rendered.ts): `selector` matches, else #root/#app/#__next

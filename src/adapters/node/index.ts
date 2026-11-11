@@ -12,7 +12,7 @@ import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-w
 import { createHash } from 'node:crypto';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
-import { findFullStack } from './scripts.ts';
+import { frontendProxy } from './scripts.ts';
 import { browserInstall, devScript, isSimple, packageDirs, nestedInstall, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
 import { planOf } from './local-packages.ts';
 import { UnsupportedDependencyError } from './spec-guard.ts';
@@ -308,7 +308,7 @@ async function hostInstall(project: Project, log: (line: string) => void, option
       start = { shell: script, command: script, tsRunner: false };
     }
   }
-  const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
+  const proxy = project.framework === 'next' ? [] : frontendProxy(project.files);
   const cacheKey = devCacheKey(project, key);
   const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
   const compiles = {
