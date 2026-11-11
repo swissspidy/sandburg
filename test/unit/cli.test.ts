@@ -65,6 +65,8 @@ test('an unknown command or option value is a usage error (64), found before the
   assert.equal((await cli('run', 'app', '--runtime', 'foo')).code, 64);
   assert.equal((await cli('compare', 'corpus', '--corpus', 'x')).code, 64);
   assert.equal((await cli('compare', 'corpus', '--reference', 'podman')).code, 64);
+  // An option of one command given to another is not dropped without a word.
+  assert.deepEqual(await cli('batch', 'corpus', '--save-files', 'db$').then((r) => [r.code, r.stderr]), [64, '--save-files: only for run, with a project directory']);
 });
 
 test("a project, checks file or directory that is not there is an error (2) on one line, and makes no run's directory", async () => {

@@ -463,6 +463,17 @@ export function createChildProcess(host: ChildProcessHost) {
     child.start(file, args, { ...options, stdio: 'pipe' }, false);
     return collect(child, options, cb);
   }
+  // util.promisify(exec) and (execFile), as Node's: { stdout, stderr }, or the error with both.
+  for (const run of [exec, execFile] as ((...args: unknown[]) => ChildProcess)[]) {
+    const promise = (...args: unknown[]) => {
+      let child: ChildProcess | undefined;
+      const result = new Promise((resolve, reject) => {
+        child = run(...args, (e: Error | null, stdout: unknown, stderr: unknown) => (e ? reject(Object.assign(e, { stdout, stderr })) : resolve({ stdout, stderr })));
+      });
+      return Object.assign(result, { child });
+    };
+    Object.defineProperty(run, Symbol.for('nodejs.util.promisify.custom'), { value: promise });
+  }
   const ERRNO: Record<string, number> = { ETIMEDOUT: -110, ENOBUFS: -105 };
   const spawnError = (code: string, file: string, spawnargs: string[]) =>
     Object.assign(new Error(`spawnSync ${file} ${code}`), { errno: ERRNO[code], code, syscall: `spawnSync ${file}`, path: file, spawnargs });

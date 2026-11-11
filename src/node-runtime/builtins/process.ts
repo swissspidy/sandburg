@@ -8,6 +8,7 @@ import { Readable, Writable } from 'readable-stream';
 import { bindContext } from '../async-context.ts';
 
 import { NODE_VERSION } from '../version.ts';
+import { norm } from '../vfs.ts';
 
 
 export class ExitError extends Error {
@@ -31,8 +32,11 @@ const NOT_ENDING = new Set(['SIGCHLD', 'SIGCONT', 'SIGURG', 'SIGWINCH', 'SIGSTOP
 /** The process's own 'warning' listener, which prints warnings (removed for --no-warnings: see worker.ts). */
 export const WARNING_PRINTER = Symbol('sandburg.warningPrinter');
 
+/** Where a function keeps its promise form (util.promisify.custom), as Node's: util.promisify returns it. */
+export const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
+
 /** How Node's ERR_INVALID_ARG_TYPE describes the value it received. */
-function received(v: unknown): string {
+export function received(v: unknown): string {
   if (v == null) return String(v);
   if (typeof v === 'object') return `an instance of ${v.constructor?.name ?? 'Object'}`;
   if (typeof v === 'function') return `function ${v.name}`;
@@ -453,17 +457,59 @@ export const timers = {
   },
 };
 
+type TimerOptions = { signal?: AbortSignal; ref?: boolean };
+/**
+ * A timers/promises timer: `set` starts it and returns what clears it. As Node's: invalid arguments
+ * reject; with a `signal`, aborted already or while it waits, it rejects with an AbortError (the
+ * signal's reason its cause) and the timer is cleared.
+ */
+function timerPromise(value: unknown, options: TimerOptions | undefined, set: (done: () => void) => () => void, delay?: unknown): Promise<unknown> {
+  const invalid = (what: string, expected: string, v: unknown) => Promise.reject(Object.assign(new TypeError(`The "${what}" ${what.includes('.') ? 'property' : 'argument'} must be ${expected}. Received ${received(v)}`), { code: 'ERR_INVALID_ARG_TYPE' }));
+  if (delay !== undefined && typeof delay !== 'number') return invalid('delay', 'of type number', delay);
+  if (options === null || typeof options !== 'object') return invalid('options', 'of type object', options);
+  const { signal, ref } = options;
+  if (signal !== undefined && (signal === null || typeof signal !== 'object' || !('aborted' in signal))) return invalid('options.signal', 'an instance of AbortSignal', signal);
+  if (ref !== undefined && typeof ref !== 'boolean') return invalid('options.ref', 'of type boolean', ref);
+  const aborted = () => Object.assign(new Error('The operation was aborted', { cause: signal!.reason }), { name: 'AbortError', code: 'ABORT_ERR' });
+  if (signal?.aborted) return Promise.reject(aborted());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clear();
+      reject(aborted());
+    };
+    const clear = set(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(value);
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export const timersPromises = {
-  setTimeout: (ms?: number, value?: unknown) => new Promise((r) => timers.setTimeout(() => r(value), ms)),
-  setImmediate: (value?: unknown) => new Promise((r) => timers.setImmediate(() => r(value))),
+  setTimeout: (ms?: number, value?: unknown, options: TimerOptions = {}) =>
+    timerPromise(value, options, (done) => {
+      const t = timers.setTimeout(done, ms);
+      if (options.ref === false) t.unref();
+      return () => timers.clearTimeout(t);
+    }, ms),
+  // (`ref: false` is not honoured here: an immediate runs on the loop's next turn whatever keeps it alive.)
+  setImmediate: (value?: unknown, options: TimerOptions = {}) =>
+    timerPromise(value, options, (done) => {
+      const imm = timers.setImmediate(done);
+      return () => timers.clearImmediate(imm);
+    }),
   async *setInterval(ms?: number, value?: unknown) {
     for (;;) {
       await new Promise((r) => timers.setTimeout(r, ms));
       yield value;
     }
   },
-  scheduler: { wait: (ms: number) => new Promise((r) => timers.setTimeout(r, ms)), yield: () => new Promise((r) => timers.setImmediate(r)) },
+  scheduler: { wait: (ms: number, options?: TimerOptions): Promise<unknown> => timersPromises.setTimeout(ms, undefined, options), yield: () => new Promise((r) => timers.setImmediate(r)) },
 };
+// util.promisify(setTimeout) and (setImmediate) are the timers/promises functions, as Node's: their
+// callbacks take no error.
+Object.defineProperty(timers.setTimeout, PROMISIFY_CUSTOM, { value: timersPromises.setTimeout });
+Object.defineProperty(timers.setImmediate, PROMISIFY_CUSTOM, { value: timersPromises.setImmediate });
 
 // --- process ----------------------------------------------------------------------
 
@@ -547,8 +593,10 @@ export function createProcess(opts: ProcessOptions) {
     stderr: out('stderr'),
     stdin: Object.assign(stdinStream(opts.stdin), { isTTY: false, fd: 0, setRawMode() {} }),
     cwd: () => cwd,
+    // (That the directory exists is checked where the files are: see buildBuiltins.)
     chdir: (dir: string) => {
-      cwd = dir.startsWith('/') ? dir : `${cwd}/${dir}`;
+      if (typeof dir !== 'string') throw Object.assign(new TypeError(`The "directory" argument must be of type string. Received ${received(dir)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      cwd = norm(dir.startsWith('/') ? dir : `${cwd}/${dir}`);
     },
     umask: () => 0o022,
     getuid: () => 0,
@@ -559,7 +607,8 @@ export function createProcess(opts: ProcessOptions) {
     uptime: () => (performance.now() - t0) / 1000,
     hrtime,
     memoryUsage,
-    cpuUsage: () => ({ user: Math.round(performance.now() * 1000), system: 0 }),
+    // In microseconds; since `prev` (an earlier result) when given.
+    cpuUsage: (prev?: { user: number; system: number }) => ({ user: Math.round(performance.now() * 1000) - (prev?.user ?? 0), system: 0 - (prev?.system ?? 0) }),
     resourceUsage: () => ({ maxRSS: memory().rss / 1024 }),
     constrainedMemory: () => 0,
     availableMemory: () => 4e9,
@@ -673,7 +722,7 @@ export function createProcess(opts: ProcessOptions) {
       proc[CAPTURE_CALLBACK] = fn;
     },
     hasUncaughtExceptionCaptureCallback: () => !!proc[CAPTURE_CALLBACK],
-    loadEnvFile() {},
+    // loadEnvFile: with the files (see buildBuiltins).
   });
   // As in Node: an integer string ('2') is the number.
   let exitCode: number | undefined;

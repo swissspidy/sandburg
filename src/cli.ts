@@ -185,6 +185,11 @@ async function command(argv: string[]): Promise<number> {
   };
   const store = new SnapshotStore(resolve(values.store ?? '.sandburg/store'));
 
+  // Not dropped without a word by the commands it is not for.
+  if (values['save-files'] !== undefined && command !== 'run') {
+    console.error('--save-files: only for run, with a project directory');
+    return 64;
+  }
   switch (command) {
     case 'snapshot': {
       const project = await input(loadProject(target, store));

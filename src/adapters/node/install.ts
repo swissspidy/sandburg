@@ -1049,7 +1049,7 @@ function walkIndex(dir: string): FileIndex {
   // 1.1-1.3 s (0.6 s with each directory's entries side by side).
   function walk(abs: string): void {
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.name === '.bin' || entry.name === '.cache' || entry.name === '.sandburg-transformed') continue;
+      if (entry.name === '.bin' || entry.name === '.cache') continue;
       const full = join(abs, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.isFile()) index[relative(dir, full).split(sep).join('/')] = lstatSync(full).size;

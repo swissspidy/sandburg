@@ -19,15 +19,34 @@ import { parseArgs } from '@pkgjs/parseargs';
 import { asyncHooks, EventEmitterAsyncResource } from './async-context.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https } from './builtins/http.ts';
-import { timers, timersPromises } from './builtins/process.ts';
+import { PROMISIFY_CUSTOM, received, timers, timersPromises } from './builtins/process.ts';
 import * as misc from './builtins/misc.ts';
 import { net } from './builtins/net.ts';
 import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
 import { CRYPTO_LIB_KEYS, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
+import { FsError } from './vfs.ts';
 import { vfs, proc, runtimeLib, lazyMember, childProcess, wasiChildThread, base, WARM_RUNTIMES, threads, thread, write, sqliteFiles } from './worker.ts';
 
 export function buildBuiltins() {
-  const fs = createFs(vfs, () => (proc.cwd as () => string)());
+  const fs = createFs(vfs, () => (proc.cwd as () => string)(), write);
+  // What the process does with files. chdir: to a directory that exists, as Node's (its error names
+  // where the process is, and the directory as given).
+  const setCwd = proc.chdir as (dir: string) => void;
+  proc.chdir = (dir: string) => {
+    const kind = typeof dir === 'string' ? vfs.kind(pathBrowserify.resolve((proc.cwd as () => string)(), dir)) : 'dir';
+    if (kind !== 'dir') {
+      const code = kind ? 'ENOTDIR' : 'ENOENT';
+      const from = (proc.cwd as () => string)();
+      throw Object.assign(new Error(`${code}: ${kind ? 'not a directory' : 'no such file or directory'}, chdir '${from}' -> '${dir}'`), { errno: kind ? -20 : -2, code, syscall: 'chdir', path: from, dest: dir });
+    }
+    setCwd(dir);
+  };
+  // loadEnvFile: the file's variables, but those the environment has already.
+  proc.loadEnvFile = (path: string | URL | Buffer = '.env') => {
+    if (!fs.existsSync(path)) throw new FsError('ENOENT', 'open', String(path));
+    const env = proc.env as Record<string, string>;
+    for (const [key, value] of Object.entries(misc.parseEnv(fs.readFileSync(path, 'utf8') as string))) env[key] ??= value;
+  };
   const path = Object.assign(Object.create(null), pathBrowserify, {
     toNamespacedPath: (p: string) => p,
     matchesGlob: () => false,
@@ -115,13 +134,29 @@ export function buildBuiltins() {
     getSystemErrorMap: () => new Map(),
     aborted: (signal: AbortSignal) => new Promise((r) => signal.addEventListener('abort', r, { once: true })),
     transferableAbortSignal: (s: AbortSignal) => s,
-    parseEnv: (s: string) => Object.fromEntries(s.split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])),
+    parseEnv: (content: string) => {
+      if (typeof content !== 'string') throw Object.assign(new TypeError(`The "content" argument must be of type string. Received ${received(content)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      return misc.parseEnv(content);
+    },
     getCallSites: () => [],
     parseArgs,
     formatWithOptions: (_options: unknown, ...args: unknown[]) => (util as unknown as { format(...a: unknown[]): string }).format(...args),
     debug: (util as unknown as { debuglog: unknown }).debuglog,
   });
   nodeUtil.inspect.custom ??= Symbol.for('nodejs.util.inspect.custom');
+  // util.promisify.custom is Node's registered symbol (the polyfill has one of its own, which no
+  // library can name): a function's promise form under either is what promisify returns (setTimeout's,
+  // fs.exists's, child_process.exec's: their callbacks are not (err, value)).
+  const polyfillPromisify = util.promisify as ((fn: unknown) => unknown) & { custom?: symbol };
+  nodeUtil.promisify = Object.assign(
+    (original: unknown) => {
+      const custom = typeof original === 'function' ? (original as unknown as Record<symbol, unknown>)[PROMISIFY_CUSTOM] : undefined;
+      if (custom === undefined) return polyfillPromisify(original);
+      if (typeof custom !== 'function') throw Object.assign(new TypeError(`The "util.promisify.custom" property must be of type function. Received ${received(custom)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      return Object.defineProperty(custom, PROMISIFY_CUSTOM, { value: custom, enumerable: false, writable: false, configurable: true });
+    },
+    { custom: PROMISIFY_CUSTOM },
+  );
 
   const url = {
     ...legacyUrl,
@@ -188,6 +223,33 @@ export function buildBuiltins() {
       const filled = randomFillSync(buf, rest[0] as number | undefined, rest[1] as number | undefined);
       queueMicrotask(() => cb(null, filled));
     };
+    // As Node's: uniform over [min, max) (48 random bits, drawn again when above the largest multiple
+    // of the range: no value is likelier than another), its checks and its errors.
+    const RAND_MAX = 2 ** 48 - 1;
+    const randomInt = (min: number, max?: number | ((err: undefined, n: number) => void), cb?: (err: undefined, n: number) => void) => {
+      const minNotSpecified = max === undefined || typeof max === 'function';
+      if (minNotSpecified) [min, max, cb] = [0, min, max as typeof cb];
+      const invalid = (what: string, expected: string, v: unknown) => Object.assign(new TypeError(`The "${what}" argument must be ${expected}. Received ${received(v)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      const outOfRange = (what: string, range: string, v: number) => Object.assign(new RangeError(`The value of "${what}" is out of range. It must be ${range}. Received ${Number.isInteger(v) && Math.abs(v) > 2 ** 32 ? String(v).replace(/\B(?=(\d{3})+$)/g, '_') : String(v)}`), { code: 'ERR_OUT_OF_RANGE' });
+      if (cb !== undefined && typeof cb !== 'function') throw invalid('callback', 'of type function', cb);
+      if (!Number.isSafeInteger(min)) throw invalid('min', 'a safe integer', min);
+      if (!Number.isSafeInteger(max)) throw invalid('max', 'a safe integer', max);
+      const top = max as number;
+      if (top <= min) throw outOfRange('max', `greater than the value of "min" (${min})`, top);
+      const range = top - min;
+      if (!(range <= RAND_MAX)) throw outOfRange(`max${minNotSpecified ? '' : ' - min'}`, `<= ${RAND_MAX}`, range);
+      const limit = RAND_MAX - (RAND_MAX % range);
+      const bytes = new Uint8Array(6);
+      let x: number;
+      do {
+        globalThis.crypto.getRandomValues(bytes);
+        x = bytes.reduce((n, b) => n * 256 + b, 0);
+      } while (x >= limit);
+      const n = (x % range) + min;
+      if (!cb) return n;
+      // As Node's: on the next tick, without an error (undefined).
+      queueMicrotask(() => cb(undefined, n));
+    };
     // crypto-browserify's other members, from the library when first used (its keys, in its order:
     // a test checks them against the library).
     const crypto = Object.create(null) as Record<string, unknown>;
@@ -207,10 +269,7 @@ export function buildBuiltins() {
       subtle: globalThis.crypto.subtle,
       getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
       randomUUID: () => globalThis.crypto.randomUUID(),
-      randomInt: (min: number, max?: number) => {
-        if (max === undefined) [min, max] = [0, min];
-        return min + Math.floor(Math.random() * (max - min));
-      },
+      randomInt,
       timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
       getHashes: () => ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'],
       getCiphers: () => [],
@@ -265,21 +324,32 @@ export function buildBuiltins() {
     stream: () => stream,
     'stream/promises': () => stream.promises,
     'stream/web': () => ({ ReadableStream, WritableStream, TransformStream, TextEncoderStream, TextDecoderStream, ByteLengthQueuingStrategy, CountQueuingStrategy, CompressionStream, DecompressionStream }),
-    'stream/consumers': () => ({
-      text: async (s: AsyncIterable<Uint8Array | string>) => {
+    'stream/consumers': () => {
+      const chunks = async (s: AsyncIterable<Uint8Array | string>) => {
+        const parts: Uint8Array[] = [];
+        for await (const c of s) parts.push(typeof c === 'string' ? Buffer.from(c) : c);
+        return parts;
+      };
+      const text = async (s: AsyncIterable<Uint8Array | string>) => {
         let t = '';
         // One decoder for the stream: a character's bytes may come in two chunks.
         const decoder = new TextDecoder();
         for await (const c of s) t += typeof c === 'string' ? c : decoder.decode(c, { stream: true });
         return t + decoder.decode();
-      },
-      buffer: async (s: AsyncIterable<Uint8Array>) => {
-        const parts: Uint8Array[] = [];
-        for await (const c of s) parts.push(c);
-        return Buffer.concat(parts);
-      },
-      json: async (s: AsyncIterable<Uint8Array>) => JSON.parse(new TextDecoder().decode(Buffer.concat(await (async () => { const p: Uint8Array[] = []; for await (const c of s) p.push(c); return p; })()))),
-    }),
+      };
+      const buffer = async (s: AsyncIterable<Uint8Array | string>) => Buffer.concat(await chunks(s));
+      return {
+        text,
+        buffer,
+        json: async (s: AsyncIterable<Uint8Array | string>) => JSON.parse(await text(s)),
+        // An ArrayBuffer of its own (a Buffer's may be a pool's, with other bytes around its own).
+        arrayBuffer: async (s: AsyncIterable<Uint8Array | string>) => {
+          const b = await buffer(s);
+          return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+        },
+        blob: async (s: AsyncIterable<Uint8Array | string>) => new Blob((await chunks(s)) as BlobPart[]),
+      };
+    },
     string_decoder: () => stringDecoder,
     util: () => nodeUtil,
     'util/types': () => nodeUtil.types,

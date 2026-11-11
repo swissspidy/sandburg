@@ -412,8 +412,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
       // Large code is asked for by the digest the host keys its compiles with (compileForRuntime):
       // what the host compiled before, next dev's chunks in every later run of an app, comes back
       // without being sent. Sending 8 MB costs ~0.35 s before the host sees the request; asking, ~10 ms.
-      const digest = code.length < ASK_FIRST ? null : ((kind === 'cjs' && writtenDigest(path)) || digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`));
+      // Not for what was compiled ahead: the digest waits for a helper, or hashes the whole source here.
       const ahead = kind === 'cjs' ? compiledAhead(path) : null;
+      const digest = ahead !== null || code.length < ASK_FIRST ? null : ((kind === 'cjs' && writtenDigest(path)) || digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`));
       const known = ahead === null && digest ? requestSync(`${base}/compiled/${digest}`, false) : null;
       if (ahead !== null) {
         out = ahead;

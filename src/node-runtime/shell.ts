@@ -329,7 +329,20 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         }
         // Past setTimeout's range (sleep inf): never.
         if (seconds * 1000 > 2 ** 31 - 1) return;
-        return void setTimeout(() => done(0), seconds * 1000);
+        // Stopped with the script (kill): its timer would keep the process busy, and the script "starting", until it ran out.
+        const sleeping = {
+          kill: () => {
+            clearTimeout(timer);
+            running.delete(sleeping);
+            done(143);
+          },
+        };
+        const timer = setTimeout(() => {
+          running.delete(sleeping);
+          done(0);
+        }, seconds * 1000);
+        running.add(sleeping);
+        return;
       }
       case 'cross-env':
       case 'env':

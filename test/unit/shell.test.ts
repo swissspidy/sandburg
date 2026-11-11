@@ -28,8 +28,8 @@ function run(script: string, { files = {}, env = {}, code = () => 0 }: { files?:
     write: (fd, text) => (fd === 1 ? out : err).push(text),
     onExit: (c) => exited(c),
   };
-  runScript(script, '/app', env, host);
-  return { ran, out, err, exit, argv: () => ran.map((r) => r.argv.slice(1).join(' ')) };
+  const handle = runScript(script, '/app', env, host);
+  return { ran, out, err, exit, kill: () => handle.kill(), argv: () => ran.map((r) => r.argv.slice(1).join(' ')) };
 }
 
 const fails = (argv: string[]) => (argv[1].startsWith('fail') ? 1 : 0);
@@ -218,4 +218,11 @@ test("a script's own arguments after -- may look like the package manager's (-r,
   const s = run('npm test -- -r dotenv/config --workspaces', { files });
   assert.equal(await s.exit, 0);
   assert.deepEqual(s.argv(), ['t.js -r dotenv/config --workspaces']);
+});
+
+test("a script stopped in its sleep ends at once, as killed: the sleep's timer does not hold it", async () => {
+  const s = run('sleep 600 && node server.js');
+  s.kill();
+  assert.equal(await s.exit, 143);
+  assert.deepEqual(s.argv(), []);
 });

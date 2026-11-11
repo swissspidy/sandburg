@@ -2198,3 +2198,305 @@ test('child_process: node -v and --version print the version, synchronously and 
   const { version, sync, async } = JSON.parse(out.stdout) as { version: string; sync: string[]; async: [unknown, string] };
   assert.deepEqual({ sync, async }, { sync: Array(4).fill(`${version}\n`), async: [null, `${version}\n`] });
 });
+
+// The programs below print what Node prints for them (but where noted: a descriptor that is a terminal, a resolver without a network).
+test('fs: descriptors 1 and 2 are the process\'s output, 0 an input at its end; writeFile and appendFile to a descriptor write where it is; truncate grows with zeros; a recursive readdir of many entries', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const fs = require('fs');
+const out = [];
+fs.writeSync(1, 'one\\n');
+fs.writeSync(process.stdout.fd, Buffer.from('two\\n'));
+const euro = Buffer.from('€\\n');
+fs.writeSync(1, euro, 0, 1);
+fs.writeSync(1, euro, 1);
+fs.writeSync(2, 'to stderr\\n');
+fs.appendFileSync(1, 'three\\n');
+out.push([0, 1, 2].map((fd) => [fs.fstatSync(fd).isCharacterDevice(), fs.fstatSync(fd).isFile(), fs.fstatSync(fd, { bigint: true }).isCharacterDevice()]));
+out.push(fs.readFileSync(0).length, fs.readFileSync(0, 'utf8'), fs.readSync(0, Buffer.alloc(4)));
+fs.closeSync(0);
+
+// A descriptor's writes go where it is.
+const fd = fs.openSync('log.txt', 'w');
+fs.writeSync(fd, 'abcdef');
+fs.appendFileSync(fd, 'gh');
+fs.writeFileSync(fd, 'ij');
+fs.closeSync(fd);
+out.push(fs.readFileSync('log.txt', 'utf8'), fs.existsSync(String(fd)));
+const again = fs.openSync('log.txt', 'r+');
+fs.writeFileSync(again, 'XY');
+fs.ftruncateSync(again, 12);
+fs.closeSync(again);
+const end = fs.openSync('log.txt', 'a');
+fs.writeFileSync(end, '!');
+fs.closeSync(end);
+out.push(fs.readFileSync('log.txt', 'latin1'));
+fs.truncateSync('log.txt', 3);
+fs.truncateSync('log.txt', 6);
+out.push(fs.readFileSync('log.txt').toString('hex'));
+
+// Many entries below one directory.
+fs.mkdirSync('tree/deep/er', { recursive: true });
+fs.mkdirSync('tree/wide');
+fs.writeFileSync('tree/deep/er/leaf.txt', '');
+out.push(fs.readdirSync('tree', { recursive: true }).sort());
+for (let i = 0; i < 200000; i++) fs.writeFileSync('tree/wide/' + i, '');
+out.push(fs.readdirSync('tree', { recursive: true }).length);
+
+fs.write(1, 'four\\n', (err, written) => {
+  out.push(err, written);
+  const stream = fs.createWriteStream(null, { fd: 1, autoClose: false });
+  stream.write('five\\n');
+  stream.end(() => console.log(JSON.stringify(out)));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stderr, 'to stderr\n');
+  const lines = out.stdout.trim().split('\n');
+  assert.deepEqual(lines.slice(0, -1), ['one', 'two', '€', 'three', 'four', 'five']);
+  // (fstat: as with a terminal on each; under a test runner Node's are pipes.)
+  assert.deepEqual(JSON.parse(lines.at(-1)!), [[[true,false,true],[true,false,true],[true,false,true]],0,"",0,"abcdefghij",false,"XYcdefghij\u0000\u0000!","585963000000",["deep","deep/er","deep/er/leaf.txt","wide"],200004,null,5]);
+});
+
+test('util.promisify gives the promise forms of setTimeout, setImmediate, fs.exists, exec and execFile; timers/promises timers reject and are cleared when their signal aborts, and need not be ref\'d', async () => {
+  const out = await h.run(
+    {
+      'print.js': `process.stdout.write('out:' + process.argv.slice(2).join(','));
+process.stderr.write('err');`,
+      'fail.js': `process.stdout.write('partial');
+process.stderr.write('bad');
+process.exitCode = 3;`,
+      'main.js': `const util = require('util');
+const fs = require('fs');
+const cp = require('child_process');
+const tp = require('timers/promises');
+const out = [];
+const failure = (e) => out.push([e.name, e.code, e.message, e.cause === undefined ? undefined : e.cause.name]);
+(async () => {
+  out.push(await util.promisify(setTimeout)(5, 'timeout'), await util.promisify(setImmediate)('immediate'));
+  out.push(util.promisify(setTimeout) === tp.setTimeout, util.promisify(setImmediate) === tp.setImmediate, util.promisify.custom === Symbol.for('nodejs.util.promisify.custom'));
+  out.push(await util.promisify(fs.exists)('main.js'), await util.promisify(fs.exists)('missing.js'));
+  out.push(await util.promisify(cp.exec)('node print.js a'), await util.promisify(cp.execFile)('node', ['print.js', 'b', 'c']));
+  const running = util.promisify(cp.exec)('node fail.js');
+  out.push(typeof running.child.pid);
+  await running.catch((e) => out.push([e.code, e.stdout, e.stderr, e.message]));
+  const own = (cb) => cb(null, 'callback');
+  own[util.promisify.custom] = () => Promise.resolve('custom');
+  out.push(await util.promisify(own)(), await util.promisify((cb) => cb(null, 'plain'))());
+
+  // A signal: aborted already, or while the timer waits (a minute: cleared, or the process would wait for it).
+  const aborted = new AbortController();
+  aborted.abort();
+  await tp.setTimeout(60000, 'x', { signal: aborted.signal }).catch(failure);
+  await tp.setImmediate('x', { signal: aborted.signal }).catch(failure);
+  const later = new AbortController();
+  const waiting = tp.setTimeout(60000, 'x', { signal: later.signal });
+  const immediate = tp.setImmediate('x', { signal: later.signal });
+  later.abort(new Error('enough'));
+  await waiting.catch(failure);
+  await immediate.catch(failure);
+  await tp.setTimeout('soon').catch(failure);
+  await tp.setTimeout(1, 'x', { signal: 5 }).catch(failure);
+  await tp.setTimeout(1, 'x', { ref: 1 }).catch(failure);
+  out.push(await tp.setTimeout(1, 'value', { signal: later.signal.constructor.prototype === AbortSignal.prototype ? new AbortController().signal : undefined }));
+  out.push(await tp.setImmediate('now', {}), await tp.scheduler.wait(1));
+  console.log(JSON.stringify(out, (k, v) => (v === undefined ? 'undefined' : v)));
+  // Not ref'd: the process does not wait for it.
+  tp.setTimeout(60000, 'x', { ref: false }).then(() => console.log('fired'));
+})();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), ["timeout","immediate",true,true,true,true,false,{"stdout":"out:a","stderr":"err"},{"stdout":"out:b,c","stderr":"err"},"number",[3,"partial","bad","Command failed: node fail.js\nbad"],"custom","plain",["AbortError","ABORT_ERR","The operation was aborted","AbortError"],["AbortError","ABORT_ERR","The operation was aborted","AbortError"],["AbortError","ABORT_ERR","The operation was aborted","Error"],["AbortError","ABORT_ERR","The operation was aborted","Error"],["TypeError","ERR_INVALID_ARG_TYPE","The \"delay\" argument must be of type number. Received type string ('soon')","undefined"],["TypeError","ERR_INVALID_ARG_TYPE","The \"options.signal\" property must be an instance of AbortSignal. Received type number (5)","undefined"],["TypeError","ERR_INVALID_ARG_TYPE","The \"options.ref\" property must be of type boolean. Received type number (1)","undefined"],"value","now","undefined"]);
+  assert.equal(out.exit, 0);
+});
+
+test('readline: an input\'s lines as events and as an async iterator, a question\'s answer, prompts, close; readline/promises', async () => {
+  const out = await h.run(
+    {
+      'data.jsonl': "{\"n\":1}\r\n{\"n\":\"é€\"}\n\n{\"n\":3}\rlast",
+      'main.js': `const readline = require('readline');
+const fs = require('fs');
+const { once } = require('events');
+const { PassThrough } = require('stream');
+const out = [];
+(async () => {
+  const lines = [];
+  for await (const line of readline.createInterface({ input: fs.createReadStream('data.jsonl', { highWaterMark: 5 }), crlfDelay: Infinity })) lines.push(line);
+  out.push(lines);
+
+  const rl = readline.createInterface({ input: fs.createReadStream('data.jsonl') });
+  const seen = [];
+  let closes = 0;
+  rl.on('line', (line) => seen.push(line)).on('close', () => closes++);
+  await once(rl, 'close');
+  rl.close();
+  out.push(seen.length === lines.length && seen.every((l, i) => l === lines[i]), closes, rl instanceof readline.Interface);
+
+  // A question's answer is the next line; the lines after are 'line' events, until it is closed.
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let written = '';
+  output.on('data', (d) => (written += d));
+  const asking = readline.createInterface({ input, output });
+  const events = [];
+  asking.on('line', (line) => {
+    events.push('line ' + line);
+    if (line === 'stop') asking.close();
+  });
+  asking.on('close', () => events.push('close'));
+  const closed = once(asking, 'close');
+  asking.question('name? ', (answer) => events.push('answer ' + answer));
+  asking.setPrompt('$ ');
+  input.write('Ada\\nsecond\\nsto');
+  input.write('p\\nsame chunk\\n');
+  input.write('not seen\\n');
+  await closed;
+  out.push(events, asking.getPrompt());
+  try {
+    asking.question('more? ', () => {});
+  } catch (e) {
+    out.push(e.code);
+  }
+
+  const input2 = new PassThrough();
+  const asking2 = require('readline/promises').createInterface({ input: input2, output });
+  const closed2 = once(asking2, 'close');
+  const answer = asking2.question('age? ');
+  input2.write('36\\n');
+  out.push(await answer, asking2 instanceof readline.promises.Interface, readline.promises === require('readline/promises'));
+  // A last line without an ending is a 'line' as the input ends, a question waiting or not.
+  asking2.question('never? ').then((a) => out.push('answered ' + a));
+  asking2.on('line', (line) => out.push('line ' + line));
+  input2.end('tail');
+  await closed2;
+  const prompting = readline.createInterface({ input: new PassThrough(), output, prompt: '# ' });
+  prompting.prompt();
+  prompting.write('typed\\n');
+  prompting.once('line', (line) => out.push(line));
+  prompting.write(Buffer.from('more\\n'));
+  prompting.close();
+  output.end();
+  await once(output, 'end');
+  out.push(written);
+  console.log(JSON.stringify(out));
+})();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), [["{\"n\":1}","{\"n\":\"é€\"}","","{\"n\":3}","last"],true,1,true,["answer Ada","line second","line stop","close","line same chunk"],"> ","ERR_USE_AFTER_CLOSE","36",true,true,"line tail","more","name? age? never? # "]);
+});
+
+test('.env files as Node parses them (util.parseEnv, process.loadEnvFile); process.chdir and cpuUsage; crypto.randomInt; stream/consumers; dns.resolve', async () => {
+  const out = await h.run(
+    {
+      '.env': "# a comment\nPLAIN=value # trailing comment\nexport EXPORTED = spaced out  \nEMPTY=\nPRESET=from file\nSINGLE='single # kept'\nDOUBLE=\"two\\nlines\"\nLITERAL='no\\nexpansion'\nBACKTICK=`back \"tick\"`\nMULTI=\"first\nsecond\"\nHASH=#not a value\n",
+      'sub/file.txt': '',
+      'main.js': `const util = require('util');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const dns = require('dns');
+const out = {};
+const failure = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    return [e.name, e.code, e.message.replaceAll(start, '<start>'), e.syscall, typeof e.path === 'string' ? e.path.replaceAll(start, '<start>') : e.path, e.dest];
+  }
+};
+const start = process.cwd();
+
+out.parsed = Object.entries(util.parseEnv(fs.readFileSync('.env', 'utf8')));
+out.odd = util.parseEnv('A="unclosed # kept\\n  B = \`x\` trailing\\r\\n\\n=nokey\\nnovalue\\nC=a=b\\nexport D=\\'q\\' # c');
+process.env.PRESET = 'mine';
+out.loaded = [process.loadEnvFile(), process.env.PLAIN, process.env.PRESET, process.env.EMPTY, process.env.MULTI];
+fs.writeFileSync('other.env', 'OTHER=1\\nPLAIN=again');
+process.loadEnvFile('other.env');
+out.other = [process.env.OTHER, process.env.PLAIN];
+out.envErrors = [failure(() => process.loadEnvFile('missing.env')), failure(() => util.parseEnv(5))];
+
+process.chdir('sub/../sub/');
+out.cwd = path.relative(start, process.cwd());
+out.chdirErrors = [failure(() => process.chdir('missing')), failure(() => process.chdir('file.txt')), failure(() => process.chdir(5))];
+process.chdir('..');
+out.back = [process.cwd() === start, fs.existsSync('main.js')];
+
+while (process.cpuUsage().user < 50000);
+const before = process.cpuUsage();
+const since = process.cpuUsage(before);
+out.cpu = [since.user >= 0 && since.user < 50000, since.system >= 0 && since.system < 50000];
+
+const draws = Array.from({ length: 3000 }, () => crypto.randomInt(10, 13));
+out.random = [
+  [...new Set(draws)].sort(),
+  crypto.randomInt(1),
+  Number.isSafeInteger(crypto.randomInt(2 ** 48 - 1)),
+  Array.from({ length: 200 }, () => crypto.randomInt(-5, 2 ** 40)).every((n) => Number.isSafeInteger(n) && n >= -5 && n < 2 ** 40),
+  Array.from({ length: 200 }, () => crypto.randomInt(2 ** 47 + 1)).some((n) => n >= 2 ** 32),
+];
+out.randomErrors = [
+  failure(() => crypto.randomInt('a')),
+  failure(() => crypto.randomInt(1.5, 3)),
+  failure(() => crypto.randomInt(5, 3)),
+  failure(() => crypto.randomInt(0)),
+  failure(() => crypto.randomInt(2 ** 48)),
+  failure(() => crypto.randomInt(-1, 2 ** 48)),
+  failure(() => crypto.randomInt(2 ** 53)),
+  failure(() => crypto.randomInt(1, 5, 'x')),
+].map((e) => e.slice(0, 3));
+const called = [];
+crypto.randomInt(3, (err, n) => called.push(['max', err === undefined, n >= 0 && n < 3]));
+crypto.randomInt(7, 8, (err, n) => called.push(['min, max', err === undefined, n]));
+out.randomSync = called.length;
+
+const { Readable } = require('stream');
+const consumers = require('stream/consumers');
+const resolved = (run) => new Promise((resolve) => run((err, records) => resolve(err ? [err.code, err.syscall, err.hostname] : records)));
+(async () => {
+  out.randomCalled = called;
+  const bytes = await consumers.arrayBuffer(Readable.from([Buffer.from('ab'), Buffer.from('cd')]));
+  const blob = await consumers.blob(Readable.from([Buffer.from('hé'), Buffer.from('llo')]));
+  out.consumers = [bytes instanceof ArrayBuffer, bytes.byteLength, Buffer.from(bytes).toString(), blob instanceof Blob, blob.size, await blob.text(), await consumers.json(Readable.from(['{"a":', '1}']))];
+  const rejected = (e) => [e.code, e.syscall, e.hostname];
+  out.dns = [
+    await resolved((cb) => dns.resolve('127.0.0.1', cb)),
+    await resolved((cb) => dns.resolve('localhost', 'A', cb)),
+    await resolved((cb) => dns.resolve4('127.0.0.1', { ttl: true }, cb)),
+    await resolved((cb) => dns.resolve6('::1', cb)),
+    await resolved((cb) => dns.resolve('example.com', 'MX', cb)),
+    await resolved((cb) => dns.resolveTxt('example.com', cb)),
+    await dns.promises.resolve4('127.0.0.1').catch(rejected),
+    await dns.promises.resolve6('127.0.0.1').catch(rejected),
+    await dns.promises.resolve('example.com', 'SRV').catch(rejected),
+    failure(() => dns.resolve('127.0.0.1', 'BOGUS', () => {})).slice(0, 3),
+  ];
+  console.log(JSON.stringify(out));
+})();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // (dns: addresses as lookup's, no other records; Node asks a name server.)
+  assert.deepEqual(JSON.parse(out.stdout), {
+    parsed: [["BACKTICK","back \"tick\""],["DOUBLE","two\nlines"],["EMPTY",""],["EXPORTED","spaced out"],["HASH",""],["LITERAL","no\\nexpansion"],["MULTI","first\nsecond"],["PLAIN","value"],["PRESET","from file"],["SINGLE","single # kept"]],
+    odd: {"A":"\"unclosed # kept","B":"x","C":"a=b","D":"q"},
+    loaded: [null,"value","mine","","first\nsecond"],
+    other: ["1","value"],
+    envErrors: [["Error","ENOENT","ENOENT: no such file or directory, open 'missing.env'","open","missing.env",null],["TypeError","ERR_INVALID_ARG_TYPE","The \"content\" argument must be of type string. Received type number (5)",null,null,null]],
+    cwd: "sub",
+    chdirErrors: [["Error","ENOENT","ENOENT: no such file or directory, chdir '<start>/sub' -> 'missing'","chdir","<start>/sub","missing"],["Error","ENOTDIR","ENOTDIR: not a directory, chdir '<start>/sub' -> 'file.txt'","chdir","<start>/sub","file.txt"],["TypeError","ERR_INVALID_ARG_TYPE","The \"directory\" argument must be of type string. Received type number (5)",null,null,null]],
+    back: [true,true],
+    cpu: [true,true],
+    random: [[10,11,12],0,true,true,true],
+    randomErrors: [["TypeError","ERR_INVALID_ARG_TYPE","The \"max\" argument must be a safe integer. Received type string ('a')"],["TypeError","ERR_INVALID_ARG_TYPE","The \"min\" argument must be a safe integer. Received type number (1.5)"],["RangeError","ERR_OUT_OF_RANGE","The value of \"max\" is out of range. It must be greater than the value of \"min\" (5). Received 3"],["RangeError","ERR_OUT_OF_RANGE","The value of \"max\" is out of range. It must be greater than the value of \"min\" (0). Received 0"],["RangeError","ERR_OUT_OF_RANGE","The value of \"max\" is out of range. It must be <= 281474976710655. Received 281_474_976_710_656"],["RangeError","ERR_OUT_OF_RANGE","The value of \"max - min\" is out of range. It must be <= 281474976710655. Received 281_474_976_710_657"],["TypeError","ERR_INVALID_ARG_TYPE","The \"max\" argument must be a safe integer. Received type number (9007199254740992)"],["TypeError","ERR_INVALID_ARG_TYPE","The \"callback\" argument must be of type function. Received type string ('x')"]],
+    randomSync: 0,
+    randomCalled: [["max",true,true],["min, max",true,7]],
+    consumers: [true,4,"abcd",true,6,"héllo",{"a":1}],
+    dns: [["127.0.0.1"],["127.0.0.1"],[{"address":"127.0.0.1","ttl":0}],["::1"],["ENODATA","queryMx","example.com"],["ENODATA","queryTxt","example.com"],["127.0.0.1"],["ENODATA","queryAaaa","127.0.0.1"],["ENODATA","querySrv","example.com"],["TypeError","ERR_INVALID_ARG_VALUE","The argument 'rrtype' is invalid. Received 'BOGUS'"]],
+  });
+});
