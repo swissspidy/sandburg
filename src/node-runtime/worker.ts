@@ -988,10 +988,14 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   const id = msg.id;
   // The server may write (and so the client reply, e.g. pong) inside its 'upgrade' handler, before upgrade() returns.
   let early: Uint8Array[] | null = [];
+  // Rejected or closed already, inside the 'upgrade' handler (ws answers 400 there, or closes at
+  // once): not a socket to keep, which would hold the process open for good.
+  let over: 'rejected' | 'closed' | null = null;
   const codec = new WsClientCodec({
     accept: (protocol, extensions) => !hasExited && post({ type: 'ws-accept', id, protocol, extensions }),
     reject: (status, message) => {
       if (hasExited) return;
+      over = 'rejected';
       sockets.delete(id);
       post({ type: 'ws-reject', id, status, message });
     },
@@ -1003,6 +1007,7 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
     closed: (code, reason, wasClean) => {
       // Closed already, as the program exited.
       if (hasExited) return;
+      over = 'closed';
       sockets.get(id)?.socket.hangUp();
       sockets.delete(id);
       post({ type: 'ws-closed', id, code, reason, wasClean });
@@ -1020,6 +1025,11 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   ];
   const socket = server?.upgrade(msg.url, headers, { data: (bytes) => codec.receive(bytes), end: () => codec.end() });
   if (!socket) return post({ type: 'ws-reject', id, status: 404, message: server ? 'the server does not accept WebSocket connections' : `nothing listening on port ${msg.port}` });
+  if (over) {
+    early = null;
+    if (over === 'closed') socket.hangUp();
+    return;
+  }
   sockets.set(id, { socket, codec });
   for (const bytes of early) socket.receive(bytes);
   early = null;

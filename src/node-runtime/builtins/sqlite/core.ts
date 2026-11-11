@@ -77,6 +77,24 @@ export async function loadSqlite(base: string, importScripts: (url: string) => v
   if (config) for (const k of ['log', 'warn', 'error', 'debug']) config[k] = () => {};
 }
 
+/**
+ * Finalizes `stmt` once `owner`, the statement object the program had, is collected: the engine
+ * keeps every prepared statement of an open database until then (~2 KB each), and the packages have
+ * no way to finalize one (better-sqlite3, node:sqlite). `db.prepare(sql).get()` per request would
+ * grow the engine's memory for as long as a server runs.
+ */
+export function finalizeWith(owner: object, stmt: OoStmt): void {
+  statements.register(owner, stmt);
+}
+const statements = new FinalizationRegistry<OoStmt>((stmt) => {
+  try {
+    // Finalized already when its database closed: nothing to do then.
+    stmt.finalize();
+  } catch {
+    // Not the program's concern.
+  }
+});
+
 export function sqlite(): Sqlite3 {
   if (!engine) throw new Error('SQLite is not loaded (the runtime loads it when the app depends on better-sqlite3, sqlite3 or node:sqlite)');
   return engine;

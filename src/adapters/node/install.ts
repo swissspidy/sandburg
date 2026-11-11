@@ -202,8 +202,8 @@ export class Installer {
       if (!/^[0-9a-f]{24}$/.test(name)) continue;
       const done = await readFile(join(this.root, name, '.sandburg-complete'), 'utf8').catch(() => '');
       const layout = recordLayout(done);
-      // A day without changes (new transforms are written into an install as it is used), so another
-      // Sandburg process still on that layout is not using it.
+      // Made more than a day ago (its transforms are kept beside the installs, not in it: nothing
+      // changes an install as it is used), so a Sandburg process still on that layout has had its time.
       const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
       if (layout !== null && layout !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
     }

@@ -48,17 +48,57 @@ export function diskCompileStore(dir: string, max = COMPILED_MAX): Pick<CompileS
 }
 
 /**
+ * Removes `dir`'s siblings of other versions (v<N>, v<N>-<hash>) that have not changed for a day
+ * (another Sandburg process may still use one): nothing asks for them again. For the compiles here,
+ * and for the installed files' transforms (transforms/v<TRANSFORM_VERSION>).
+ */
+export async function sweepOtherVersions(dir: string, now = Date.now()): Promise<void> {
+  const root = dirname(dir);
+  for (const version of await readdir(root).catch(() => [] as string[])) {
+    if (version === basename(dir) || !/^v\d+(-[0-9a-f]+)?$/.test(version)) continue;
+    const s = await stat(join(root, version)).catch(() => null);
+    if (s && now - s.mtimeMs > DAY) await rm(join(root, version), { recursive: true, force: true }).catch(() => {});
+  }
+}
+const DAY = 24 * 3600_000;
+
+/** Dev caches, preload bundles and lists not written for this long are removed (sweepDevCaches). */
+const DEV_CACHE_AGE = 14 * DAY;
+/** Bytes of them kept: the oldest beyond it are removed. */
+const DEV_CACHE_MAX = 8 * 2 ** 30;
+
+/**
+ * Removes the files of the dev-cache directory (a project's dev caches, up to 256 MB for each state
+ * of its files; its compiles; an install's preload bundles and lists; a seed's marks) that were not
+ * written for two weeks, and the oldest beyond `max` bytes, down to three quarters of it. Never one
+ * written in the last day, which a run may be reading. What a run misses, it makes again: a cold
+ * start, not a wrong result.
+ */
+export async function sweepDevCaches(dir: string, max = DEV_CACHE_MAX, maxAge = DEV_CACHE_AGE, now = Date.now()): Promise<void> {
+  const files: { path: string; size: number; time: number }[] = [];
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    const s = await stat(join(dir, name)).catch(() => null);
+    if (!s?.isFile()) continue;
+    if (now - s.mtimeMs > maxAge) await rm(join(dir, name), { force: true }).catch(() => {});
+    else files.push({ path: join(dir, name), size: s.size, time: s.mtimeMs });
+  }
+  let total = files.reduce((sum, f) => sum + f.size, 0);
+  if (total <= max) return;
+  files.sort((a, b) => a.time - b.time);
+  for (const f of files) {
+    if (total <= max * 0.75 || now - f.time <= DAY) break;
+    await rm(f.path, { force: true }).catch(() => {});
+    total -= f.size;
+  }
+}
+
+/**
  * Removes the compiles of other versions (dir's siblings v<N>) that have not changed for a day (another
  * Sandburg process may still use one), and the oldest of `dir` beyond `max` bytes, down to three
  * quarters of it.
  */
 export async function sweepCompiles(dir: string, max = COMPILED_MAX, now = Date.now()): Promise<void> {
-  const root = dirname(dir);
-  for (const version of await readdir(root).catch(() => [] as string[])) {
-    if (version === basename(dir) || !/^v\d+(-[0-9a-f]+)?$/.test(version)) continue;
-    const s = await stat(join(root, version)).catch(() => null);
-    if (s && now - s.mtimeMs > 24 * 3600_000) await rm(join(root, version), { recursive: true, force: true }).catch(() => {});
-  }
+  await sweepOtherVersions(dir, now);
   const files: { path: string; size: number; time: number }[] = [];
   for (const sub of await readdir(dir).catch(() => [] as string[])) {
     for (const name of await readdir(join(dir, sub)).catch(() => [] as string[])) {

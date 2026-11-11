@@ -22,7 +22,7 @@ import { offlineInstall } from './npm-cli.ts';
 import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, tmpSuffix } from './install.ts';
 import { NATIVE_TRANSFORM_PATH, nativeTransform } from './native-transform.ts';
-import { diskCompileStore, sweepCompiles } from './compile-store.ts';
+import { diskCompileStore, sweepCompiles, sweepDevCaches, sweepOtherVersions } from './compile-store.ts';
 import type { HostInstall } from './browser.ts';
 import { VITE_SEED_DIRS, VITE_SEED_WAIT } from './vite-seed.ts';
 import { warmups } from './warmup.ts';
@@ -40,6 +40,9 @@ import { DISPOSE_PHASE_MS } from './cache-settle.ts';
 const compiledDir = join(installer.root, '..', 'compiled', `v${TRANSFORM_VERSION}-${COMPILER}`);
 storeCompiles(diskCompileStore(compiledDir));
 void sweepCompiles(compiledDir);
+// What else nothing sweeps: the installed files' transforms of earlier versions, and dev caches long unused.
+void sweepOtherVersions(join(installer.root, '..', 'transforms', `v${TRANSFORM_VERSION}`));
+void sweepDevCaches(devCacheRoot());
 const WS_SHIM = source('adapters/node/ws-shim.js');
 
 /**
