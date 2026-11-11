@@ -332,7 +332,8 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         // Stopped with the script (kill): its timer would keep the process busy, and the script "starting", until it ran out.
         const sleeping = {
           kill: () => {
-            clearTimeout(timer);
+            // The global one, as the setTimeout below is: the program's timers, in the runtime.
+            globalThis.clearTimeout(timer);
             running.delete(sleeping);
             done(143);
           },

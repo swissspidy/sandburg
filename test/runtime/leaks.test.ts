@@ -39,3 +39,24 @@ test("http: a response that came whole and is destroyed unread closes its reques
   assert.deepEqual(JSON.parse(out.stdout.trim()), ['first closed', 'second closed', 'hello /c']);
   assert.equal(out.exit, 0);
 });
+
+test("a WebSocket its server rejects inside its 'upgrade' handler is not kept: the process exits once its server closes", async () => {
+  const out = await h.runWebSocket(
+    {
+      'main.js': `
+        const server = require('http').createServer((req, res) => res.end());
+        server.on('upgrade', (req, socket) => {
+          socket.end('HTTP/1.1 400 Bad Request\\r\\n\\r\\n');
+          server.close();
+        });
+        server.listen(3000);`,
+    },
+    '/app/main.js',
+    '/',
+    [],
+    [],
+    true,
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(out.events, [['reject', 400, ''], ['exit', 0]]);
+});

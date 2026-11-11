@@ -100,7 +100,8 @@ window.runNode = (files, main, requests, extra = {}) => new Promise((resolve) =>
   } else if (extra.prepare) setTimeout(start, extra.prepare);
   else start();
 });
-window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => {
+// untilExit: a rejected socket does not end the run; the program's exit does (or the 3 s below, without one).
+window.runWs = (files, main, url, protocols, sends, untilExit) => new Promise((resolve) => {
   const w = new Worker('/__sandburg/node-worker.js');
   const out = { stdout: '', stderr: '', events: [], fatal: null };
   const finish = () => { w.terminate(); resolve(out); };
@@ -113,10 +114,10 @@ window.runWs = (files, main, url, protocols, sends) => new Promise((resolve) => 
     else if (m.type === 'ws-accept') {
       out.events.push(['open', m.protocol]);
       for (const s of sends) w.postMessage(s === 'CLOSE' ? { type: 'ws-close', id: 1, code: 1000, reason: 'bye' } : { type: 'ws-send', id: 1, data: s });
-    } else if (m.type === 'ws-reject') { out.events.push(['reject', m.status, m.message]); finish(); }
+    } else if (m.type === 'ws-reject') { out.events.push(['reject', m.status, m.message]); if (!untilExit) finish(); }
     else if (m.type === 'ws-message') out.events.push(['message', typeof m.data === 'string' ? m.data : Array.from(new Uint8Array(m.data))]);
     else if (m.type === 'ws-closed') { out.events.push(['closed', m.code, m.reason, m.wasClean]); setTimeout(finish, 50); }
-    else if (m.type === 'exit') out.events.push(['exit', m.code]);
+    else if (m.type === 'exit') { out.events.push(['exit', m.code]); if (untilExit) finish(); }
   };
   w.postMessage({ type: 'init', cwd: '/app', env: {}, files, installKey: null, nodeModules: null, base: '/__sandburg' });
   setTimeout(finish, 3000);
@@ -149,6 +150,18 @@ export const CHANNEL_OPEN = `const channelOpen = async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 };`;
+
+/**
+ * For a program: `hostAsked(has, count)` resolves once the host was asked `count` times (1 if left
+ * out) for something whose record in `asked` includes `has` (or after 10 s: the test's assertions
+ * then say what is missing). For what a program cannot see itself: a helper's request, a report.
+ */
+export const hostAsked = (port: number) => `const hostAsked = (has, count = 1) => new Promise((resolve) => {
+  require('http').get('http://fetch.localhost:${port}/__test/asked?count=' + count + '&has=' + encodeURIComponent(has), (res) => {
+    res.resume();
+    res.on('end', resolve);
+  });
+});`;
 
 /** What a running program has printed and what the host was asked for, for RuntimeHarness.until. */
 type RunState = { stdout: string; asked: string[] };
@@ -341,6 +354,22 @@ export class RuntimeHarness {
         });
         return check();
       }
+      // Answers once the host was asked `count` times for something that includes `has` (or after
+      // 10 s), looked at every 10 ms: for a program to wait for what the host has seen (hostAsked).
+      if (url.pathname === '/__test/asked') {
+        const has = url.searchParams.get('has') ?? '';
+        const count = Number(url.searchParams.get('count') ?? 1);
+        const deadline = Date.now() + 10_000;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const check = () => {
+          if (this.asked.filter((a) => a.includes(has)).length < count && Date.now() < deadline) return void (timer = setTimeout(check, 10));
+          res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' });
+          res.end('asked');
+        };
+        // Its client went away: nothing to answer.
+        res.on('close', () => clearTimeout(timer));
+        return check();
+      }
       if (url.pathname === '/__sandburg/tla-scan') {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
@@ -397,9 +426,9 @@ export class RuntimeHarness {
     await this.page.goto(`http://127.0.0.1:${(this.server.address() as AddressInfo).port}/`);
   }
 
-  runWebSocket(files: Record<string, string>, main: string, url: string, protocols: string[], sends: string[]) {
+  runWebSocket(files: Record<string, string>, main: string, url: string, protocols: string[], sends: string[], untilExit = false) {
     this.dropChannels = 0;
-    return this.page.evaluate(([f, m, u, p, s]) => (window as unknown as { runWs: Function }).runWs(f, m, u, p, s), [files, main, url, protocols, sends] as const) as Promise<{
+    return this.page.evaluate(([f, m, u, p, s, x]) => (window as unknown as { runWs: Function }).runWs(f, m, u, p, s, x), [files, main, url, protocols, sends, untilExit] as const) as Promise<{
       stdout: string;
       stderr: string;
       fatal: string | null;
