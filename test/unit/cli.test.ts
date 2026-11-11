@@ -327,3 +327,12 @@ test("untilStopped gives the listeners it held back as they were: a once listene
     process.off('SIGBREAK', once);
   }
 });
+
+test('an error that is not about the input (here: the store cannot be written) exits 2 with the error, not 1 as a failed check', async () => {
+  const dir = tempDir('sandburg-cli-');
+  // A file where the store's directory would be.
+  await writeFile(join(dir, 'store'), '');
+  const { code, stderr } = await cli('snapshot', fixture, '--store', join(dir, 'store'));
+  assert.equal(code, 2);
+  assert.match(stderr, /^error: Error: (ENOTDIR|EEXIST)[^\n]*\n\s+at /);
+});
