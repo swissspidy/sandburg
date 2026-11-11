@@ -122,8 +122,10 @@ export async function main(argv: string[]): Promise<number> {
     return await command(argv);
   } catch (err) {
     // What to change on this host, without Playwright's launch log (the error's cause).
-    if (!(err instanceof BrowserSetupError) && !(err instanceof InputError)) throw err;
-    console.error(`error: ${err.message}`);
+    if (err instanceof BrowserSetupError || err instanceof InputError) console.error(`error: ${err.message}`);
+    // Anything else (the browser died, a bug): an error too, with where it came from. Not exit code 1,
+    // which says the app ran and a check failed.
+    else console.error(`error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
     return 2;
   }
 }

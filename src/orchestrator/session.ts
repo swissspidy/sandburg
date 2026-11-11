@@ -495,6 +495,7 @@ export class Session {
         seed: options.seed,
         sandbox,
         installIn: options.installIn,
+        offline: this.options.offline ?? false,
         runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
       });
       if (hostInstall) {
@@ -599,9 +600,13 @@ export class Session {
             const rendered = () => host('rendered', options.readySelector ?? null) as Promise<boolean>;
             // Watched from the first load on: a dev server that never answers the page's request (Angular's,
             // after its dependency optimizer crashed) never fires its load event, and reports the error meanwhile.
+            // Over once the phase has its answer or its deadline passed: what still waits for it stops (the
+            // wait for a render would go on loading the app again in a tab `hold` keeps open).
+            const over = new AbortController();
+            deadline.addEventListener('abort', () => over.abort(), { once: true });
             const render = (async () => {
               await host('ready', url, navigate ?? true);
-              await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
+              await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered, over.signal);
             })();
             // What the app's processes read, and whether undeclared packages are installed after all (relevantFindings).
             const relevant = async (found: SourceFinding[]) => {
@@ -610,8 +615,6 @@ export class Session {
               return relevantFindings(found, answer);
             };
             // The project's sources, checked if the app has not rendered after 20 s: what classifies the phase if it times out.
-            const over = new AbortController();
-            deadline.addEventListener('abort', () => over.abort(), { once: true });
             watchSources(run, (signal) => checkSources(project.files, { app: project.app }, { signal }), relevant, over.signal);
             await failFastOnAppError(render, run, loadingPage, frame).finally(() => over.abort());
             return frame;

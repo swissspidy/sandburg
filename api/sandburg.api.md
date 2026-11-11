@@ -539,6 +539,7 @@ interface HostInstallOptions {
     seed?: boolean;
     runSeed?(project: Project, checks: unknown): Promise<void>;
     installIn?: 'host' | 'browser';
+    offline?: boolean;
     sandbox?: Promise<string>;
 }
 

@@ -17,7 +17,8 @@ import { browserInstall, devScript, isSimple, packageDirs, nestedInstall, pinned
 import { planOf } from './local-packages.ts';
 import { UnsupportedDependencyError } from './spec-guard.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
-import type { AdapterDescriptor, HostRequest, HostResponse, Project } from '../../types.ts';
+import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
+import { offlineInstall } from './npm-cli.ts';
 import { compiled, compileForRuntime, projectHasTopLevelAwait, storeCompiles, warmCompiler, type CompileKind } from './compile.ts';
 import { TRANSFORM_VERSION, tmpSuffix } from './install.ts';
 import { NATIVE_TRANSFORM_PATH, nativeTransform } from './native-transform.ts';
@@ -265,6 +266,117 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   return null;
 }
 
+/** The host's half of an install (AdapterDescriptor.hostInstall): npm's, the WebAssembly builds, how the app starts. */
+async function hostInstall(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<HostInstall> {
+  // A static site: no packages, a file server (see browser.ts).
+  if (project.framework === 'static') return staticInstall();
+  // Workspaces and file:/link: packages are linked, their registry dependencies installed with the
+  // root's; a pnpm-lock.yaml or yarn.lock pins versions (local-packages.ts, ADR 0064).
+  const plan = planOf(project);
+  const pinned = pinnedNote(plan);
+  if (pinned) log(pinned);
+  if (options?.installIn === 'browser') return browserInstall(project);
+  // The runtime's bundle, which the page asks for as soon as the install is done, is built while npm runs.
+  void bundleNodeRuntime().catch(() => {});
+  for (const name of Object.keys(RUNTIME_LIBS) as RuntimeLib[]) void bundleRuntimeLib(name).catch(() => {});
+  const root = rootInstall(project, plan);
+  const info = await installer.install(root, extraDependencies(root), log);
+  const parts = [{ dir: '', key: info.key }];
+  // A local package's dependencies in other versions than the root's, in its own node_modules.
+  for (const { dir, dependencies, lockfile } of plan.nested) parts.push({ dir, key: (await installer.install({ ...project, ...nestedInstall(dependencies, lockfile) }, {}, log)).key });
+  // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
+  for (const dir of packageDirs(project, plan.local)) {
+    const sub = subProject(project, dir);
+    const deps = sub.packageJson ? { ...sub.packageJson.dependencies, ...sub.packageJson.devDependencies } : {};
+    if (!Object.keys(deps).length) continue;
+    parts.push({ dir, key: (await installer.install(sub, {}, log)).key });
+  }
+  const key = parts.length > 1 ? installer.combine(parts) : info.key;
+  let start: HostInstall['start'] = null;
+  if (project.framework !== 'next') {
+    const cmd = startCommand(project);
+    const script = devScript(project);
+    if (cmd && (!script || isSimple(project, script))) {
+      const main = cmd.bin ? await resolveBin(info.dir, cmd.bin) : cmd.file;
+      // The app's fault, as in the page (browser.ts): classified by its code.
+      if (!main) throw Object.assign(new Error(`the dev script runs "${cmd.bin}", which no installed package provides`), { code: 'APP' });
+      start = { main, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
+    } else if (script) {
+      start = { shell: script, command: script, tsRunner: false };
+    }
+  }
+  const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
+  const cacheKey = devCacheKey(project, key);
+  const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
+  const compiles = {
+    key: cacheKey,
+    bundle: (await compileCache.has(cacheKey)) ? `/__sandburg/compile-cache/${cacheKey}` : null,
+    token: issueCompileWrite(cacheKey, options?.sandbox),
+  };
+  let filesBundle: string | null = null;
+  // The run's write of a cache: one, under one key, from its own sandbox.
+  const write = (key: string, dirs: string[]) => issueCacheWrite(key, dirs, options?.sandbox);
+  // The app's own cache from an earlier run: how many files, and their digests (devCacheDigests).
+  const own = await devCacheDigests(cacheKey, cacheDirs);
+  let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: {} };
+  let keep: NonNullable<HostInstall['devCache']>['keep'];
+  if (project.framework === 'next') {
+    const seed = await nextSeedCache(info.resolved, nextRouter(project), options, log);
+    if (seed && options?.seed) {
+      // The seed run keeps its webpack cache under the shared key.
+      devCache = { key: seed.key, dirs: seed.dirs, files: {}, token: write(seed.key, seed.dirs), waitFor: nextCachePacks(seed.dirs) };
+    } else if (seed?.ready) {
+      // The app starts from the webpack cache an earlier run of its own kept, if one did (the seed
+      // was for another cache version: its next.config), else from the seed. If that cache is not
+      // for the app's cache version, webpack keeps this run's, which the page stores under `keep`.
+      const ownKey = nextOwnCacheKey(cacheKey);
+      const from = (await stat(join(devCacheRoot(), `${ownKey}.json`)).then(() => true, () => false)) ? ownKey : seed.key;
+      readableCaches.set(from, seed.dirs);
+      filesBundle = `/__sandburg/dev-cache/${from}/bundle`;
+      keep = { key: ownKey, dirs: seed.dirs, waitFor: nextCachePacks(seed.dirs), token: write(ownKey, seed.dirs), flag: `${posix.dirname(seed.dirs[0])}/sandburg` };
+    }
+  }
+  // A Vite app without a cache of its own starts from the seed for its packages and config.
+  if (project.framework === 'vite' && parts.length === 1 && (options?.seed || !own.count)) {
+    const seed = await viteSeedCache(project, info.key, options, log);
+    if (seed && options?.seed) {
+      devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, token: write(seed.key, VITE_SEED_DIRS), waitFor: VITE_SEED_WAIT };
+    } else if (seed?.ready) {
+      readableCaches.set(seed.key, VITE_SEED_DIRS);
+      filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
+    }
+  }
+  // The app's own cache from an earlier run, as a bundle the runtime fetches: megabytes of base64 in
+  // the install data took ~0.6 s to reach the runtime (SvelteKit's is 8 MB, the Angular CLI's 5 MB).
+  // The page compares what the run leaves with the digests to tell whether to store it again.
+  if (!filesBundle && devCache.key === cacheKey && own.count) {
+    readableCaches.set(cacheKey, cacheDirs);
+    filesBundle = `/__sandburg/dev-cache/${cacheKey}/bundle`;
+    devCache = { ...devCache, digests: own.digests };
+  } else if (devCache.key === cacheKey && own.count) {
+    // Beside a seed's bundle, the app's own cache goes in the install data, as it did.
+    devCache = { ...devCache, files: await readDevCache(cacheKey, cacheDirs) };
+  }
+  if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
+  if (keep) devCache.keep = keep;
+  grantReads(key, options?.sandbox);
+  // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
+  const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
+  return {
+    key,
+    index: await installer.index(key),
+    resolved: info.resolved,
+    lockfile: info.lockfile || plan.pinned !== null,
+    start,
+    proxy,
+    devCache,
+    filesBundle,
+    compileCache: compiles,
+    preload: await preloadUrl(key, entry),
+    ...workspaceInfo(plan),
+  };
+}
+
 export const node: AdapterDescriptor = {
   name: 'node',
   version: NODE_VERSION,
@@ -296,114 +408,8 @@ export const node: AdapterDescriptor = {
     const scripts = project.packageJson?.scripts ?? {};
     return { verdict: 'unsupported', reason: `no way to start this project in the node runtime (dev/start script: "${scripts.dev ?? scripts.start ?? ''}")` };
   },
-  async hostInstall(project, log, options): Promise<HostInstall> {
-    // A static site: no packages, a file server (see browser.ts).
-    if (project.framework === 'static') return staticInstall();
-    // Workspaces and file:/link: packages are linked, their registry dependencies installed with the
-    // root's; a pnpm-lock.yaml or yarn.lock pins versions (local-packages.ts, ADR 0064).
-    const plan = planOf(project);
-    const pinned = pinnedNote(plan);
-    if (pinned) log(pinned);
-    if (options?.installIn === 'browser') return browserInstall(project);
-    // The runtime's bundle, which the page asks for as soon as the install is done, is built while npm runs.
-    void bundleNodeRuntime().catch(() => {});
-    for (const name of Object.keys(RUNTIME_LIBS) as RuntimeLib[]) void bundleRuntimeLib(name).catch(() => {});
-    const root = rootInstall(project, plan);
-    const info = await installer.install(root, extraDependencies(root), log);
-    const parts = [{ dir: '', key: info.key }];
-    // A local package's dependencies in other versions than the root's, in its own node_modules.
-    for (const { dir, dependencies, lockfile } of plan.nested) parts.push({ dir, key: (await installer.install({ ...project, ...nestedInstall(dependencies, lockfile) }, {}, log)).key });
-    // client/, server/ …: packages of their own that the dev script starts (or that the app imports from).
-    for (const dir of packageDirs(project, plan.local)) {
-      const sub = subProject(project, dir);
-      const deps = sub.packageJson ? { ...sub.packageJson.dependencies, ...sub.packageJson.devDependencies } : {};
-      if (!Object.keys(deps).length) continue;
-      parts.push({ dir, key: (await installer.install(sub, {}, log)).key });
-    }
-    const key = parts.length > 1 ? installer.combine(parts) : info.key;
-    let start: HostInstall['start'] = null;
-    if (project.framework !== 'next') {
-      const cmd = startCommand(project);
-      const script = devScript(project);
-      if (cmd && (!script || isSimple(project, script))) {
-        const main = cmd.bin ? await resolveBin(info.dir, cmd.bin) : cmd.file;
-        // The app's fault, as in the page (browser.ts): classified by its code.
-        if (!main) throw Object.assign(new Error(`the dev script runs "${cmd.bin}", which no installed package provides`), { code: 'APP' });
-        start = { main, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
-      } else if (script) {
-        start = { shell: script, command: script, tsRunner: false };
-      }
-    }
-    const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
-    const cacheKey = devCacheKey(project, key);
-    const cacheDirs = parts.flatMap((p) => DEV_CACHE_DIRS.map((d) => (p.dir ? `${p.dir}/${d}` : d)));
-    const compiles = {
-      key: cacheKey,
-      bundle: (await compileCache.has(cacheKey)) ? `/__sandburg/compile-cache/${cacheKey}` : null,
-      token: issueCompileWrite(cacheKey, options?.sandbox),
-    };
-    let filesBundle: string | null = null;
-    // The run's write of a cache: one, under one key, from its own sandbox.
-    const write = (key: string, dirs: string[]) => issueCacheWrite(key, dirs, options?.sandbox);
-    // The app's own cache from an earlier run: how many files, and their digests (devCacheDigests).
-    const own = await devCacheDigests(cacheKey, cacheDirs);
-    let devCache: NonNullable<HostInstall['devCache']> = { key: cacheKey, dirs: cacheDirs, files: {} };
-    let keep: NonNullable<HostInstall['devCache']>['keep'];
-    if (project.framework === 'next') {
-      const seed = await nextSeedCache(info.resolved, nextRouter(project), options, log);
-      if (seed && options?.seed) {
-        // The seed run keeps its webpack cache under the shared key.
-        devCache = { key: seed.key, dirs: seed.dirs, files: {}, token: write(seed.key, seed.dirs), waitFor: nextCachePacks(seed.dirs) };
-      } else if (seed?.ready) {
-        // The app starts from the webpack cache an earlier run of its own kept, if one did (the seed
-        // was for another cache version: its next.config), else from the seed. If that cache is not
-        // for the app's cache version, webpack keeps this run's, which the page stores under `keep`.
-        const ownKey = nextOwnCacheKey(cacheKey);
-        const from = (await stat(join(devCacheRoot(), `${ownKey}.json`)).then(() => true, () => false)) ? ownKey : seed.key;
-        readableCaches.set(from, seed.dirs);
-        filesBundle = `/__sandburg/dev-cache/${from}/bundle`;
-        keep = { key: ownKey, dirs: seed.dirs, waitFor: nextCachePacks(seed.dirs), token: write(ownKey, seed.dirs), flag: `${posix.dirname(seed.dirs[0])}/sandburg` };
-      }
-    }
-    // A Vite app without a cache of its own starts from the seed for its packages and config.
-    if (project.framework === 'vite' && parts.length === 1 && (options?.seed || !own.count)) {
-      const seed = await viteSeedCache(project, info.key, options, log);
-      if (seed && options?.seed) {
-        devCache = { key: seed.key, dirs: VITE_SEED_DIRS, files: {}, token: write(seed.key, VITE_SEED_DIRS), waitFor: VITE_SEED_WAIT };
-      } else if (seed?.ready) {
-        readableCaches.set(seed.key, VITE_SEED_DIRS);
-        filesBundle = `/__sandburg/dev-cache/${seed.key}/bundle`;
-      }
-    }
-    // The app's own cache from an earlier run, as a bundle the runtime fetches: megabytes of base64 in
-    // the install data took ~0.6 s to reach the runtime (SvelteKit's is 8 MB, the Angular CLI's 5 MB).
-    // The page compares what the run leaves with the digests to tell whether to store it again.
-    if (!filesBundle && devCache.key === cacheKey && own.count) {
-      readableCaches.set(cacheKey, cacheDirs);
-      filesBundle = `/__sandburg/dev-cache/${cacheKey}/bundle`;
-      devCache = { ...devCache, digests: own.digests };
-    } else if (devCache.key === cacheKey && own.count) {
-      // Beside a seed's bundle, the app's own cache goes in the install data, as it did.
-      devCache = { ...devCache, files: await readDevCache(cacheKey, cacheDirs) };
-    }
-    if (devCache.key === cacheKey) devCache.token = write(cacheKey, cacheDirs);
-    if (keep) devCache.keep = keep;
-    grantReads(key, options?.sandbox);
-    // The program's entry, from which a never-run install's prefetch starts (see preloadUrl).
-    const entry = start && 'main' in start ? { main: start.main } : project.framework === 'next' ? { require: 'next' } : {};
-    return {
-      key,
-      index: await installer.index(key),
-      resolved: info.resolved,
-      lockfile: info.lockfile || plan.pinned !== null,
-      start,
-      proxy,
-      devCache,
-      filesBundle,
-      compileCache: compiles,
-      preload: await preloadUrl(key, entry),
-      ...workspaceInfo(plan),
-    };
+  hostInstall(project, log, options): Promise<HostInstall> {
+    return offlineInstall.run(options?.offline === true, () => hostInstall(project, log, options));
   },
   serve,
   warmups,

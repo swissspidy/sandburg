@@ -24,10 +24,10 @@ import type { Project } from '../../types.ts';
 import { deferImports } from './deferred-imports.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
-import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
-import { assertRegistryLockfile, assertRegistryManifest } from './spec-guard.ts';
+import { installFromLockfile, installedPackages, linkTree, npmConfig, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
+import { assertRegistryLockfile, assertRegistryManifest, registryOrigins } from './spec-guard.ts';
 import { writeSoon } from './file-writes.ts';
-import { npmCommand } from './npm-cli.ts';
+import { installsOffline, npmCommand } from './npm-cli.ts';
 
 /**
  * A git binary that does not exist, so that npm cannot clone (and prepare, see spec-guard.ts) a git
@@ -245,7 +245,7 @@ export class Installer {
     // Registry dependencies only: a git or directory dependency's prepare script runs on the host,
     // even with --ignore-scripts (see spec-guard.ts). Refused here, before npm or pacote sees it.
     assertRegistryManifest(manifest);
-    if (lock !== null) assertRegistryLockfile(lock);
+    if (lock !== null) assertRegistryLockfile(lock, registryOrigins((await npmConfig()).registries));
     let pending = this.pending.get(key);
     // A finished install is used while its record is the one it finished with (one stat): one removed
     // since (.sandburg cleared while the process kept running), or removed and made again by another
@@ -324,14 +324,14 @@ export class Installer {
         const m = manifest as Manifest;
         const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
         writing.push(ahead);
-        if (!(await this.resolver.resolve(tmp, log))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
+        if (installsOffline() || !(await this.resolver.resolve(tmp, log))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
         // The resolved tree holds only registry packages: a transitive git, directory, or
         // off-registry-host tarball dependency (a registry package may declare one) is refused before
         // anything is unpacked or the full npm install fetches it.
         // npm writes one even for a project without dependencies: none means nothing was checked.
         const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
         if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
-        assertRegistryLockfile(resolvedLock);
+        assertRegistryLockfile(resolvedLock, registryOrigins((await npmConfig()).registries));
         // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
         // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
         const packages = installedPackages(JSON.parse(resolvedLock));
@@ -796,7 +796,7 @@ export function sideInstall(sides: Sides, manifest: object, flags: string[], log
         // As an install: npm resolves (in the resolver's worker, beside others: these are small), the
         // store unpacks; npm installs what the store does not handle.
         const force = flags.includes('--force');
-        if (!(await sides.resolver.resolve(tmp, log, { force, small: true }))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
+        if (installsOffline() || !(await sides.resolver.resolve(tmp, log, { force, small: true }))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
         if (!(await installFromLockfile(tmp, sides.store, log, false))) {
           // From its package.json alone, as before: npm installing from a lockfile skips its libc
           // check for optional packages (sass's @parcel/watcher-linux-x64-musl would come along).
@@ -848,6 +848,8 @@ export interface Sides {
 function npmViewVersion(spec: string, resolver: Resolver): Promise<string | null> {
   let version = viewed.get(spec);
   if (!version) {
+    // Offline, npm answers from its cache alone, and what it does not know then is asked again online.
+    if (installsOffline()) return npmView(spec);
     version = resolver.view(spec).then((v) => (v === undefined ? npmView(spec) : v));
     viewed.set(spec, version);
   }
@@ -859,7 +861,7 @@ function npmView(spec: string): Promise<string | null> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(...npmCommand(['view', spec, 'version', '--json']), { stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(...npmCommand(['view', spec, 'version', '--json', ...(installsOffline() ? ['--offline'] : [])]), { stdio: ['ignore', 'pipe', 'ignore'] });
     } catch {
       // No npm (npmCommand): as when it fails to start.
       return resolve(null);
@@ -1059,6 +1061,8 @@ function walkIndex(dir: string): FileIndex {
 }
 
 function runNpm(args: string[], cwd: string, log: (line: string) => void): Promise<void> {
+  const offline = installsOffline();
+  if (offline) args = [...args, '--offline'];
   return new Promise((resolve, reject) => {
     const child = spawn(...npmCommand(args), { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, npm_config_update_notifier: 'false' } });
     let out = '';
@@ -1069,7 +1073,8 @@ function runNpm(args: string[], cwd: string, log: (line: string) => void): Promi
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
+    // "offline mode:" is how a run says its cache lacked something (run-state.ts): not the app's failure.
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${offline ? "offline mode: npm's cache does not have every package of this install. " : ''}npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
   });
 }
 

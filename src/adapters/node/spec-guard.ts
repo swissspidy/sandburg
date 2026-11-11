@@ -116,18 +116,20 @@ export function assertRegistryManifest(manifest: { dependencies?: Record<string,
 }
 
 /**
- * The origins a package may be fetched from: npm's configured registry, and the public registry as a
- * default. A lockfile's `resolved` tarball URLs point at the registry that produced them; anything
- * else is another host the install would reach.
+ * The origins a package may be fetched from: the public registry, the one in the environment
+ * (npm_config_registry) and `configured`, the registries of npm's own configuration (the host passes
+ * package-store.ts' npmConfig: a mirror or a scope's registry in the user's .npmrc). A lockfile's
+ * `resolved` tarball URLs point at the registry that produced them; anything else is another host
+ * the install would reach.
  */
-export function registryOrigins(): Set<string> {
+export function registryOrigins(configured: string[] = []): Set<string> {
   const out = new Set<string>(['https://registry.npmjs.org']);
-  const reg = process.env.npm_config_registry;
-  if (reg) {
+  for (const reg of [process.env.npm_config_registry, ...configured]) {
+    if (!reg) continue;
     try {
       out.add(new URL(reg).origin);
     } catch {
-      // not a URL: the default stands
+      // not a URL: the others stand
     }
   }
   return out;

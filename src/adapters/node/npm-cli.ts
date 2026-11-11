@@ -4,8 +4,17 @@
  * script runs on this Node (`node .../npm/bin/npm-cli.js`), as `npm.cmd` runs it. No shell, so no
  * cmd.exe quoting of the arguments.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync } from 'node:fs';
 import { delimiter, dirname, join, posix, win32 } from 'node:path';
+
+/**
+ * Whether the install going on is one of an offline session (SessionOptions.offline): npm is then run
+ * with --offline, from its cache alone, and nothing asks the registry. Set around a whole host
+ * install (the node adapter's hostInstall), for everything it starts.
+ */
+export const offlineInstall = new AsyncLocalStorage<boolean>();
+export const installsOffline = (): boolean => offlineInstall.getStore() === true;
 
 /** The file and arguments that run `npm <args>`. On Windows, throws when no npm-cli.js is found (see npmCliScript). */
 export function npmCommand(args: string[], platform = process.platform): [string, string[]] {

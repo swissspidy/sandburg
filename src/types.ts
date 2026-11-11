@@ -93,6 +93,8 @@ export interface HostInstallOptions {
   runSeed?(project: Project, checks: unknown): Promise<void>;
   /** Where dependencies are installed: by npm on the host (default), or in the browser (opt-in). */
   installIn?: 'host' | 'browser';
+  /** The session is offline (SessionOptions.offline): the install asks no registry, and fails on what npm's cache lacks. */
+  offline?: boolean;
   /**
    * The sandbox (HostServer id) the run's page is in, once its tab is known. Write capabilities the
    * install issues to the run are bound to it (HostRequest.sandbox).

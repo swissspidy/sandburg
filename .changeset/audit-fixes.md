@@ -15,3 +15,7 @@ Fixes found by reading the whole project:
 - The `sqlite3` package's stand-in calls back once, not twice, for SQL that cannot be prepared, and its later statements still run after a callback throws.
 - `process.stdout`, `process.stderr` and `stream/consumers`' `text()` keep a character whose bytes come in two chunks; `clearTimeout(t); t.refresh()` leaves the timer cleared; `zlib.crc32(data, value)` goes on from `value`; `fs.realpath.native` exists (fs-extra warned without it).
 - A SQLite database written right before `process.exit()` (a seed or migration script) is in its file for the next process. Before, a write in the last 20 ms of a process was lost.
+- An install accepts packages from the registries npm is configured with (a mirror, or a scope's registry, in the user's `.npmrc`), not only from the public registry and `npm_config_registry`. Before, such an install was refused with "only registry versions can be installed".
+- `--offline` holds for the install too: npm runs with `--offline`, from its own cache, and a package it lacks is an `infra` error. Before, a project not installed yet was installed from the registry.
+- An error of Sandburg's own (the browser died mid-run, a bug) exits 2 with the error printed. Before, it exited 1, which says a check failed.
+- `sandburg open` on an app that never renders (a compile error) no longer loads the app again every few seconds after the ready phase has failed.

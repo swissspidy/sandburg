@@ -41,7 +41,7 @@ import {
 import { lstat, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { TarReader, type TarFile } from './browser-npm/tar.ts';
-import { npmCommand } from './npm-cli.ts';
+import { installsOffline, npmCommand } from './npm-cli.ts';
 
 interface LockEntry {
   version?: string;
@@ -104,6 +104,8 @@ export async function installFromLockfile(dir: string, storeRoot: string, log: (
   // Tarballs npm's cache does not have yet (a cold ~/.npm), and that the store does not have either.
   const missing = [...new Set(fetched.filter(([, e]) => !existsSync(storeOf(e)) && !existsSync(tarballOf(e))).map(([, e]) => e.resolved!))];
   if (missing.length) {
+    // Offline, they are not fetched: npm installs from what its cache has, or says what it lacks.
+    if (installsOffline()) return false;
     await npm(['cache', 'add', ...missing], dir).catch(() => {});
     if (fetched.some(([, e]) => !existsSync(storeOf(e)) && !existsSync(tarballOf(e)))) return false;
   }
@@ -233,18 +235,30 @@ function contentHash(integrity: string): { algorithm: string; hex: string; base6
   return null;
 }
 
-/** npm's cache directory and registry (`npm config get`), asked once per process. */
-function npmConfig(): Promise<{ cache: string; registry: string }> {
+/**
+ * npm's cache directory and registries (`npm config ls`), asked once per process: the registry, and
+ * those of scopes (`@acme:registry`). Asked from the home directory: the user's and the machine's
+ * configuration, as npm reads it in an install directory, without the .npmrc of a project the
+ * process happens to be started in (an untrusted one could name a registry of its own).
+ */
+export function npmConfig(): Promise<NpmConfig> {
   config ??= new Promise((done) => {
     let out = '';
     const finish = () => {
-      const value = (key: string) => new RegExp(`^${key}=(.*)$`, 'm').exec(out)?.[1].trim();
-      const registry = value('registry') || 'https://registry.npmjs.org/';
-      done({ cache: value('cache') || join(homedir(), '.npm'), registry: registry.endsWith('/') ? registry : `${registry}/` });
+      let listed: Record<string, unknown> = {};
+      try {
+        listed = JSON.parse(out) as Record<string, unknown>;
+      } catch {
+        // npm did not answer: its defaults.
+      }
+      const url = (value: unknown) => (typeof value === 'string' && value ? (value.endsWith('/') ? value : `${value}/`) : null);
+      const registry = url(listed.registry) ?? 'https://registry.npmjs.org/';
+      const scoped = Object.entries(listed).flatMap(([key, value]) => (/^@[^:]+:registry$/.test(key) ? [url(value)] : []));
+      done({ cache: typeof listed.cache === 'string' && listed.cache ? listed.cache : join(homedir(), '.npm'), registry, registries: [registry, ...scoped.filter((r): r is string => r !== null)] });
     };
     let child;
     try {
-      child = spawn(...npmCommand(['config', 'get', 'cache', 'registry']), { stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(...npmCommand(['config', 'ls', '-l', '--json']), { cwd: homedir(), stdio: ['ignore', 'pipe', 'ignore'] });
     } catch {
       // No npm to ask (npmCommand): npm's defaults, as when it fails to start.
       return finish();
@@ -255,7 +269,14 @@ function npmConfig(): Promise<{ cache: string; registry: string }> {
   });
   return config;
 }
-let config: Promise<{ cache: string; registry: string }> | undefined;
+interface NpmConfig {
+  cache: string;
+  /** The default registry, with a trailing slash. */
+  registry: string;
+  /** Every registry npm is configured with: the default and the scopes'. */
+  registries: string[];
+}
+let config: Promise<NpmConfig> | undefined;
 
 /** Where npm's cache (cacache) keeps a tarball with this integrity. */
 function contentPath(cache: string, integrity: string): string {

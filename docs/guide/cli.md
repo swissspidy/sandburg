@@ -83,8 +83,9 @@ Snapshots and batches are described in [ADR 0002](../adr/0002-snapshots-and-batc
 
 ### `--offline`
 
-`--offline` answers every request from the HTTP cache (`.sandburg/cache`) and fails on a miss. Run the
-project once online to fill the cache, then run it offline as often as you like. A miss is an `infra`
+`--offline` answers every request from the HTTP cache (`.sandburg/cache`) and fails on a miss. An
+install the project still needs is made by npm with `--offline`, from npm's own cache alone. Run the
+project once online to fill the caches, then run it offline as often as you like. A miss is an `infra`
 failure.
 
 ### `--install-in browser`
@@ -144,7 +145,7 @@ also when a phase before the checks failed: to look at an app, or at why it fail
 |---|---|---|
 | `0` | Passed. | It has its report. |
 | `1` | A blocking check failed (the app ran). In `batch`: a run failed. | |
-| `2` | Error: the run did not reach the checks, or they did not finish in time, or its project or checks file did not load. In `batch`: a run ended in error. The browser could not be set up (Chromium missing, its sandbox could not start). | Nothing could be compared: the reference judged no app, or every run of one side ended in error. |
+| `2` | Error: the run did not reach the checks, or they did not finish in time, or its project or checks file did not load. In `batch`: a run ended in error. The browser could not be set up (Chromium missing, its sandbox could not start), or Sandburg itself failed: the error is printed. | Nothing could be compared: the reference judged no app, or every run of one side ended in error. |
 | `64` | Usage error: an unknown command or option, a missing argument, an invalid value, no projects in the directory. | Same. |
 | `129` | Interrupted (SIGHUP: the terminal closed), after closing the browser. | Interrupted (SIGHUP), after removing its containers. |
 | `130` | Interrupted (Ctrl-C), after closing the browser. | Interrupted (Ctrl-C), after removing its containers. |
