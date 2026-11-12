@@ -398,17 +398,21 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // Keyed by the code itself: a Map compares long strings natively, and hashing them in JavaScript
   // first was ~0.1 s of next dev's start (its 8 MB vendor chunk, twice).
   const compiledCache = new Map<string, string>();
-  const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts'): string => {
-    const key = `${kind}:${path}\0${code}`;
+  // `asAsync`: as an async module whatever the run's mode (the loader asks for it when an ES module
+  // imports one still evaluating: see loadJs in loader.ts).
+  const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts', asAsync = false): string => {
+    const forced = asAsync && !asyncModules && kind !== 'cjs';
+    // Not a key loadCompiles fills: those are compiles in the run's mode.
+    const key = `${kind}${forced ? '!async' : ''}:${path}\0${code}`;
     if (!compilesLoaded && !pageCompiler) loadCompiles(compiledCache, asyncModules);
     const hit = compiledCache.get(key);
     if (hit !== undefined) return hit;
     let out: string;
     // Packages installed in the browser: compiled in the page, on esbuild's WebAssembly build.
     if (pageCompiler) {
-      out = compileInPage({ op: 'compile', code, path, kind, asyncModules: asyncModules && kind !== 'cjs' });
+      out = compileInPage({ op: 'compile', code, path, kind, asyncModules: (asyncModules || forced) && kind !== 'cjs' });
     } else {
-      const async = asyncModules && kind !== 'cjs';
+      const async = (asyncModules || forced) && kind !== 'cjs';
       // Large code is asked for by the digest the host keys its compiles with (compileForRuntime):
       // what the host compiled before, next dev's chunks in every later run of an app, comes back
       // without being sent. Sending 8 MB costs ~0.35 s before the host sees the request; asking, ~10 ms.
