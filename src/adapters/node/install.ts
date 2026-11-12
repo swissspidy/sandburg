@@ -346,7 +346,10 @@ export class Installer {
         // They change different directories: the bindings are new top-level packages, the builds go
         // inside the packages they replace.
         const [placeBindings, placeBuilds] = await additions;
-        await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
+        // All settled before a failure is thrown: the catch below removes tmp, which the others still write into.
+        const placed = await Promise.allSettled([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
+        const failed = placed.find((p) => p.status === 'rejected');
+        if (failed) throw failed.reason;
         await writeBinIndex(tmp);
         // The index is written with the install (see loadIndex): this process walked it anyway.
         const index = walkIndex(tmp);
@@ -797,6 +800,11 @@ export function sideInstall(sides: Sides, manifest: object, flags: string[], log
         // store unpacks; npm installs what the store does not handle.
         const force = flags.includes('--force');
         if (installsOffline() || !(await sides.resolver.resolve(tmp, log, { force, small: true }))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
+        // Registry packages only, as an install's tree (doInstall): a binding's own dependencies are
+        // nobody's choice, and a git or directory one would run its prepare script on the host.
+        const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
+        if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the side install cannot be checked');
+        assertRegistryLockfile(resolvedLock, registryOrigins((await npmConfig()).registries));
         if (!(await installFromLockfile(tmp, sides.store, log, false))) {
           // From its package.json alone, as before: npm installing from a lockfile skips its libc
           // check for optional packages (sass's @parcel/watcher-linux-x64-musl would come along).
@@ -1074,7 +1082,8 @@ function runNpm(args: string[], cwd: string, log: (line: string) => void): Promi
     child.stderr.on('data', onData);
     child.on('error', reject);
     // "offline mode:" is how a run says its cache lacked something (run-state.ts): not the app's failure.
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${offline ? "offline mode: npm's cache does not have every package of this install. " : ''}npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
+    // Only for a cache miss: another failure offline (a conflict, ERESOLVE) is the install's.
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${offline && out.includes('ENOTCACHED') ? "offline mode: npm's cache does not have every package of this install. " : ''}npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
   });
 }
 

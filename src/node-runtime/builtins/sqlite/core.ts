@@ -121,15 +121,23 @@ const shared = new Map<string, Shared>();
 
 /**
  * Writes every changed database back to its file now: the process exits (process.exit() right after
- * a write, as a seed script ends), and the timer that would have written it never fires. What an
- * open transaction changed is not written, as a database file would not have it.
+ * a write, as a seed script ends), and the timer that would have written it never fires. A transaction
+ * still open is rolled back first, as a database file would not have it, and what was committed before
+ * it is written. Each database is written whatever happens to another; the first failure is thrown after.
  */
 export function flushDatabases(): void {
+  let failure: { error: unknown } | null = null;
   for (const s of shared.values()) {
-    if (!s.dirty || !s.path || sqlite().capi.sqlite3_get_autocommit(s.db.pointer) === 0) continue;
-    s.dirty = false;
-    s.files.write(s.path, sqlite().capi.sqlite3_js_db_export(s.db.pointer));
+    if (!s.dirty || !s.path) continue;
+    try {
+      if (sqlite().capi.sqlite3_get_autocommit(s.db.pointer) === 0) s.db.exec('ROLLBACK');
+      s.files.write(s.path, sqlite().capi.sqlite3_js_db_export(s.db.pointer));
+      s.dirty = false;
+    } catch (error) {
+      failure ??= { error };
+    }
   }
+  if (failure) throw failure.error;
 }
 
 /** A database handle shared by every connection to the same file (or a private one for :memory:). */

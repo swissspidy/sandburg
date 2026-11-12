@@ -162,7 +162,10 @@ export class Dirent {
  * `write` is where the process's output goes: what is written to descriptors 1 and 2 (pino's default
  * destination writes to fd 1) goes there, not through process.stdout, as in Node.
  */
-export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' | 'stderr', text: string) => void) {
+export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' | 'stderr', text: string) => void, stdin: () => Uint8Array | undefined = () => undefined) {
+  /** How far descriptor 0 has been read: what stdin holds, read once, as a pipe is. */
+  let stdinRead = 0;
+  const stdinLeft = () => (stdin() ?? new Uint8Array()).subarray(stdinRead);
   const abs = (p: PathLike): string => {
     let s = typeof p === 'string' ? p : p instanceof URL ? decodeURIComponent(p.pathname) : Buffer.isBuffer(p) ? p.toString() : String(p);
     if (s.startsWith('file://')) s = decodeURIComponent(new URL(s).pathname);
@@ -187,8 +190,9 @@ export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' 
     }
   }
   function readFileSync(p: PathLike | number, o?: EncOpt): string | Buffer {
-    // Standard input is at its end.
-    const buf = p === 0 ? Buffer.alloc(0) : Buffer.from(vfs.read(typeof p === 'number' ? fdPath(p) : abs(p)));
+    // Standard input: what is left of it, then it is at its end.
+    const buf = p === 0 ? Buffer.from(stdinLeft()) : Buffer.from(vfs.read(typeof p === 'number' ? fdPath(p) : abs(p)));
+    if (p === 0) stdinRead += buf.length;
     const e = enc(o);
     return e ? buf.toString(e) : buf;
   }
@@ -306,7 +310,13 @@ export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' 
     if (length !== undefined && (length < 0 || from + length > buffer.byteLength)) {
       throw Object.assign(new RangeError(`The value of "length" is out of range. It must be <= ${buffer.byteLength - from}. Received ${length}`), { code: 'ERR_OUT_OF_RANGE' });
     }
-    if (fd === 0) return 0;
+    if (fd === 0) {
+      const left = stdinLeft();
+      const n = Math.min(length ?? buffer.byteLength - from, left.length);
+      buffer.set(left.subarray(0, n), from);
+      stdinRead += n;
+      return n;
+    }
     const f = fds.get(fd);
     if (!f) throw new FsError('EBADF', 'read', String(fd));
     const data = vfs.read(f.path);

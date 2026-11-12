@@ -226,3 +226,11 @@ test("a script stopped in its sleep ends at once, as killed: the sleep's timer d
   assert.equal(await s.exit, 143);
   assert.deepEqual(s.argv(), []);
 });
+
+test('a script stopped with a sleep in the background ends as killed, not with the code of the command before', async () => {
+  const s = run('sleep 600 & true');
+  await Promise.resolve();
+  await Promise.resolve();
+  s.kill();
+  assert.equal(await s.exit, 143);
+});

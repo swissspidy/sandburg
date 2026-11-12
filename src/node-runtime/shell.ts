@@ -434,7 +434,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         command(step.words, cwd, { ...env, ...shellEnv }, () => {
           background--;
           // Only once the foreground commands are done too (`node seed.js & vite` runs until vite ends).
-          if (reachedEnd && background === 0) finish(last);
+          if (reachedEnd && background === 0) finish(killed ? 143 : last);
         });
         return next(i + 1, false);
       }

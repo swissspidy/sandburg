@@ -76,7 +76,8 @@ yourself (a verifier's) on the host, and the agent's in the page.
 ## GitHub Action
 
 The repository is a composite action ([`action.yml`](../../action.yml)) that runs one project.
-v0.3.0 is the first release that has it. Pin it to a release's commit, as you pin other actions
+v0.3.0 is the first release that has it, and it installs that version of the `sandburg` package: until
+`sandburg@0.3.0` is public on npm, give `sandburg-version` too. Pin it to a release's commit, as you pin other actions
 ([Versions and tags](#versions-and-tags)), or use `@main`, which moves:
 
 ```yaml

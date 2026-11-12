@@ -94,6 +94,26 @@ test('a database written right before process.exit() is in its file for the next
   assert.deepEqual(JSON.parse(out.stdout.trim().split('\n').pop()!), [null, [{ name: 'ada' }, { name: 'bob' }]]);
 });
 
+test('a process that exits inside a transaction keeps what it committed before, not what the transaction changed', async () => {
+  const out = await h.run(
+    {
+      ...fakePackage('better-sqlite3'),
+      'seed.js': `
+        const db = new (require('better-sqlite3'))('tx.db');
+        db.exec("CREATE TABLE t (x); INSERT INTO t VALUES (1); BEGIN; INSERT INTO t VALUES (2)");
+        process.exit(0);`,
+      'main.js': `
+        require('child_process').execFile('node', ['seed.js'], (err) => {
+          const db = new (require('better-sqlite3'))('tx.db');
+          console.log(JSON.stringify([err, db.prepare('SELECT x FROM t').all()]));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout.trim().split('\n').pop()!), [null, [{ x: 1 }]]);
+});
+
 test('sqlite3: callbacks in order, this.lastID/changes, $params, errors', async () => {
   const out = await h.run(
     {

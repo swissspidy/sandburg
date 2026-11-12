@@ -25,10 +25,10 @@ import { net } from './builtins/net.ts';
 import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
 import { CRYPTO_LIB_KEYS, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
 import { FsError } from './vfs.ts';
-import { vfs, proc, runtimeLib, lazyMember, childProcess, wasiChildThread, base, WARM_RUNTIMES, threads, thread, write, sqliteFiles } from './worker.ts';
+import { stdinInput, vfs, proc, runtimeLib, lazyMember, childProcess, wasiChildThread, base, WARM_RUNTIMES, threads, thread, write, sqliteFiles } from './worker.ts';
 
 export function buildBuiltins() {
-  const fs = createFs(vfs, () => (proc.cwd as () => string)(), write);
+  const fs = createFs(vfs, () => (proc.cwd as () => string)(), write, () => stdinInput);
   // What the process does with files. chdir: to a directory that exists, as Node's (its error names
   // where the process is, and the directory as given).
   const setCwd = proc.chdir as (dir: string) => void;

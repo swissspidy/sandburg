@@ -221,6 +221,18 @@ test('a cleared timeout stays cleared when refreshed; output and exec decode a c
   assert.deepEqual(out.stdout.trim().split('\n'), ['€', JSON.stringify([true, 'function', '€', null, 'hÃ©llo'])]);
 });
 
+test("fs reads a synchronous child's input from descriptor 0, once, as a pipe", async () => {
+  const out = await h.run(
+    {
+      'read.js': `const fs = require('fs'); const b = Buffer.alloc(3); const n = fs.readSync(0, b, 0, 3, null); console.log(JSON.stringify([n, b.toString(), fs.readFileSync(0, 'utf8'), fs.readFileSync(0, 'utf8')]));`,
+      'main.js': `console.log(require('child_process').execSync('node read.js', { input: 'hello stdin' }).toString().trim());`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout.trim()), [3, 'hel', 'lo stdin', '']);
+});
+
 test("process.exit in an 'exit' listener ends the process with its code, and 'exit' sees process.exitCode", async () => {
   const out = await h.run(
     {

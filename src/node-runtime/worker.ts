@@ -97,6 +97,8 @@ installAsyncContext();
 installWasmGrowGuard();
 
 export let base = '/__sandburg';
+/** What the process's standard input holds (a synchronous child's `input`): fd 0 and process.stdin read it. */
+export let stdinInput: Uint8Array | undefined;
 export let installKey: string | null = null;
 let projectRoot = '/app';
 
@@ -346,6 +348,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined, stdin: child?.stdin });
+  stdinInput = child?.stdin;
   // A worker thread has its parent's node options (Node's default for `execArgv`); a child process has its own (below).
   if (msg.execArgv?.length) proc.execArgv = msg.execArgv;
   if (child) {
@@ -1032,7 +1035,8 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   if (!socket) return post({ type: 'ws-reject', id, status: 404, message: server ? 'the server does not accept WebSocket connections' : `nothing listening on port ${msg.port}` });
   if (over) {
     early = null;
-    if (over === 'closed') socket.hangUp();
+    // Its server may have answered and left the socket open: nothing would close it later.
+    socket.hangUp();
     return;
   }
   sockets.set(id, { socket, codec });

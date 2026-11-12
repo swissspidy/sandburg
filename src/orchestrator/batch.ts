@@ -169,7 +169,9 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const startedAt = new Date();
   const t0 = performance.now();
   const results: RunResult[] = new Array(items.length);
-  const earlier = await history(items, options.batchDir ?? '.sandburg/batches', !!options.nodeRuntime);
+  // Each item's key, taken once: the history's and the summary's (a working directory changed meanwhile would give another).
+  const keys = items.map((item) => runKey(item.project));
+  const earlier = await history(keys, options.batchDir ?? '.sandburg/batches', !!options.nodeRuntime);
   const order = options.longestFirst === false ? items.map((_, i) => i) : longestFirst(earlier);
   let next = 0;
   // The first apps of a stack would otherwise each install and seed it, several tabs at once.
@@ -310,7 +312,7 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
       label: items[i].label,
       // The directory or file the item named, which history() looks up: a workspace package's own
       // directory, where its project's path is its monorepo's.
-      project: runKey(items[i].project) ?? r.project.path,
+      project: keys[i] ?? r.project.path,
       runId: r.runId,
       snapshotId: r.project.snapshotId,
       runtime: r.runtime.name,
@@ -339,7 +341,7 @@ interface Earlier {
  * Each item's latest run in the latest HISTORY_BATCHES batches' summaries (runs in the browser, or
  * out of it, as this batch's), or undefined.
  */
-async function history(items: BatchItem[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<(Earlier | undefined)[]> {
+async function history(keys: (string | undefined)[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<(Earlier | undefined)[]> {
   const took = new Map<string, Earlier>();
   const dir = resolve(batchDir);
   // Batch ids start with their start time in base 36: the newest first.
@@ -360,10 +362,7 @@ async function history(items: BatchItem[], batchDir: string, outOfBrowser: boole
       }
     }
   }
-  return items.map((item) => {
-    const key = runKey(item.project);
-    return key === undefined ? undefined : took.get(key);
-  });
+  return keys.map((key) => (key === undefined ? undefined : took.get(key)));
 }
 
 /** What a summary's run names its project by, when the item named a path. */
