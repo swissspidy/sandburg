@@ -162,7 +162,9 @@ function fileRunner(cmd: string, args: string[]): { argv: string[]; typescript: 
 export function runScript(script: string, cwd: string, env: Record<string, string>, host: ShellHost): { kill(): void } {
   const running = new Set<{ kill(): void }>();
   let killed = false;
-  const shellEnv = { ...env };
+  // What the script itself set (A=1, export B=2), over the environment of each command list: not a
+  // copy of `env`, which would undo what a list is run with (NODE_ENV=production npm run serve).
+  const shellEnv: Record<string, string> = {};
 
   const join = (dir: string, rel: string) => {
     if (rel.startsWith('/')) return normalize(rel);
@@ -281,13 +283,14 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
   /** Runs one command; calls done(exit code). */
   const command = (input: string[], dir: string, env: Record<string, string>, done: (code: number, cwd?: string) => void) => {
     const words = [...input];
-    const localEnv = { ...env };
+    const assigned: Record<string, string> = {};
     while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
       const w = words.shift()!;
-      localEnv[w.slice(0, w.indexOf('='))] = w.slice(w.indexOf('=') + 1);
+      assigned[w.slice(0, w.indexOf('='))] = w.slice(w.indexOf('=') + 1);
     }
+    const localEnv = { ...env, ...assigned };
     if (!words.length) {
-      Object.assign(shellEnv, localEnv);
+      Object.assign(shellEnv, assigned);
       return done(0);
     }
     const [cmd, ...args] = words;
@@ -326,7 +329,21 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         }
         // Past setTimeout's range (sleep inf): never.
         if (seconds * 1000 > 2 ** 31 - 1) return;
-        return void setTimeout(() => done(0), seconds * 1000);
+        // Stopped with the script (kill): its timer would keep the process busy, and the script "starting", until it ran out.
+        const sleeping = {
+          kill: () => {
+            // The global one, as the setTimeout below is: the program's timers, in the runtime.
+            globalThis.clearTimeout(timer);
+            running.delete(sleeping);
+            done(143);
+          },
+        };
+        const timer = setTimeout(() => {
+          running.delete(sleeping);
+          done(0);
+        }, seconds * 1000);
+        running.add(sleeping);
+        return;
       }
       case 'cross-env':
       case 'env':
@@ -417,7 +434,7 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
         command(step.words, cwd, { ...env, ...shellEnv }, () => {
           background--;
           // Only once the foreground commands are done too (`node seed.js & vite` runs until vite ends).
-          if (reachedEnd && background === 0) finish(last);
+          if (reachedEnd && background === 0) finish(killed ? 143 : last);
         });
         return next(i + 1, false);
       }

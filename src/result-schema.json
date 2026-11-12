@@ -46,13 +46,12 @@
     "finishedAt": { "type": "string", "format": "date-time" },
     "timings": {
       "type": "object",
-      "required": ["probeMs", "loadMs", "mountMs", "installMs", "buildMs", "startMs", "readyMs", "checksMs", "totalMs"],
+      "required": ["probeMs", "loadMs", "mountMs", "installMs", "startMs", "readyMs", "checksMs", "totalMs"],
       "properties": {
         "probeMs": { "$ref": "#/$defs/msOrNull" },
         "loadMs": { "$ref": "#/$defs/msOrNull" },
         "mountMs": { "$ref": "#/$defs/msOrNull" },
         "installMs": { "$ref": "#/$defs/msOrNull" },
-        "buildMs": { "$ref": "#/$defs/msOrNull" },
         "startMs": { "$ref": "#/$defs/msOrNull" },
         "readyMs": { "$ref": "#/$defs/msOrNull" },
         "checksMs": { "$ref": "#/$defs/msOrNull" },
@@ -81,9 +80,7 @@
           "properties": {
             "resolution": { "enum": ["lockfile", "range", "none"] },
             "lockfileHonored": { "type": "boolean" },
-            "dependencies": { "type": "object", "additionalProperties": { "type": "string" } },
-            "buildMs": { "$ref": "#/$defs/msOrNull" },
-            "shims": { "type": "array", "items": { "type": "string" } }
+            "dependencies": { "type": "object", "additionalProperties": { "type": "string" } }
           }
         }
       ]

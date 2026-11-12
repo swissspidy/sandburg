@@ -70,7 +70,7 @@ core importing a layer, a cycle; type and dynamic imports that make none). The t
   installer is the node adapter's browser half. The runtime imports no adapter code.
 - page-checks: runtime.ts's helpers that locator.ts and expect.ts use (the app's frame, the run's
   settings, poll, named errors, guarded) moved to frame.ts, and `app` to app.ts, by
-  scripts/split-module.ts (scripts/split-page-checks.ts redoes it): frame ‹ locator ‹ app ‹ expect ‹
+  scripts/split-module.ts (scripts/split-page-checks.ts, since removed, did it): frame ‹ locator ‹ app ‹ expect ‹
   runtime, no cycle. The run's settings are a const object run() assigns into (an importer cannot
   reassign an exported `let`).
 - The lint config's browser list: 15 modules added, warmup.ts removed (its host rules apply again;

@@ -104,9 +104,10 @@ export interface NodeRuntime {
   /** Phase deadlines this runtime needs instead of the defaults (RunOptions.timeouts still override them). */
   timeouts?: Partial<Record<PhaseName, number>>;
   probe(project: Project): ProbeVerdict;
-  /** Prepares, installs and starts the app; returns the loopback port it listens on. A phase's error with `infra: true` (the runtime itself could not run) classes the run infra. */
-  mount(project: Project, log: (line: string) => void): Promise<void>;
+  /** Prepares the app's files. A phase's error with `infra: true` (the runtime itself could not run) classes the run infra. */
+  mount(project: Project): Promise<void>;
   install(): Promise<InstallReport>;
+  /** Starts the app: the loopback port it listens on. */
   start(): Promise<{ port: number }>;
   /** Log lines (install and dev-server output), for results and classification. */
   logs(): string[];
@@ -495,6 +496,7 @@ export class Session {
         seed: options.seed,
         sandbox,
         installIn: options.installIn,
+        offline: this.options.offline ?? false,
         runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
       });
       if (hostInstall) {
@@ -588,7 +590,7 @@ export class Session {
             const hostData = hostInstall ? await hostInstall : undefined;
             return watch(host('install', hostData));
           })) as InstallReport;
-          const { url, navigate } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string; navigate?: boolean };
+          const { url } = (await run.phase('start', timeouts.start, () => watch(host('start')))) as { url: string };
           run.appStarted(url);
           const app = await run.phase('ready', timeouts.ready, async (deadline) => {
             // The host page's frame for the app, there before the app loads into it.
@@ -599,9 +601,13 @@ export class Session {
             const rendered = () => host('rendered', options.readySelector ?? null) as Promise<boolean>;
             // Watched from the first load on: a dev server that never answers the page's request (Angular's,
             // after its dependency optimizer crashed) never fires its load event, and reports the error meanwhile.
+            // Over once the phase has its answer or its deadline passed: what still waits for it stops (the
+            // wait for a render would go on loading the app again in a tab `hold` keeps open).
+            const over = new AbortController();
+            deadline.addEventListener('abort', () => over.abort(), { once: true });
             const render = (async () => {
-              await host('ready', url, navigate ?? true);
-              await waitForRender(frame, options.readySelector, navigate === false ? undefined : () => host('ready', url, true), loading, rendered);
+              await host('ready', url);
+              await waitForRender(frame, options.readySelector, () => host('ready', url), loading, rendered, over.signal);
             })();
             // What the app's processes read, and whether undeclared packages are installed after all (relevantFindings).
             const relevant = async (found: SourceFinding[]) => {
@@ -610,8 +616,6 @@ export class Session {
               return relevantFindings(found, answer);
             };
             // The project's sources, checked if the app has not rendered after 20 s: what classifies the phase if it times out.
-            const over = new AbortController();
-            deadline.addEventListener('abort', () => over.abort(), { once: true });
             watchSources(run, (signal) => checkSources(project.files, { app: project.app }, { signal }), relevant, over.signal);
             await failFastOnAppError(render, run, loadingPage, frame).finally(() => over.abort());
             return frame;
@@ -671,10 +675,9 @@ export class Session {
     checks: Checks | PageChecks | null,
     options: RunOptions,
   ): Promise<void> {
-    const logs: string[] = [];
     try {
       await run.phase('load', timeouts.load, async () => {}); // no host page
-      await run.phase('mount', timeouts.mount, () => node.mount(project, (l) => logs.push(l)));
+      await run.phase('mount', timeouts.mount, () => node.mount(project));
       run.install = await run.phase('install', timeouts.install, () => node.install());
       // The tab's routes and capture for the app's origin are part of starting it: an error there is the phase's.
       const origin = await run.phase('start', timeouts.start, async () => {

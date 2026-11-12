@@ -4,9 +4,20 @@
 # nothing: the build is CI's slowest job, and without this it first ran once the change was merged.
 name: Pages
 
+# The same paths for both: a merge that changes none of them (docs, tests, an ADR) would build every
+# demo to deploy the site it already has. workflow_dispatch deploys it whatever changed.
 on:
   push:
     branches: [main]
+    paths:
+      - 'pages/**'
+      - 'src/**'
+      - 'scripts/pages/**'
+      - 'fixtures/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/pages.yml'
+      - '.github/actions/setup-chromium/**'
   pull_request:
     paths:
       - 'pages/**'
@@ -49,7 +60,9 @@ jobs:
         if: always()
         with:
           name: screenshots
-          path: dist-pages/demos/*/screenshot.png
+          path: |
+            dist-pages/demos/*/screenshot.png
+            dist-pages/generate/screenshot-*.png
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         if: github.event_name != 'pull_request'
         with:

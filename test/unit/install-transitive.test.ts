@@ -91,6 +91,11 @@ test('registryOrigins and assertRegistryLockfile reject a resolved URL on anothe
     assert.ok(registryOrigins().has('http://127.0.0.1:4873'));
     assert.doesNotThrow(() => assertRegistryLockfile(lock('http://127.0.0.1:4873/x/-/x-1.0.0.tgz')));
     assert.throws(() => assertRegistryLockfile(lock('http://127.0.0.1:9999/x.tgz')), UnsupportedDependencyError);
+    // The registries of npm's configuration (a mirror, a scope's registry in the user's .npmrc) are allowed too.
+    const configured = registryOrigins(['https://mirror.example/npm/', 'https://npm.acme.example/', 'not a url']);
+    assert.doesNotThrow(() => assertRegistryLockfile(lock('https://mirror.example/npm/x/-/x-1.0.0.tgz'), configured));
+    assert.doesNotThrow(() => assertRegistryLockfile(lock('https://npm.acme.example/@acme/x/-/x-1.0.0.tgz'), configured));
+    assert.throws(() => assertRegistryLockfile(lock('https://evil.example/x.tgz'), configured), UnsupportedDependencyError);
   } finally {
     if (env === undefined) delete process.env.npm_config_registry;
     else process.env.npm_config_registry = env;

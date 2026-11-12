@@ -228,7 +228,6 @@ export class RunState {
         loadMs: byName('load'),
         mountMs: byName('mount'),
         installMs: byName('install'),
-        buildMs: this.install?.buildMs ?? null,
         startMs: byName('start'),
         readyMs: byName('ready'),
         checksMs: byName('checks'),

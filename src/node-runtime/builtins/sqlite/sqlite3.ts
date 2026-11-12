@@ -209,9 +209,13 @@ export function createSqlite3(files: FileAccess) {
       this.scheduled = true;
       const drain = () => {
         const next = this.jobs.shift();
-        if (next) next();
-        if (this.jobs.length) later(drain);
-        else this.scheduled = false;
+        try {
+          if (next) next();
+        } finally {
+          // Also when the job throws (the program's callback did): the jobs after it still run.
+          if (this.jobs.length) later(drain);
+          else this.scheduled = false;
+        }
       };
       later(drain);
     }
@@ -223,30 +227,36 @@ export function createSqlite3(files: FileAccess) {
 
     run(sql: string, ...rest: unknown[]) {
       const { params, cb } = args(rest);
-      const stmt = new Statement(this, sql, (err: Error | null) => err && this._fail(err, cb, stmt));
+      // A statement that could not be prepared reports that once, not again for the step it never took.
+      let unprepared = false;
+      const stmt = new Statement(this, sql, (err: Error | null) => err && ((unprepared = true), this._fail(err, cb, stmt)));
       stmt.run(...params, function (this: Statement, err: Error | null) {
         stmt.finalize();
-        cb?.call(this, err);
+        if (!unprepared) cb?.call(this, err);
       });
       return this;
     }
 
     get(sql: string, ...rest: unknown[]) {
       const { params, cb } = args(rest);
-      const stmt = new Statement(this, sql, (err: Error | null) => err && this._fail(err, cb, stmt));
+      // A statement that could not be prepared reports that once, not again for the step it never took.
+      let unprepared = false;
+      const stmt = new Statement(this, sql, (err: Error | null) => err && ((unprepared = true), this._fail(err, cb, stmt)));
       stmt.get(...params, function (this: Statement, err: Error | null, row: unknown) {
         stmt.finalize();
-        cb?.call(this, err, row);
+        if (!unprepared) cb?.call(this, err, row);
       });
       return this;
     }
 
     all(sql: string, ...rest: unknown[]) {
       const { params, cb } = args(rest);
-      const stmt = new Statement(this, sql, (err: Error | null) => err && this._fail(err, cb, stmt));
+      // A statement that could not be prepared reports that once, not again for the step it never took.
+      let unprepared = false;
+      const stmt = new Statement(this, sql, (err: Error | null) => err && ((unprepared = true), this._fail(err, cb, stmt)));
       stmt.all(...params, function (this: Statement, err: Error | null, rows: unknown) {
         stmt.finalize();
-        cb?.call(this, err, rows);
+        if (!unprepared) cb?.call(this, err, rows);
       });
       return this;
     }

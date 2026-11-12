@@ -276,8 +276,11 @@ test('a sandbox cannot hold more than its file-channel bound open at once', asyn
     const first = channels.find((c) => c.status === 101)!;
     first.socket.write(closeFrame);
     await waitClosed(first.socket);
-    await new Promise((r) => setTimeout(r, 50));
-    assert.equal((await openChannel(origin)).status, 101);
+    // The host frees the slot when it sees its side of that socket end, which may be a moment after
+    // the client saw its own close: asked again until then (5 s at most).
+    let again = await openChannel(origin);
+    for (const deadline = Date.now() + 5_000; again.status === 503 && Date.now() < deadline; again = await openChannel(origin)) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(again.status, 101);
   } finally {
     for (const c of channels) if (c.status !== 101) c.socket.destroy();
     await Promise.all(channels.filter((c) => c.status === 101 && !c.socket.closed).map((c) => (c.socket.write(closeFrame), waitClosed(c.socket))));

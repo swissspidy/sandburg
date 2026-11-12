@@ -24,10 +24,10 @@ import type { Project } from '../../types.ts';
 import { deferImports } from './deferred-imports.ts';
 import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
-import { installFromLockfile, installedPackages, linkTree, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
-import { assertRegistryLockfile, assertRegistryManifest } from './spec-guard.ts';
+import { installFromLockfile, installedPackages, linkTree, npmConfig, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
+import { assertRegistryLockfile, assertRegistryManifest, registryOrigins } from './spec-guard.ts';
 import { writeSoon } from './file-writes.ts';
-import { npmCommand } from './npm-cli.ts';
+import { installsOffline, npmCommand } from './npm-cli.ts';
 
 /**
  * A git binary that does not exist, so that npm cannot clone (and prepare, see spec-guard.ts) a git
@@ -39,7 +39,7 @@ const NO_GIT = '/nonexistent/sandburg-git-is-disabled';
 const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', '--loglevel=error', `--git=${NO_GIT}`];
 
 /** Bump when the transform changes, so cached transforms are rebuilt. */
-export const TRANSFORM_VERSION = 31;
+export const TRANSFORM_VERSION = 32;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
 export const LAYOUT_VERSION = 17;
 
@@ -202,8 +202,8 @@ export class Installer {
       if (!/^[0-9a-f]{24}$/.test(name)) continue;
       const done = await readFile(join(this.root, name, '.sandburg-complete'), 'utf8').catch(() => '');
       const layout = recordLayout(done);
-      // A day without changes (new transforms are written into an install as it is used), so another
-      // Sandburg process still on that layout is not using it.
+      // Made more than a day ago (its transforms are kept beside the installs, not in it: nothing
+      // changes an install as it is used), so a Sandburg process still on that layout has had its time.
       const idle = Date.now() - ((await lstat(join(this.root, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 24 * 3600_000;
       if (layout !== null && layout !== LAYOUT_VERSION && idle) await rm(join(this.root, name), { recursive: true, force: true }).catch(() => {});
     }
@@ -245,7 +245,7 @@ export class Installer {
     // Registry dependencies only: a git or directory dependency's prepare script runs on the host,
     // even with --ignore-scripts (see spec-guard.ts). Refused here, before npm or pacote sees it.
     assertRegistryManifest(manifest);
-    if (lock !== null) assertRegistryLockfile(lock);
+    if (lock !== null) assertRegistryLockfile(lock, registryOrigins((await npmConfig()).registries));
     let pending = this.pending.get(key);
     // A finished install is used while its record is the one it finished with (one stat): one removed
     // since (.sandburg cleared while the process kept running), or removed and made again by another
@@ -310,44 +310,58 @@ export class Installer {
     const exists = await access(done).then(() => true, () => false);
     if (!exists) {
       const tmp = `${dir}.tmp-${tmpSuffix()}`;
-      await mkdir(tmp, { recursive: true });
-      await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
-      if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
-      const base = await this.startFromClosest(manifest, tmp, lock !== null);
-      if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
-      // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
-      // when the lockfile has what the store does not handle.
-      const flags = INSTALL_FLAGS;
-      const m = manifest as Manifest;
-      const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
-      if (!(await this.resolver.resolve(tmp, log))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
-      // The resolved tree holds only registry packages: a transitive git, directory, or
-      // off-registry-host tarball dependency (a registry package may declare one) is refused before
-      // anything is unpacked or the full npm install fetches it.
-      // npm writes one even for a project without dependencies: none means nothing was checked.
-      const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
-      if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
-      assertRegistryLockfile(resolvedLock);
-      // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
-      // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
-      const packages = installedPackages(JSON.parse(resolvedLock));
-      const sides = this.sides;
-      const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
-      additions.catch(() => {});
-      if (!(await installFromLockfile(tmp, this.store, log))) await runNpm(['install', ...flags], tmp, log);
-      await ahead;
-      // npm creates no node_modules for a project without dependencies; the steps below read it.
-      await mkdir(join(tmp, 'node_modules'), { recursive: true });
-      // They change different directories: the bindings are new top-level packages, the builds go
-      // inside the packages they replace.
-      const [placeBindings, placeBuilds] = await additions;
-      await Promise.all([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
-      await writeBinIndex(tmp);
-      // The index is written with the install (see loadIndex): this process walked it anyway.
-      const index = walkIndex(tmp);
-      await writeFile(join(tmp, INDEX_FILE), JSON.stringify(index));
-      await writeFile(join(tmp, '.sandburg-complete'), completeRecord());
-      if (await settle(tmp, dir, done)) this.indexes.set(key, Promise.resolve(index));
+      // What still writes into tmp when a step fails; waited for before tmp is removed.
+      const writing: Promise<unknown>[] = [];
+      try {
+        await mkdir(tmp, { recursive: true });
+        await writeFile(join(tmp, 'package.json'), JSON.stringify(manifest, null, 2));
+        if (lock) await writeFile(join(tmp, 'package-lock.json'), lock);
+        const base = await this.startFromClosest(manifest, tmp, lock !== null);
+        if (base) log(`starting from install ${base.key}'s lockfile, which has ${base.shared} of the same dependencies`);
+        // npm resolves the tree; the package store unpacks it (see package-store.ts), or npm does
+        // when the lockfile has what the store does not handle.
+        const flags = INSTALL_FLAGS;
+        const m = manifest as Manifest;
+        const ahead = unpackAhead(tmp, { ...m.devDependencies, ...m.dependencies }, this.store);
+        writing.push(ahead);
+        if (installsOffline() || !(await this.resolver.resolve(tmp, log))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
+        // The resolved tree holds only registry packages: a transitive git, directory, or
+        // off-registry-host tarball dependency (a registry package may declare one) is refused before
+        // anything is unpacked or the full npm install fetches it.
+        // npm writes one even for a project without dependencies: none means nothing was checked.
+        const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
+        if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the install cannot be checked');
+        assertRegistryLockfile(resolvedLock, registryOrigins((await npmConfig()).registries));
+        // The WebAssembly bindings and builds the tree needs are installed (each in a directory of its
+        // own, waiting on npm and the registry) while the tree is unpacked; they are put in place after.
+        const packages = installedPackages(JSON.parse(resolvedLock));
+        const sides = this.sides;
+        const additions = Promise.all([wasiBindingsFor(tmp, sides, packages, log), wasmBuildsFor(tmp, sides, packages, log)]);
+        additions.catch(() => {});
+        writing.push(additions);
+        if (!(await installFromLockfile(tmp, this.store, log))) await runNpm(['install', ...flags], tmp, log);
+        await ahead;
+        // npm creates no node_modules for a project without dependencies; the steps below read it.
+        await mkdir(join(tmp, 'node_modules'), { recursive: true });
+        // They change different directories: the bindings are new top-level packages, the builds go
+        // inside the packages they replace.
+        const [placeBindings, placeBuilds] = await additions;
+        // All settled before a failure is thrown: the catch below removes tmp, which the others still write into.
+        const placed = await Promise.allSettled([placeNextSwcWasm(tmp), placeBindings(), placeBuilds()]);
+        const failed = placed.find((p) => p.status === 'rejected');
+        if (failed) throw failed.reason;
+        await writeBinIndex(tmp);
+        // The index is written with the install (see loadIndex): this process walked it anyway.
+        const index = walkIndex(tmp);
+        await writeFile(join(tmp, INDEX_FILE), JSON.stringify(index));
+        await writeFile(join(tmp, '.sandburg-complete'), completeRecord());
+        if (await settle(tmp, dir, done)) this.indexes.set(key, Promise.resolve(index));
+      } catch (err) {
+        // A failed install's directory is nobody's: sweep() only knows complete installs by their key.
+        await Promise.allSettled(writing);
+        await rm(tmp, { recursive: true, force: true }).catch(() => {});
+        throw err;
+      }
     }
     const resolved: Record<string, string> = {};
     for (const name of Object.keys((manifest as { dependencies: object }).dependencies)) {
@@ -785,7 +799,12 @@ export function sideInstall(sides: Sides, manifest: object, flags: string[], log
         // As an install: npm resolves (in the resolver's worker, beside others: these are small), the
         // store unpacks; npm installs what the store does not handle.
         const force = flags.includes('--force');
-        if (!(await sides.resolver.resolve(tmp, log, { force, small: true }))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
+        if (installsOffline() || !(await sides.resolver.resolve(tmp, log, { force, small: true }))) await runNpm(['install', '--package-lock-only', ...flags], tmp, log);
+        // Registry packages only, as an install's tree (doInstall): a binding's own dependencies are
+        // nobody's choice, and a git or directory one would run its prepare script on the host.
+        const resolvedLock = await readFile(join(tmp, 'package-lock.json'), 'utf8').catch(() => null);
+        if (resolvedLock === null) throw new Error('npm resolved no package-lock.json; the side install cannot be checked');
+        assertRegistryLockfile(resolvedLock, registryOrigins((await npmConfig()).registries));
         if (!(await installFromLockfile(tmp, sides.store, log, false))) {
           // From its package.json alone, as before: npm installing from a lockfile skips its libc
           // check for optional packages (sass's @parcel/watcher-linux-x64-musl would come along).
@@ -837,6 +856,8 @@ export interface Sides {
 function npmViewVersion(spec: string, resolver: Resolver): Promise<string | null> {
   let version = viewed.get(spec);
   if (!version) {
+    // Offline, npm answers from its cache alone, and what it does not know then is asked again online.
+    if (installsOffline()) return npmView(spec);
     version = resolver.view(spec).then((v) => (v === undefined ? npmView(spec) : v));
     viewed.set(spec, version);
   }
@@ -848,7 +869,7 @@ function npmView(spec: string): Promise<string | null> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(...npmCommand(['view', spec, 'version', '--json']), { stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(...npmCommand(['view', spec, 'version', '--json', ...(installsOffline() ? ['--offline'] : [])]), { stdio: ['ignore', 'pipe', 'ignore'] });
     } catch {
       // No npm (npmCommand): as when it fails to start.
       return resolve(null);
@@ -1036,7 +1057,7 @@ function walkIndex(dir: string): FileIndex {
   // 1.1-1.3 s (0.6 s with each directory's entries side by side).
   function walk(abs: string): void {
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.name === '.bin' || entry.name === '.cache' || entry.name === '.sandburg-transformed') continue;
+      if (entry.name === '.bin' || entry.name === '.cache') continue;
       const full = join(abs, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.isFile()) index[relative(dir, full).split(sep).join('/')] = lstatSync(full).size;
@@ -1048,6 +1069,8 @@ function walkIndex(dir: string): FileIndex {
 }
 
 function runNpm(args: string[], cwd: string, log: (line: string) => void): Promise<void> {
+  const offline = installsOffline();
+  if (offline) args = [...args, '--offline'];
   return new Promise((resolve, reject) => {
     const child = spawn(...npmCommand(args), { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, npm_config_update_notifier: 'false' } });
     let out = '';
@@ -1058,7 +1081,9 @@ function runNpm(args: string[], cwd: string, log: (line: string) => void): Promi
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
+    // "offline mode:" is how a run says its cache lacked something (run-state.ts): not the app's failure.
+    // Only for a cache miss: another failure offline (a conflict, ERESOLVE) is the install's.
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${offline && out.includes('ENOTCACHED') ? "offline mode: npm's cache does not have every package of this install. " : ''}npm ${args[0]} failed (exit ${code}): ${out.trim().split('\n').slice(-10).join('\n')}`))));
   });
 }
 

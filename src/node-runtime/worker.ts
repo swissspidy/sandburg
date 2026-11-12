@@ -6,7 +6,7 @@
  * virtual servers.
  */
 import { Buffer } from 'buffer';
-import { loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
+import { flushDatabases, loadSqlite, type FileAccess } from './builtins/sqlite/core.ts';
 import { WsClientCodec } from './websocket.ts';
 import { bundleCache, listCache } from './cache-tree.ts';
 import type { FromWorker, NetMessage, ToParent, ThreadInit, ToWorker, SharedPreload } from './messages.ts';
@@ -23,7 +23,7 @@ import { trackPending } from './track-pending.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverConnections, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
-import { ExitError, NODE_VERSION, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
+import { ExitError, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
 import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { createUncaught } from './uncaught.ts';
@@ -97,6 +97,8 @@ installAsyncContext();
 installWasmGrowGuard();
 
 export let base = '/__sandburg';
+/** What the process's standard input holds (a synchronous child's `input`): fd 0 and process.stdin read it. */
+export let stdinInput: Uint8Array | undefined;
 export let installKey: string | null = null;
 let projectRoot = '/app';
 
@@ -346,6 +348,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
 
   const child = thread?.process;
   proc = createProcess({ cwd: msg.cwd, env: { NODE_ENV: 'development', HOME: '/root', PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/tmp', ...msg.env }, argv: ['/usr/local/bin/node'], write, send: msg.ipc || child?.ipc ? (data) => post({ type: 'message', data }) : undefined, stdin: child?.stdin });
+  stdinInput = child?.stdin;
   // A worker thread has its parent's node options (Node's default for `execArgv`); a child process has its own (below).
   if (msg.execArgv?.length) proc.execArgv = msg.execArgv;
   if (child) {
@@ -398,22 +401,27 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // Keyed by the code itself: a Map compares long strings natively, and hashing them in JavaScript
   // first was ~0.1 s of next dev's start (its 8 MB vendor chunk, twice).
   const compiledCache = new Map<string, string>();
-  const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts'): string => {
-    const key = `${kind}:${path}\0${code}`;
+  // `asAsync`: as an async module whatever the run's mode (the loader asks for it when an ES module
+  // imports one still evaluating: see loadJs in loader.ts).
+  const hostCompile = (code: string, path: string, kind: 'esm' | 'cjs' | 'ts', asAsync = false): string => {
+    const forced = asAsync && !asyncModules && kind !== 'cjs';
+    // Not a key loadCompiles fills: those are compiles in the run's mode.
+    const key = `${kind}${forced ? '!async' : ''}:${path}\0${code}`;
     if (!compilesLoaded && !pageCompiler) loadCompiles(compiledCache, asyncModules);
     const hit = compiledCache.get(key);
     if (hit !== undefined) return hit;
     let out: string;
     // Packages installed in the browser: compiled in the page, on esbuild's WebAssembly build.
     if (pageCompiler) {
-      out = compileInPage({ op: 'compile', code, path, kind, asyncModules: asyncModules && kind !== 'cjs' });
+      out = compileInPage({ op: 'compile', code, path, kind, asyncModules: (asyncModules || forced) && kind !== 'cjs' });
     } else {
-      const async = asyncModules && kind !== 'cjs';
+      const async = (asyncModules || forced) && kind !== 'cjs';
       // Large code is asked for by the digest the host keys its compiles with (compileForRuntime):
       // what the host compiled before, next dev's chunks in every later run of an app, comes back
       // without being sent. Sending 8 MB costs ~0.35 s before the host sees the request; asking, ~10 ms.
-      const digest = code.length < ASK_FIRST ? null : ((kind === 'cjs' && writtenDigest(path)) || digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`));
+      // Not for what was compiled ahead: the digest waits for a helper, or hashes the whole source here.
       const ahead = kind === 'cjs' ? compiledAhead(path) : null;
+      const digest = ahead !== null || code.length < ASK_FIRST ? null : ((kind === 'cjs' && writtenDigest(path)) || digestOf(`${kind}${async ? '\0async' : ''}\0${path}\0${code}`));
       const known = ahead === null && digest ? requestSync(`${base}/compiled/${digest}`, false) : null;
       if (ahead !== null) {
         out = ahead;
@@ -784,6 +792,11 @@ let uncaught: ReturnType<typeof createUncaught>;
 export function exited(code: number) {
   if (hasExited) return;
   hasExited = true;
+  try {
+    flushDatabases();
+  } catch {
+    // The process exits all the same.
+  }
   stopTimers();
   for (const id of inflight) post({ type: 'response-error', id, message: `the process exited with code ${code}` });
   inflight.clear();
@@ -983,10 +996,14 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   const id = msg.id;
   // The server may write (and so the client reply, e.g. pong) inside its 'upgrade' handler, before upgrade() returns.
   let early: Uint8Array[] | null = [];
+  // Rejected or closed already, inside the 'upgrade' handler (ws answers 400 there, or closes at
+  // once): not a socket to keep, which would hold the process open for good.
+  let over: 'rejected' | 'closed' | null = null;
   const codec = new WsClientCodec({
     accept: (protocol, extensions) => !hasExited && post({ type: 'ws-accept', id, protocol, extensions }),
     reject: (status, message) => {
       if (hasExited) return;
+      over = 'rejected';
       sockets.delete(id);
       post({ type: 'ws-reject', id, status, message });
     },
@@ -998,6 +1015,7 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
     closed: (code, reason, wasClean) => {
       // Closed already, as the program exited.
       if (hasExited) return;
+      over = 'closed';
       sockets.get(id)?.socket.hangUp();
       sockets.delete(id);
       post({ type: 'ws-closed', id, code, reason, wasClean });
@@ -1015,12 +1033,16 @@ function wsOpen(msg: Extract<ToWorker, { type: 'ws-open' }>) {
   ];
   const socket = server?.upgrade(msg.url, headers, { data: (bytes) => codec.receive(bytes), end: () => codec.end() });
   if (!socket) return post({ type: 'ws-reject', id, status: 404, message: server ? 'the server does not accept WebSocket connections' : `nothing listening on port ${msg.port}` });
+  if (over) {
+    early = null;
+    // Its server may have answered and left the socket open: nothing would close it later.
+    socket.hangUp();
+    return;
+  }
   sockets.set(id, { socket, codec });
   for (const bytes of early) socket.receive(bytes);
   early = null;
 }
-
-export const RUNTIME_NODE_VERSION = NODE_VERSION;
 
 // Ready for an init message (a parent keeps booted runtimes for its threads: see threads.ts).
 realPostMessage({ type: 'booted' });

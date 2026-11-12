@@ -8,7 +8,7 @@ import { Readable, Writable } from 'readable-stream';
 import { FsError, norm, type VStat, type Vfs } from '../vfs.ts';
 import { bindContext } from '../async-context.ts';
 import { realpath } from '../links.ts';
-import { onLaterIo } from './process.ts';
+import { onLaterIo, PROMISIFY_CUSTOM } from './process.ts';
 
 type PathLike = string | Buffer | URL;
 type Encoding = BufferEncoding | null | undefined;
@@ -16,6 +16,7 @@ type EncOpt = Encoding | { encoding?: Encoding; flag?: string; withFileTypes?: b
 
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
+const S_IFCHR = 0o020000;
 
 const constants = {
   F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
@@ -46,13 +47,14 @@ export class Stats {
   dev = 1; ino: number; mode: number; nlink = 1; uid = 0; gid = 0; rdev = 0; size: number; blksize = 4096; blocks: number;
   atimeMs: number; mtimeMs: number; ctimeMs: number; birthtimeMs: number;
   atime: Date; mtime: Date; ctime: Date; birthtime: Date;
-  private kind: VStat['kind'];
-  constructor(s: VStat) {
+  /** 'char': a standard descriptor (fstat of 0, 1 or 2), a character device as a terminal is. */
+  private kind: VStat['kind'] | 'char';
+  constructor(s: Omit<VStat, 'kind'> & { kind: VStat['kind'] | 'char' }) {
     this.kind = s.kind;
     this.ino = s.ino;
     this.size = s.size;
     this.blocks = Math.ceil(s.size / 512);
-    this.mode = (s.kind === 'dir' ? S_IFDIR | 0o755 : S_IFREG | 0o644);
+    this.mode = s.kind === 'char' ? S_IFCHR | 0o620 : s.kind === 'dir' ? S_IFDIR | 0o755 : S_IFREG | 0o644;
     this.atimeMs = this.mtimeMs = this.ctimeMs = this.birthtimeMs = s.mtimeMs;
     this.atime = this.mtime = this.ctime = this.birthtime = new Date(s.mtimeMs);
   }
@@ -60,7 +62,7 @@ export class Stats {
   isDirectory() { return this.kind === 'dir'; }
   isSymbolicLink() { return false; }
   isBlockDevice() { return false; }
-  isCharacterDevice() { return false; }
+  isCharacterDevice() { return this.kind === 'char'; }
   isFIFO() { return false; }
   isSocket() { return false; }
 }
@@ -85,7 +87,7 @@ export class BigIntStats {
   isDirectory() { return this.stats.isDirectory(); }
   isSymbolicLink() { return false; }
   isBlockDevice() { return false; }
-  isCharacterDevice() { return false; }
+  isCharacterDevice() { return this.stats.isCharacterDevice(); }
   isFIFO() { return false; }
   isSocket() { return false; }
 }
@@ -156,7 +158,14 @@ export class Dirent {
   isSocket() { return false; }
 }
 
-export function createFs(vfs: Vfs, cwd: () => string) {
+/**
+ * `write` is where the process's output goes: what is written to descriptors 1 and 2 (pino's default
+ * destination writes to fd 1) goes there, not through process.stdout, as in Node.
+ */
+export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' | 'stderr', text: string) => void, stdin: () => Uint8Array | undefined = () => undefined) {
+  /** How far descriptor 0 has been read: what stdin holds, read once, as a pipe is. */
+  let stdinRead = 0;
+  const stdinLeft = () => (stdin() ?? new Uint8Array()).subarray(stdinRead);
   const abs = (p: PathLike): string => {
     let s = typeof p === 'string' ? p : p instanceof URL ? decodeURIComponent(p.pathname) : Buffer.isBuffer(p) ? p.toString() : String(p);
     if (s.startsWith('file://')) s = decodeURIComponent(new URL(s).pathname);
@@ -181,8 +190,9 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     }
   }
   function readFileSync(p: PathLike | number, o?: EncOpt): string | Buffer {
-    const path = typeof p === 'number' ? fdPath(p) : abs(p);
-    const buf = Buffer.from(vfs.read(path));
+    // Standard input: what is left of it, then it is at its end.
+    const buf = p === 0 ? Buffer.from(stdinLeft()) : Buffer.from(vfs.read(typeof p === 'number' ? fdPath(p) : abs(p)));
+    if (p === 0) stdinRead += buf.length;
     const e = enc(o);
     return e ? buf.toString(e) : buf;
   }
@@ -190,7 +200,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     const flag = typeof o === 'object' && o ? o.flag : undefined;
     const f = openFlags(flag ?? 'w');
     const bytes = toBytes(data, enc(o));
-    if (typeof p === 'number') return vfs.write(fdPath(p), bytes, !!(f & constants.O_APPEND));
+    // To a descriptor, the flag is not used: the bytes go where the descriptor is (or to the end, opened for appending).
+    if (typeof p === 'number') return void writeSync(p, bytes);
     // As open(2) with the flag, then a write from the start: 'wx' fails on a file that exists, 'r+' on one that does not, and keeps what is past the new bytes.
     const path = abs(p);
     if (f & constants.O_CREAT && f & constants.O_EXCL && vfs.exists(path)) throw new FsError('EEXIST', 'open', path);
@@ -202,7 +213,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   function readdirSync(p: PathLike, o?: EncOpt): (string | Dirent)[] {
     const dir = abs(p);
     const recursive = typeof o === 'object' && o?.recursive;
-    const names = recursive ? walk(dir, '') : vfs.readdir(dir);
+    const names = recursive ? walk(dir, '', []) : vfs.readdir(dir);
     if (typeof o === 'object' && o?.withFileTypes) {
       return names.map((n) => {
         const full = `${dir}/${n}`;
@@ -212,12 +223,12 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     }
     return names;
   }
-  function walk(dir: string, prefix: string): string[] {
-    const out: string[] = [];
+  /** A directory's entries and those below, into `out` (not spread from each level: a large tree's would overflow the stack). */
+  function walk(dir: string, prefix: string, out: string[]): string[] {
     for (const n of vfs.readdir(dir)) {
       const rel = prefix ? `${prefix}/${n}` : n;
       out.push(rel);
-      if (vfs.stat(`${dir}/${n}`).kind === 'dir') out.push(...walk(`${dir}/${n}`, rel));
+      if (vfs.stat(`${dir}/${n}`).kind === 'dir') walk(`${dir}/${n}`, rel, out);
     }
     return out;
   }
@@ -262,6 +273,13 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   // --- file descriptors ---------------------------------------------------------
   const fds = new Map<number, { path: string; pos: number; append: boolean }>();
   let nextFd = 20;
+  /**
+   * The standard descriptors are not files of the Vfs: 1 and 2 are the process's output (each with one
+   * decoder: a character's bytes may come in two writes), 0 an input at its end.
+   */
+  const STDIO: Record<number, 'stdout' | 'stderr' | undefined> = { 1: 'stdout', 2: 'stderr' };
+  const stdioDecoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+  const isStdio = (fd: number) => fd === 0 || fd === 1 || fd === 2;
   function fdPath(fd: number): string {
     const f = fds.get(fd);
     if (!f) throw new FsError('EBADF', 'read', String(fd));
@@ -292,6 +310,13 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     if (length !== undefined && (length < 0 || from + length > buffer.byteLength)) {
       throw Object.assign(new RangeError(`The value of "length" is out of range. It must be <= ${buffer.byteLength - from}. Received ${length}`), { code: 'ERR_OUT_OF_RANGE' });
     }
+    if (fd === 0) {
+      const left = stdinLeft();
+      const n = Math.min(length ?? buffer.byteLength - from, left.length);
+      buffer.set(left.subarray(0, n), from);
+      stdinRead += n;
+      return n;
+    }
     const f = fds.get(fd);
     if (!f) throw new FsError('EBADF', 'read', String(fd));
     const data = vfs.read(f.path);
@@ -315,7 +340,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   }
   function writeSync(fd: number, data: unknown, ...rest: unknown[]): number {
     const f = fds.get(fd);
-    if (!f) throw new FsError('EBADF', 'write', String(fd));
+    const stdio = write && STDIO[fd];
+    if (!f && !stdio) throw new FsError('EBADF', 'write', String(fd));
     let bytes: Uint8Array;
     if (typeof data === 'string') bytes = Buffer.from(data, (typeof rest[1] === 'string' ? rest[1] : 'utf8') as BufferEncoding);
     else {
@@ -326,7 +352,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     }
     // writeSync(fd, data, offset, length, position): an explicit position does not move the file position.
     const position = typeof data === 'string' ? rest[0] : rest[2];
-    if (f.append) vfs.writeAt(f.path, bytes, 'end');
+    if (!f) write!(stdio!, stdioDecoders[stdio!].decode(bytes, { stream: true }));
+    else if (f.append) vfs.writeAt(f.path, bytes, 'end');
     else if (typeof position === 'number') vfs.writeAt(f.path, bytes, position);
     else {
       vfs.writeAt(f.path, bytes, f.pos);
@@ -349,11 +376,17 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     return total;
   }
   function fstatSync(fd: number, o?: { bigint?: boolean }): Stats {
-    const s = new Stats(vfs.stat(fdPath(fd)));
+    const s = new Stats(isStdio(fd) ? { kind: 'char', size: 0, mtimeMs: Date.now(), ino: fd + 1 } : vfs.stat(fdPath(fd)));
     return (o?.bigint ? new BigIntStats(s) : s) as Stats;
   }
+  /** A file cut to `len` bytes, or grown to it with zeros. */
+  function truncate(path: string, len: number): void {
+    const out = new Uint8Array(Math.max(0, len));
+    out.set(vfs.read(path).subarray(0, out.length));
+    vfs.write(path, out);
+  }
   function ftruncateSync(fd: number, len = 0): void {
-    vfs.write(fdPath(fd), new Uint8Array(vfs.read(fdPath(fd)).subarray(0, len)));
+    truncate(fdPath(fd), len);
   }
 
   const sync = {
@@ -368,7 +401,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     lstatSync: statSync,
     readFileSync,
     writeFileSync,
-    appendFileSync: (p: PathLike, data: unknown, o?: EncOpt) => vfs.write(abs(p), toBytes(data, enc(o)), true),
+    appendFileSync: (p: PathLike | number, data: unknown, o?: EncOpt) => (typeof p === 'number' ? void writeSync(p, toBytes(data, enc(o))) : vfs.write(abs(p), toBytes(data, enc(o)), true)),
     readdirSync,
     mkdirSync: (p: PathLike, o?: { recursive?: boolean } | number) => vfs.mkdir(abs(p), typeof o === 'object' && !!o?.recursive),
     rmdirSync: (p: PathLike, o?: { recursive?: boolean }) => vfs.rmdir(abs(p), !!o?.recursive),
@@ -388,7 +421,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     ftruncateSync,
     writevSync,
     readvSync,
-    truncateSync: (p: PathLike, len = 0) => vfs.write(abs(p), new Uint8Array(vfs.read(abs(p)).subarray(0, len))),
+    truncateSync: (p: PathLike, len = 0) => truncate(abs(p), len),
     fsyncSync: () => {},
     fdatasyncSync: () => {},
     chmodSync: () => {},
@@ -452,6 +485,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     };
     promisified[base] = async (...args: unknown[]) => withoutStack(() => (fn as (...a: unknown[]) => unknown)(...args));
   }
+  // fs-extra looks for it when it loads, and warns without.
+  Object.assign(callbackified.realpath, { native: callbackified.realpath });
   // fs.read/fs.write callbacks take (err, bytes, buffer): the buffer read into, or the data written
   callbackified.read = (fd, ...args) => {
     const done = (typeof args.at(-1) === 'function' ? bindContext(args.pop() as never) : () => {}) as (e: unknown, n?: number, b?: unknown) => void;
@@ -472,6 +507,8 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     }
   };
   const exists = (p: PathLike, cb: (b: boolean) => void) => later(() => cb(sync.existsSync(p)));
+  // Its callback takes no error: util.promisify(fs.exists) resolves the boolean, as Node's.
+  Object.defineProperty(exists, PROMISIFY_CUSTOM, { value: (p: PathLike) => new Promise<boolean>((resolve) => exists(p, resolve)) });
 
   class FileHandle {
     fd: number;
@@ -492,8 +529,6 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     async [Symbol.asyncDispose]() { closeSync(this.fd); }
   }
   promisified.open = async (p, flags) => new FileHandle(openSync(p as PathLike, flags as string));
-  promisified.access = async (p) => accessSync(p as PathLike);
-  promisified.rm = async (p, o) => rmSync(p as PathLike, o as { recursive?: boolean; force?: boolean });
   promisified.exists = async (p) => sync.existsSync(p as PathLike);
 
   // --- streams and watchers --------------------------------------------------------
@@ -503,7 +538,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
    * `.apply(this)`, so these are function constructors, as in Node.
    */
   type ReadOpts = EncOpt & { flags?: string; start?: number; end?: number; highWaterMark?: number };
-  type WriteOpts = EncOpt & { flags?: string };
+  type WriteOpts = EncOpt & { flags?: string; fd?: number | null; autoClose?: boolean };
   interface ReadStream extends InstanceType<typeof Readable> {
     path: string;
     fd: number | null;
@@ -515,10 +550,11 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     close(cb?: () => void): void;
   }
   interface WriteStream extends InstanceType<typeof Writable> {
-    path: string;
+    path: string | null;
     fd: number | null;
     bytesWritten: number;
     pending: boolean;
+    autoClose?: boolean;
     close(cb?: () => void): void;
   }
   /**
@@ -546,7 +582,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
     });
   }
   function closeFd(this: ReadStream | WriteStream, err: Error | null, cb: (e: Error | null) => void) {
-    if (this.fd !== null) closeSync(this.fd);
+    if (this.fd !== null && (this as WriteStream).autoClose !== false) closeSync(this.fd);
     this.fd = null;
     cb(err);
   }
@@ -586,9 +622,18 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   const WriteStream = function (this: WriteStream | undefined, p: PathLike, o?: WriteOpts): WriteStream {
     if (!(this instanceof WriteStream)) return new (WriteStream as unknown as new (p: PathLike, o?: WriteOpts) => WriteStream)(p, o);
     (Writable as unknown as Function).call(this);
-    this.path = abs(p);
     this.bytesWritten = 0;
-    opened(this, () => openSync(this.path, (typeof o === 'object' && o?.flags) || 'w'));
+    if (typeof o === 'object' && o?.autoClose === false) this.autoClose = false;
+    // With `fd` (createWriteStream(null, { fd: 1 })): that descriptor, open already (no 'open'), and no path.
+    const fd = typeof o === 'object' && o ? o.fd : undefined;
+    if (typeof fd === 'number') {
+      this.path = null;
+      this.fd = fd;
+      this.pending = false;
+      return this;
+    }
+    this.path = abs(p);
+    opened(this, () => openSync(this.path!, (typeof o === 'object' && o?.flags) || 'w'));
     return this;
   } as unknown as { new (p: PathLike, o?: WriteOpts): WriteStream; (p: PathLike, o?: WriteOpts): WriteStream; prototype: WriteStream };
   Object.setPrototypeOf(WriteStream.prototype, Writable.prototype);
@@ -596,7 +641,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   WriteStream.prototype._write = function (this: WriteStream, chunk: unknown, encoding: BufferEncoding, cb: (e?: Error | null) => void) {
     try {
       const bytes = toBytes(chunk, encoding);
-      if (this.fd === null) throw openErrors.get(this) ?? new FsError('EBADF', 'write', this.path);
+      if (this.fd === null) throw openErrors.get(this) ?? new FsError('EBADF', 'write', String(this.path));
       writeSync(this.fd, bytes);
       this.bytesWritten += bytes.length;
       cb();
@@ -610,7 +655,7 @@ export function createFs(vfs: Vfs, cwd: () => string) {
   };
 
   const createReadStream = (p: PathLike, o?: ReadOpts) => new ReadStream(p, o);
-  const createWriteStream = (p: PathLike, o?: WriteOpts) => new WriteStream(p, o);
+  const createWriteStream = (p: PathLike | null, o?: WriteOpts) => new WriteStream(p as PathLike, o);
   function watch(p: PathLike, o?: unknown, listener?: (event: string, filename: string) => void) {
     const cb = typeof o === 'function' ? (o as typeof listener) : listener;
     const root = abs(p);

@@ -39,7 +39,7 @@ runs project after project, each in its own browser context and origin. `open()`
 | `cacheDir` | `.sandburg/cache` | Directory for the HTTP cache. |
 | `storeDir` | `.sandburg/store` | Directory of the snapshot store. |
 | `codeCacheDir` | `.sandburg/code-cache` | Directory for V8's compiled code of the host's own scripts, or `null` for none on disk. |
-| `offline` | `false` | Fail on cache misses instead of fetching upstream. |
+| `offline` | `false` | Fail on cache misses instead of fetching upstream; npm installs from its cache alone. |
 | `headless` | `true` | |
 | `executablePath` | Playwright's, or `$SANDBURG_CHROMIUM` | Chromium binary. |
 | `browserSandbox` | `true`, unless `$SANDBURG_NO_BROWSER_SANDBOX` is `1` | Run Chromium inside its OS sandbox. Where it cannot start, `open()` fails and says so; there is no fallback ([Security](security.md)). |

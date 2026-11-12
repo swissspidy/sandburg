@@ -4,12 +4,15 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isWorkspace, workspaceDirs, workspacePatterns } from '../../src/workspaces.ts';
 import { parseYaml } from '../../src/yaml-lite.ts';
 import { projectFromFiles } from '../../src/project.ts';
 import { packageDirs } from '../../src/adapters/node/plan.ts';
 import { loadProject } from '../../src/project.ts';
+import { tempDir } from './temp-dir.ts';
 
 const fixture = (name: string) => fileURLToPath(new URL(`../../fixtures/${name}`, import.meta.url));
 
@@ -128,10 +131,7 @@ test('YAML: deep nesting does not overflow the stack; a __proto__ key is a key',
 test("a project's own .sandburg/ files are left out, however it is loaded", async () => {
   const files = { 'package.json': '{}', '.sandburg/workspace.json': '{"links":{}}', 'app/.sandburg/x': 'y', 'index.js': '' };
   assert.deepEqual(Object.keys(projectFromFiles(files, { name: 'x', path: 'x' }).files).sort(), ['index.js', 'package.json']);
-  const { writeFileSync, mkdtempSync } = await import('node:fs');
-  const { join } = await import('node:path');
-  const { tmpdir } = await import('node:os');
-  const json = join(mkdtempSync(join(tmpdir(), 'sandburg-json-')), 'tree.json');
+  const json = join(tempDir('sandburg-json-'), 'tree.json');
   writeFileSync(json, JSON.stringify(files));
   assert.deepEqual(Object.keys((await loadProject(json)).files).sort(), ['index.js', 'package.json']);
 });

@@ -18,8 +18,11 @@ export interface LoaderHost {
   vfs: Vfs;
   /** Compiled code for a node_modules file, or null to compile the raw source. */
   compiledNodeModule(path: string): string | null;
-  /** Compiles project or generated code (ESM → CJS, TypeScript, async lowering). */
-  compile(code: string, path: string, kind: 'esm' | 'cjs' | 'ts'): string;
+  /**
+   * Compiles project or generated code (ESM → CJS, TypeScript, async lowering). `asAsync`: an ES module
+   * as an async module (tla.ts), which waits for its imports' evaluation.
+   */
+  compile(code: string, path: string, kind: 'esm' | 'cjs' | 'ts', asAsync?: boolean): string;
   builtin(name: string): unknown;
   builtinNames: string[];
   /** Names that exist only with the node: prefix (node:test, node:sqlite, …). */
@@ -113,6 +116,13 @@ export function createModuleSystem(host: LoaderHost) {
     _compile(content: string, filename: string): unknown;
     /** Compiled from an ES module: its requests resolve with import conditions. */
     esm?: boolean;
+    /**
+     * An ES module compiled here, not as an async module: one that imports a module still
+     * evaluating (top-level await) is compiled again as one (see loadJs).
+     */
+    syncEsm?: boolean;
+    /** import.meta.resolve, for a converted ES module (ESM_DEFINE in adapters/node/esm-names.ts). */
+    metaResolve(specifier: string): string;
     isPreloading: boolean;
   }
 
@@ -345,9 +355,11 @@ export function createModuleSystem(host: LoaderHost) {
     if (!tla || typeof tla.then !== 'function' || Object.prototype.hasOwnProperty.call(exports, 'then')) return;
     const target = exports as Record<string, unknown>;
     let settled = false;
+    evaluating.add(target);
     const done = () => {
       if (settled) return;
       settled = true;
+      evaluating.delete(target);
       delete target.then;
     };
     try {
@@ -384,7 +396,25 @@ export function createModuleSystem(host: LoaderHost) {
 
   Module.prototype.require = function (this: Mod, id: string) {
     if (typeof id !== 'string') throw Object.assign(new TypeError('The "id" argument must be of type string'), { code: 'ERR_INVALID_ARG_TYPE' });
-    return Module._load(id, this, false);
+    const exports = Module._load(id, this, false);
+    // An ES module evaluating, that imports one still evaluating (its top-level await): in Node it waits
+    // for it; compiled as it was, it would read the import's bindings before they are set. It is
+    // compiled again as an async module (loadJs), which waits.
+    if (this.syncEsm && !this.loaded && evaluating.has(exports as object)) throw new ImportsAsyncModule(this);
+    return exports;
+  };
+
+  /**
+   * import.meta.resolve(specifier), as Node's: a URL. A relative or absolute one is resolved against the
+   * module's URL whether or not it exists; a package's, as this ES module imports it (import conditions).
+   */
+  Module.prototype.metaResolve = function (this: Mod, specifier: string) {
+    const parentUrl = `file://${this.filename ?? `${host.cwd()}/`}`;
+    if (/^(\.{1,2}(\/|$)|\/)/.test(specifier)) return new URL(specifier, parentUrl).href;
+    // A URL (file:, data:, node:): as it is.
+    if (/^[a-z][a-z\d+.-]*:/i.test(specifier) && !isBuiltin(specifier)) return new URL(specifier).href;
+    const filename = Module._resolveFilename(specifier, this);
+    return isBuiltin(filename) ? `node:${filename.replace(/^node:/, '')}` : `file://${filename}`;
   };
 
   Module.prototype.load = function (this: Mod, filename: string) {
@@ -462,12 +492,30 @@ export function createModuleSystem(host: LoaderHost) {
       if (esm || needsLowering(code)) code = host.compile(code, filename, esm ? 'esm' : 'cjs');
     }
     if (code.startsWith(ESM_MARKER)) m.esm = true;
-    m._compile(code, filename);
+    if (installed === null) compileWaiting(m, code, filename, () => host.compile(readText(filename), filename, 'esm', true));
+    else m._compile(code, filename);
   };
   const loadTs = (m: Mod, filename: string) => {
     const code = host.compile(readText(filename), filename, 'ts');
     if (code.startsWith(ESM_MARKER)) m.esm = true;
-    m._compile(code, filename);
+    compileWaiting(m, code, filename, () => host.compile(readText(filename), filename, 'ts', true));
+  };
+  /**
+   * Runs a module compiled here; an ES module that is not an async module already, and turns out to
+   * import one still evaluating, runs again compiled as an async module (Module.prototype.require). The
+   * imports before that one ran once: they are cached, and the conversion requires every import first,
+   * before the module's own code.
+   */
+  const compileWaiting = (m: Mod, code: string, filename: string, asAsync: () => string) => {
+    m.syncEsm = !!m.esm && !code.includes(TLA_EXPORT);
+    try {
+      m._compile(code, filename);
+    } catch (e) {
+      if (!(e instanceof ImportsAsyncModule) || e.module !== m) throw e;
+      m.syncEsm = false;
+      m.exports = {};
+      m._compile(asAsync(), filename);
+    }
   };
 
   Module._extensions = Object.assign(Object.create(null), {
@@ -503,6 +551,21 @@ export function createModuleSystem(host: LoaderHost) {
   return { Module, makeRequire, isBuiltin };
 
   // --- helpers that close over host ---------------------------------------------------------
+}
+
+/** An async module's export: its evaluation (adapters/node/tla.ts). */
+const TLA_EXPORT = '__sandburg_tla';
+
+/** The exports of async modules still evaluating (awaitableWhileEvaluating). */
+const evaluating = new WeakSet<object>();
+
+/** Thrown by an ES module's require of a module still evaluating: it is compiled again as an async module (compileWaiting). */
+class ImportsAsyncModule extends Error {
+  readonly module: object;
+  constructor(module: object) {
+    super('imports an async module still evaluating');
+    this.module = module;
+  }
 }
 
 // --- package.json "exports" / "imports" ------------------------------------------------------

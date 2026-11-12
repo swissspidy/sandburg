@@ -330,7 +330,7 @@ test('a wrapped for-of iterable reads Symbol.iterator, next and return as for-of
 
 // Off by default: a timing test under `node --test`, which runs files in parallel, flakes.
 // SANDBURG_PERF_TESTS=1 runs it (it caught the wrapper costing ~10x on arrays).
-test('a wrapped for-of over an array or a Set runs at the speed of a plain one', { skip: !process.env.SANDBURG_PERF_TESTS }, () => {
+test('a wrapped for-of over an array or a Set runs at the speed of a plain one', { skip: process.env.SANDBURG_PERF_TESTS !== '1' }, () => {
   const time = (variant: 'native' | 'wrapped', kind: 'array' | 'set') => {
     const script = `
       import { awaitContext } from ${JSON.stringify(new URL('../../src/node-runtime/async-context.ts', import.meta.url).href)};

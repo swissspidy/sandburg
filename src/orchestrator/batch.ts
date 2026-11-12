@@ -169,7 +169,9 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
   const startedAt = new Date();
   const t0 = performance.now();
   const results: RunResult[] = new Array(items.length);
-  const earlier = await history(items, options.batchDir ?? '.sandburg/batches', !!options.nodeRuntime);
+  // Each item's key, taken once: the history's and the summary's (a working directory changed meanwhile would give another).
+  const keys = items.map((item) => runKey(item.project));
+  const earlier = await history(keys, options.batchDir ?? '.sandburg/batches', !!options.nodeRuntime);
   const order = options.longestFirst === false ? items.map((_, i) => i) : longestFirst(earlier);
   let next = 0;
   // The first apps of a stack would otherwise each install and seed it, several tabs at once.
@@ -308,7 +310,9 @@ export async function runBatch(session: Session, items: BatchItem[], options: Ba
     speedup: runsMs ? Math.round((sum(results.map((r) => r.timings.totalMs)) / runsMs) * 100) / 100 : 0,
     runs: results.map((r, i) => ({
       label: items[i].label,
-      project: r.project.path,
+      // The directory or file the item named, which history() looks up: a workspace package's own
+      // directory, where its project's path is its monorepo's.
+      project: keys[i] ?? r.project.path,
       runId: r.runId,
       snapshotId: r.project.snapshotId,
       runtime: r.runtime.name,
@@ -337,7 +341,7 @@ interface Earlier {
  * Each item's latest run in the latest HISTORY_BATCHES batches' summaries (runs in the browser, or
  * out of it, as this batch's), or undefined.
  */
-async function history(items: BatchItem[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<(Earlier | undefined)[]> {
+async function history(keys: (string | undefined)[], batchDir: string, outOfBrowser: boolean, batches = HISTORY_BATCHES): Promise<(Earlier | undefined)[]> {
   const took = new Map<string, Earlier>();
   const dir = resolve(batchDir);
   // Batch ids start with their start time in base 36: the newest first.
@@ -358,7 +362,12 @@ async function history(items: BatchItem[], batchDir: string, outOfBrowser: boole
       }
     }
   }
-  return items.map((item) => (typeof item.project === 'string' ? took.get(resolve(item.project)) : undefined));
+  return keys.map((key) => (key === undefined ? undefined : took.get(key)));
+}
+
+/** What a summary's run names its project by, when the item named a path. */
+function runKey(project: BatchItem['project']): string | undefined {
+  return typeof project === 'string' && !project.startsWith('snapshot:') ? resolve(project) : undefined;
 }
 
 /** The largest peak a batch expects of an app from its history (a renderer's memory is bounded well below this). */

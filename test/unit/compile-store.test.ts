@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { compiled, compileForRuntime, storeCompiles } from '../../src/adapters/node/compile.ts';
-import { diskCompileStore, sweepCompiles } from '../../src/adapters/node/compile-store.ts';
+import { diskCompileStore, sweepCompiles, sweepDevCaches, sweepOtherVersions } from '../../src/adapters/node/compile-store.ts';
 
 test('compiles are stored on disk and found by a later process (by the same key)', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sandburg-compiled-'));
@@ -88,3 +88,36 @@ async function until<T>(get: () => Promise<T>, done: (v: T) => boolean): Promise
   }
   return v;
 }
+
+test('dev caches not written for two weeks go, then the oldest beyond the limit, never one of the last day; transforms of other versions go as compiles do', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sandburg-dev-cache-'));
+  try {
+    const now = Date.now();
+    const day = 24 * 3600_000;
+    const file = async (name: string, age: number, size = 100) => {
+      await writeFile(join(root, name), 'x'.repeat(size));
+      await utimes(join(root, name), (now - age) / 1000, (now - age) / 1000);
+    };
+    await file('stale.json', 15 * day);
+    await file('preload-stale.bin', 20 * day);
+    await file('old.json', 5 * day);
+    await file('older.json', 6 * day);
+    await file('recent.json', 2 * day);
+    await file('today.json', 1000, 400);
+    await mkdir(join(root, 'a-directory'));
+    await sweepDevCaches(root, 400, 14 * day, now);
+    // 700 bytes left of a limit of 400: the oldest go until 300 are left, but not today's.
+    assert.deepEqual((await readdir(root)).sort(), ['a-directory', 'today.json']);
+    await file('old.json', 5 * day);
+    await sweepDevCaches(root, 600, 14 * day, now);
+    assert.deepEqual((await readdir(root)).sort(), ['a-directory', 'old.json', 'today.json'], 'within the limit: kept');
+
+    const transforms = join(root, 'transforms');
+    for (const version of ['v29', 'v30', 'v31']) await mkdir(join(transforms, version, 'ab'), { recursive: true });
+    await utimes(join(transforms, 'v29'), (now - 2 * day) / 1000, (now - 2 * day) / 1000);
+    await sweepOtherVersions(join(transforms, 'v31'), now);
+    assert.deepEqual((await readdir(transforms)).sort(), ['v30', 'v31'], 'an earlier version unchanged for a day goes; a recent one stays');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

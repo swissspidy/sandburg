@@ -68,7 +68,7 @@ if (!('__sandburg_ac' in globalThis)) {
       if (target.protocol === 'https:') target.protocol = 'wss:';
       const list = protocols === undefined ? [] : Array.isArray(protocols) ? protocols : [protocols];
       const channel = new MessageChannel();
-      if (!connect(target.href, list, channel.port2, location.href)) return new Native(url, protocols);
+      if (!connect(target.href, list, channel.port2)) return new Native(url, protocols);
       this.url = target.href;
       this.readyState = CONNECTING;
       this.protocol = '';

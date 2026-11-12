@@ -1,6 +1,6 @@
 # ADR 0012: Real Vite in the node runtime (SvelteKit, Astro, React Router, Nuxt)
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0063](0063-synchronous-child-processes.md) (synchronous child processes run)
 - Date: 2026-09-30
 
 ## Context

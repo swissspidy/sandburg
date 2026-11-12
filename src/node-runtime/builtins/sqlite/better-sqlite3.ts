@@ -5,7 +5,7 @@
  * SqliteError with SQLite's extended codes (SQLITE_CONSTRAINT_UNIQUE, …).
  */
 import { Buffer } from 'buffer';
-import { Handle, bindAll, columnNames, describeError, readRow, safeReset, splitParams, sqlite, type BindValue, type FileAccess, type OoStmt } from './core.ts';
+import { Handle, bindAll, finalizeWith, columnNames, describeError, readRow, safeReset, splitParams, sqlite, type BindValue, type FileAccess, type OoStmt } from './core.ts';
 
 class SqliteError extends Error {
   code: string;
@@ -52,6 +52,7 @@ export function createBetterSqlite3(files: FileAccess) {
       this.reader = stmt.columnCount > 0;
       this.readonly = /^\s*(select|with|pragma|explain|values)\b/i.test(source) && !/\b(insert|update|delete|replace)\b/i.test(source.replace(/'[^']*'/g, ''));
       this.bigints = db._safeIntegers;
+      finalizeWith(this, stmt);
     }
 
     private prepared(args: unknown[]): OoStmt {

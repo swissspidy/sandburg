@@ -3,7 +3,7 @@
  * script, the packages of a project with client/ and server/ packages, and the plan for an install
  * in the page (ADR 0018). No Node.js imports: the demo site's generator page bundles it.
  */
-import { expandScript, findFullStack, isTsRunner } from './scripts.ts';
+import { expandScript, frontendProxy, isTsRunner, runnerPositionals } from './scripts.ts';
 import { extraDependencies } from './install-rules.ts';
 import { detectFramework } from '../../framework.ts';
 import type { Project } from '../../types.ts';
@@ -25,7 +25,7 @@ export function startCommand(project: Project): { file?: string; bin?: string; a
       if (leaf.dir) continue; // another package's script: not this runtime's job
       const [cmd, ...args] = leaf.words;
       if (/^(node|nodemon|tsx|ts-node|ts-node-dev|esno)$/.test(cmd)) {
-        const positional = args.filter((a) => !a.startsWith('-') && a !== 'watch');
+        const positional = runnerPositionals(cmd, args);
         if (positional[0]) return { file: positional[0].replace(/^\.\//, ''), argv: positional.slice(1), command: leaf.command, tsRunner: isTsRunner(leaf.command) };
       } else if (/^[a-z@][\w@/.-]*$/i.test(cmd) && !/^(npm|npx|yarn|pnpm|bun|cd|echo|rm|cp|mkdir|concurrently|cross-env)$/.test(cmd)) {
         return { bin: cmd, argv: args, command: leaf.command, tsRunner: false };
@@ -137,7 +137,7 @@ export function browserInstall(project: Project): HostInstall {
     if (cmd && (!script || isSimple(project, script))) start = cmd.bin ? { bin: cmd.bin, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner } : { main: cmd.file!, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
     else if (script) start = { shell: script, command: script, tsRunner: false };
   }
-  const proxy = project.framework === 'next' ? [] : findFullStack(project.files).proxy;
+  const proxy = project.framework === 'next' ? [] : frontendProxy(project.files);
   // lockfile: set by the install in the page, to whether the lockfile decided the tree (or, here,
   // whether a pnpm-lock.yaml or yarn.lock pinned the versions).
   return { key: '', index: {}, resolved: {}, lockfile: plan.pinned !== null, start, proxy, browserInstall: parts, ...workspaceInfo(plan) };

@@ -1057,7 +1057,11 @@ class ClientRequest extends Writable {
     this.#gone = true;
     this.controller.abort();
     this.#heldWrite = null;
-    if (this.#ended && this.res?.complete) return this;
+    if (this.#ended && this.res?.complete) {
+      // Its response was not read to its end: none of it is to fail, but the connection still closes.
+      if (!this.res.readableEnded) onClosePhase(() => this.#connectionClosed());
+      return this;
+    }
     this.#error = err;
     if (!this.#hasSocket) return this;
     // Its server (on this machine) learns it as from its end of the connection.
@@ -1119,8 +1123,11 @@ class ClientRequest extends Writable {
       queueMicrotask(() => this.#emitClose());
     });
     res.once('close', () => {
+      if (this.#socketClosed) return;
+      // All of it came and it ended ('end' closes the request, above). Destroyed unread: no 'end'
+      // comes, so its connection closes here, or the request never closes and keeps its agent's socket.
+      if (res.complete) return void (res.readableEnded || onClosePhase(() => this.#connectionClosed()));
       // Destroyed before its end (by the program): its connection closes, what is still coming is not read, and its server learns it.
-      if (res.complete || this.#socketClosed) return;
       this.#gone = true;
       this.controller.abort();
       this.#cancelServer?.();

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expandScript, findFullStack, matchProxy, readViteProxy, splitWords } from '../../src/adapters/node/scripts.ts';
+import { expandScript, frontendProxy, matchProxy, readViteProxy, splitWords } from '../../src/adapters/node/scripts.ts';
+import { startCommand } from '../../src/adapters/node/plan.ts';
+import { projectFromFiles } from '../../src/project.ts';
 
 const pkg = (scripts: Record<string, string>, extra: object = {}) => JSON.stringify({ scripts, ...extra });
 
@@ -8,51 +10,29 @@ test('splitWords keeps quoted commands together', () => {
   assert.deepEqual(splitWords(`concurrently -n api,web "node server.js" 'vite --port 5173'`), ['concurrently', '-n', 'api,web', 'node server.js', 'vite --port 5173']);
 });
 
-test('one package: concurrently with npm: shorthands and node --watch', () => {
-  const files = {
+test("the front end's proxy rules: the package whose dev script runs Vite, from the root's script or a directory of its own", () => {
+  const proxy = (target: string) => `export default { server: { proxy: { '/api': { target: '${target}', changeOrigin: true, rewrite: (path) => path.replace(/^\\/api/, '') } } } }`;
+  // One package: concurrently with npm: shorthands.
+  const one = {
     'package.json': pkg({ dev: 'concurrently "npm:server" "npm:client"', server: 'node --watch server/index.js', client: 'vite' }),
     'server/index.js': '',
     'index.html': '',
+    'vite.config.ts': proxy('http://localhost:4000'),
   };
-  assert.deepEqual(findFullStack(files), { frontend: '', backend: { dir: '', main: 'server/index.js', command: 'node --watch server/index.js' }, proxy: [] });
-});
-
-test('client/ and server/ packages started from the root with --prefix and cd', () => {
-  const files = {
+  assert.deepEqual(frontendProxy(one), [{ prefix: '/api', regex: undefined, port: 4000, strip: '/api' }]);
+  // client/ and server/ packages started from the root with --prefix and cd.
+  const split = {
     'package.json': pkg({ dev: 'concurrently -n api,web -c blue,green "npm run dev --prefix server" "cd client && npm run dev"' }),
     'server/package.json': pkg({ dev: 'nodemon --watch src src/index.ts' }),
     'server/src/index.ts': '',
     'client/package.json': pkg({ dev: 'vite' }),
     'client/index.html': '',
-    'client/vite.config.ts': "export default { server: { proxy: { '/api': { target: 'http://localhost:4000', changeOrigin: true, rewrite: (path) => path.replace(/^\\/api/, '') } } } }",
+    'client/vite.config.ts': proxy('http://localhost:5000'),
   };
-  const layout = findFullStack(files);
-  assert.equal(layout.frontend, 'client');
-  assert.deepEqual(layout.backend, { dir: 'server', main: 'src/index.ts', command: 'nodemon --watch src src/index.ts' });
-  assert.deepEqual(layout.proxy, [{ prefix: '/api', regex: undefined, port: 4000, strip: '/api' }]);
-});
-
-test('npm-run-all / run-p patterns, tsx watch, env assignments', () => {
-  const files = {
-    'package.json': pkg({ dev: 'run-p dev:*', 'dev:web': 'vite', 'dev:api': 'cross-env PORT=5000 tsx watch api/server.ts' }),
-    'api/server.ts': '',
-    'index.html': '',
-  };
-  assert.deepEqual(findFullStack(files).backend, { dir: '', main: 'api/server.ts', command: 'cross-env PORT=5000 tsx watch api/server.ts' });
-});
-
-test('a server/ package that the root does not start is still found', () => {
-  const files = {
-    'package.json': pkg({ dev: 'vite' }),
-    'index.html': '',
-    'server/package.json': pkg({ start: 'node index.js' }),
-    'server/index.js': '',
-  };
-  assert.deepEqual(findFullStack(files).backend, { dir: 'server', main: 'index.js', command: 'node index.js' });
-});
-
-test('a front end without a backend', () => {
-  assert.equal(findFullStack({ 'package.json': pkg({ dev: 'vite' }), 'index.html': '' }).backend, null);
+  assert.deepEqual(frontendProxy(split), [{ prefix: '/api', regex: undefined, port: 5000, strip: '/api' }]);
+  // No script that runs Vite: the directory with an index.html.
+  assert.deepEqual(frontendProxy({ 'package.json': pkg({ dev: 'node server.js' }), 'web/index.html': '', 'web/vite.config.js': proxy('http://localhost:6000') }), [{ prefix: '/api', regex: undefined, port: 6000, strip: '/api' }]);
+  assert.deepEqual(frontendProxy({ 'package.json': pkg({ dev: 'vite' }), 'index.html': '' }), []);
 });
 
 test('expandScript: sequences run every part', () => {
@@ -100,4 +80,18 @@ test('a workspace package\'s script, by name or path: npm -w, pnpm --filter, yar
   // Every workspace's script is not one script: left as a command (not the root's own script, again).
   assert.deepEqual(expandScript(files, '', 'npm run dev --workspaces').map((l) => [l.dir, l.command]), [['', 'npm run dev --workspaces']]);
   assert.deepEqual(expandScript(files, '', 'npm run dev -w missing'), []);
+});
+
+test("a runner's flags and their values are not its entry file", () => {
+  const start = (dev: string) => {
+    const cmd = startCommand(projectFromFiles({ 'package.json': pkg({ dev }) }, { name: 'app', path: 'app' }));
+    return cmd && [cmd.file, ...cmd.argv];
+  };
+  assert.deepEqual(start('node -r dotenv/config server.js 3000'), ['server.js', '3000']);
+  assert.deepEqual(start('node --env-file .env --watch server.js'), ['server.js']);
+  assert.deepEqual(start('node --import tsx server.ts'), ['server.ts']);
+  assert.deepEqual(start('nodemon --watch src src/index.js'), ['src/index.js']);
+  assert.deepEqual(start('nodemon --exec tsx server.ts'), ['server.ts']);
+  assert.deepEqual(start('tsx watch --tsconfig tsconfig.server.json ./server.ts'), ['server.ts']);
+  assert.deepEqual(start('tsx --watch server.ts'), ['server.ts']);
 });

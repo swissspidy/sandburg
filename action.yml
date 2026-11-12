@@ -6,7 +6,7 @@
 #       checks: ./my-app/checks.spec.ts
 #
 # It installs the sandburg package from npm, not this checkout: by default the version this ref's
-# package.json names. The first release after the action was added is the first tag that has it.
+# package.json names. v0.3.0 is the first release that has it.
 name: Sandburg
 description: Run and test a generated web app in the browser with Sandburg.
 author: swissspidy
@@ -29,7 +29,7 @@ inputs:
     default: "24"
   sandburg-version:
     description: >-
-      The sandburg package to install: a version, range or dist-tag (0.2.0, ^0.2, latest), the path of a
+      The sandburg package to install: a version, range or dist-tag (0.3.0, ^0.3, latest), the path of a
       packed .tgz (no ":"; starting with ./, ../, / or ~/, or ending in .tgz; relative to the workspace),
       or another npm spec (a URL, file:…), passed to npm as it is. A value starting with - is refused.
       Default: the version in this action ref's package.json.

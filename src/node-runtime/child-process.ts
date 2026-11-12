@@ -431,8 +431,10 @@ export function createChildProcess(host: ChildProcessHost) {
   function collect(child: ChildProcess, options: SpawnOptions, cb?: (e: Error | null, out: string | Buffer, err: string | Buffer) => void) {
     const out: Buffer[] = [];
     const err: Buffer[] = [];
-    child.stdout?.on('data', (d: Buffer | string) => out.push(Buffer.from(d)));
-    child.stderr?.on('data', (d: Buffer | string) => err.push(Buffer.from(d)));
+    // The streams have the encoding asked for (setEncoding): a string is in it, not in UTF-8.
+    const bytes = (d: Buffer | string) => (typeof d === 'string' ? Buffer.from(d, (options.encoding as BufferEncoding) ?? 'utf8') : d);
+    child.stdout?.on('data', (d: Buffer | string) => out.push(bytes(d)));
+    child.stderr?.on('data', (d: Buffer | string) => err.push(bytes(d)));
     const text = (b: Buffer[]) => (options.encoding === 'buffer' ? Buffer.concat(b) : Buffer.concat(b).toString((options.encoding as BufferEncoding) ?? 'utf8'));
     let failed = false;
     child.on('error', (e) => {
@@ -460,6 +462,17 @@ export function createChildProcess(host: ChildProcessHost) {
     const child = new ChildProcess();
     child.start(file, args, { ...options, stdio: 'pipe' }, false);
     return collect(child, options, cb);
+  }
+  // util.promisify(exec) and (execFile), as Node's: { stdout, stderr }, or the error with both.
+  for (const run of [exec, execFile] as ((...args: unknown[]) => ChildProcess)[]) {
+    const promise = (...args: unknown[]) => {
+      let child: ChildProcess | undefined;
+      const result = new Promise((resolve, reject) => {
+        child = run(...args, (e: Error | null, stdout: unknown, stderr: unknown) => (e ? reject(Object.assign(e, { stdout, stderr })) : resolve({ stdout, stderr })));
+      });
+      return Object.assign(result, { child });
+    };
+    Object.defineProperty(run, Symbol.for('nodejs.util.promisify.custom'), { value: promise });
   }
   const ERRNO: Record<string, number> = { ETIMEDOUT: -110, ENOBUFS: -105 };
   const spawnError = (code: string, file: string, spawnargs: string[]) =>

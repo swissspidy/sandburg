@@ -75,9 +75,10 @@ yourself (a verifier's) on the host, and the agent's in the page.
 
 ## GitHub Action
 
-The repository is a composite action ([`action.yml`](../../action.yml)) that runs one project. It ships
-with the first release after it was added: no tag before that has `action.yml`. Until then, pin it to a
-commit of `main` (or use `@main`, which moves):
+The repository is a composite action ([`action.yml`](../../action.yml)) that runs one project.
+v0.3.0 is the first release that has it, and it installs that version of the `sandburg` package: until
+`sandburg@0.3.0` is public on npm, give `sandburg-version` too. Pin it to a release's commit, as you pin other actions
+([Versions and tags](#versions-and-tags)), or use `@main`, which moves:
 
 ```yaml
 jobs:
@@ -90,7 +91,7 @@ jobs:
         with:
           persist-credentials: false
       - id: sandburg
-        uses: swissspidy/sandburg@<commit sha> # main
+        uses: swissspidy/sandburg@<commit sha> # v0.3.0
         with:
           project: ./my-app
           checks: ./my-app/checks.spec.ts
@@ -101,9 +102,6 @@ jobs:
           STATUS: ${{ steps.sandburg.outputs.status }}
           RESULT: ${{ steps.sandburg.outputs.result-path }}
 ```
-
-Once a release has it, pin to that release's commit, as you pin other actions
-([Versions and tags](#versions-and-tags)).
 
 What it does:
 
@@ -144,7 +142,7 @@ To run more than one project, use a matrix over `project` (with `artifact-name`)
 By default, the version in the `package.json` of the action's ref: the latest release when that ref is
 `main` between releases, and the release itself when it is a release's commit. `sandburg-version` takes:
 
-- **a version, range or dist-tag** of the `sandburg` package: `0.2.0`, `^0.2`, `latest`;
+- **a version, range or dist-tag** of the `sandburg` package: `0.3.0`, `^0.3`, `latest`;
 - **the path of a packed package** (`npm pack`), relative to the workspace: a value with no `:` that
   starts with `./`, `../`, `/` or `~/`, or ends in `.tgz`. A directory does not work: npm links it
   without installing its dependencies, and the action then stops, with Playwright missing;

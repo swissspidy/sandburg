@@ -77,6 +77,24 @@ export async function loadSqlite(base: string, importScripts: (url: string) => v
   if (config) for (const k of ['log', 'warn', 'error', 'debug']) config[k] = () => {};
 }
 
+/**
+ * Finalizes `stmt` once `owner`, the statement object the program had, is collected: the engine
+ * keeps every prepared statement of an open database until then (~2 KB each), and the packages have
+ * no way to finalize one (better-sqlite3, node:sqlite). `db.prepare(sql).get()` per request would
+ * grow the engine's memory for as long as a server runs.
+ */
+export function finalizeWith(owner: object, stmt: OoStmt): void {
+  statements.register(owner, stmt);
+}
+const statements = new FinalizationRegistry<OoStmt>((stmt) => {
+  try {
+    // Finalized already when its database closed: nothing to do then.
+    stmt.finalize();
+  } catch {
+    // Not the program's concern.
+  }
+});
+
 export function sqlite(): Sqlite3 {
   if (!engine) throw new Error('SQLite is not loaded (the runtime loads it when the app depends on better-sqlite3, sqlite3 or node:sqlite)');
   return engine;
@@ -95,9 +113,32 @@ interface Shared {
   refs: number;
   dirty: boolean;
   timer: ReturnType<typeof setTimeout> | null;
+  /** Where it is written back to (see flushDatabases). */
+  files: FileAccess;
 }
 
 const shared = new Map<string, Shared>();
+
+/**
+ * Writes every changed database back to its file now: the process exits (process.exit() right after
+ * a write, as a seed script ends), and the timer that would have written it never fires. A transaction
+ * still open is rolled back first, as a database file would not have it, and what was committed before
+ * it is written. Each database is written whatever happens to another; the first failure is thrown after.
+ */
+export function flushDatabases(): void {
+  let failure: { error: unknown } | null = null;
+  for (const s of shared.values()) {
+    if (!s.dirty || !s.path) continue;
+    try {
+      if (sqlite().capi.sqlite3_get_autocommit(s.db.pointer) === 0) s.db.exec('ROLLBACK');
+      s.files.write(s.path, sqlite().capi.sqlite3_js_db_export(s.db.pointer));
+      s.dirty = false;
+    } catch (error) {
+      failure ??= { error };
+    }
+  }
+  if (failure) throw failure.error;
+}
 
 /** A database handle shared by every connection to the same file (or a private one for :memory:). */
 export class Handle {
@@ -122,7 +163,7 @@ export class Handle {
           if (rc !== 0) throw Object.assign(new Error('file is not a database'), { code: 'SQLITE_NOTADB' });
         }
       } else if (path) files.write(path, new Uint8Array());
-      s = { db, path, refs: 0, dirty: false, timer: null };
+      s = { db, path, refs: 0, dirty: false, timer: null, files };
       if (path) shared.set(path, s);
     }
     s.refs++;

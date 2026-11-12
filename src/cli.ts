@@ -122,8 +122,10 @@ export async function main(argv: string[]): Promise<number> {
     return await command(argv);
   } catch (err) {
     // What to change on this host, without Playwright's launch log (the error's cause).
-    if (!(err instanceof BrowserSetupError) && !(err instanceof InputError)) throw err;
-    console.error(`error: ${err.message}`);
+    if (err instanceof BrowserSetupError || err instanceof InputError) console.error(`error: ${err.message}`);
+    // Anything else (the browser died, a bug): an error too, with where it came from. Not exit code 1,
+    // which says the app ran and a check failed.
+    else console.error(`error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
     return 2;
   }
 }
@@ -183,6 +185,11 @@ async function command(argv: string[]): Promise<number> {
   };
   const store = new SnapshotStore(resolve(values.store ?? '.sandburg/store'));
 
+  // Not dropped without a word by the commands it is not for.
+  if (values['save-files'] !== undefined && command !== 'run') {
+    console.error('--save-files: only for run, with a project directory');
+    return 64;
+  }
   switch (command) {
     case 'snapshot': {
       const project = await input(loadProject(target, store));
@@ -216,7 +223,8 @@ async function command(argv: string[]): Promise<number> {
       );
       if (refused) console.error(`--save-files: nothing written: ${refused}`);
       else if (saved) {
-        const skipped = await writeAppFiles(resolve(target), saved);
+        // The paths are the project's: a workspace package's project is its monorepo.
+        const skipped = await writeAppFiles(project.path, saved);
         if (skipped.length) console.error(`--save-files: not written: ${skipped.map((s) => `${s.path} (${s.reason})`).join(', ')}`);
       }
       const dir = relative(process.cwd(), join(values.out ?? '.sandburg/runs', result.runId));

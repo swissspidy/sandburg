@@ -155,6 +155,11 @@ then
     node scripts/split-session.ts && node scripts/split-node-adapter.ts
     npm run typecheck && npm run lint && npm test
 
+The scripts that list the moves (`split-worker.ts`, `split-page-checks.ts`, `split-session.ts`,
+`split-node-adapter.ts`) were removed once the splits were long merged and their sources no longer had
+the declarations to move: they are in the history (`git log -- scripts/split-worker.ts`).
+`scripts/split-module.ts`, the tool, stays.
+
 ### Numbers
 
 | | base (origin/quality-structure, c4c760c) | this branch |

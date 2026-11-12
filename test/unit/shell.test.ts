@@ -28,8 +28,8 @@ function run(script: string, { files = {}, env = {}, code = () => 0 }: { files?:
     write: (fd, text) => (fd === 1 ? out : err).push(text),
     onExit: (c) => exited(c),
   };
-  runScript(script, '/app', env, host);
-  return { ran, out, err, exit, argv: () => ran.map((r) => r.argv.slice(1).join(' ')) };
+  const handle = runScript(script, '/app', env, host);
+  return { ran, out, err, exit, kill: () => handle.kill(), argv: () => ran.map((r) => r.argv.slice(1).join(' ')) };
 }
 
 const fails = (argv: string[]) => (argv[1].startsWith('fail') ? 1 : 0);
@@ -84,6 +84,17 @@ test('NAME=value before a command sets it for that command; alone, or with expor
   const c = run('cross-env NODE_ENV=production node a.js && env DEBUG=1 node b.js');
   await c.exit;
   assert.deepEqual([c.ran[0].env.NODE_ENV, c.ran[1].env.DEBUG], ['production', '1']);
+  // What a command is run with reaches the script it runs, over the environment the shell started with.
+  const files = { '/app/package.json': JSON.stringify({ scripts: { serve: 'node server.js' } }) };
+  for (const script of ['NODE_ENV=production PORT=4000 npm run serve', 'cross-env NODE_ENV=production PORT=4000 npm run serve', 'NODE_ENV=production PORT=4000 sh -c "node server.js"']) {
+    const n = run(script, { files, env: { NODE_ENV: 'development', PORT: '3000' } });
+    await n.exit;
+    assert.deepEqual([n.ran[0].env.NODE_ENV, n.ran[0].env.PORT], ['production', '4000'], script);
+  }
+  // A bare assignment sets that variable alone: the next command list still has its own.
+  const b = run('A=1; NODE_ENV=production npm run serve', { files, env: { NODE_ENV: 'development' } });
+  await b.exit;
+  assert.deepEqual([b.ran[0].env.A, b.ran[0].env.NODE_ENV], ['1', 'production']);
 });
 
 test('sh -c and bash -c run their script in this shell', async () => {
@@ -207,4 +218,19 @@ test("a script's own arguments after -- may look like the package manager's (-r,
   const s = run('npm test -- -r dotenv/config --workspaces', { files });
   assert.equal(await s.exit, 0);
   assert.deepEqual(s.argv(), ['t.js -r dotenv/config --workspaces']);
+});
+
+test("a script stopped in its sleep ends at once, as killed: the sleep's timer does not hold it", async () => {
+  const s = run('sleep 600 && node server.js');
+  s.kill();
+  assert.equal(await s.exit, 143);
+  assert.deepEqual(s.argv(), []);
+});
+
+test('a script stopped with a sleep in the background ends as killed, not with the code of the command before', async () => {
+  const s = run('sleep 600 & true');
+  await Promise.resolve();
+  await Promise.resolve();
+  s.kill();
+  assert.equal(await s.exit, 143);
 });

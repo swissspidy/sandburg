@@ -30,15 +30,6 @@ export const DEV_ENV: Record<string, string> = {
   NO_UPDATE_NOTIFIER: '1',
 };
 
-interface BackendCommand {
-  /** Package directory the command runs in ("" is the project root). */
-  dir: string;
-  /** The server entry, relative to `dir`. */
-  main: string;
-  /** The command as written, for logs. */
-  command: string;
-}
-
 export interface ProxyRule {
   /** Path prefix (Vite matches keys starting with ^ as regular expressions). */
   prefix: string;
@@ -48,17 +39,10 @@ export interface ProxyRule {
   strip?: string;
 }
 
-export interface FullStackLayout {
-  /** Directory of the front end (index.html, vite.config): "" or e.g. "client". */
-  frontend: string;
-  backend: BackendCommand | null;
-  proxy: ProxyRule[];
-}
-
 const CONCURRENTLY_VALUE_OPTS = /^(-n|--names|-c|--prefix-colors|-p|--prefix|-l|--prefix-length|-t|--timestamp-format|-m|--max-processes|-s|--success|--restart-tries|--restart-after|--default-input-target|--kill-signal|--passthrough-arguments-separator)$/;
-const SERVER_RUNNERS = /^(node|nodemon|tsx|ts-node|ts-node-dev|ts-node-esm|node-dev|esno|esr)$/;
 const FRONTEND_DIRS = ['', 'client', 'frontend', 'web', 'app', 'ui'];
-const BACKEND_DIRS = ['server', 'backend', 'api'];
+/** Other packages a root without a dev script may start its front end from. */
+const OTHER_DIRS = ['server', 'backend', 'api'];
 
 const text = (files: Files, path: string) => {
   const v = files[path];
@@ -217,16 +201,22 @@ export function isTsRunner(command: string): boolean {
   return /^(tsx|ts-node|ts-node-dev|ts-node-esm|esno|esr)$/.test(words[0] ?? '') || (words[0] === 'nodemon' && /\.[cm]?ts$/.test(words[words.length - 1] ?? ''));
 }
 
-/** The file a server runner starts (`node --watch server/index.js` → server/index.js). */
-function serverEntry(leaf: Leaf): string | null {
-  const [cmd, ...args] = leaf.words;
-  if (!SERVER_RUNNERS.test(cmd)) return null;
+/**
+ * What a runner's arguments leave once its flags, their values and tsx's `watch` are taken out: the
+ * entry file, then the program's own arguments (`node -r dotenv/config server.js 3000` → server.js, 3000).
+ */
+export function runnerPositionals(cmd: string, args: string[]): string[] {
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === 'watch' && positional.length === 0 && (cmd === 'tsx' || cmd === 'esno')) continue;
-    // Flags that take a value.
-    if (/^(--watch-path|--exec|-e|-r|--require|--import|--loader|--env-file|--inspect-port|-w|--watch|--ext|--ignore|-i|--delay|--signal|-x|--tsconfig|-P|--project)$/.test(a) && cmd !== 'node') {
+    // Flags that take a value. --watch names a path for nodemon and ts-node-dev; for the others it
+    // is node's own switch.
+    if (/^(--watch-path|--exec|-e|--ext|--ignore|-i|--delay|--signal|-x|--tsconfig|-P|--project|--inspect-port)$/.test(a) && cmd !== 'node') {
+      i++;
+      continue;
+    }
+    if (/^(-w|--watch)$/.test(a) && /^(nodemon|ts-node-dev|node-dev)$/.test(cmd)) {
       i++;
       continue;
     }
@@ -237,56 +227,28 @@ function serverEntry(leaf: Leaf): string | null {
     if (a.startsWith('-')) continue;
     positional.push(a);
   }
-  return positional[0] ?? null;
+  return positional;
 }
 
 function isVite(leaf: Leaf): boolean {
   return leaf.words[0] === 'vite' && leaf.words[1] !== 'build' && leaf.words[1] !== 'preview';
 }
 
-/** Finds the front end, the backend command and Vite's proxy rules. */
-export function findFullStack(files: Files): FullStackLayout {
+/**
+ * Vite's proxy rules (server.proxy) of the project's front end: the package whose dev script runs
+ * Vite (the root's, or what it starts in client/, frontend/, …), else the directory with an index.html.
+ */
+export function frontendProxy(files: Files): ProxyRule[] {
   const leaves: Leaf[] = [];
-  for (const dir of ['', ...FRONTEND_DIRS.slice(1), ...BACKEND_DIRS]) {
+  for (const dir of ['', ...FRONTEND_DIRS.slice(1), ...OTHER_DIRS]) {
     const pkg = readPackage(files, dir);
     if (!pkg) continue;
     const script = pkg.scripts.dev ?? pkg.scripts.start;
     if (script) leaves.push(...expandScript(files, dir, script));
     if (dir === '' && leaves.length) break; // the root's dev script says how the project starts
   }
-
   const frontend = leaves.find(isVite)?.dir ?? FRONTEND_DIRS.find((d) => text(files, d ? `${d}/index.html` : 'index.html') !== null) ?? '';
-  let backend: BackendCommand | null = null;
-  for (const leaf of leaves) {
-    const entry = serverEntry(leaf);
-    if (entry && findFile(files, leaf.dir, entry)) {
-      backend = { dir: leaf.dir, main: findFile(files, leaf.dir, entry)!, command: leaf.command };
-      break;
-    }
-  }
-  // A server/ (backend/, api/) package whose own scripts were not reached from the root.
-  if (!backend) {
-    for (const dir of BACKEND_DIRS) {
-      const pkg = readPackage(files, dir);
-      const script = pkg?.scripts.dev ?? pkg?.scripts.start;
-      const leaf = script ? expandScript(files, dir, script).find((l) => serverEntry(l)) : undefined;
-      const entry = leaf ? serverEntry(leaf) : pkg?.main;
-      if (entry && findFile(files, leaf?.dir ?? dir, entry)) {
-        backend = { dir: leaf?.dir ?? dir, main: findFile(files, leaf?.dir ?? dir, entry)!, command: leaf?.command ?? `node ${entry}` };
-        break;
-      }
-    }
-  }
-  return { frontend, backend, proxy: readViteProxy(files, frontend) };
-}
-
-/** The file for an entry as a runner resolves it: exact, or with a JS/TS extension or /index. */
-function findFile(files: Files, dir: string, entry: string): string | null {
-  const base = joinDir('', entry);
-  for (const candidate of [base, ...['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts'].map((e) => base + e), ...['.js', '.ts'].map((e) => `${base}/index${e}`)]) {
-    if (files[dir ? `${dir}/${candidate}` : candidate] !== undefined) return candidate;
-  }
-  return null;
+  return readViteProxy(files, frontend);
 }
 
 /** server.proxy from vite.config: string targets and { target, rewrite } objects pointing at localhost. */

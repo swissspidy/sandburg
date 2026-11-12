@@ -12,6 +12,17 @@ const pkg = (deps: Record<string, string> = {}, extra: object = {}) => JSON.stri
 /** A Vite app's page, whose script is the app's entry. */
 const page = (src = '/src/main.ts') => `<!doctype html>\n<div id="app"></div>\n<script type="module" src="${src}"></script>\n`;
 const check = async (files: Record<string, string>, app?: string) => (await checkSourcesHere(files, { app })).map(describeFinding);
+/** What `read` gives once `done` holds for it, looked at every 25 ms; after `ms`, what it gave last (the assertion that follows says what is wrong). */
+async function settled<T>(read: () => T, done: (value: T) => boolean, ms = 15_000): Promise<T> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const value = read();
+    if (done(value) || Date.now() >= deadline) return value;
+    await sleep(25);
+  }
+}
+/** The time a step takes is checked only where asked for (it depends on the machine), as in host-socket.test.ts. */
+const timed = process.env.SANDBURG_PERF_TESTS === '1';
 /** The process's warnings (a check that fails says so, once). */
 const warnings: string[] = [];
 process.on('warning', (w) => warnings.push(w.message));
@@ -255,13 +266,21 @@ test('a check leaves no process behind: not its own, nor the esbuild it started,
   const unit = `${'['.repeat(900)}1${']'.repeat(900)},\n`;
   for (let i = 0; i < 48; i++) files[`src/f${i}.ts`] = `export const a = [\n${unit.repeat(Math.floor(500_000 / unit.length))}];\n`;
   for (const budget of [150, 300, 450]) assert.deepEqual(await checkSources(files, {}, { budgetMs: budget, onSpawn }), [], `budget ${budget} ms`);
-  await sleep(1_000);
   // Running ones of a check's, wherever they are, and unreaped ones of this process's or a check's.
   // (A killed check's esbuild is its init's to reap, as any orphan is: dead, it is not left running.)
   const ours = (p: { ppid: number; pgid: number | null }) => p.ppid === process.pid || checks.includes(p.ppid) || (p.pgid !== null && checks.includes(p.pgid));
-  const left = esbuildProcesses().filter((p) => !before.has(p.pid) && (p.zombie ? p.ppid !== 1 && ours(p) : ours(p) || p.ppid === 1));
-  assert.deepEqual(left, [], 'an esbuild process of a check is still there');
-  for (const pid of checks) assert.throws(() => process.kill(pid, 0), `the check's process ${pid} is still there`);
+  const left = () => esbuildProcesses().filter((p) => !before.has(p.pid) && (p.zombie ? p.ppid !== 1 && ours(p) : ours(p) || p.ppid === 1));
+  const alive = () =>
+    checks.filter((pid) => {
+      try {
+        return process.kill(pid, 0);
+      } catch {
+        return false;
+      }
+    });
+  // The killed ones end, and are reaped, a moment after their checks answered.
+  assert.deepEqual(await settled(left, (l) => l.length === 0), [], 'an esbuild process of a check is still there');
+  assert.deepEqual(await settled(alive, (a) => a.length === 0), [], "a check's process is still there");
 });
 
 test('a file nested too deep for the parser is not parsed (no crash, at once); the other files are', async () => {
@@ -331,9 +350,8 @@ test(
     try {
       const started = Date.now();
       assert.deepEqual(await checkSources({ 'index.html': page(), 'src/main.ts': 'export {};\n' }, {}, { budgetMs: 1_500 }), []);
-      assert.ok(Date.now() - started < 3_000);
-      await sleep(500);
-      assert.deepEqual(running(), [], 'the stand-in esbuild is still running');
+      if (timed) assert.ok(Date.now() - started < 3_000);
+      assert.deepEqual(await settled(running, (r) => r.length === 0), [], 'the stand-in esbuild is still running');
     } finally {
       if (before === undefined) delete process.env.ESBUILD_BINARY_PATH;
       else process.env.ESBUILD_BINARY_PATH = before;
@@ -358,19 +376,22 @@ test(
     const warned = warnings.length;
     try {
       const over = new AbortController();
-      const started = Date.now();
       const check = checkSources({ 'index.html': page(), 'src/main.ts': 'export {};\n' }, {}, { signal: over.signal });
-      await sleep(700);
+      // Stopped once the check waits on its esbuild (the stand-in runs).
+      assert.notDeepEqual(await settled(running, (r) => r.length > 0), [], 'the stand-in esbuild was not started');
+      const stopped = Date.now();
       over.abort();
       assert.deepEqual(await check, []);
-      assert.ok(Date.now() - started < 2_000, `stopped after ${Date.now() - started} ms (its budget is 10 s)`);
-      await sleep(500);
-      assert.deepEqual(running(), [], 'the stand-in esbuild is still running');
+      // What the test is about, so checked everywhere: it answers as it is stopped, not at its budget (10 s).
+      assert.ok(Date.now() - stopped < 2_000, `answered ${Date.now() - stopped} ms after it was stopped (its budget is 10 s)`);
+      assert.deepEqual(await settled(running, (r) => r.length === 0), [], 'the stand-in esbuild is still running');
       assert.equal(warnings.length, warned, 'a check no longer wanted is no failure');
       // One no longer wanted before it starts is not started.
       const asked = Date.now();
-      assert.deepEqual(await checkSources({ 'src/main.ts': 'const broken = ;\n' }, {}, { signal: AbortSignal.abort() }), []);
-      assert.ok(Date.now() - asked < 500, `answered after ${Date.now() - asked} ms`);
+      const spawned: number[] = [];
+      assert.deepEqual(await checkSources({ 'src/main.ts': 'const broken = ;\n' }, {}, { signal: AbortSignal.abort(), onSpawn: (pid) => spawned.push(pid) }), []);
+      assert.deepEqual(spawned, [], 'a process was started for it');
+      if (timed) assert.ok(Date.now() - asked < 500, `answered after ${Date.now() - asked} ms`);
     } finally {
       if (before === undefined) delete process.env.ESBUILD_BINARY_PATH;
       else process.env.ESBUILD_BINARY_PATH = before;

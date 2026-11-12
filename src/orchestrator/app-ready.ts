@@ -58,12 +58,14 @@ export async function appFrame(page: Page): Promise<Frame> {
  * which reloads itself once the app is built, or any 503 answer (`loading`). The app is loaded
  * again until it renders or the phase's deadline passes. `rendered` asks the host page first (one call,
  * where Playwright's waitForFunction first sets itself up in the new frame), if there is one.
+ * `over`: the phase ended without it (it failed, or timed out); the wait ends, and loads nothing again.
  */
-export async function waitForRender(frame: Frame, selector?: string, reload?: () => Promise<unknown>, loading?: () => boolean, rendered?: () => Promise<boolean>): Promise<void> {
+export async function waitForRender(frame: Frame, selector?: string, reload?: () => Promise<unknown>, loading?: () => boolean, rendered?: () => Promise<boolean>, over?: AbortSignal): Promise<void> {
   if (rendered && (await rendered().catch(() => false)) && !loading?.()) return;
   for (let tries = 1; ; tries++) {
     // The run ended (the phase timed out and the tab closed): stop trying.
     if (frame.isDetached() || frame.page().isClosed()) throw new Error('the app frame is gone');
+    if (over?.aborted) throw new Error('the ready phase is over');
     const state = await frame
       .waitForFunction(`(${appRendered.toString()})(document, ${JSON.stringify(selector ?? null)})`, undefined, { polling: 100, timeout: RELOAD_ERROR_PAGE_MS })
       .then(
@@ -71,6 +73,7 @@ export async function waitForRender(frame: Frame, selector?: string, reload?: ()
         () => (frame.url().startsWith('chrome-error:') ? ('error' as const) : ('waiting' as const)),
       );
     if (state === 'rendered' && !loading?.()) return;
+    if (over?.aborted) throw new Error('the ready phase is over');
     // The error page at once; a loading page after a while, in case its own reload does not come.
     if (reload && (state === 'error' || tries % RELOAD_LOADING_PAGE_TRIES === 0)) await reload().catch(() => {});
   }

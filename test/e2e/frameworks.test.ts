@@ -8,7 +8,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,7 +46,7 @@ test('a Lit app that renders only into its shadow root (no light-DOM text) is re
   assert.equal(result.status, 'passed', failures(result));
 });
 
-test('Tailwind CSS v4 (@tailwindcss/vite) is compiled by the app\'s own tailwindcss', async () => {
+test('Tailwind CSS v4 (@tailwindcss/vite) is compiled by the app\'s own tailwindcss', async (t) => {
   const project = projectFromFiles(
     {
       'package.json': JSON.stringify({ type: 'module', scripts: { dev: 'vite' }, devDependencies: { vite: '^6.0.0', tailwindcss: '4.1.14', '@tailwindcss/vite': '4.1.14' } }),
@@ -58,6 +58,7 @@ test('Tailwind CSS v4 (@tailwindcss/vite) is compiled by the app\'s own tailwind
     { name: 'tailwind-v4', path: '/virtual/tailwind-v4' },
   );
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-tw-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const checks = join(dir, 'checks.spec.ts');
   await writeFile(
     checks,

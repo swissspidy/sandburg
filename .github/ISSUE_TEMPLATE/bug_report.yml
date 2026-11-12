@@ -18,7 +18,7 @@ body:
     attributes:
       label: Sandburg version
       description: "`npm ls sandburg`, or the commit of a checkout."
-      placeholder: 0.2.0
+      placeholder: 0.3.0
     validations:
       required: true
   - type: input

@@ -8,7 +8,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +58,7 @@ test('a template error fails the compile as an app bug, with its location', asyn
   assert.match(result.failure.message, /src\/app\/tasks\/task-list\.html:\d+:\d+: TS2339: Property 'remainingCount' does not exist/);
 });
 
-test('Tailwind CSS v4 via @tailwindcss/postcss is applied', async () => {
+test('Tailwind CSS v4 via @tailwindcss/postcss is applied', async (t) => {
   const base = await loadProject(tasks);
   const pkg = JSON.parse(base.files['package.json'] as string);
   Object.assign(pkg.devDependencies, { tailwindcss: '4.1.14', '@tailwindcss/postcss': '4.1.14', postcss: '^8.5.0' });
@@ -73,13 +73,14 @@ test('Tailwind CSS v4 via @tailwindcss/postcss is applied', async () => {
     { name: 'angular-tailwind', path: tasks },
   );
   const dir = await mkdtemp(join(tmpdir(), 'sandburg-ng-tw-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const checks = join(dir, 'checks.spec.ts');
   await writeFile(checks, `export default { 'utilities apply': async ({ app, expect }) => { await expect(app.getByRole('heading', { name: 'Task board' })).toHaveCSS('font-size', '30px'); } };\n`);
   const result = await session.run(project, { checks, outDir });
   assert.equal(result.status, 'passed', failures(result));
 });
 
-test('Sass @use of a package (the Angular CDK) is resolved by the CLI\'s importer', async () => {
+test('Sass @use of a package (the Angular CDK) is resolved by the CLI\'s importer', async (t) => {
   const base = await loadProject(tasks);
   const pkg = JSON.parse(base.files['package.json'] as string);
   pkg.dependencies['@angular/cdk'] = pkg.dependencies['@angular/core'];
@@ -95,6 +96,7 @@ test('Sass @use of a package (the Angular CDK) is resolved by the CLI\'s importe
     { name: 'angular-sass-package', path: tasks },
   );
   const tmp = await mkdtemp(join(tmpdir(), 'sandburg-ng-sass-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
   const checks = join(tmp, 'checks.spec.ts');
   await writeFile(checks, `export default { 'the CDK mixin applies': async ({ app, expect }) => { const el = app.getByTestId('hidden'); await expect(el).toHaveCSS('position', 'absolute'); await expect(el).toHaveCSS('width', '1px'); } };\n`);
   const result = await session.run(project, { checks, outDir });

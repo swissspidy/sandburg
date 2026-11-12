@@ -65,6 +65,8 @@ test('an unknown command or option value is a usage error (64), found before the
   assert.equal((await cli('run', 'app', '--runtime', 'foo')).code, 64);
   assert.equal((await cli('compare', 'corpus', '--corpus', 'x')).code, 64);
   assert.equal((await cli('compare', 'corpus', '--reference', 'podman')).code, 64);
+  // An option of one command given to another is not dropped without a word.
+  assert.deepEqual(await cli('batch', 'corpus', '--save-files', 'db$').then((r) => [r.code, r.stderr]), [64, '--save-files: only for run, with a project directory']);
 });
 
 test("a project, checks file or directory that is not there is an error (2) on one line, and makes no run's directory", async () => {
@@ -156,7 +158,7 @@ const HANGING_COMPARE = `
       const project = await loadProject(path);
       // A mount or install the signal's disposeAll cut short ends its run as an error result, as Session.run's does.
       const runtime = options.nodeRuntime?.();
-      const failure = runtime ? await runtime.mount(project, () => {}).then(() => runtime.install()).then(() => null, (e) => ({ class: 'infra', rule: 'infra-error', message: String(e) })) : null;
+      const failure = runtime ? await runtime.mount(project).then(() => runtime.install()).then(() => null, (e) => ({ class: 'infra', rule: 'infra-error', message: String(e) })) : null;
       return {
         runId: 'r', status: failure ? 'error' : 'passed', failure, checks: [],
         project: { name: project.name, path, framework: project.framework, snapshotId: 's' },
@@ -324,4 +326,13 @@ test("untilStopped gives the listeners it held back as they were: a once listene
   } finally {
     process.off('SIGBREAK', once);
   }
+});
+
+test('an error that is not about the input (here: the store cannot be written) exits 2 with the error, not 1 as a failed check', async () => {
+  const dir = tempDir('sandburg-cli-');
+  // A file where the store's directory would be.
+  await writeFile(join(dir, 'store'), '');
+  const { code, stderr } = await cli('snapshot', fixture, '--store', join(dir, 'store'));
+  assert.equal(code, 2);
+  assert.match(stderr, /^error: Error: (ENOTDIR|EEXIST)[^\n]*\n\s+at /);
 });

@@ -259,7 +259,7 @@ function* compileOnce(code: string, path: string, kind: CompileKind, opts: { asy
     sourcefile: kind === 'esm' && loader === 'js' ? esmSourcefile(path) : path,
     target: 'es2022',
     supported: LOWER,
-    define: kind === 'cjs' ? undefined : marked ? ESM_DEFINE : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename' },
+    define: kind === 'cjs' ? undefined : marked ? ESM_DEFINE : { 'import.meta.url': '__sandburg_import_meta_url', 'import.meta.dirname': '__dirname', 'import.meta.filename': '__filename', 'import.meta.resolve': 'module.metaResolve' },
     logLevel: 'silent',
   };
   // The eval literals' placeholders are strings: the rewrite leaves them as they are.

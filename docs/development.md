@@ -70,7 +70,7 @@ Docker reference tests run there too. Each job reports its tests' times, with a 
 a file over its budget in `test/budgets.json`.
 Those jobs run on Linux; macOS and Windows run typecheck, the unit and runtime tests and the e2e `run` file.
 A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, the unit tests with timing assertions,
-`package-lock.json` or the perf workflow is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
+`package-lock.json`, the perf workflow or `.github/actions/setup-chromium/` is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
 That job fails only when a median is more than 30% slower, or when a side has no result; it also runs
 the unit tests' timing assertions (`SANDBURG_PERF_TESTS=1`), one file at a time. zizmor checks the workflows, and Dependabot proposes npm and GitHub Actions updates weekly,
 after a week's cooldown. Every action is pinned to a commit, and the jobs that launch Chromium share one setup
@@ -87,7 +87,7 @@ publishing (no npm token in the repository) and provenance, tags it and creates 
 version goes public once a maintainer approves the staged publish on npmjs.com.
 
 The GitHub Action ([`action.yml`](../action.yml)) installs the package version its ref's
-`package.json` names. It ships with the first release after it was added: no earlier tag has it.
+`package.json` names. v0.3.0 is the first release that has it.
 Nothing moves a `v0` major tag; a maintainer moves it at a release, after the version is public
 ([Agents and CI](guide/agents-and-ci.md#versions-and-tags)).
 

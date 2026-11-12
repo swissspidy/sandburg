@@ -6,6 +6,7 @@
  */
 import { EventEmitter } from 'events';
 import { Readable, Writable } from 'readable-stream';
+import { StringDecoder } from 'string_decoder';
 import { SIGNALS, timers } from './process.ts';
 import { net, NetServer, Socket } from './net.ts';
 
@@ -70,14 +71,50 @@ const lookup = (host: string, opts: unknown, cb?: (e: unknown, addr?: unknown, f
   const address = host === 'localhost' || net.isIP(host) ? (net.isIP(host) ? host : '127.0.0.1') : '0.0.0.0';
   timers.setTimeout(() => (all ? done(null, [{ address, family: 4 }]) : done(null, address, 4)), 0);
 };
+/** Node's record types (dns.resolve's rrtype), each with its function's name: resolveMx for 'MX'. */
+const RRTYPES = ['A', 'AAAA', 'ANY', 'CAA', 'CNAME', 'MX', 'NAPTR', 'NS', 'PTR', 'SOA', 'SRV', 'TXT'];
+const rrName = (rrtype: string) => (rrtype === 'A' ? '4' : rrtype === 'AAAA' ? '6' : rrtype[0] + rrtype.slice(1).toLowerCase());
+/**
+ * A host's records. There is no resolver here: addresses are what lookup gives (an address itself,
+ * the loopback for localhost, else a placeholder; no IPv6 address but those), and a host has no
+ * other record: ENODATA, as from a server that has none of the type.
+ */
+function resolveRecords(host: string, rrtype: string, ttl: boolean): unknown[] {
+  if (!RRTYPES.includes(rrtype)) throw Object.assign(new TypeError(`The argument 'rrtype' is invalid. Received ${typeof rrtype === 'string' ? `'${rrtype}'` : String(rrtype)}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  const family = net.isIP(host);
+  const address = rrtype === 'A' ? (family === 4 ? host : family ? null : host === 'localhost' ? '127.0.0.1' : '0.0.0.0') : rrtype === 'AAAA' ? (family === 6 ? host : host === 'localhost' ? '::1' : null) : null;
+  if (address) return [ttl ? { address, ttl: 0 } : address];
+  const syscall = `query${rrtype === 'A' || rrtype === 'AAAA' ? rrtype[0] + rrtype.slice(1).toLowerCase() : rrName(rrtype)}`;
+  throw Object.assign(new Error(`${syscall} ENODATA ${host}`), { errno: undefined, code: 'ENODATA', syscall, hostname: host });
+}
+type ResolveCallback = (e: unknown, records?: unknown[]) => void;
+/** dns.resolve(host[, rrtype], cb): an invalid rrtype throws, a host without records calls back with the error. */
+const resolve = (host: string, rrtype: string | ResolveCallback, cb?: ResolveCallback, ttl = false) => {
+  const done = (typeof rrtype === 'function' ? rrtype : cb) as ResolveCallback;
+  let records: unknown[] | undefined;
+  let error: unknown = null;
+  try {
+    records = resolveRecords(host, typeof rrtype === 'string' ? rrtype : 'A', ttl);
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'ENODATA') throw e;
+    error = e;
+  }
+  timers.setTimeout(() => (error ? done(error) : done(null, records)), 0);
+};
+const resolvePromise = (host: string, rrtype = 'A', ttl = false) => new Promise((res, rej) => resolve(host, rrtype, (e, records) => (e ? rej(e) : res(records)), ttl));
+/** resolve4, resolve6 (with { ttl: true }, records with their ttl), resolveMx and the others. */
+const resolvers = Object.fromEntries(RRTYPES.map((rrtype) => [`resolve${rrName(rrtype)}`, (host: string, o: { ttl?: boolean } | ResolveCallback, cb?: ResolveCallback) => resolve(host, rrtype, typeof o === 'function' ? o : cb, typeof o === 'object' && !!o?.ttl)]));
+const resolverPromises = Object.fromEntries(RRTYPES.map((rrtype) => [`resolve${rrName(rrtype)}`, (host: string, o?: { ttl?: boolean }) => resolvePromise(host, rrtype, !!o?.ttl)]));
 export const dns = {
   lookup,
-  resolve: (_h: string, cb: (e: unknown) => void) => timers.setTimeout(() => cb(notSupported('dns.resolve')), 0),
+  resolve: (host: string, rrtype: string | ResolveCallback, cb?: ResolveCallback) => resolve(host, rrtype, cb),
+  ...resolvers,
   setDefaultResultOrder: () => {},
   getDefaultResultOrder: () => 'ipv4first',
   promises: {
     lookup: (host: string, opts?: unknown) => new Promise((res, rej) => lookup(host, opts ?? {}, (e, address, family) => (e ? rej(e) : res(Array.isArray(address) ? address : { address, family })))),
-    resolve: () => Promise.reject(notSupported('dns.resolve')),
+    resolve: (host: string, rrtype?: string) => resolvePromise(host, rrtype),
+    ...resolverPromises,
     setDefaultResultOrder: () => {},
   },
 };
@@ -208,15 +245,266 @@ export const perfHooks = {
   constants: {},
 };
 
+// --- readline -------------------------------------------------------------------------------
+
+type LineInput = EventEmitter & { pause?(): unknown; resume?(): unknown };
+type LineOutput = { write(text: string): unknown };
+type InterfaceOptions = { input?: LineInput; output?: LineOutput; prompt?: string; crlfDelay?: number };
+const useAfterClose = () => Object.assign(new Error('readline was closed'), { code: 'ERR_USE_AFTER_CLOSE' });
+/**
+ * readline.Interface for an input that is not a terminal: the input's lines ('line' for each, and for
+ * a last one without an ending as the input ends), then 'close'; closed, it reads no more. No line editing, history or keys.
+ */
+class Interface extends EventEmitter {
+  terminal = false;
+  line = '';
+  cursor = 0;
+  closed = false;
+  input?: LineInput;
+  output?: LineOutput;
+  private promptText: string;
+  // One decoder for the input: a character's bytes may come in two chunks.
+  private decoder = new StringDecoder('utf8');
+  /** The text since the last line ending. */
+  private rest = '';
+  /** The last chunk ended with a '\r': a '\n' that starts the next belongs to it (as with crlfDelay: Infinity). */
+  private afterReturn = false;
+  /** The question that waits for its answer, and the prompt to go back to after it. */
+  private asked: { done: (answer: string) => void; prompt: string } | null = null;
+  private iterator?: AsyncIterableIterator<string>;
+  private onData = (chunk: Uint8Array | string) => this.feed(typeof chunk === 'string' ? chunk : this.decoder.write(chunk));
+  private onEnd = () => {
+    const last = this.rest + this.decoder.end();
+    this.rest = '';
+    // As Node's: a 'line', not a waiting question's answer.
+    if (last) this.emit('line', last);
+    this.close();
+  };
+  private onError = (e: unknown) => this.emit('error', e);
+  /** createInterface(options) or (input, output). */
+  constructor(input?: LineInput | InterfaceOptions, output?: LineOutput) {
+    super();
+    const options: InterfaceOptions = input && typeof (input as LineInput).on === 'function' ? { input: input as LineInput, output } : ((input ?? {}) as InterfaceOptions);
+    this.input = options.input;
+    this.output = options.output;
+    this.promptText = options.prompt ?? '> ';
+    this.input?.on('data', this.onData);
+    this.input?.on('end', this.onEnd);
+    this.input?.on('error', this.onError);
+    this.input?.resume?.();
+  }
+  private feed(text: string) {
+    if (this.afterReturn && text[0] === '\n') text = text.slice(1);
+    if (text) this.afterReturn = text.endsWith('\r');
+    const lines = (this.rest + text).split(/\r\n|\n|\r/);
+    this.rest = lines.pop()!;
+    // (As Node's: a chunk's lines are all emitted, one of them closing it or not.)
+    for (const line of lines) this.gotLine(line);
+  }
+  /** A line: the answer to the question, if one waits, else a 'line' event. */
+  private gotLine(line: string) {
+    const asked = this.asked;
+    if (!asked) return void this.emit('line', line);
+    this.asked = null;
+    this.promptText = asked.prompt;
+    asked.done(line);
+  }
+  /**
+   * Writes the query to the output (as the prompt, until answered); the next line is its answer (not
+   * a 'line' event). As Node's, one asked while another waits only shows the prompt again.
+   */
+  question(query: string, options: unknown, cb?: (answer: string) => void): unknown {
+    const done = (typeof options === 'function' ? options : cb) as (answer: string) => void;
+    if (this.closed) throw useAfterClose();
+    if (!this.asked) {
+      this.asked = { done, prompt: this.promptText };
+      this.promptText = query;
+    }
+    this.prompt();
+    return undefined;
+  }
+  close() {
+    if (this.closed) return;
+    this.pause();
+    this.closed = true;
+    this.input?.removeListener('data', this.onData);
+    this.input?.removeListener('end', this.onEnd);
+    this.input?.removeListener('error', this.onError);
+    this.emit('close');
+  }
+  pause() {
+    this.input?.pause?.();
+    this.emit('pause');
+    return this;
+  }
+  resume() {
+    this.input?.resume?.();
+    this.emit('resume');
+    return this;
+  }
+  setPrompt(prompt: string) { this.promptText = prompt; }
+  getPrompt() { return this.promptText; }
+  prompt() {
+    if (this.closed) throw useAfterClose();
+    this.input?.resume?.();
+    this.output?.write(this.promptText);
+  }
+  /** Without a terminal, what is written is read as input. */
+  write(data?: string | Uint8Array | null) {
+    if (this.closed) throw useAfterClose();
+    if (data != null) this.feed(typeof data === 'string' ? data : new TextDecoder().decode(data));
+  }
+  getCursorPos() { return { rows: 0, cols: 0 }; }
+  /**
+   * The lines from now on, until 'close' (one iterator, as Node's: lines emitted before it is asked
+   * for are not in it). The input is paused while many lines wait to be taken.
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<string> {
+    if (this.iterator) return this.iterator;
+    const lines: string[] = [];
+    const takers: ((r: IteratorResult<string>) => void)[] = [];
+    let ended = this.closed;
+    let paused = false;
+    const onLine = (line: string) => {
+      const taker = takers.shift();
+      if (taker) return taker({ value: line, done: false });
+      lines.push(line);
+      if (lines.length >= 1024 && !paused && !this.closed) {
+        paused = true;
+        this.pause();
+      }
+    };
+    const onClose = () => {
+      ended = true;
+      for (const taker of takers.splice(0)) taker({ value: undefined, done: true });
+    };
+    const stop = () => {
+      ended = true;
+      lines.length = 0;
+      this.removeListener('line', onLine);
+      this.removeListener('close', onClose);
+      onClose();
+    };
+    this.on('line', onLine);
+    this.on('close', onClose);
+    return (this.iterator = {
+      next: () => {
+        if (lines.length) {
+          const value = lines.shift()!;
+          if (paused && !lines.length && !this.closed) {
+            paused = false;
+            this.resume();
+          }
+          return Promise.resolve({ value, done: false });
+        }
+        if (ended) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => takers.push(resolve));
+      },
+      return: () => {
+        stop();
+        return Promise.resolve({ value: undefined, done: true });
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    });
+  }
+  [Symbol.dispose]() {
+    this.close();
+  }
+}
+/** readline/promises' Interface: question() returns a promise of the answer. */
+class PromisesInterface extends Interface {
+  question(query: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      try {
+        super.question(query, resolve);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+}
+
 export const readline = {
-  createInterface: () => Object.assign(new EventEmitter(), { close() {}, question(_q: string, cb: (a: string) => void) { cb(''); }, on: EventEmitter.prototype.on, setPrompt() {}, prompt() {}, [Symbol.asyncIterator]: async function* () {} }),
+  Interface,
+  createInterface: (input?: LineInput | InterfaceOptions, output?: LineOutput) => new Interface(input, output),
   clearLine: (_s: unknown, _d: unknown, cb?: () => void) => { cb?.(); return true; },
   cursorTo: (_s: unknown, _x: unknown, _y?: unknown, cb?: () => void) => { if (typeof _y === 'function') _y(); else cb?.(); return true; },
   moveCursor: () => true,
   clearScreenDown: () => true,
   emitKeypressEvents: () => {},
-  promises: {},
+  promises: {
+    Interface: PromisesInterface,
+    createInterface: (input?: LineInput | InterfaceOptions, output?: LineOutput) => new PromisesInterface(input, output),
+  },
 };
+
+// --- .env files ------------------------------------------------------------------------------
+
+/**
+ * A .env file's variables, as Node's parser reads them (util.parseEnv, process.loadEnvFile), its
+ * oddities too (checked against Node's on random input): `KEY=value` lines, the key and an unquoted
+ * value trimmed; an `export ` before the key; `#` comments, on a line of their own or after an
+ * unquoted value; values in single, double or back quotes without them, over several lines if so
+ * written, `\n` a newline in double quotes; a quote that is not closed is part of its line's value.
+ * In the keys' sorted order (Node keeps them in a std::map).
+ */
+export function parseEnv(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  const trim = (s: string) => s.replace(/^[ \t\n\f\v]+|[ \t\n\f\v]+$/g, '');
+  const trimStart = (s: string) => s.replace(/^[ \t\n\f\v]+/, '');
+  let rest = trim(text.replace(/\r/g, ''));
+  /** The text after the line `from` is in. */
+  const afterLine = (from = 0) => {
+    const newline = rest.indexOf('\n', from);
+    return newline < 0 ? '' : rest.slice(newline + 1);
+  };
+  while (rest) {
+    if (rest[0] === '\n' || rest[0] === '#') {
+      rest = afterLine();
+      continue;
+    }
+    const equal = rest.search(/[=\n]/);
+    // A line without '='.
+    if (equal < 0 || rest[equal] === '\n') {
+      rest = trimStart(afterLine());
+      continue;
+    }
+    let key = trim(rest.slice(0, equal));
+    rest = rest.slice(equal + 1);
+    if (!rest || rest[0] === '\n') {
+      env[key] = '';
+      rest = rest.slice(1);
+      continue;
+    }
+    rest = trimStart(rest);
+    if (!key) continue;
+    if (key.startsWith('export ')) key = trim(key.slice(7));
+    if (!rest) {
+      env[key] = '';
+      break;
+    }
+    const quote = rest[0];
+    const quoted = quote === '"' || quote === "'" || quote === '`';
+    const close = quoted ? rest.indexOf(quote, 1) : -1;
+    if (close >= 0) {
+      const value = rest.slice(1, close);
+      env[key] = quote === '"' ? value.replaceAll('\\n', '\n') : value;
+      rest = afterLine(close + 1);
+      continue;
+    }
+    const newline = rest.indexOf('\n');
+    let value = newline < 0 ? rest : rest.slice(0, newline);
+    if (!quoted) {
+      const hash = value.indexOf('#');
+      value = trim(hash < 0 ? value : value.slice(0, hash));
+    }
+    env[key] = value;
+    rest = trimStart(afterLine());
+  }
+  return Object.fromEntries(Object.keys(env).sort().map((k) => [k, env[k]]));
+}
 
 export const inspector = { url: () => undefined, open() {}, close() {}, Session: class { connect() {} post() {} disconnect() {} }, console };
 

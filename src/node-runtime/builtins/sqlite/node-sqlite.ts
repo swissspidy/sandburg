@@ -3,7 +3,7 @@
  * with Node's defaults: foreign keys on, bare named parameters allowed, rows
  * as null-prototype objects, errors with code ERR_SQLITE_ERROR.
  */
-import { Handle, bindAll, columnNames, describeError, readRow, safeReset, splitParams, type BindValue, type FileAccess, type OoStmt } from './core.ts';
+import { finalizeWith, Handle, bindAll, columnNames, describeError, readRow, safeReset, splitParams, type BindValue, type FileAccess, type OoStmt } from './core.ts';
 
 function sqliteError(handle: Handle, e: unknown): Error {
   const info = describeError(e, handle);
@@ -31,6 +31,7 @@ export function createNodeSqlite(files: FileAccess) {
       this.handle = handle;
       this.stmt = stmt;
       this.sourceSQL = sql;
+      finalizeWith(this, stmt);
       this.names = columnNames(stmt);
     }
 

@@ -65,7 +65,7 @@ test('a cold machine pulls the image before the container starts; the container 
     ps: async (args) => (args[1] === '-aq' ? 'cid\n' : ''),
   });
   const run = dockerReference({ workDir, docker })();
-  await withProxy(undefined, () => run.mount(project, () => {}));
+  await withProxy(undefined, () => run.mount(project));
   assert.deepEqual(commands(), ['ps -a', 'image inspect', 'pull --quiet', ...asUser, 'run -d']);
   const args = runArgs(calls);
   const name = args[args.indexOf('--name') + 1];
@@ -99,12 +99,12 @@ test('a failed pull fails mount as infra, and the next run pulls again', async (
   });
   const factory = dockerReference({ workDir, docker });
   const first = factory();
-  const err = await first.mount(project, () => {}).catch((e: Error & { infra?: boolean }) => e);
+  const err = await first.mount(project).catch((e: Error & { infra?: boolean }) => e);
   assert.ok(err instanceof Error);
   assert.equal(err.infra, true);
   assert.match(err.message, /^docker pull node:24-slim failed: .*\n.*pull rate limit/);
   await first.dispose();
-  await factory().mount(project, () => {}).catch(() => {});
+  await factory().mount(project).catch(() => {});
   assert.equal(pulls, 2);
   assert.ok(!commands().includes('run -d'), 'no container without the image');
 });
@@ -119,7 +119,7 @@ test('an image that does not exist fails every run as infra, with one pull', asy
     },
   });
   const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker });
-  for (let i = 0; i < 3; i++) await assert.rejects(factory().mount(project, () => {}), (e: Error & { infra?: boolean }) => e.infra === true && /manifest unknown/.test(e.message));
+  for (let i = 0; i < 3; i++) await assert.rejects(factory().mount(project), (e: Error & { infra?: boolean }) => e.infra === true && /manifest unknown/.test(e.message));
   assert.equal(pulls, 1);
 });
 
@@ -133,7 +133,7 @@ test('a "not found" from a registry mirror or proxy is not taken for an image th
     },
   });
   const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker });
-  for (let i = 0; i < 2; i++) await assert.rejects(factory().mount(project, () => {}), (e: Error & { infra?: boolean }) => e.infra === true);
+  for (let i = 0; i < 2; i++) await assert.rejects(factory().mount(project), (e: Error & { infra?: boolean }) => e.infra === true);
   assert.equal(pulls, 2);
 });
 
@@ -147,7 +147,7 @@ test('"manifest for … not found" is an image that does not exist', async () =>
     },
   });
   const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker });
-  for (let i = 0; i < 2; i++) await assert.rejects(factory().mount(project, () => {}));
+  for (let i = 0; i < 2; i++) await assert.rejects(factory().mount(project));
   assert.equal(pulls, 1);
 });
 
@@ -155,7 +155,7 @@ test('no Docker daemon fails mount as infra, without a pull', async () => {
   const { docker, commands } = fakeDocker({
     image: () => Promise.reject(new Error('docker image inspect exited with 1\nfailed to connect to the docker API at unix:///var/run/docker.sock')),
   });
-  const err = await dockerReference({ workDir: tempDir('sandburg-ref-'), docker })().mount(project, () => {}).catch((e: Error & { infra?: boolean }) => e);
+  const err = await dockerReference({ workDir: tempDir('sandburg-ref-'), docker })().mount(project).catch((e: Error & { infra?: boolean }) => e);
   assert.ok(err instanceof Error);
   assert.equal(err.infra, true);
   assert.deepEqual(commands(), ['ps -a', 'image inspect']);
@@ -173,7 +173,7 @@ test('a run disposed while the image is still pulling never creates its containe
     },
   });
   const run = dockerReference({ workDir, docker })();
-  const mounting = run.mount(project, () => {}).then(() => 'mounted', () => 'rejected');
+  const mounting = run.mount(project).then(() => 'mounted', () => 'rejected');
   while (!commands().includes('pull --quiet')) await new Promise((r) => setImmediate(r));
   // The session's mount deadline passed: dispose runs while the pull goes on.
   await run.dispose();
@@ -200,7 +200,7 @@ test('dispose stops a docker run still in flight and removes the container it cr
     ps: async (args) => (args[1] === '-aq' && created ? 'late\n' : ''),
   });
   const run = dockerReference({ workDir, docker })();
-  const mounting = run.mount(project, () => {}).catch(() => {});
+  const mounting = run.mount(project).catch(() => {});
   while (!created) await new Promise((r) => setImmediate(r));
   await run.dispose();
   await mounting;
@@ -212,7 +212,7 @@ test("startup removes the containers and project copies of this host's, PID name
   const workDir = tempDir('sandburg-ref-');
   // A first run tells this process's owner label and name.
   const first = fakeDocker({});
-  await withProxy(undefined, () => dockerReference({ workDir, docker: first.docker })().mount(project, () => {}));
+  await withProxy(undefined, () => dockerReference({ workDir, docker: first.docker })().mount(project));
   const args = runArgs(first.calls);
   const owner = label(args, 'sandburg.ref.owner');
   const tag = /^sandburg-ref-([0-9a-f]{8})-/.exec(args[args.indexOf('--name') + 1])![1];
@@ -224,7 +224,7 @@ test("startup removes the containers and project copies of this host's, PID name
     // Only this owner's containers are listed (the filter); of them, the one whose process is gone goes.
     ps: async (a) => (a[1] === '-a' && a[3] === `label=sandburg.ref.owner=${owner}` ? [`aaa ${GONE}`, `bbb ${process.pid}`].join('\n') + '\n' : ''),
   });
-  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project, () => {}));
+  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project));
   assert.deepEqual(calls[1], ['rm', '-f', 'aaa']);
   assert.ok(!existsSync(join(workDir, gone)));
   assert.ok(existsSync(join(workDir, mine)));
@@ -234,7 +234,7 @@ test("startup removes the containers and project copies of this host's, PID name
 test('leftovers whose pid cannot be checked are kept: only a pid with no such process (ESRCH) is gone', async (t) => {
   const workDir = tempDir('sandburg-ref-');
   const first = fakeDocker({});
-  await withProxy(undefined, () => dockerReference({ workDir, docker: first.docker })().mount(project, () => {}));
+  await withProxy(undefined, () => dockerReference({ workDir, docker: first.docker })().mount(project));
   const args = runArgs(first.calls);
   const owner = label(args, 'sandburg.ref.owner');
   const tag = /^sandburg-ref-([0-9a-f]{8})-/.exec(args[args.indexOf('--name') + 1])![1];
@@ -253,7 +253,7 @@ test('leftovers whose pid cannot be checked are kept: only a pid with no such pr
     // A container per case: no pid label, not a number, zero, negative, too large, an unexpected error, gone.
     ps: async (a) => (a[1] === '-a' && a[3] === `label=sandburg.ref.owner=${owner}` ? ['none ', 'nan x', 'zero 0', 'neg -5', `huge ${HUGE}`, `odd ${ODD}`, `gone ${GONE}`].join('\n') + '\n' : ''),
   });
-  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project, () => {}));
+  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project));
   assert.deepEqual(calls.filter((c) => c[0] === 'rm'), [['rm', '-f', 'gone']]);
   assert.ok(!existsSync(join(workDir, dirs.gone)), 'the copy of a gone process is removed');
   assert.ok(existsSync(join(workDir, dirs.huge)), 'a pid too large to check keeps its copy');
@@ -267,7 +267,7 @@ test('the directory of project copies must be a directory of this user\'s, not a
   const link = join(tempDir('sandburg-ref-link-'), 'copies');
   await symlink(target, link);
   const { docker, commands } = fakeDocker({});
-  await assert.rejects(dockerReference({ workDir: link, docker })().mount(project, () => {}), (e: Error & { infra?: boolean }) => e.infra === true && /is not a directory of this user's/.test(e.message));
+  await assert.rejects(dockerReference({ workDir: link, docker })().mount(project), (e: Error & { infra?: boolean }) => e.infra === true && /is not a directory of this user's/.test(e.message));
   assert.deepEqual(commands(), []);
   assert.ok(existsSync(join(target, leftover)));
 });
@@ -281,7 +281,7 @@ test('as a user other than root, containers run as that user, with npm\'s home a
   t.mock.method(process as { getuid(): number }, 'getuid', () => uid);
   t.mock.method(process as { getgid(): number }, 'getgid', () => gid);
   const { docker, calls } = fakeDocker({});
-  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project, () => {}));
+  await withProxy(undefined, () => dockerReference({ workDir, docker })().mount(project));
   const chown = calls.find((c) => c[0] === 'run' && c.includes('chown'));
   assert.ok(chown, 'the cache volume is given to the user');
   assert.deepEqual(chown.slice(-5), [`sandburg-npm-cache-${uid}:/cache`, 'node:24-slim', 'chown', `${uid}:${gid}`, '/cache']);
@@ -303,7 +303,7 @@ test('a loopback proxy is reached over a bridge network through the host gateway
       },
     });
   const reachable = probing(true);
-  await withProxy(proxy, () => dockerReference({ workDir: tempDir('sandburg-ref-'), docker: reachable.docker })().mount(project, () => {}));
+  await withProxy(proxy, () => dockerReference({ workDir: tempDir('sandburg-ref-'), docker: reachable.docker })().mount(project));
   const probe = reachable.calls.find((c) => c.includes('node'))!;
   assert.ok(probe.includes('--add-host=host.docker.internal:host-gateway'));
   assert.ok(probe.includes('--rm'));
@@ -317,8 +317,8 @@ test('a loopback proxy is reached over a bridge network through the host gateway
   const unreachable = probing(false);
   const factory = dockerReference({ workDir: tempDir('sandburg-ref-'), docker: unreachable.docker });
   await withProxy(proxy, async () => {
-    await factory().mount(project, () => {});
-    await factory().mount(project, () => {});
+    await factory().mount(project);
+    await factory().mount(project);
   });
   const host = runArgs(unreachable.calls);
   assert.deepEqual(host.slice(host.indexOf('--network'), host.indexOf('--network') + 2), ['--network', 'host']);
@@ -335,12 +335,20 @@ test('disposeAll removes every mounted run and refuses new ones (Ctrl-C during c
   });
   const factory = dockerReference({ workDir, docker });
   await withProxy(undefined, async () => {
-    await factory().mount(project, () => {});
-    await factory().mount(project, () => {});
+    await factory().mount(project);
+    await factory().mount(project);
   });
   await factory.disposeAll();
   const names = calls.filter((c) => c[0] === 'run' && c[1] === '-d').map((c) => c[c.indexOf('--name') + 1]);
   assert.deepEqual(calls.filter((c) => c[0] === 'rm').map((c) => c[2]).sort(), names.sort());
-  await assert.rejects(factory().mount(project, () => {}), /shutting down/);
+  await assert.rejects(factory().mount(project), /shutting down/);
   assert.deepEqual(readdirSync(workDir), []);
+});
+
+test('an Angular project with a start script and no dev script is one the reference runs', () => {
+  const run = dockerReference({ workDir: tempDir('sandburg-ref-'), docker: fakeDocker({}).docker })();
+  const project = (framework: Project['framework'], scripts: Record<string, string>) => ({ framework, packageJson: { scripts } }) as Project;
+  assert.deepEqual(run.probe(project('angular', { start: 'ng serve' })), { verdict: 'supported' });
+  assert.deepEqual(run.probe(project('angular', { build: 'ng build' })), { verdict: 'unsupported', reason: 'package.json has no "start" script' });
+  assert.deepEqual(run.probe(project('vite', { start: 'vite' })), { verdict: 'unsupported', reason: 'package.json has no "dev" script' });
 });

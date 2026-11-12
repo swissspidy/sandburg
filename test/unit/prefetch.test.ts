@@ -1,25 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Installer } from '../../src/adapters/node/install.ts';
 import { Prefetcher } from '../../src/adapters/node/prefetch.ts';
+import { tempDir } from './temp-dir.ts';
 
 /** An install directory (installs/<key>/node_modules/…) with these files. */
-async function install(files: Record<string, string>): Promise<{ installer: Installer; key: string; root: string }> {
-  const root = await mkdtemp(join(tmpdir(), 'sandburg-prefetch-'));
+async function install(files: Record<string, string>): Promise<{ installer: Installer; key: string }> {
+  // Removed at exit: the installer still writes its transforms after the test ends.
+  const root = tempDir('sandburg-prefetch-');
   const key = 'a'.repeat(24);
   for (const [path, content] of Object.entries(files)) {
     const abs = join(root, 'installs', key, path);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, content);
   }
-  return { installer: new Installer(join(root, 'installs')), key, root };
+  return { installer: new Installer(join(root, 'installs')), key };
 }
 
 test('a prefetch from an entry transforms what it requires, as the runtime resolves it', async () => {
-  const { installer, key, root } = await install({
+  const { installer, key } = await install({
     'node_modules/tool/package.json': JSON.stringify({ name: 'tool', type: 'module', bin: 'bin/tool.js' }),
     'node_modules/tool/bin/tool.js': `import { run } from '../lib/run.js';\nrun();\n`,
     // ES imports and import() become require calls when transformed.
@@ -34,17 +35,13 @@ test('a prefetch from an entry transforms what it requires, as the runtime resol
     'node_modules/dual/cjs/feature.cjs': `module.exports = 2;\n`,
     'node_modules/unused/index.js': `module.exports = 3;\n`,
   });
-  try {
-    const p = new Prefetcher(installer, key, await installer.index(key));
-    p.add('node_modules/tool/bin/tool.js');
-    await p.idle();
-    assert.deepEqual(new Set(p.transformed), new Set(['node_modules/tool/bin/tool.js', 'node_modules/tool/lib/run.js', 'node_modules/tool/lib/lazy.js', 'node_modules/dep/main.js', 'node_modules/dual/esm/feature.mjs']));
-    assert.ok(p.raw.has('node_modules/dep/data.json'));
-    assert.ok(p.raw.has('node_modules/tool/package.json'));
-    // Transformed for the runtime and cached: the request finds it.
-    const served = await installer.file(key, 'node_modules/tool/lib/run.js');
-    assert.match(served!.body.toString(), /require\("dep"\)/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  const p = new Prefetcher(installer, key, await installer.index(key));
+  p.add('node_modules/tool/bin/tool.js');
+  await p.idle();
+  assert.deepEqual(new Set(p.transformed), new Set(['node_modules/tool/bin/tool.js', 'node_modules/tool/lib/run.js', 'node_modules/tool/lib/lazy.js', 'node_modules/dep/main.js', 'node_modules/dual/esm/feature.mjs']));
+  assert.ok(p.raw.has('node_modules/dep/data.json'));
+  assert.ok(p.raw.has('node_modules/tool/package.json'));
+  // Transformed for the runtime and cached: the request finds it.
+  const served = await installer.file(key, 'node_modules/tool/lib/run.js');
+  assert.match(served!.body.toString(), /require\("dep"\)/);
 });

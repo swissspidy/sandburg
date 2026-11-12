@@ -381,4 +381,10 @@ test('the host page is asked first; a frame that is gone ends the wait', async (
   const gone = frame([], { detached: () => ++tries > 2 });
   await assert.rejects(waitForRender(gone.frame), /the app frame is gone/);
   assert.equal(gone.checks.length, 2);
+  // The phase ended (it failed, and `open` keeps the tab): the wait ends without loading the app again.
+  const over = new AbortController();
+  const reloads: number[] = [];
+  const held = frame(['error', 'error', 'error'], { detached: () => (held.checks.length === 1 && over.abort(), false) });
+  await assert.rejects(waitForRender(held.frame, undefined, async () => reloads.push(held.checks.length), undefined, undefined, over.signal), /the ready phase is over/);
+  assert.deepEqual([held.checks.length, reloads], [1, [1]]);
 });

@@ -215,7 +215,7 @@ interface NodeRuntime {
     egress: string[];
     timeouts?: Partial<Record<PhaseName, number>>;
     probe(project: Project): ProbeVerdict;
-    mount(project: Project, log: (line: string) => void): Promise<void>;
+    mount(project: Project): Promise<void>;
     install(): Promise<InstallReport>;
     start(): Promise<{
         port: number;
@@ -345,10 +345,8 @@ interface AdapterDescriptor {
     browserEntry: string;
     assets: Record<string, string>;
     egress: string[];
-    crossOriginIsolation: boolean | 'credentialless';
+    crossOriginIsolation: false | 'credentialless';
     timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
-    bundleDefines?: Record<string, string>;
-    bundleAliases?: Record<string, string>;
     probe(project: Project): ProbeVerdict;
     hostInstall?(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<unknown>;
     serve?(request: HostRequest): Promise<HostResponse | null>;
@@ -401,8 +399,6 @@ interface InstallReport {
     resolution: 'lockfile' | 'range' | 'none';
     lockfileHonored: boolean;
     dependencies: Record<string, string>;
-    buildMs?: number | null;
-    shims?: string[];
 }
 
 interface NetworkEntry {
@@ -438,9 +434,6 @@ type PhaseStatus = 'ok' | 'failed' | 'timeout' | 'skipped';
 
 type ProbeVerdict = {
     verdict: 'supported';
-} | {
-    verdict: 'unknown';
-    reason: string;
 } | {
     verdict: 'unsupported';
     reason: string;
@@ -486,7 +479,6 @@ interface RunResult {
         loadMs: number | null;
         mountMs: number | null;
         installMs: number | null;
-        buildMs: number | null;
         startMs: number | null;
         readyMs: number | null;
         checksMs: number | null;
@@ -539,6 +531,7 @@ interface HostInstallOptions {
     seed?: boolean;
     runSeed?(project: Project, checks: unknown): Promise<void>;
     installIn?: 'host' | 'browser';
+    offline?: boolean;
     sandbox?: Promise<string>;
 }
 

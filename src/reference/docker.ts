@@ -273,7 +273,9 @@ class DockerRun implements NodeRuntime {
       const titles = Object.values(FRAMEWORKS).flatMap((f) => (f.reference ? [f.title] : []));
       return { verdict: 'unsupported', reason: `the Docker reference runs ${titles.slice(0, -1).join(', ')} and ${titles.at(-1)} dev servers, not "${project.framework}"` };
     }
-    if (!project.packageJson?.scripts?.dev) return { verdict: 'unsupported', reason: 'package.json has no "dev" script' };
+    const reference = frameworkInfo(project.framework)!.reference!;
+    const script = reference.script(project.packageJson);
+    if (!project.packageJson?.scripts?.[script]) return { verdict: 'unsupported', reason: `package.json has no "${script}" script` };
     return { verdict: 'supported' };
   }
 

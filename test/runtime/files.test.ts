@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CHANNEL_OPEN, INSTALL_KEY, RuntimeHarness } from './harness.ts';
+import { CHANNEL_OPEN, hostAsked, INSTALL_KEY, RuntimeHarness } from './harness.ts';
 
 const h = new RuntimeHarness();
 before(() => h.open());
@@ -151,14 +151,18 @@ test('installed files: modules pushed with a transformed file are loaded without
 // next dev writes its server's chunks, then requires them once it has compiled the client: the
 // runtime has them compiled as they are written (compile-ahead.ts), and uses that compile only for
 // the file as it was written.
-const writesChunks = {
+// It requires them once the file channel is open and, with `ahead`, once the host was asked to
+// compile the two files as written (a compile still going is waited for: compiledAhead).
+const writesChunks = (ahead: boolean) => ({
   'main.js': `
+    ${CHANNEL_OPEN}
+    ${hostAsked(h.port)}
     const fs = require('fs');
     const dir = '/app/.next/dev/server';
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(dir + '/chunk.js', 'module.exports = async () => "written";');
     fs.writeFileSync(dir + '/other.js', 'module.exports = async () => "first";');
-    setTimeout(() => {
+    channelOpen().then(() => ${ahead ? `hostAsked('http POST /__sandburg/compile?path=' + dir + '/', 2)` : 'undefined'}).then(() => {
       // The host is asked for this file now: what it was asked before came first.
       require('single');
       fs.writeFileSync(dir + '/other.js', 'module.exports = async () => "changed";');
@@ -166,15 +170,15 @@ const writesChunks = {
         console.log(r.join(' '));
         process.exit(0);
       });
-    }, 500);`,
-};
+    });`,
+});
 
 test('installed files: CommonJS files written under the directories named are compiled as they are written, and only used as written', async () => {
   // A compile ahead goes over HTTP (compile-ahead.ts); one when a file is required, over the file channel.
   const compiles = (file: string) =>
     h.asked.flatMap((a, i) => (a === `http POST /__sandburg/compile?path=/app/.next/dev/server/${file}` || (a.startsWith('ws /__sandburg/compile?') && a.includes(`path=${encodeURIComponent(`/app/.next/dev/server/${file}`)}`)) ? [i] : []));
   const marker = () => h.asked.findIndex((a) => a.includes('node_modules/single/'));
-  let out = await h.runInstalled(writesChunks, install, '/app/main.js', { compileAhead: ['.next/dev/server'] });
+  let out = await h.runInstalled(writesChunks(true), install, '/app/main.js', { compileAhead: ['.next/dev/server'] });
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, 'written changed\n');
   assert.equal(compiles('chunk.js').length, 1);
@@ -183,7 +187,7 @@ test('installed files: CommonJS files written under the directories named are co
   assert.equal(compiles('other.js').length, 2);
   assert.ok(compiles('other.js')[0] < marker() && compiles('other.js')[1] > marker(), h.asked.join('\n'));
   // Without: compiled when required.
-  out = await h.runInstalled(writesChunks, install, '/app/main.js');
+  out = await h.runInstalled(writesChunks(false), install, '/app/main.js');
   assert.equal(out.stdout, 'written changed\n');
   assert.ok(compiles('chunk.js')[0] > marker(), h.asked.join('\n'));
 });
@@ -251,29 +255,40 @@ for (const delay of [300, 1000]) {
 }
 
 test('threads: a napi-rs WebAssembly thread (wasi-worker.mjs) boots no spare runtimes; another thread does', async () => {
-  // Each thread loads worker_threads, as napi-rs' wasi-worker.mjs does; the program waits for the
-  // runtimes they start to load. emnapi's threads ask the thread that loaded the build to spawn
-  // more, so spares of their own are never taken.
-  const thread = `require('worker_threads').parentPort.postMessage('up');`;
-  const spares = async (entry: string) => {
+  // Each thread loads worker_threads, as napi-rs' wasi-worker.mjs does. emnapi's threads ask the
+  // thread that loaded the build to spawn more, so spares of their own are never taken.
+  // A thread says it is up only once the host answered a request it made after loading
+  // worker_threads: the spares it started, if any, were asked for before that request was made.
+  const thread = `
+    const { parentPort } = require('worker_threads');
+    require('http').get('http://fetch.localhost:${h.port}/__test/count?key=thread-up', (res) => {
+      res.resume();
+      res.on('end', () => parentPort.postMessage('up'));
+    });`;
+  const warm = await h.page.evaluate(() => Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4)));
+  const started = (asked: string[]) => asked.filter((a) => a === 'http /__sandburg/node-spare.js').length;
+  // The run ends once the thread is up and the host was asked for the spares the run is to start
+  // at least: `least` of them (more are counted as they come, and fail the comparison below).
+  const spares = async (entry: string, least: number) => {
     const files = { ...install.files, [`node_modules/${entry}`]: thread };
     const main = {
       'main.js': `
+        ${CHANNEL_OPEN}
         const { Worker } = require('worker_threads');
-        setTimeout(() => {
+        setInterval(() => {}, 1000);
+        channelOpen().then(() => {
           const w = new Worker('/app/node_modules/${entry}');
-          w.on('message', (m) => { console.log(m); setTimeout(() => process.exit(0), 1000); });
-        }, 300);`,
+          w.on('message', (m) => console.log(m));
+        });`,
     };
-    const out = await h.runInstalled(main, { files, bundled: [] }, '/app/main.js');
+    const out = await h.runInstalled(main, { files, bundled: [] }, '/app/main.js', { until: ({ asked, stdout }) => stdout === 'up\n' && started(asked) >= least });
     assert.equal(out.fatal, null);
     assert.equal(out.stdout, 'up\n');
-    return h.asked.filter((a) => a === 'http /__sandburg/node-spare.js').length;
+    return started(h.asked);
   };
-  const other = await spares('@demo/tool/worker.mjs');
-  const wasi = await spares('@demo/tool-wasm32-wasi/wasi-worker.mjs');
-  // The program's spares (and their replacements) are the same in both runs.
-  const warm = await h.page.evaluate(() => Math.min(8, Math.max(2, navigator.hardwareConcurrency || 4)));
+  // The program's spares and the one that replaces the thread's (warm + 1) are the same in both runs.
+  const other = await spares('@demo/tool/worker.mjs', 2 * warm + 1);
+  const wasi = await spares('@demo/tool-wasm32-wasi/wasi-worker.mjs', warm + 1);
   assert.equal(other - wasi, warm, `spares started: ${other} with another thread, ${wasi} with a WebAssembly thread`);
 });
 
@@ -281,7 +296,8 @@ test("the runtime's compiles go over the file channel once it is open, with thei
   // An ES module over ~131 KB (Chromium sends it in fragments; under COMPILE_POST_MAX) and a TypeScript file that does not parse.
   const main = {
     'main.js': `
-      setTimeout(() => {
+      ${CHANNEL_OPEN}
+      channelOpen().then(() => {
         console.log(require('./big.mjs').size);
         try {
           require('./bad.ts');
@@ -289,14 +305,15 @@ test("the runtime's compiles go over the file channel once it is open, with thei
           console.log(e.code, /Expected/.test(e.message));
         }
         process.exit(0);
-      }, 300);`,
+      });`,
     'big.mjs': `export const size = ${JSON.stringify('x'.repeat(200_000))}.length;\n`,
     'bad.ts': 'const = 1;\n',
   };
   const out = await h.runInstalled(main, { files: {}, bundled: [] }, '/app/main.js');
   assert.equal(out.fatal, null);
   assert.equal(out.stdout, '200000\nERR_COMPILE true\n');
-  const compiles = h.asked.filter((a) => a.includes('/__sandburg/compile'));
+  // Not main.js' own compile (its channelOpen is an async function): it starts while the channel opens, over either.
+  const compiles = h.asked.filter((a) => a.includes('/__sandburg/compile') && !/[?&]path=(\/|%2F)app(\/|%2F)main\.js(&|$)/.test(a));
   assert.deepEqual(compiles.map((a) => a.split('?')[0]), ['ws /__sandburg/compile', 'ws /__sandburg/compile']);
 });
 
@@ -312,11 +329,12 @@ test('installed files over the channel\'s bound are asked for over HTTP at once'
   };
   const main = {
     'main.js': `
+      ${CHANNEL_OPEN}
       const fs = require('fs');
-      setTimeout(() => {
+      channelOpen().then(() => {
         console.log(fs.readFileSync('/app/node_modules/big/blob.bin', 'utf8').length + ' ' + fs.readFileSync('/app/node_modules/big/small.bin', 'utf8'));
         process.exit(0);
-      }, 300);`,
+      });`,
   };
   const out = await h.runInstalled(main, install, '/app/main.js');
   assert.equal(out.fatal, null);
@@ -334,19 +352,26 @@ test('installed files: the bundle files a runtime read are told in reports that 
   const names = Array.from({ length: 100 }, (_, i) => `${dir}/f${i}.js`);
   const files: Record<string, string> = { 'node_modules/single/package.json': install.files['node_modules/single/package.json'], 'node_modules/single/index.js': install.files['node_modules/single/index.js'] };
   for (const [i, name] of names.entries()) files[name] = `module.exports = ${i};`;
+  // Once the channel is open, the program reads the files; once the host has their first report (a
+  // frame over the bound would have closed the channel instead), it requires a file the bundle
+  // lacks, and stays (an interval) until the host has the reports of all 100.
   const main = {
     'main.js': `
-      setTimeout(() => {
+      ${CHANNEL_OPEN}
+      ${hostAsked(h.port)}
+      setInterval(() => {}, 1000);
+      channelOpen().then(() => {
         let sum = 0;
         for (let i = 0; i < 100; i++) sum += require('/app/${dir}/f' + i + '.js');
         console.log(sum);
-        setTimeout(() => { console.log(require('single')); setTimeout(() => process.exit(0), 700); }, 100);
-      }, 300);`,
+        return hostAsked('/read?files=');
+      }).then(() => console.log(require('single')));`,
   };
-  const out = await h.runInstalled(main, { files, bundled: names }, '/app/main.js');
+  const printed = '4950\nasked for on its own\n';
+  const reports = (asked: string[]) => asked.filter((a) => a.startsWith(`ws /__sandburg/nm/${INSTALL_KEY}/read?files=`)).flatMap((a) => decodeURIComponent(a.slice(a.indexOf('=') + 1)).split('\n'));
+  const out = await h.runInstalled(main, { files, bundled: names }, '/app/main.js', { until: ({ asked, stdout }) => stdout === printed && reports(asked).length >= names.length });
   assert.equal(out.fatal, null);
-  assert.equal(out.stdout, '4950\nasked for on its own\n');
-  const reported = h.asked.filter((a) => a.startsWith(`ws /__sandburg/nm/${INSTALL_KEY}/read?files=`)).flatMap((a) => decodeURIComponent(a.slice(a.indexOf('=') + 1)).split('\n'));
-  assert.deepEqual(reported.sort(), names.map((n) => `t/${n}`).sort());
+  assert.equal(out.stdout, printed);
+  assert.deepEqual(reports(h.asked).sort(), names.map((n) => `t/${n}`).sort());
   assert.deepEqual(h.asked.filter((a) => a.startsWith('http /__sandburg/nm/')), []);
 });

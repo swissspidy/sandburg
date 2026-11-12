@@ -86,19 +86,39 @@ test('assertRegistryLockfile allows a registry lockfile and ignores non-JSON', (
 
 // Property fuzz: isRegistrySpec must never accept a spec that npm's own npm-package-arg classifies as
 // anything but a registry version/range/tag or an alias to one. npa is npm's parser, so agreement
-// means the allowlist cannot be slipped a git/file/directory/remote spec. (Uses the npm on PATH.)
-test('isRegistrySpec never accepts a spec npm-package-arg calls non-registry (fuzz, fixed seed)', async () => {
-  const { execSync } = await import('node:child_process');
+// means the allowlist cannot be slipped a git/file/directory/remote spec. Uses the npm of this node:
+// the one that started the tests or is beside node.exe (npmCliScript), the one of this node's prefix
+// (<prefix>/lib/node_modules/npm, as on POSIX), or the one an `npm` on PATH links to.
+test('isRegistrySpec never accepts a spec npm-package-arg calls non-registry (fuzz, fixed seed)', async (t) => {
   const { createRequire } = await import('node:module');
-  const { dirname, join } = await import('node:path');
+  const { delimiter, dirname, join } = await import('node:path');
   const { realpathSync } = await import('node:fs');
-  let npa: { resolve(name: string, spec: string): { type: string; subSpec?: { type: string } } };
-  try {
-    const root = dirname(dirname(realpathSync(execSync('command -v npm').toString().trim())));
-    npa = createRequire(join(root, 'package.json'))(join(root, 'node_modules', 'npm-package-arg'));
-  } catch {
-    return; // no npm on PATH: skip (covered by the explicit cases above)
-  }
+  const { npmCliScript } = await import('../../src/adapters/node/npm-cli.ts');
+  type Npa = { resolve(name: string, spec: string): { type: string; subSpec?: { type: string } } };
+  // npm's own directory (the parent of its bin/), for each place it may be.
+  const cli = npmCliScript();
+  const roots = [
+    ...(cli ? [dirname(dirname(cli))] : []),
+    join(dirname(process.execPath), 'node_modules', 'npm'),
+    join(dirname(dirname(process.execPath)), 'lib', 'node_modules', 'npm'),
+    ...(process.env.PATH ?? '').split(delimiter).flatMap((dir) => {
+      try {
+        return dir ? [dirname(dirname(realpathSync(join(dir, 'npm'))))] : [];
+      } catch {
+        return [];
+      }
+    }),
+  ];
+  const load = (root: string): Npa | null => {
+    try {
+      return createRequire(join(root, 'package.json'))(join(root, 'node_modules', 'npm-package-arg')) as Npa;
+    } catch {
+      return null;
+    }
+  };
+  const found = roots.map(load).find((loaded) => loaded !== null);
+  if (!found) return void t.skip(`npm's npm-package-arg was not found (looked in ${[...new Set(roots)].join(', ')})`);
+  const npa: Npa = found;
   const registryType = (t: string) => t === 'version' || t === 'range' || t === 'tag';
   const parts = ['^', '~', '1', '2', '.', '0', 'x', '*', '|', ' ', '>', '<', '=', '-', '+', 'latest', 'next', 'beta', ':', '/', '\\', 'git+', 'ssh', 'file', 'link', 'http', '://', 'github', 'workspace', 'npm:', '@scope/n', 'a', 'b', '.tgz', '..'];
   let seed = 0x1234;

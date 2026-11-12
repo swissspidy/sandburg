@@ -27,6 +27,8 @@ export const ESM_DEFINE: Record<string, string> = {
   'import.meta.url': '__sandburg_import_meta_url',
   'import.meta.dirname': '__sandburg_dirname',
   'import.meta.filename': '__sandburg_filename',
+  // `module` is the wrapper's in every converted module (a module declaring one is renamed: RESERVED).
+  'import.meta.resolve': 'module.metaResolve',
   __dirname: '__sandburg_dirname',
   __filename: '__sandburg_filename',
 };

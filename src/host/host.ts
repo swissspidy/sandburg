@@ -65,13 +65,12 @@ const api: HostApi = {
     }),
   install: (hostData?: unknown) => call(() => current().install(ctx(), hostData)),
   start: () => call(() => current().start(ctx())),
-  ready: (url: string, navigate = true) =>
+  ready: (url: string) =>
     call(async () => {
       // A runtime that fails while the app loads (its dev server crashed) ends the wait.
       const failed = current().failed?.();
       const unless = <T>(p: Promise<T>) => (failed ? Promise.race([p, failed]) : p);
       await unless(current().ready?.(ctx()) ?? Promise.resolve());
-      if (!navigate) return;
       const frame = appFrame();
       await unless(
         new Promise<void>((resolve) => {

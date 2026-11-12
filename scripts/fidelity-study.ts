@@ -40,7 +40,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Session } from '../src/index.ts';
 import { discoverProjects, runBatch, type BatchItem } from '../src/orchestrator/batch.ts';
@@ -163,12 +163,14 @@ const ran = args.report ? done[0].params : null;
 const corpus = ran?.corpus ?? resolve(positionals[0] ?? 'corpus');
 const parallel = ran?.parallel ?? count('parallel', args.parallel ?? '3');
 const only = ran ? ran.only : (args.only ?? null);
-const items: (BatchItem & { meta: Meta })[] = [];
+const items: (BatchItem & { project: string; label: string; meta: Meta })[] = [];
 if (ran) for (const label of ran.apps) items.push({ project: join(corpus, label), label, meta: ran.meta[label] });
 else {
   for (const item of await discoverProjects(corpus)) {
-    const meta = JSON.parse(await readFile(join(item.project, 'meta.json'), 'utf8')) as Meta;
-    if (!only || new RegExp(only).test(meta.framework)) items.push({ ...item, meta: { framework: meta.framework, fault: meta.fault, expected: meta.expected } });
+    const { project } = item;
+    if (typeof project !== 'string') continue; // discovered items are paths
+    const meta = JSON.parse(await readFile(join(project, 'meta.json'), 'utf8')) as Meta;
+    if (!only || new RegExp(only).test(meta.framework)) items.push({ ...item, project, label: item.label ?? basename(project), meta: { framework: meta.framework, fault: meta.fault, expected: meta.expected } });
   }
 }
 if (!items.length) refuse(`no apps in ${corpus}${only ? ` matching ${only}` : ''}`);

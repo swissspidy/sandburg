@@ -32,7 +32,7 @@ sandburg open <project>                                 # load it in a visible t
 - a **directory**;
 - a **`.zip`** (a single top-level folder is stripped);
 - a **JSON file tree**: `{ "path": "contents" }`;
-- **`snapshot:<id>`**, or a prefix of the id, from the snapshot store.
+- **`snapshot:<id>`**, or a unique prefix of the id (at least 8 hex characters), from the snapshot store.
 
 A workspace package's directory runs in its monorepo: when a directory above `apps/web` declares
 workspaces (npm, pnpm or yarn) that name it, `sandburg run mono/apps/web` loads all of the monorepo's
@@ -50,8 +50,8 @@ so any run can be reopened exactly: its `result.json` has `project.snapshotId`.
 
 ```sh
 sandburg snapshot ./my-app          # prints the id
-sandburg run snapshot:3f9a1c        # runs it again, from the store
-sandburg open snapshot:3f9a1c       # looks at it in a visible tab
+sandburg run snapshot:3f9a1c0b72d4   # runs it again, from the store
+sandburg open snapshot:3f9a1c0b72d4  # looks at it in a visible tab
 ```
 
 Snapshots and batches are described in [ADR 0002](../adr/0002-snapshots-and-batches.md).
@@ -76,15 +76,16 @@ Snapshots and batches are described in [ADR 0002](../adr/0002-snapshots-and-batc
 | `--headed` | | Show the browser window (`open` always does). |
 | `--no-browser-sandbox` | sandboxed | Run Chromium without its OS sandbox, only for hosts where it cannot start (as root, or user namespaces restricted). Also `SANDBURG_NO_BROWSER_SANDBOX=1`. Results record it. See [Troubleshooting](troubleshooting.md#the-browser-sandbox). |
 | `--browser-sandbox` | | Run it sandboxed even where `SANDBURG_NO_BROWSER_SANDBOX=1` is set. |
-| `--json` | | Print the full JSON result (`run`) or batch summary (`batch`) instead of a summary. |
+| `--json` | | Print the full JSON result (`run`), batch summary (`batch`) or report (`compare`) instead of a summary. |
 | `--reference <name>` | `docker` | `compare`: the reference runtime (`docker`, the default and only one). |
 | `--report <path>` | `.sandburg/reports/fidelity` | `compare`: write the report to `<path>.md` and `<path>.json`. |
 | `-h`, `--help` | | Show the help. |
 
 ### `--offline`
 
-`--offline` answers every request from the HTTP cache (`.sandburg/cache`) and fails on a miss. Run the
-project once online to fill the cache, then run it offline as often as you like. A miss is an `infra`
+`--offline` answers every request from the HTTP cache (`.sandburg/cache`) and fails on a miss. An
+install the project still needs is made by npm with `--offline`, from npm's own cache alone. Run the
+project once online to fill the caches, then run it offline as often as you like. A miss is an `infra`
 failure.
 
 ### `--install-in browser`
@@ -144,7 +145,7 @@ also when a phase before the checks failed: to look at an app, or at why it fail
 |---|---|---|
 | `0` | Passed. | It has its report. |
 | `1` | A blocking check failed (the app ran). In `batch`: a run failed. | |
-| `2` | Error: the run did not reach the checks, or they did not finish in time, or its project or checks file did not load. In `batch`: a run ended in error. The browser could not be set up (Chromium missing, its sandbox could not start). | Nothing could be compared: the reference judged no app, or every run of one side ended in error. |
+| `2` | Error: the run did not reach the checks, or they did not finish in time, or its project or checks file did not load. In `batch`: a run ended in error. The browser could not be set up (Chromium missing, its sandbox could not start), or Sandburg itself failed: the error is printed. | Nothing could be compared: the reference judged no app, or every run of one side ended in error. |
 | `64` | Usage error: an unknown command or option, a missing argument, an invalid value, no projects in the directory. | Same. |
 | `129` | Interrupted (SIGHUP: the terminal closed), after closing the browser. | Interrupted (SIGHUP), after removing its containers. |
 | `130` | Interrupted (Ctrl-C), after closing the browser. | Interrupted (Ctrl-C), after removing its containers. |

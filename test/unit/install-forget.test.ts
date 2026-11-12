@@ -120,3 +120,14 @@ test('seeds: a seed whose cache was stored, then removed, runs again; one that s
   await nextSeedCache(other, 'app', failing, () => {});
   assert.equal(tries, 1);
 });
+
+test("an offline session's install asks no registry: it fails on what npm's cache lacks, as an offline miss, and leaves no directory", async () => {
+  const { offlineInstall } = await import('../../src/adapters/node/npm-cli.ts');
+  const { readdirSync } = await import('node:fs');
+  const dir = join(tempDir('sandburg-offline-'), 'installs');
+  // A version no registry has, so no cache has it either.
+  const packageJson = { name: 'offline', dependencies: { 'sandburg-no-such-package': '0.0.0-offline' } };
+  const app = { files: { 'package.json': JSON.stringify(packageJson) }, packageJson } as unknown as Project;
+  await assert.rejects(offlineInstall.run(true, () => new Installer(dir).install(app, {}, () => {})), /^Error: offline mode: npm's cache does not have every package of this install\. npm install failed .*ENOTCACHED/s);
+  assert.deepEqual(readdirSync(dir).filter((name) => name.includes('.tmp-')), []);
+});
