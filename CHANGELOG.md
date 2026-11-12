@@ -1,5 +1,37 @@
 # sandburg
 
+## 0.3.1
+
+### Patch Changes
+
+- [#136](https://github.com/swissspidy/sandburg/pull/136) [`5655338`](https://github.com/swissspidy/sandburg/commit/5655338e5eb267b5bfd6a2037d0118c0c522103f) Thanks [@swissspidy](https://github.com/swissspidy)! - Fixes found by reading the whole project:
+  
+  - A dev script whose runner takes a flag with a value (`node -r dotenv/config server.js`, `node --env-file .env server.js`, `nodemon --watch src src/index.js`, `tsx watch --tsconfig tsconfig.server.json server.ts`) starts its entry file. Before, the flag's value was taken for the file.
+  - `sandburg run <a workspace package> --save-files` writes the files where the app has them, in the monorepo. Before, they went to a second copy of the package's path inside the package.
+  - `sandburg compare`'s Docker reference runs Angular projects that have a `start` script and no `dev` script, as the Angular CLI makes them. Before, it called them unsupported.
+  - A batch finds the earlier runs of a monorepo's packages, for its order and its memory guard: a summary names a run by the path its item gave.
+  - An install that fails removes its temporary directory in `.sandburg/installs`. Before, each failed install left one for good.
+  - A dev script that runs a program no installed package provides is the app's failure (`adapter-code:APP`) with a host install too, as with an install in the browser.
+  - In the node runtime's shell, what a command is run with reaches the script it runs: `NODE_ENV=production npm run serve`, `cross-env PORT=4000 npm run dev` and `FOO=1 sh -c "…"` no longer lose the assignment to the environment the script started with.
+  - `exec` and `execFile` with an encoding other than UTF-8 (`latin1`, `hex`, `base64`) give the output in it once, not encoded twice.
+  - The `sqlite3` package's stand-in calls back once, not twice, for SQL that cannot be prepared, and its later statements still run after a callback throws.
+  - `process.stdout`, `process.stderr` and `stream/consumers`' `text()` keep a character whose bytes come in two chunks; `clearTimeout(t); t.refresh()` leaves the timer cleared; `zlib.crc32(data, value)` goes on from `value`; `fs.realpath.native` exists (fs-extra warned without it).
+  - A SQLite database written right before `process.exit()` (a seed or migration script) is in its file for the next process. Before, a write in the last 20 ms of a process was lost. A transaction still open then is rolled back, and what was committed before it is kept.
+  - An install accepts packages from the registries npm is configured with (a mirror, or a scope's registry, in the user's `.npmrc`), not only from the public registry and `npm_config_registry`. Before, such an install was refused with "only registry versions can be installed".
+  - `--offline` holds for the install too: npm runs with `--offline`, from its own cache, and a package it lacks is an `infra` error. Before, a project not installed yet was installed from the registry.
+  - An error of Sandburg's own (the browser died mid-run, a bug) exits 2 with the error printed. Before, it exited 1, which says a check failed.
+  - `sandburg open` on an app that never renders (a compile error) no longer loads the app again every few seconds after the ready phase has failed.
+  - Leaks in the node runtime: a WebSocket its server rejects (or closes) inside its `upgrade` handler no longer keeps the process from exiting; a prepared statement of the `better-sqlite3` and `node:sqlite` stand-ins is finalized once the program lets go of it (`db.prepare(sql).get()` per request grew the engine's memory by about 2 KB each time); an HTTP response that came whole and is destroyed unread closes its request and gives its agent's socket back.
+  - `.sandburg` no longer grows without bound from two directories: the installed files' transforms of earlier Sandburg versions are removed, and dev caches (and preload bundles) not written for two weeks, or the oldest beyond 8 GiB.
+  - Removed what nothing set or read. In `result.json`: `timings.buildMs` (always `null`) and `install.buildMs`, `install.shims`. In the library's types: `AdapterDescriptor.bundleDefines` and `bundleAliases`, `crossOriginIsolation: true` (it is `false` or `'credentialless'`), the `'unknown'` probe verdict, and `NodeRuntime.mount`'s `log` argument.
+  - Node behaviour the runtime lacked: `fs.writeSync(1, …)` and the other writes to descriptors 1 and 2 reach the process's output (pino's default destination; they threw `EBADF`), with `fs.fstatSync` of 0 to 2 a character device, and descriptor 0 reading a synchronous child's `input`; `util.promisify` of `setTimeout`, `setImmediate`, `fs.exists`, `exec` and `execFile` gives Node's promise forms; `readline.createInterface` reads its input's lines (events, async iterator, `question`, `readline/promises`); `process.loadEnvFile()` loads the file and `util.parseEnv` parses as Node does; `crypto.randomInt` is uniform, from `getRandomValues`, with its callback forms; `timers/promises` honour `signal` and `ref`; `process.chdir` normalises and refuses a missing directory; `process.cpuUsage(prev)`; `fs.appendFileSync` and `writeFileSync` to a descriptor, `truncate` to a larger size; a recursive `readdir` of a very large tree; `dns.resolve` with a record type, `resolve4`, `resolve6`; `stream/consumers`' `arrayBuffer` and `blob`.
+  - A script stopped while it sleeps (`sleep 600 && vite`) ends at once. `--save-files` given to a command other than `run` is a usage error, not ignored.
+  - SvelteKit and Astro run again on their latest releases. An ES module that imports one still in its top-level await (`@sveltejs/adapter-auto` 8.0.1 awaits as it loads) waits for it, as in Node: it was converted to read the import's exports before they were set ("`adapter_auto.default` is not a function"). `import.meta.resolve()` works in converted modules (Astro 7.4.11 calls it as it loads), with Node's results for packages, relative paths, built-ins and URLs.
+
+- [#129](https://github.com/swissspidy/sandburg/pull/129) [`0fedef3`](https://github.com/swissspidy/sandburg/commit/0fedef3dca32114f4f69220886129ba72075d839) Thanks [@swissspidy](https://github.com/swissspidy)! - A runtime whose file channel closes before it opens (a connection that fails, or a handshake the host does not answer) tries it again, up to three more times, instead of running without it. What the run read of its install's preload bundle is still told to the host: it waits for the channel, and goes over HTTP once the channel is closed. Before, those reports were dropped, and the install's next preload bundle missed the files the run read first.
+
+- [#131](https://github.com/swissspidy/sandburg/pull/131) [`2364123`](https://github.com/swissspidy/sandburg/commit/2364123842099a2e0f8406d03f195473db87e9bd) Thanks [@swissspidy](https://github.com/swissspidy)! - A Next.js app whose next.config gives webpack another cache version than Sandburg's shared seed (a `webpack` function, rewrites, a `basePath`, …) keeps a webpack cache of its own, which its later runs start from. Before, webpack started empty in every run of such an app: a warm run of the App Router fixture with a `webpack` function took about 6.6 s, and takes about 4.3 s now, as one without. Apps the seed fits are unchanged. The app's own cache is keyed by its files, as its other dev caches are: a run after an edit starts from the seed again and keeps a new one.
+
 ## 0.3.0
 
 ### Minor Changes
