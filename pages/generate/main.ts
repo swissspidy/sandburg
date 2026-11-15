@@ -19,6 +19,7 @@ import { applyEdits, DATA_FILES, needsRestart, parseAnswer, type FileEdit } from
 import type { CallResult, Turn } from './llm.ts';
 import type { FromVault, Prefs, ToVault } from './protocol.ts';
 import { firstMessage, fixMessage, SYSTEM } from './prompt.ts';
+import { tabForKey } from './tabs.ts';
 import { template, TEMPLATES } from './templates.ts';
 import { zip } from './zip.ts';
 import { guardAppFrame } from '../frame-guard.js';
@@ -111,7 +112,7 @@ async function createVault(): Promise<void> {
   frame.title = 'Model, API key and request';
   // No allow-same-origin: an opaque origin, which this page (and the app) cannot read.
   frame.setAttribute('sandbox', 'allow-scripts allow-forms');
-  frame.srcdoc = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><script>${script.replace(/<\/(script)/gi, '<\\/$1')}</script></body></html>`;
+  frame.srcdoc = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"></head><body><script>${script.replace(/<\/(script)/gi, '<\\/$1')}</script></body></html>`;
   window.addEventListener('message', (e: MessageEvent<FromVault>) => {
     if (!vault || e.source !== vault.contentWindow) return;
     onVault(e.data);
@@ -689,20 +690,28 @@ async function boot(): Promise<void> {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
-  for (const [tab, panel] of [
+  const tabs = [
     [ui.tabTerminal, ui.terminal],
     [ui.tabFiles, ui.files],
-  ] as const) {
-    tab.addEventListener('click', () => {
-      for (const [t, p] of [
-        [ui.tabTerminal, ui.terminal],
-        [ui.tabFiles, ui.files],
-      ] as const) {
-        t.setAttribute('aria-selected', String(t === tab));
-        p.hidden = p !== panel;
-      }
+  ] as const;
+  const selectTab = (tab: HTMLButtonElement) => {
+    for (const [t, p] of tabs) {
+      t.setAttribute('aria-selected', String(t === tab));
+      // One tab stop for the tablist: the selected tab (arrow keys move between them).
+      t.tabIndex = t === tab ? 0 : -1;
+      p.hidden = t !== tab;
+    }
+  };
+  tabs.forEach(([tab], i) => {
+    tab.addEventListener('click', () => selectTab(tab));
+    tab.addEventListener('keydown', (e) => {
+      const to = tabForKey(e.key, i, tabs.length);
+      if (to === null) return;
+      e.preventDefault();
+      selectTab(tabs[to][0]);
+      tabs[to][0].focus();
     });
-  }
+  });
 
   // ?scaffold=<framework>: run a framework's scaffold as it is, without a model (the site's build checks each).
   const scaffold = new URLSearchParams(location.search).get('scaffold');

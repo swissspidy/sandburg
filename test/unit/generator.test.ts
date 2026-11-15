@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyEdits, cleanPath, formatFiles, needsRestart, parseAnswer } from '../../pages/generate/files.ts';
+import { tabForKey } from '../../pages/generate/tabs.ts';
 import { TEMPLATES } from '../../pages/generate/templates.ts';
 import { zip } from '../../pages/generate/zip.ts';
 import { pageInstall } from '../../src/adapters/node/plan.ts';
@@ -84,4 +85,15 @@ test('a project downloads as a zip with one top folder', () => {
       ['app/src/ü.js', 'x'],
     ],
   );
+});
+
+test('arrow keys, Home and End move between the output tabs, wrapping around', () => {
+  assert.equal(tabForKey('ArrowRight', 0, 2), 1);
+  assert.equal(tabForKey('ArrowRight', 1, 2), 0);
+  assert.equal(tabForKey('ArrowLeft', 0, 2), 1);
+  assert.equal(tabForKey('ArrowLeft', 1, 2), 0);
+  assert.equal(tabForKey('Home', 1, 2), 0);
+  assert.equal(tabForKey('End', 0, 2), 1);
+  assert.equal(tabForKey('Enter', 0, 2), null);
+  assert.equal(tabForKey('a', 1, 2), null);
 });

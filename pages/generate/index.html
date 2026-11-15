@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Generate an app · Sandburg</title>
 <meta name="description" content="Describe a web app; a model of your choice writes it, and Sandburg installs and runs it in this browser tab with the project's own dev server.">
 <link rel="stylesheet" href="../style.css">
@@ -50,12 +51,12 @@
       <div id="placeholder"><div><h2>Your app runs here</h2><p>Packages install from the npm registry in this tab, and the project's own dev server (Vite, <code>next dev</code>, Express) runs in a Web Worker.</p></div></div>
     </section>
     <section class="console" aria-label="Output">
-      <div class="chrome tabs" role="tablist">
+      <div class="chrome tabs" role="tablist" aria-label="Output views">
         <button type="button" role="tab" id="tab-terminal" aria-selected="true" aria-controls="terminal">Terminal</button>
-        <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="files">Files</button>
+        <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="files" tabindex="-1">Files</button>
       </div>
-      <div id="terminal" role="log"></div>
-      <div id="files" hidden><ul id="file-list"></ul><pre id="file-view"></pre></div>
+      <div id="terminal" role="log" aria-labelledby="tab-terminal"></div>
+      <div id="files" role="tabpanel" aria-labelledby="tab-files" hidden><ul id="file-list"></ul><pre id="file-view"></pre></div>
     </section>
   </section>
 </main>
