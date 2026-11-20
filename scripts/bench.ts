@@ -8,7 +8,8 @@
  *
  * - A fixture is a name in fixtures/, or a directory of the checkout (corpus/012-vite-react).
  * - A revision is a git ref, checked out in a worktree under the temporary directory (its
- *   node_modules is this checkout's when the lockfiles match, else npm ci), or `.` for this
+ *   node_modules is this checkout's when the lockfiles match, else npm ci and its Playwright's
+ *   Chromium), or `.` for this
  *   checkout as it is (cold runs remove its .sandburg/).
  * - cold: a fresh session in a revision whose .sandburg/ was removed (npm's own cache stays warm);
  *   the time to the result, then Session.close (a seed run may finish then) separately.
@@ -85,7 +86,12 @@ function checkout(ref: string): { dir: string; label: string } {
   if (!existsSync(join(dir, 'node_modules'))) {
     const same = readFileSync(join(dir, 'package-lock.json'), 'utf8') === readFileSync(join(root, 'package-lock.json'), 'utf8');
     if (same) symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
-    else execFileSync('npm', ['ci', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit' });
+    else {
+      execFileSync('npm', ['ci', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit' });
+      // Its own Playwright may pin another Chromium than this checkout's (a Playwright update): install
+      // that one too. A no-op when the build is in place already.
+      if (!process.env.SANDBURG_CHROMIUM) execFileSync(process.execPath, [join(dir, 'node_modules/playwright-core/cli.js'), 'install', 'chromium'], { cwd: dir, stdio: 'inherit' });
+    }
   }
   return { dir, label: `${ref} (${sha.slice(0, 7)})` };
 }
