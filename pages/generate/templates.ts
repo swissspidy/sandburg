@@ -85,8 +85,8 @@ const withApi = (client: string, dependencies: Record<string, string>, devDepend
     version: '0.0.0',
     type: 'module',
     scripts: { dev: 'concurrently "npm:server" "npm:client"', server: 'node server/index.js', client },
-    dependencies: { express: '^5.2.0', ...dependencies },
-    devDependencies: { concurrently: '^10.0.0', ...devDependencies },
+    dependencies: { express: '^5.3.0', ...dependencies },
+    devDependencies: { concurrently: '^10.0.7', ...devDependencies },
   });
 
 const API_STACK = 'The backend is an Express 5 API in server/index.js on port 3001, behind the dev server\'s proxy for /api; `npm run dev` starts both with concurrently. Data in SQLite through node:sqlite (server/db.js). Keep the proxy and the ports.';
@@ -97,7 +97,7 @@ export const TEMPLATES: Template[] = [
     label: 'React',
     stack: `React 19 on Vite 8 (JavaScript with JSX). ${API_STACK}`,
     files: {
-      'package.json': withApi('vite', { react: '^19.3.0', 'react-dom': '^19.3.0' }, { '@vitejs/plugin-react': '^6.1.1', vite: '^8.3.1' }),
+      'package.json': withApi('vite', { react: '^19.3.1', 'react-dom': '^19.3.1' }, { '@vitejs/plugin-react': '^6.3.0', vite: '^8.3.8' }),
       'vite.config.js': viteConfig('react()', "import react from '@vitejs/plugin-react';"),
       'index.html': viteIndex('/src/main.jsx'),
       'src/main.jsx': `import { StrictMode } from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App.jsx';\nimport './index.css';\n\ncreateRoot(document.getElementById('app')).render(\n  <StrictMode>\n    <App />\n  </StrictMode>,\n);\n`,
@@ -112,7 +112,7 @@ export const TEMPLATES: Template[] = [
     label: 'Vue',
     stack: `Vue 3 single-file components on Vite 8 (JavaScript, <script setup>). ${API_STACK}`,
     files: {
-      'package.json': withApi('vite', { vue: '^3.5.13' }, { '@vitejs/plugin-vue': '^6.0.0', vite: '^8.3.0' }),
+      'package.json': withApi('vite', { vue: '^3.5.46' }, { '@vitejs/plugin-vue': '^6.0.11', vite: '^8.3.8' }),
       'vite.config.js': viteConfig('vue()', "import vue from '@vitejs/plugin-vue';"),
       'index.html': viteIndex('/src/main.js'),
       'src/main.js': `import { createApp } from 'vue';\nimport App from './App.vue';\nimport './style.css';\n\ncreateApp(App).mount('#app');\n`,
@@ -135,7 +135,7 @@ export const TEMPLATES: Template[] = [
         type: 'module',
         imports: { '#lib/*': './src/lib/*' },
         scripts: { dev: 'vite dev', build: 'vite build' },
-        devDependencies: { '@sveltejs/adapter-auto': '^8.0.0', '@sveltejs/kit': '^3.1.0', '@sveltejs/vite-plugin-svelte': '^7.1.2', svelte: '^5.56.1', vite: '^8.0.16' },
+        devDependencies: { '@sveltejs/adapter-auto': '^9.0.0', '@sveltejs/kit': '^3.4.0', '@sveltejs/vite-plugin-svelte': '^7.3.1', svelte: '^5.59.0', vite: '^8.3.8' },
       }),
       'vite.config.js': `import adapter from '@sveltejs/adapter-auto';\nimport { sveltekit } from '@sveltejs/kit/vite';\nimport { defineConfig } from 'vite';\n\nexport default defineConfig({\n  plugins: [sveltekit({ compilerOptions: { runes: true }, adapter: adapter() })],\n});\n`,
       'src/app.html': `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="utf-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1" />\n    %sveltekit.head%\n  </head>\n  <body data-sveltekit-preload-data="hover">\n    <div style="display: contents">%sveltekit.body%</div>\n  </body>\n</html>\n`,
@@ -151,8 +151,8 @@ export const TEMPLATES: Template[] = [
     files: {
       'package.json': withApi(
         'ng serve',
-        { '@angular/common': '^22.2.0', '@angular/compiler': '^22.2.0', '@angular/core': '^22.2.0', '@angular/forms': '^22.2.0', '@angular/platform-browser': '^22.2.0', '@angular/router': '^22.2.0', rxjs: '~7.8.0', tslib: '^2.3.0' },
-        { '@angular/build': '^22.2.0', '@angular/cli': '^22.2.0', '@angular/compiler-cli': '^22.2.0', typescript: '~6.0.2' },
+        { '@angular/common': '^22.3.0', '@angular/compiler': '^22.3.0', '@angular/core': '^22.3.0', '@angular/forms': '^22.3.0', '@angular/platform-browser': '^22.3.0', '@angular/router': '^22.3.0', rxjs: '~7.8.0', tslib: '^2.3.0' },
+        { '@angular/build': '^22.3.0', '@angular/cli': '^22.3.0', '@angular/compiler-cli': '^22.3.0', typescript: '~6.0.2' },
       ),
       'angular.json': json({
         version: 1,
@@ -206,7 +206,7 @@ export const TEMPLATES: Template[] = [
         type: 'module',
         private: true,
         scripts: { dev: 'vite dev', build: 'vite build' },
-        dependencies: { '@solidjs/meta': '^0.29.4', '@solidjs/router': '^0.16.1', '@solidjs/start': '^2.0.5', 'solid-js': '^1.9.15', vite: '^8.0.16' },
+        dependencies: { '@solidjs/meta': '^0.29.8', '@solidjs/router': '^1.0.3', '@solidjs/start': '^2.2.3', 'solid-js': '^1.9.20', vite: '^8.3.8' },
       }),
       'vite.config.js': `import { defineConfig } from 'vite';\nimport { solidStart } from '@solidjs/start/config';\n\nexport default defineConfig({\n  plugins: [solidStart()],\n  // SolidStart's dev overlay imports a UMD file that only loads pre-bundled. SolidStart's\n  // server-function client is pre-bundled too: found late (when a route with a server function\n  // loads), it rebundles trace-mapping, which SolidStart pre-bundles as well, and Vite reloads\n  // the page.\n  optimizeDeps: { include: ['@jridgewell/trace-mapping', '@jridgewell/resolve-uri', '@solidjs/start/fns/client'] },\n});\n`,
       'src/app.jsx': `import { MetaProvider, Title } from '@solidjs/meta';\nimport { Router } from '@solidjs/router';\nimport { FileRoutes } from '@solidjs/start/router';\nimport { Suspense } from 'solid-js';\nimport './app.css';\n\nexport default function App() {\n  return (\n    <Router\n      root={(props) => (\n        <MetaProvider>\n          <Title>App</Title>\n          <Suspense>{props.children}</Suspense>\n        </MetaProvider>\n      )}\n    >\n      <FileRoutes />\n    </Router>\n  );\n}\n`,
@@ -223,7 +223,7 @@ export const TEMPLATES: Template[] = [
     stack:
       'Next.js 16 with the App Router (JavaScript, no TypeScript), React 19. Server components by default; add "use client" to components with state or event handlers. Route handlers in app/api/**/route.js, server actions with "use server". Data in SQLite through node:sqlite (lib/db.js), used only in server code.',
     files: {
-      'package.json': json({ name: 'app', version: '0.1.0', private: true, scripts: { dev: 'next dev', build: 'next build', start: 'next start' }, dependencies: { next: '16.4.0', react: '19.3.0', 'react-dom': '19.3.0' } }),
+      'package.json': json({ name: 'app', version: '0.1.0', private: true, scripts: { dev: 'next dev', build: 'next build', start: 'next start' }, dependencies: { next: '16.4.6', react: '19.3.1', 'react-dom': '19.3.1' } }),
       'next.config.mjs': `/** @type {import('next').NextConfig} */\nconst nextConfig = {};\n\nexport default nextConfig;\n`,
       'lib/db.js': db(),
       'app/layout.js': `import './globals.css';\n\nexport const metadata = { title: 'App' };\n\nexport default function RootLayout({ children }) {\n  return (\n    <html lang="en">\n      <body>{children}</body>\n    </html>\n  );\n}\n`,
@@ -237,7 +237,7 @@ export const TEMPLATES: Template[] = [
     stack:
       'Nuxt 4 with Vue 3 (JavaScript, <script setup>; auto-imported ref, computed, useFetch, $fetch). Pages in app/pages/ (or app/app.vue alone), server routes in server/api/ (defineEventHandler, readBody, getQuery). Data in SQLite through node:sqlite (server/db.js), used only from server routes.',
     files: {
-      'package.json': json({ name: 'app', type: 'module', private: true, scripts: { dev: 'nuxt dev', build: 'nuxt build' }, dependencies: { nuxt: '^4.5.2', vue: '^3.5.22', 'vue-router': '^5.3.1' } }),
+      'package.json': json({ name: 'app', type: 'module', private: true, scripts: { dev: 'nuxt dev', build: 'nuxt build' }, dependencies: { nuxt: '^4.6.4', vue: '^3.5.46', 'vue-router': '^5.5.1' } }),
       'nuxt.config.js': `export default defineNuxtConfig({\n  compatibilityDate: '2025-07-15',\n  devtools: { enabled: false },\n  css: ['~/assets/main.css'],\n});\n`,
       'app/assets/main.css': css,
       'app/app.vue': `<script setup>\nconst { data: health } = await useFetch('/api/health');\n</script>\n\n<template>\n  <main>\n    <h1>Hello</h1>\n    <p v-if="health">SQLite {{ health.sqlite }}</p>\n  </main>\n</template>\n`,
@@ -251,7 +251,7 @@ export const TEMPLATES: Template[] = [
     stack:
       'Astro 7 (.astro components; JavaScript). Pages in src/pages/, rendered on request in the dev server, so frontmatter can read the database; endpoints in src/pages/api/*.js export GET/POST. Interactivity with <script> tags in components. Data in SQLite through node:sqlite (src/lib/db.js), used only in frontmatter and endpoints.',
     files: {
-      'package.json': json({ name: 'app', type: 'module', version: '0.0.1', private: true, scripts: { dev: 'astro dev', build: 'astro build' }, dependencies: { astro: '^7.3.5' } }),
+      'package.json': json({ name: 'app', type: 'module', version: '0.0.1', private: true, scripts: { dev: 'astro dev', build: 'astro build' }, dependencies: { astro: '^7.4.13' } }),
       'astro.config.mjs': `import { defineConfig } from 'astro/config';\n\nexport default defineConfig({});\n`,
       'src/lib/db.js': db(),
       'src/styles/global.css': css,
@@ -264,7 +264,7 @@ export const TEMPLATES: Template[] = [
     stack:
       'Plain HTML, CSS and JavaScript (ES modules) in public/, no build step, served by an Express 5 server (server/index.js, port 3000) that also has the API under /api. Data in SQLite through node:sqlite (server/db.js). Packages for the page only from a CDN as ES modules (https://esm.sh/<package>), if at all.',
     files: {
-      'package.json': json({ name: 'app', private: true, version: '0.0.0', type: 'module', scripts: { dev: 'node server/index.js' }, dependencies: { express: '^5.2.0' } }),
+      'package.json': json({ name: 'app', private: true, version: '0.0.0', type: 'module', scripts: { dev: 'node server/index.js' }, dependencies: { express: '^5.3.0' } }),
       'public/index.html': `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>App</title>\n    <link rel="stylesheet" href="style.css" />\n  </head>\n  <body>\n    <main>\n      <h1>Hello</h1>\n      <p id="sqlite"></p>\n    </main>\n    <script type="module" src="app.js"></script>\n  </body>\n</html>\n`,
       'public/style.css': css,
       'public/app.js': `const health = await fetch('/api/health').then((r) => r.json());\ndocument.getElementById('sqlite').textContent = \`SQLite \${health.sqlite}\`;\n`,

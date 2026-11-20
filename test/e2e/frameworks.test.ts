@@ -49,7 +49,7 @@ test('a Lit app that renders only into its shadow root (no light-DOM text) is re
 test('Tailwind CSS v4 (@tailwindcss/vite) is compiled by the app\'s own tailwindcss', async (t) => {
   const project = projectFromFiles(
     {
-      'package.json': JSON.stringify({ type: 'module', scripts: { dev: 'vite' }, devDependencies: { vite: '^6.0.0', tailwindcss: '4.1.14', '@tailwindcss/vite': '4.1.14' } }),
+      'package.json': JSON.stringify({ type: 'module', scripts: { dev: 'vite' }, devDependencies: { vite: '^8.3.8', tailwindcss: '^4.3.5', '@tailwindcss/vite': '^4.3.5' } }),
       'vite.config.ts': "import { defineConfig } from 'vite';\nimport tailwindcss from '@tailwindcss/vite';\nexport default defineConfig({ plugins: [tailwindcss()] });\n",
       'index.html': '<!doctype html><html><body><h1 class="text-2xl font-bold text-[#123456]">Hi</h1><script type="module" src="/main.js"></script></body></html>',
       'main.js': "import './style.css';\n",

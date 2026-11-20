@@ -61,7 +61,7 @@ test('a template error fails the compile as an app bug, with its location', asyn
 test('Tailwind CSS v4 via @tailwindcss/postcss is applied', async (t) => {
   const base = await loadProject(tasks);
   const pkg = JSON.parse(base.files['package.json'] as string);
-  Object.assign(pkg.devDependencies, { tailwindcss: '4.1.14', '@tailwindcss/postcss': '4.1.14', postcss: '^8.5.0' });
+  Object.assign(pkg.devDependencies, { tailwindcss: '^4.3.5', '@tailwindcss/postcss': '^4.3.5', postcss: '^8.5.0' });
   const project = projectFromFiles(
     {
       ...base.files,
