@@ -6,7 +6,7 @@ Sandburg drives Chromium with the Playwright it installs. If that Playwright's C
 the run stops (exit code `2`) and prints the command that installs it:
 
 ```text
-error: Chromium for Playwright 1.64.1 is not installed. Run: npx playwright@1.64.1 install chromium (on Linux, add --with-deps for its system libraries), or set SANDBURG_CHROMIUM to a Chromium binary.
+error: Chromium for Playwright 1.65.0 is not installed. Run: npx playwright@1.65.0 install chromium (on Linux, add --with-deps for its system libraries), or set SANDBURG_CHROMIUM to a Chromium binary.
 ```
 
 - `npx playwright@<version> install chromium` installs it; on Linux, add `--with-deps` for its system
