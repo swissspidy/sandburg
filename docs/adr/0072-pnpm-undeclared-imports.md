@@ -1,4 +1,4 @@
-# ADR 0072: pnpm projects: an import of a package the project does not declare fails, as with pnpm
+# ADR 0072: pnpm, Yarn Plug'n'Play and Bun workspace projects: an import of a package the project does not declare fails, as there
 
 - Status: Accepted
 - Date: 2026-11-21
@@ -83,6 +83,30 @@ into a new project, which pnpm refuses to install; the fixture was measured with
 - `test/e2e/run.test.ts`: the Vite + React fixture with `"packageManager": "pnpm@10.28.0"` and the
   `scheduler` import fails in `ready` as `undeclared-import`; without the `packageManager`, it passes
   its checks.
+
+## Yarn's Plug'n'Play and Bun workspaces (2026-11-21)
+
+Two more package managers lay a project out so that it imports only what it declares. Each was
+installed and asked the same way as pnpm above (one undeclared import, the real dev server):
+
+| Layout | When | Undeclared import |
+|---|---|---|
+| Yarn 4.19 Plug'n'Play | Yarn 2 and later by default (`nodeLinker: pnp`); also `nodeLinker: pnpm` | Vite 8 + React, `scheduler`: 500, `Failed to resolve import "scheduler"` |
+| Bun 1.4.4 isolated | a workspace with member packages whose bun.lock has `configVersion` (Bun 1.3 and later), or `linker = "isolated"` in bunfig.toml | Vite 8 + React as a workspace package, `scheduler`: 500, `Failed to resolve import "scheduler"` |
+
+What hoists, as npm does: Yarn 1; Yarn with `nodeLinker: node-modules` or `pnpMode: loose`; a single
+Bun package, a workspace without member packages (`"workspaces": []`), a bun.lock without
+`configVersion`, or `linker = "hoisted"`. Next.js 16 (Turbopack) does not start under Plug'n'Play at
+all ("Could not find the Next.js package"), and create-nuxt and the Angular CLI write
+`nodeLinker: node-modules` when the user picks Yarn, as Nuxt and Angular do not run under it either.
+
+`strictLayout` (`source-check.ts`, formerly `pnpmStrict`) recognises all three, by `packageManager`
+first, then by lockfile (pnpm-lock.yaml, yarn.lock, bun.lock, in that order, as ADR 0064 reads them),
+and the Nuxt exception holds for each. In a strict layout no lockfile's packages count as installed
+but what pnpm's `public-hoist-pattern` hoists. The ready phase's error names the layout ("the project
+installs with Yarn's Plug'n'Play, which lets a package import only what it declares"). Measured end to
+end: the Yarn project above, with its yarn.lock and without `.pnp.cjs` (as a repository holds it),
+fails as `undeclared-import`; with `nodeLinker: node-modules` it passes.
 
 ## Consequences
 

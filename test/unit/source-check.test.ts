@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { checkSources, checkSourcesHere, describeFinding, pnpmStrict, publiclyHoisted } from '../../src/source-check.ts';
+import { checkSources, checkSourcesHere, describeFinding, publiclyHoisted, strictLayout } from '../../src/source-check.ts';
 
 const pkg = (deps: Record<string, string> = {}, extra: object = {}) => JSON.stringify({ name: 'app', dependencies: deps, ...extra });
 /** A Vite app's page, whose script is the app's entry. */
@@ -123,7 +123,7 @@ test('a package a lockfile lists as installed is not undeclared: hoisted by npm 
   const pnpm = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      vue:\n        specifier: ^3.5.0\n\npackages:\n\n  vue-router@4.4.0:\n    resolution: {integrity: x}\n\n  h3@1.13.0:\n    resolution: {integrity: x}\n";
   // pnpm hoisting everything (shamefully-hoist) lays node_modules out as npm does.
   assert.deepEqual(await check(app({ 'pnpm-lock.yaml': pnpm, '.npmrc': 'shamefully-hoist=true\n' })), ['imports undeclared package "dayjs" (src/main.ts:3)']);
-  // Its default, isolated layout gives the app only what it declares (pnpmStrict).
+  // Its default, isolated layout gives the app only what it declares (strictLayout).
   assert.deepEqual(await check(app({ 'pnpm-lock.yaml': pnpm })), [
     'imports undeclared package "vue-router" (src/main.ts:1)',
     'imports undeclared package "h3" (src/main.ts:2)',
@@ -148,28 +148,70 @@ test('a package a lockfile lists as installed is not undeclared: hoisted by npm 
 test("pnpm's isolated layout: a project that installs with pnpm, not hoisted, whose framework does not resolve from the whole install", () => {
   const lock = "lockfileVersion: '9.0'\n";
   const app = (files: Record<string, string> = {}, extra: object = {}) => ({ 'package.json': pkg({ react: '^19.0.0' }, extra), ...files });
-  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock })), { publicHoist: [] });
-  assert.deepEqual(pnpmStrict(app({}, { packageManager: 'pnpm@10.28.0' })), { publicHoist: [] }, 'packageManager alone');
-  assert.equal(pnpmStrict(app({})), null, 'npm: no pnpm-lock.yaml, no packageManager');
-  assert.equal(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'package-lock.json': '{}' })), null, 'Sandburg installs from the package-lock.json');
-  assert.equal(pnpmStrict(app({ 'pnpm-lock.yaml': lock }, { packageManager: 'yarn@4.5.0' })), null, 'packageManager names another');
+  assert.deepEqual(strictLayout(app({ 'pnpm-lock.yaml': lock })), { manager: 'pnpm', publicHoist: [] });
+  assert.deepEqual(strictLayout(app({}, { packageManager: 'pnpm@10.28.0' })), { manager: 'pnpm', publicHoist: [] }, 'packageManager alone');
+  assert.equal(strictLayout(app({})), null, 'npm: no pnpm-lock.yaml, no packageManager');
+  assert.equal(strictLayout(app({ 'pnpm-lock.yaml': lock, 'package-lock.json': '{}' })), null, 'Sandburg installs from the package-lock.json');
+  assert.equal(strictLayout(app({ 'pnpm-lock.yaml': lock }, { packageManager: 'yarn@1.22.22' })), null, 'packageManager names another (Yarn 1, which hoists)');
   // Hoisted: .npmrc or pnpm-workspace.yaml.
   const hoisted: Record<string, string>[] = [{ '.npmrc': 'shamefully-hoist=true\n' }, { '.npmrc': 'node-linker = hoisted\n' }, { 'pnpm-workspace.yaml': 'shamefullyHoist: true\n' }, { 'pnpm-workspace.yaml': "nodeLinker: 'hoisted'\n" }];
   for (const files of hoisted) {
-    assert.equal(pnpmStrict(app({ 'pnpm-lock.yaml': lock, ...files })), null, JSON.stringify(files));
+    assert.equal(strictLayout(app({ 'pnpm-lock.yaml': lock, ...files })), null, JSON.stringify(files));
   }
-  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'shamefully-hoist=false\nnode-linker=isolated\n' })), { publicHoist: [] });
+  assert.deepEqual(strictLayout(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'shamefully-hoist=false\nnode-linker=isolated\n' })), { manager: 'pnpm', publicHoist: [] });
   // Nuxt resolves what the app does not declare from the whole install, under pnpm too: when the app that runs uses it.
-  assert.equal(pnpmStrict({ 'package.json': pkg({ nuxt: '^4.6.4' }), 'pnpm-lock.yaml': lock }), null);
+  assert.equal(strictLayout({ 'package.json': pkg({ nuxt: '^4.6.4' }), 'pnpm-lock.yaml': lock }), null);
   const mono = { 'package.json': pkg(), 'apps/docs/package.json': pkg({ nuxt: '^4.6.4' }), 'apps/web/package.json': pkg({ next: '16.4.6' }), 'pnpm-lock.yaml': lock };
-  assert.equal(pnpmStrict(mono, 'apps/docs'), null);
-  assert.deepEqual(pnpmStrict(mono, 'apps/web'), { publicHoist: [] }, "a sibling's Nuxt does not lift it for the Next.js app");
-  assert.deepEqual(pnpmStrict(mono), { publicHoist: [] }, 'the root runs, without Nuxt');
+  assert.equal(strictLayout(mono, 'apps/docs'), null);
+  assert.deepEqual(strictLayout(mono, 'apps/web'), { manager: 'pnpm', publicHoist: [] }, "a sibling's Nuxt does not lift it for the Next.js app");
+  assert.deepEqual(strictLayout(mono), { manager: 'pnpm', publicHoist: [] }, 'the root runs, without Nuxt');
   // public-hoist-pattern: given (.npmrc or pnpm-workspace.yaml), or pnpm 9's default; a negation is not a package.
-  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'public-hoist-pattern[]=*types*\npublic-hoist-pattern[]=!@types/node\n' })), { publicHoist: ['*types*', '!@types/node'] });
-  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': "publicHoistPattern:\n  - 'scheduler'\n" })), { publicHoist: ['scheduler'] });
-  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock }, { packageManager: 'pnpm@9.15.0' })), { publicHoist: ['*eslint*', '*prettier*'] });
-  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': 'publicHoistPattern: []\n' }, { packageManager: 'pnpm@9.15.0' })), { publicHoist: [] });
+  assert.deepEqual(strictLayout(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'public-hoist-pattern[]=*types*\npublic-hoist-pattern[]=!@types/node\n' })), { manager: 'pnpm', publicHoist: ['*types*', '!@types/node'] });
+  assert.deepEqual(strictLayout(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': "publicHoistPattern:\n  - 'scheduler'\n" })), { manager: 'pnpm', publicHoist: ['scheduler'] });
+  assert.deepEqual(strictLayout(app({ 'pnpm-lock.yaml': lock }, { packageManager: 'pnpm@9.15.0' })), { manager: 'pnpm', publicHoist: ['*eslint*', '*prettier*'] });
+  assert.deepEqual(strictLayout(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': 'publicHoistPattern: []\n' }, { packageManager: 'pnpm@9.15.0' })), { manager: 'pnpm', publicHoist: [] });
+});
+
+test("Yarn's Plug'n'Play and a Bun workspace are strict layouts too; Yarn 1, nodeLinker: node-modules, a single Bun package and linker = \"hoisted\" are not", () => {
+  const app = (files: Record<string, string> = {}, extra: object = {}) => ({ 'package.json': pkg({ react: '^19.0.0' }, extra), ...files });
+  const yarn = { manager: 'yarn', publicHoist: [] };
+  const bun = { manager: 'bun', publicHoist: [] };
+  // Yarn: 2 and later write __metadata, and default to Plug'n'Play.
+  const berry = '# This file is generated by running "yarn install" inside your project.\n\n__metadata:\n  version: 10\n  cacheKey: 10c0\n';
+  assert.deepEqual(strictLayout(app({ 'yarn.lock': berry })), yarn);
+  assert.deepEqual(strictLayout(app({}, { packageManager: 'yarn@4.19.0' })), yarn, 'packageManager alone');
+  assert.deepEqual(strictLayout(app({ 'yarn.lock': berry, '.yarnrc.yml': 'nodeLinker: pnpm\n' })), yarn, "Yarn's pnpm linker isolates too");
+  assert.equal(strictLayout(app({ 'yarn.lock': '# yarn lockfile v1\n\nms@^2.0.0:\n  version "2.1.3"\n' })), null, 'Yarn 1 hoists');
+  assert.equal(strictLayout(app({ 'yarn.lock': berry, '.yarnrc.yml': 'nodeLinker: node-modules\n' })), null, 'as create-nuxt and the Angular CLI write it');
+  assert.equal(strictLayout(app({ 'yarn.lock': berry, '.yarnrc.yml': 'pnpMode: loose\n' })), null);
+  // Bun: isolated for a workspace with member packages, from Bun 1.3 (configVersion), or wherever bunfig.toml says so.
+  const lock13 = '{\n  "lockfileVersion": 2,\n  "configVersion": 1,\n  "workspaces": {},\n}\n';
+  const lockOld = '{\n  "lockfileVersion": 1,\n  "workspaces": {},\n}\n';
+  const ws = { 'package.json': pkg({}, { workspaces: ['packages/*'] }), 'packages/web/package.json': JSON.stringify({ name: 'web', dependencies: { react: '^19.0.0' } }) };
+  assert.deepEqual(strictLayout({ ...ws, 'bun.lock': lock13 }), bun);
+  assert.deepEqual(strictLayout({ ...ws }), null, 'no lockfile, no packageManager: npm');
+  assert.deepEqual(strictLayout({ ...ws, 'package.json': pkg({}, { workspaces: ['packages/*'], packageManager: 'bun@1.4.4' }) }), bun, 'packageManager bun@1.3+ alone');
+  assert.equal(strictLayout({ ...ws, 'package.json': pkg({}, { workspaces: ['packages/*'], packageManager: 'bun@1.2.20' }) }), null, 'before 1.3, hoisted');
+  assert.equal(strictLayout({ ...ws, 'bun.lock': lockOld }), null, 'a bun.lock from before 1.3 stays hoisted');
+  assert.equal(strictLayout({ ...ws, 'bun.lock': lock13, 'bunfig.toml': '[install]\nlinker = "hoisted"\n' }), null);
+  assert.equal(strictLayout(app({ 'bun.lock': lock13 }, { workspaces: [] })), null, 'workspaces without member packages: hoisted');
+  assert.deepEqual(strictLayout(app({ 'bun.lock': lockOld, 'bunfig.toml': '# settings\n[install]\nlinker = "isolated"\n' })), bun, 'linker = "isolated" for a single package');
+  assert.equal(strictLayout(app({ 'bun.lock': lock13, 'bunfig.toml': '[run]\nlinker = "isolated"\n' }, { workspaces: [] })), null, 'only [install] sets it');
+});
+
+test("in Yarn's Plug'n'Play or a Bun workspace, a package only a dependency brings is undeclared, though its lockfile lists it", async () => {
+  const files = (lockfile: Record<string, string>, extra: object = {}) => ({
+    'package.json': pkg({ react: '^19.3.0', 'react-dom': '^19.3.0' }, extra),
+    'index.html': page('/src/main.tsx'),
+    'src/main.tsx': "import { unstable_now } from 'scheduler';\nimport React from 'react';\nexport default [unstable_now, React];\n",
+    ...lockfile,
+  });
+  const yarnLock = '__metadata:\n  version: 10\n  cacheKey: 10c0\n\n"scheduler@npm:^0.27.0":\n  version: 0.27.0\n  resolution: "scheduler@npm:0.27.0"\n';
+  assert.deepEqual(await check(files({ 'yarn.lock': yarnLock })), ['imports undeclared package "scheduler" (src/main.tsx:1)']);
+  assert.deepEqual(await check(files({ 'yarn.lock': yarnLock, '.yarnrc.yml': 'nodeLinker: node-modules\n' })), []);
+  const bunLock = '{\n  "lockfileVersion": 2,\n  "configVersion": 1,\n  "packages": {\n    "scheduler": ["scheduler@0.27.0", "", {}, "sha512-a=="],\n  },\n}\n';
+  assert.deepEqual(await check(files({ 'bun.lock': bunLock })), [], 'a single Bun package is hoisted');
+  assert.deepEqual(await check(files({ 'bun.lock': bunLock, 'bunfig.toml': '[install]\nlinker = "isolated"\n' })), ['imports undeclared package "scheduler" (src/main.tsx:1)']);
 });
 
 test("public-hoist-pattern is read as pnpm 10's matcher reads it: in order, with exclusions; only exclusions hoist everything else", () => {

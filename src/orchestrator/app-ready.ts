@@ -6,7 +6,7 @@ import type { Frame, Page } from 'playwright-core';
 import type { ConsoleEntry } from '../types.ts';
 import { RunState } from './run-state.ts';
 import { appRendered } from '../host/rendered.ts';
-import { publiclyHoisted, type PnpmStrict, type SourceFinding } from '../source-check.ts';
+import { publiclyHoisted, type StrictLayout, type SourceFinding } from '../source-check.ts';
 import type { ProjectReads } from '../host/types.ts';
 
 /** Grace period after a runtime asset fails before the phase gives up (the runtime may retry). */
@@ -204,36 +204,45 @@ const SOURCE_RELEVANCE_MS = 2_000;
  * undeclared import, only one whose package is not installed where the file imports it from (npm
  * hoists what dependencies need: Nuxt's h3, a Next app's @tanstack/query-core). Nothing, when the
  * runtime does not record what it read. `answer.installed` is in the order of the undeclared imports.
- * In a project with pnpm's isolated layout (`pnpmStrict`), what npm hoisted counts only when pnpm
- * hoists it publicly too: pnpm gives the project only what it declares (source-check.ts, pnpmStrict).
+ * In a strict layout (`strict`: pnpm's isolated node_modules, Yarn's Plug'n'Play, a Bun workspace;
+ * source-check.ts, strictLayout), what npm hoisted counts only when pnpm hoists it publicly too: the
+ * project gets only what it declares.
  */
-export function relevantFindings(found: SourceFinding[], answer: ProjectReads | null, pnpmStrict: PnpmStrict | null = null): SourceFinding[] {
+export function relevantFindings(found: SourceFinding[], answer: ProjectReads | null, strict: StrictLayout | null = null): SourceFinding[] {
   if (!answer?.reads) return [];
   const read = new Set(answer.reads);
   let i = 0;
   return found.filter((f) => {
-    const installed = f.rule === 'undeclared-import' ? answer.installed[i++] && (!pnpmStrict || publiclyHoisted(pnpmStrict, f.message)) : false;
+    const installed = f.rule === 'undeclared-import' ? answer.installed[i++] && (!strict || publiclyHoisted(strict, f.message)) : false;
     return read.has(f.file) && !installed;
   });
 }
 
+/** What a strict layout does with an undeclared import, in the ready phase's error (failOnUndeclaredImport). */
+const STRICT_LAYOUT_SAYS: Record<StrictLayout['manager'], string> = {
+  pnpm: "the project installs with pnpm, whose node_modules gives a package only what it declares",
+  yarn: "the project installs with Yarn's Plug'n'Play, which lets a package import only what it declares",
+  bun: "the project is a Bun workspace, whose isolated node_modules gives a package only what it declares",
+};
+
 /**
- * In a project with pnpm's isolated layout (source-check.ts, pnpmStrict), fails the ready phase on an
- * undeclared import in a file the app has read (`relevant`, relevantFindings), once the app has
- * rendered: with pnpm, that import resolves to nothing, and the dev server fails the page or module
- * that has it (measured: every supported framework but Nuxt; ADR 0072). npm, which Sandburg installs with,
- * hoists every package to the top of node_modules, where the import resolves. `found` is the source
- * check, started with the phase. The error is the one Node gives, which classify() takes for an
- * undeclared import (an app bug).
+ * In a strict layout (`layout`: pnpm's isolated node_modules, Yarn's Plug'n'Play, a Bun workspace;
+ * source-check.ts, strictLayout), fails the ready phase on an undeclared import in a file the app has
+ * read (`relevant`, relevantFindings), once the app has rendered: there, that import resolves to
+ * nothing, and the dev server fails the page or module that has it (measured: every supported
+ * framework but Nuxt under pnpm, Vite under Yarn's Plug'n'Play and in a Bun workspace; ADR 0072). npm,
+ * which Sandburg installs with, hoists every package to the top of node_modules, where the import
+ * resolves. `found` is the source check, started with the phase. The error is the one Node gives,
+ * which classify() takes for an undeclared import (an app bug).
  */
-export async function failOnUndeclaredWithPnpm(run: RunState, found: Promise<SourceFinding[]>, relevant: (found: SourceFinding[]) => Promise<SourceFinding[]>): Promise<void> {
+export async function failOnUndeclaredImport(run: RunState, layout: StrictLayout, found: Promise<SourceFinding[]>, relevant: (found: SourceFinding[]) => Promise<SourceFinding[]>): Promise<void> {
   const undeclared = (await found).filter((f) => f.rule === 'undeclared-import');
   const bearing = undeclared.length ? await relevant(undeclared) : [];
   if (!bearing.length) return;
   run.sourceFindings = bearing;
   const f = bearing[0];
   throw new Error(
-    `Cannot find package '${f.message}' imported from ${f.file}:${f.line}: the project installs with pnpm, whose node_modules gives a package only what it declares (npm, which Sandburg installs with, hoists it). Add "${f.message}" to package.json.`,
+    `Cannot find package '${f.message}' imported from ${f.file}:${f.line}: ${STRICT_LAYOUT_SAYS[layout.manager]} (npm, which Sandburg installs with, hoists it). Add "${f.message}" to package.json.`,
   );
 }
 

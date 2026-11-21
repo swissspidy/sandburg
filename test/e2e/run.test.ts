@@ -173,15 +173,21 @@ test('importing an undeclared package is an app bug, not a runtime limitation', 
   assert.deepEqual([result.failure?.class, result.failure?.rule], ['app-bug', 'undeclared-import']);
 });
 
-test("a project that installs with pnpm fails on an import of a package it does not declare, as pnpm's node_modules gives it none; with npm it runs (ADR 0072)", async () => {
-  // react-dom's own dependency: npm hoists it to the top of node_modules, pnpm keeps it in react-dom's.
+test("a project that installs with pnpm, Yarn's Plug'n'Play or Bun's isolated linker fails on an import of a package it does not declare; with npm it runs (ADR 0072)", async () => {
+  // react-dom's own dependency: npm hoists it to the top of node_modules; pnpm, Yarn and Bun keep it react-dom's.
   const page = `import { unstable_now } from 'scheduler';\nconsole.log(unstable_now());\n` + (counter.files['src/App.tsx'] as string);
   const pkg = JSON.parse(counter.files['package.json'] as string);
-  const pnpm = variant('pnpm-undeclared', { 'src/App.tsx': page, 'package.json': JSON.stringify({ ...pkg, packageManager: 'pnpm@10.28.0' }) });
-  const result = await session.run(pnpm, { outDir, timeouts: { ready: 30_000 } });
-  assert.equal(result.status, 'error');
-  assert.deepEqual([result.failure?.class, result.failure?.phase, result.failure?.rule], ['app-bug', 'ready', 'undeclared-import']);
-  assert.match(result.failure?.message ?? '', /"scheduler"/);
+  const strict: [string, Record<string, string>][] = [
+    ['pnpm', { 'package.json': JSON.stringify({ ...pkg, packageManager: 'pnpm@10.28.0' }) }],
+    ['yarn', { 'package.json': JSON.stringify({ ...pkg, packageManager: 'yarn@4.19.0' }) }],
+    ['bun', { 'package.json': JSON.stringify({ ...pkg, packageManager: 'bun@1.4.4' }), 'bunfig.toml': '[install]\nlinker = "isolated"\n' }],
+  ];
+  for (const [manager, files] of strict) {
+    const result = await session.run(variant(`${manager}-undeclared`, { 'src/App.tsx': page, ...files }), { outDir, timeouts: { ready: 30_000 } });
+    assert.equal(result.status, 'error', manager);
+    assert.deepEqual([result.failure?.class, result.failure?.phase, result.failure?.rule], ['app-bug', 'ready', 'undeclared-import'], manager);
+    assert.match(result.failure?.message ?? '', /"scheduler"/, manager);
+  }
   const npm = variant('npm-undeclared', { 'src/App.tsx': page });
   const ran = await session.run(npm, { checks: `${fixtureDir}/checks.spec.ts`, outDir, timeouts: { ready: 30_000 } });
   assert.equal(ran.status, 'passed', JSON.stringify(ran.failure));
