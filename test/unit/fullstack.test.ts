@@ -40,6 +40,11 @@ test('expandScript: sequences run every part', () => {
   assert.deepEqual(expandScript(files, '', 'npm run dev').map((l) => l.command), ['node seed.js', 'node server.js']);
 });
 
+test('expandScript: bunx and bun x run the binary as npx does', () => {
+  const files = { 'package.json': pkg({ dev: 'bunx --bun vite & bun x tsx server.ts' }) };
+  assert.deepEqual(expandScript(files, '', 'npm run dev').map((l) => l.command), ['vite', 'tsx server.ts']);
+});
+
 test('Vite proxy: string and object targets, regex keys, env fallbacks', () => {
   const files = {
     'vite.config.js': `export default defineConfig({

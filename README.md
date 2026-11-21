@@ -21,26 +21,27 @@ runs it on its own dev server. Later requests change the running app, and errors
 
 - **The project's own tools.** `next dev`, Vite 5–8 with its plugins, `ng serve`, `nuxt dev`, `astro dev`,
   Express, and a dev script as written (`concurrently "vite" "node server"`). There is no reimplementation of a framework's build.
-- **Correct answers.** Tested on 232 generated apps in 14 frameworks with known faults (study v7.1), it gets 231
-  right from empty caches and all 232 with warm ones, and catches every fault. The one false alarm is an
-  Angular app, cold. `sandburg compare` measures agreement with a Docker reference.
+- **Correct answers.** Tested on 232 generated apps in 14 frameworks with known faults (study v8, on the
+  frameworks' current releases), it gets all 232 right, from empty caches and with warm ones, and catches
+  every fault. `sandburg compare` measures agreement with a Docker reference.
 - **Fast after the first run.** Installs, compiled modules, and dev-server caches carry over between
   runs and between projects that share packages.
 - **Contained.** A sandbox reaches the network only through a caching gateway and a per-sandbox
   allowlist, and tests prove it.
 
-| 232-app study ([v7.1](docs/fidelity/v7.1-node-vs-truth.md), 2026-10-28, 4 vCPU, 3 tabs at a time) | Median run, cold | Median run, warm |
+| 232-app study ([v8](docs/fidelity/v8-node-vs-truth.md), 2026-11-21, 4 vCPU, 3 tabs at a time) | Median run, cold | Median run, warm |
 |---|---|---|
-| Vite, vanilla (33 apps) | 2.9 s | 2.2 s |
-| Vite + React (34) | 8.1 s | 3.2 s |
-| Next.js 15 (33) | 9.7 s | 8.2 s |
-| 11 more frameworks (12 apps each; per framework in the study) | 1.9 s to 11.4 s | 0.9 s to 9.2 s |
-| All 232 | 6.7 s | 3.4 s |
-| Whole corpus, 3 tabs | 784 s | 568 s |
+| Vite, vanilla (33 apps) | 1.9 s | 1.4 s |
+| Vite + React (34) | 6.6 s | 2.0 s |
+| Next.js 15 (33) | 8.0 s | 6.5 s |
+| 11 more frameworks (12 apps each; per framework in the study) | 1.1 s to 10.8 s | 0.5 s to 9.1 s |
+| All 232 | 5.9 s | 2.6 s |
+| Whole corpus, 3 tabs | 739 s | 550 s |
 
 A run includes the install, the dev server's start, the first render and the checks. "Cold" starts
 from empty Sandburg caches (npm's own cache warm). The medians are over the apps that pass in both
-passes. The fixtures on 2026-10-26, at 8dda85e: a one-off run of `node scripts/bench.ts` on a
+passes. v8 ran in a container with Chromium's OS sandbox off; v7.1, on a machine with it on, measured
+6.7 s cold and 3.4 s warm over all 232. The fixtures on 2026-10-26, at 8dda85e: a one-off run of `node scripts/bench.ts` on a
 4-core, 15 GB Linux machine, 3 rounds ([command, setup and every run](docs/bench/2026-10-26.md)):
 
 | Fixture | Cold run | Warm run |
@@ -108,8 +109,8 @@ error.
 |---|---|
 | Front ends | Vite 5–8 with its plugins (React, Vue, Svelte, Solid, Preact, Lit, Tailwind), SvelteKit 3, Astro 7, Nuxt 4, React Router 8, SolidStart 2; `next dev` (Next.js 15–16, App and Pages Router, webpack, SWC); `ng serve` (Angular 22); static sites. Each framework is one entry of the table in [`src/framework.ts`](src/framework.ts), which also sets the order detection tries them in |
 | Back ends | Express and other Node servers next to the front end, reached through Vite's proxy, from the page (`http://localhost:<port>`) or over WebSockets; SQLite (`better-sqlite3`, `sqlite3`, `node:sqlite`) |
-| Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn scripts, package binaries, `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly; a workspace's script (`npm -w`, `pnpm --filter`, `yarn workspace`) |
-| Dependencies | npm registry versions, at a package-lock.json's versions, or pinned from a pnpm-lock.yaml or yarn.lock (a pnpm project that imports a package it does not declare fails, as pnpm's isolated node_modules does: [ADR 0072](docs/adr/0072-pnpm-undeclared-imports.md)); npm, pnpm and yarn workspaces, and `file:`, `link:` and `workspace:` packages inside the project, linked ([ADR 0064](docs/adr/0064-monorepos-and-local-packages.md)). `sandburg run mono/apps/web` runs a workspace package in its monorepo (it loads all of the monorepo's files) |
+| Dev scripts | `&&`, `\|\|`, `;`, `&`, `cd`, `VAR=value`, `cross-env`, npm/pnpm/yarn/bun scripts, package binaries (`npx`, `bunx`), `concurrently`; `tsx`, `ts-node` and `nodemon` run their file directly; a workspace's script (`npm -w`, `pnpm --filter`, `yarn workspace`) |
+| Dependencies | npm registry versions, at a package-lock.json's versions, or pinned from a pnpm-lock.yaml, yarn.lock or bun.lock (a pnpm project that imports a package it does not declare fails, as pnpm's isolated node_modules does: [ADR 0072](docs/adr/0072-pnpm-undeclared-imports.md)); npm, pnpm, yarn and Bun workspaces, and `file:`, `link:` and `workspace:` packages inside the project, linked ([ADR 0064](docs/adr/0064-monorepos-and-local-packages.md)). `sandburg run mono/apps/web` runs a workspace package in its monorepo (it loads all of the monorepo's files) |
 | Node APIs | `fs`, `http`, `worker_threads`, `child_process` (Node programs), `node:wasi`, `AsyncLocalStorage` across native `await`s ([ADR 0057](docs/adr/0057-native-awaits-and-the-runtime-warm-path.md)), top-level await, WebSockets. Native tools run on their WebAssembly builds: SWC, rolldown, rollup, esbuild, lightningcss, Tailwind's oxide; TypeScript 7's `tsc` runs tsrs ([ADR 0024](docs/adr/0024-typescript-7.md)) |
 | Not supported | Native addons without a WebAssembly build, programs other than Node (`git`, `python` exit with 127, also under `execSync`/`spawnSync`), servers started synchronously (`execSync('npm run dev')` blocks with a server nothing reaches), dependencies that are neither npm registry versions nor packages inside the project (git, URL, `user/repo` shorthands, local tarballs, paths outside the project: the run fails before installing, as `runtime-unsupported`) |
 

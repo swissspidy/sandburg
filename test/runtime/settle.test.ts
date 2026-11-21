@@ -90,6 +90,30 @@ test('SvelteKit: not until Svelte has hydrated its page, whatever the servers do
     for (const e of document.querySelectorAll('main, button')) Object.assign(e, { __svelte_meta: { loc: { file: 'src/routes/+page.svelte' } } });
   });
   assert.equal(await safe(), true);
+  // Svelte 5.59: its runtime sets __svelte_meta to null on Element.prototype as it loads, before it hydrates.
+  await load('<script>window.__sveltekit_dev = { base: "" }; Element.prototype.__svelte_meta = null;</script><main><button>Count: 0</button><input></main>');
+  assert.equal(await safe(), false, 'an inherited __svelte_meta is not a hydrated element');
+  // It hydrates without __svelte_meta: its delegated handlers (Symbol('events')) say so.
+  await page.evaluate(() => Object.assign(document.querySelector('button')!, { [Symbol('events')]: { click() {} } }));
+  assert.equal(await safe(), true);
+  // A page whose only handler is a binding (bind:value): Symbol('form reset').
+  await load('<script>window.__sveltekit_dev = { base: "" }; Element.prototype.__svelte_meta = null;</script><main><input></main>');
+  assert.equal(await safe(), false);
+  await page.evaluate(() => Object.assign(document.querySelector('input')!, { [Symbol('form reset')]: () => {} }));
+  assert.equal(await safe(), true);
+  // A custom control (Svelte delegates its onclick like a button's) waits for its handler too.
+  await load('<script>window.__sveltekit_dev = { base: "" }; Element.prototype.__svelte_meta = null;</script><main><div role="button" tabindex="0">Open</div></main>');
+  assert.equal(await safe(), false);
+  await page.evaluate(() => Object.assign(document.querySelector('[role="button"]')!, { [Symbol('events')]: { click() {} } }));
+  assert.equal(await safe(), true);
+  // A control or a hydrated element past the first 5,000 elements is seen.
+  await load(`<script>window.__sveltekit_dev = { base: "" }</script><main>${'<p>x</p>'.repeat(6000)}<button>Late</button></main>`);
+  assert.equal(await safe(), false);
+  await page.evaluate(() => Object.assign(document.querySelector('button')!, { [Symbol('events')]: { click() {} } }));
+  assert.equal(await safe(), true);
+  // No control a click or a fill could be lost on: the servers decide.
+  await load('<script>window.__sveltekit_dev = { base: "" }</script><main><h1>About</h1><a href="/">Home</a></main>');
+  assert.equal(await safe(), undefined);
   // A Svelte app without SvelteKit: the servers decide, as before.
   await load('<div id="app"><button>Clicked 0 times</button></div>');
   assert.equal(await safe(), undefined);

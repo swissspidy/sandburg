@@ -358,6 +358,8 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
     if (SCRIPT_RUNNERS.test(cmd)) {
       if (cmd === 'npm' && args[0] === 'exec') return command(args.slice(1).filter((a) => a !== '--' && !/^(-y|--yes)$/.test(a)), dir, localEnv, done);
       if ((cmd === 'pnpm' || cmd === 'yarn') && (args[0] === 'exec' || args[0] === 'dlx')) return command(args.slice(1), dir, localEnv, done);
+      // `bun x vite` is bunx; `--bun` (run it with Bun instead of Node) has no meaning here.
+      if (cmd === 'bun' && args[0] === 'x') return command(args.slice(1).filter((a) => a !== '--bun' && a !== '--'), dir, localEnv, done);
       const target = packageScript(words, dir);
       if (target && 'error' in target) {
         host.write(2, `sh: ${target.error}\n`);
@@ -370,8 +372,8 @@ export function runScript(script: string, cwd: string, env: Record<string, strin
       host.write(2, `sh: ${words.join(' ')}: package manager commands other than running scripts are not available in the browser runtime\n`);
       return later(127);
     }
-    if (cmd === 'npx') {
-      const rest = args.filter((a) => !/^(-y|--yes|--no-install|-q|--quiet)$/.test(a));
+    if (cmd === 'npx' || cmd === 'bunx') {
+      const rest = args.filter((a) => !/^(-y|--yes|--no-install|-q|--quiet|--bun)$/.test(a));
       return command(rest, dir, localEnv, done);
     }
     let argv: string[] | null = null;

@@ -39,7 +39,7 @@ export interface InstallPlan {
   /** Workspace packages by name → directory (for `npm -w <name>`, `pnpm --filter <name>`, `yarn workspace <name>`). */
   workspaces: Record<string, string>;
   /** The lockfile other than package-lock.json whose versions the plan pins (lockfile-pins.ts), or null. */
-  pinned: 'pnpm-lock.yaml' | 'yarn.lock' | null;
+  pinned: 'pnpm-lock.yaml' | 'yarn.lock' | 'bun.lock' | null;
   /** The directories of local packages: their dependencies are installed here, not as projects of their own. */
   local: string[];
 }
