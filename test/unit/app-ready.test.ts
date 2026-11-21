@@ -266,8 +266,11 @@ test("what bears on the app: findings in files its processes read, and undeclare
   // A runtime that does not record reads: nothing bears on the app.
   assert.deepEqual(relevantFindings([syntax], { reads: null, installed: [] }), []);
   assert.deepEqual(relevantFindings([syntax], null), []);
-  // pnpm's isolated layout: what npm hoisted (h3) is not installed for the app.
-  assert.deepEqual(relevantFindings([syntax, h3, faker, dayjs], answer, true), [syntax, h3, dayjs]);
+  // pnpm's isolated layout: what npm hoisted (h3) is not installed for the app, unless pnpm hoists it publicly too.
+  assert.deepEqual(relevantFindings([syntax, h3, faker, dayjs], answer, { publicHoist: [] }), [syntax, h3, dayjs]);
+  assert.deepEqual(relevantFindings([syntax, h3, faker, dayjs], answer, { publicHoist: ['h3'] }), [syntax, dayjs]);
+  // Only what npm installed: a pattern does not make an absent package (dayjs) installed.
+  assert.deepEqual(relevantFindings([syntax, h3, faker, dayjs], answer, { publicHoist: ['*'] }), [syntax, dayjs]);
 });
 
 test("with pnpm's isolated layout, an undeclared import in a file the app read fails the ready phase as Node's error, which classifies as an undeclared import", async () => {
@@ -276,7 +279,7 @@ test("with pnpm's isolated layout, an undeclared import in a file the app read f
   const unread: SourceFinding = { rule: 'undeclared-import', file: 'app/other/page.tsx', line: 2, message: 'dayjs' };
   const reads = ['app/page.tsx', 'app/old.tsx'];
   const asked: SourceFinding[][] = [];
-  const relevant = async (found: SourceFinding[]) => (asked.push(found), relevantFindings(found, { reads, installed: found.map(() => true) }, true));
+  const relevant = async (found: SourceFinding[]) => (asked.push(found), relevantFindings(found, { reads, installed: found.map(() => true) }, { publicHoist: [] }));
   const run = runState();
   const error = await failOnUndeclaredWithPnpm(asRun(run), Promise.resolve([syntax, scheduler, unread]), relevant).then(() => null, (e: Error) => e);
   assert.match(error?.message ?? '', /^Cannot find package 'scheduler' imported from app\/page\.tsx:1: the project installs with pnpm/);

@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { checkSources, checkSourcesHere, describeFinding, pnpmStrict } from '../../src/source-check.ts';
+import { checkSources, checkSourcesHere, describeFinding, pnpmStrict, publiclyHoisted } from '../../src/source-check.ts';
 
 const pkg = (deps: Record<string, string> = {}, extra: object = {}) => JSON.stringify({ name: 'app', dependencies: deps, ...extra });
 /** A Vite app's page, whose script is the app's entry. */
@@ -159,14 +159,32 @@ test("pnpm's isolated layout: a project that installs with pnpm, not hoisted, wh
     assert.equal(pnpmStrict(app({ 'pnpm-lock.yaml': lock, ...files })), null, JSON.stringify(files));
   }
   assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'shamefully-hoist=false\nnode-linker=isolated\n' })), { publicHoist: [] });
-  // Nuxt resolves what the app does not declare from the whole install, under pnpm too; in a monorepo's app as well.
+  // Nuxt resolves what the app does not declare from the whole install, under pnpm too: when the app that runs uses it.
   assert.equal(pnpmStrict({ 'package.json': pkg({ nuxt: '^4.6.4' }), 'pnpm-lock.yaml': lock }), null);
-  assert.equal(pnpmStrict({ 'package.json': pkg(), 'apps/web/package.json': pkg({ nuxt: '^4.6.4' }), 'pnpm-lock.yaml': lock }), null);
+  const mono = { 'package.json': pkg(), 'apps/docs/package.json': pkg({ nuxt: '^4.6.4' }), 'apps/web/package.json': pkg({ next: '16.4.6' }), 'pnpm-lock.yaml': lock };
+  assert.equal(pnpmStrict(mono, 'apps/docs'), null);
+  assert.deepEqual(pnpmStrict(mono, 'apps/web'), { publicHoist: [] }, "a sibling's Nuxt does not lift it for the Next.js app");
+  assert.deepEqual(pnpmStrict(mono), { publicHoist: [] }, 'the root runs, without Nuxt');
   // public-hoist-pattern: given (.npmrc or pnpm-workspace.yaml), or pnpm 9's default; a negation is not a package.
-  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'public-hoist-pattern[]=*types*\npublic-hoist-pattern[]=!@types/node\n' })), { publicHoist: ['*types*'] });
+  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'public-hoist-pattern[]=*types*\npublic-hoist-pattern[]=!@types/node\n' })), { publicHoist: ['*types*', '!@types/node'] });
   assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': "publicHoistPattern:\n  - 'scheduler'\n" })), { publicHoist: ['scheduler'] });
   assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock }, { packageManager: 'pnpm@9.15.0' })), { publicHoist: ['*eslint*', '*prettier*'] });
   assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': 'publicHoistPattern: []\n' }, { packageManager: 'pnpm@9.15.0' })), { publicHoist: [] });
+});
+
+test("public-hoist-pattern is read as pnpm 10's matcher reads it: in order, with exclusions; only exclusions hoist everything else", () => {
+  const hoisted = (publicHoist: string[], name: string) => publiclyHoisted({ publicHoist }, name);
+  assert.equal(hoisted([], 'scheduler'), false);
+  assert.equal(hoisted(['sched*'], 'scheduler'), true);
+  assert.equal(hoisted(['*eslint*'], '@typescript-eslint/utils'), true, "`*` matches a scope's `/`");
+  // An exclusion after a match takes the package out again; others the pattern matches stay in.
+  assert.equal(hoisted(['*', '!scheduler'], 'scheduler'), false);
+  assert.equal(hoisted(['*', '!scheduler'], 'react-is'), true);
+  assert.equal(hoisted(['*', '!@types/*'], '@types/node'), false);
+  // Only exclusions: every package but those.
+  assert.equal(hoisted(['!scheduler'], 'scheduler'), false);
+  assert.equal(hoisted(['!scheduler'], 'react-is'), true);
+  assert.equal(hoisted(['!scheduler', '!react-is'], 'react-is'), false);
 });
 
 test("with pnpm's isolated layout, an import of a package only a dependency brings is undeclared, unless pnpm hoists it publicly", async () => {
@@ -187,6 +205,10 @@ test("with pnpm's isolated layout, an import of a package only a dependency brin
   assert.deepEqual(await check(app({ ...scoped, 'pnpm-lock.yaml': withUtils })), ['imports undeclared package "@typescript-eslint/utils" (app/lint.ts:1)']);
   assert.deepEqual(await check(app({ ...scoped, 'pnpm-lock.yaml': withUtils, '.npmrc': 'public-hoist-pattern[]=*eslint*\n' })), []);
   assert.deepEqual(await check(app({ '.npmrc': 'shamefully-hoist=true\n' })), []);
+  // Excluded from a pattern that hoists everything else: undeclared, as pnpm leaves it out.
+  assert.deepEqual(await check(app({ '.npmrc': 'public-hoist-pattern[]=*\npublic-hoist-pattern[]=!scheduler\n' })), ['imports undeclared package "scheduler" (app/page.tsx:1)']);
+  assert.deepEqual(await check(app({ 'pnpm-workspace.yaml': "publicHoistPattern:\n  - '!scheduler'\n" })), ['imports undeclared package "scheduler" (app/page.tsx:1)']);
+  assert.deepEqual(await check(app({ 'pnpm-workspace.yaml': "publicHoistPattern:\n  - '!react-is'\n" })), []);
 });
 
 test("components are checked by their scripts, each a module, at the file's own lines, whatever their start tags hold", async () => {
