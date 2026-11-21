@@ -507,7 +507,7 @@ function tsconfigs(files: FileTree): (file: string) => TsConfig {
 
 /** How a pnpm project's node_modules is laid out, where it is isolated (pnpmStrict). */
 export interface PnpmStrict {
-  /** Globs of the packages pnpm hoists into the project's node_modules all the same (public-hoist-pattern). */
+  /** public-hoist-pattern: globs of the packages pnpm hoists into the project's node_modules all the same, and `!` exclusions. */
   publicHoist: string[];
 }
 
@@ -520,9 +520,54 @@ export interface PnpmStrict {
  */
 const PNPM_LENIENT = new Set(['nuxt']);
 
-/** Whether a public-hoist-pattern matches a package name: as pnpm matches them, `*` any characters, a scope's `/` among them. */
-function hoistMatch(pattern: string, name: string): boolean {
-  return new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(name);
+/**
+ * Whether one glob matches a package name: as pnpm matches them, `*` any characters, a scope's `/`
+ * among them, every other character itself. Matched directly, not as a regular expression: the
+ * pattern is the project's (.npmrc, pnpm-workspace.yaml), and `a*a*a*…z` backtracks for seconds in
+ * a regular expression. Here a mismatch goes back only to the last `*`, so the cost is at most the
+ * pattern's length times the name's.
+ */
+function globMatch(pattern: string, name: string): boolean {
+  let p = 0;
+  let n = 0;
+  let star = -1;
+  let resume = 0;
+  while (n < name.length) {
+    if (p < pattern.length && pattern[p] === '*') {
+      star = p++;
+      resume = n;
+    } else if (p < pattern.length && pattern[p] === name[n]) {
+      p++;
+      n++;
+    } else if (star !== -1) {
+      // The last `*` takes one more character of the name.
+      p = star + 1;
+      n = ++resume;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[p] === '*') p++;
+  return p === pattern.length;
+}
+
+/**
+ * Whether pnpm hoists a package publicly (`strict.publicHoist`), as pnpm 10's matcher
+ * (`@pnpm/matcher`) reads the list: no pattern, nothing; only exclusions (`!name`), every package
+ * but those; otherwise in order, a matching pattern includes it and a later matching exclusion
+ * takes it out again.
+ */
+export function publiclyHoisted(strict: PnpmStrict, name: string): boolean {
+  const patterns = strict.publicHoist;
+  if (!patterns.length) return false;
+  if (patterns.every((p) => p.startsWith('!'))) return !patterns.some((p) => globMatch(p.slice(1), name));
+  let hoisted = false;
+  for (const p of patterns) {
+    if (p.startsWith('!')) {
+      if (globMatch(p.slice(1), name)) hoisted = false;
+    } else if (!hoisted && globMatch(p, name)) hoisted = true;
+  }
+  return hoisted;
 }
 
 /** A setting's values in an .npmrc (`key=value` lines; a list repeats `key[]=`). */
@@ -540,10 +585,11 @@ function npmrcValues(npmrc: string, key: string): string[] {
  * package.json's `packageManager` saying pnpm) and has no package-lock.json (Sandburg installs from
  * that), whose node_modules is not hoisted (`shamefully-hoist`, or a `node-linker` other than
  * isolated, in .npmrc or pnpm-workspace.yaml), and whose framework does not resolve from the whole
- * install anyway (PNPM_LENIENT). There, a package imports only what it declares: npm hoists every
- * package to the top, so an undeclared import that runs here fails with pnpm.
+ * install anyway (PNPM_LENIENT): the framework of the app that runs (`app`, a workspace package's
+ * directory; the root's otherwise) or of the root. There, a package imports only what it declares:
+ * npm hoists every package to the top, so an undeclared import that runs here fails with pnpm.
  */
-export function pnpmStrict(files: FileTree): PnpmStrict | null {
+export function pnpmStrict(files: FileTree, app = ''): PnpmStrict | null {
   if (typeof files['package-lock.json'] === 'string' || typeof files['npm-shrinkwrap.json'] === 'string') return null;
   const pkg = parseJsonc(text(files, 'package.json') ?? '') as { packageManager?: unknown } | null;
   const manager = typeof pkg?.packageManager === 'string' ? pkg.packageManager : '';
@@ -554,10 +600,10 @@ export function pnpmStrict(files: FileTree): PnpmStrict | null {
   const hoistAll = npmrcValues(npmrc, 'shamefully-hoist').includes('true') || setting('shamefullyHoist') === 'true';
   const linker = setting('nodeLinker') ?? npmrcValues(npmrc, 'node-linker').at(-1) ?? 'isolated';
   if (hoistAll || linker !== 'isolated') return null;
-  // The framework of any package of the project (a monorepo's app among them).
-  for (const [path, source] of Object.entries(files)) {
-    if (!/(?:^|\/)package\.json$/.test(path) || /(?:^|\/)node_modules\//.test(path) || typeof source !== 'string') continue;
-    const manifest = parseJsonc(source) as Record<string, Record<string, unknown> | undefined> | null;
+  // The framework of the app that runs, or of the root: not a sibling's (a monorepo's Nuxt docs beside a Next.js app).
+  const dir = app.replace(/^\/+|\/+$/g, '');
+  for (const path of new Set(['package.json', dir ? `${dir}/package.json` : 'package.json'])) {
+    const manifest = parseJsonc(text(files, path) ?? '') as Record<string, Record<string, unknown> | undefined> | null;
     if (['dependencies', 'devDependencies'].some((field) => Object.keys(manifest?.[field] ?? {}).some((d) => PNPM_LENIENT.has(d)))) return null;
   }
   // public-hoist-pattern, given or pnpm's default: nothing since pnpm 10; ESLint's and Prettier's packages before.
@@ -565,7 +611,7 @@ export function pnpmStrict(files: FileTree): PnpmStrict | null {
   const given = fromWorkspace !== undefined ? (Array.isArray(fromWorkspace) ? fromWorkspace : [fromWorkspace]).filter((p): p is string => typeof p === 'string') : npmrcValues(npmrc, 'public-hoist-pattern');
   const major = Number(/^pnpm@(\d+)/.exec(manager)?.[1] ?? 10);
   const patterns = fromWorkspace !== undefined || given.length ? given : major < 10 ? ['*eslint*', '*prettier*'] : [];
-  return { publicHoist: patterns.filter((p) => p && !p.startsWith('!')) };
+  return { publicHoist: patterns.filter((p) => p && p !== '!') };
 }
 
 /**
@@ -605,7 +651,7 @@ function installedPackages(files: FileTree, strict: PnpmStrict | null = null): (
       }
     } else if (path.endsWith('pnpm-lock.yaml')) {
       let inPackages = false;
-      const hoisted = (name: string) => !strict || strict.publicHoist.some((pattern) => hoistMatch(pattern, name));
+      const hoisted = (name: string) => !strict || publiclyHoisted(strict, name);
       for (const line of source.split('\n')) {
         if (/^\S/.test(line)) inPackages = /^(?:packages|snapshots):/.test(line);
         // `name@1.0.0:` (lockfile v6 and later), `/name/1.0.0:` (v5).
@@ -913,7 +959,7 @@ export async function checkSourcesHere(files: FileTree, options: SourceCheckOpti
     .slice(0, MAX_FILES);
   const tsconfigFor = tsconfigs(files);
   const { declared, workspaces } = declaredFor(files);
-  const installed = installedPackages(files, pnpmStrict(files));
+  const installed = installedPackages(files, pnpmStrict(files, options.app));
   const resolve = resolver(files, app, tsconfigFor, workspaces);
 
   // Each module, grouped by the TypeScript options it is parsed with.

@@ -610,7 +610,7 @@ export class Session {
               await waitForRender(frame, options.readySelector, () => host('ready', url), loading, rendered, over.signal);
             })();
             // pnpm's isolated layout: a package imports only what it declares (source-check.ts, pnpmStrict).
-            const strict = pnpmStrict(project.files) !== null;
+            const strict = pnpmStrict(project.files, project.app);
             // What the app's processes read, and whether undeclared packages are installed after all (relevantFindings).
             const relevant = async (found: SourceFinding[]) => {
               const packages = found.filter((f) => f.rule === 'undeclared-import').map((f) => ({ name: f.message, from: f.file }));
@@ -618,7 +618,7 @@ export class Session {
               return relevantFindings(found, answer, strict);
             };
             // With pnpm, the sources are checked from the start: an undeclared import fails the page there, not here.
-            const early = strict ? checkSources(project.files, { app: project.app }, { signal: deadline }) : null;
+            const early = strict !== null ? checkSources(project.files, { app: project.app }, { signal: deadline }) : null;
             // The project's sources, checked if the app has not rendered after 20 s: what classifies the phase if it times out.
             watchSources(run, (signal) => checkSources(project.files, { app: project.app }, { signal }), relevant, over.signal);
             await failFastOnAppError(render, run, loadingPage, frame).finally(() => over.abort());
