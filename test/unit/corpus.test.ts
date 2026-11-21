@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generateApp, type AppMeta } from '../../scripts/corpus/generate.ts';
+import { floatPins, generateApp, type AppMeta } from '../../scripts/corpus/generate.ts';
 
 const corpus = fileURLToPath(new URL('../../corpus', import.meta.url));
 
@@ -48,4 +48,13 @@ test("the source check (src/source-check.ts) flags each corpus app's seeded synt
   }
   assert.equal(expected.length, index.apps.filter((a) => a.fault === 'syntax' || a.fault === 'undeclared-import').length, 'one seeded line per such app');
   assert.deepEqual(flagged, expected);
+});
+
+test('--latest makes each exact version a caret range, the newest of its major; ranges and other specs stay as they are', () => {
+  const pkg = JSON.stringify({ name: 'app', dependencies: { next: '15.5.4', react: '19.1.0', 'canvas-confetti': '^99.0.0', local: 'file:../lib' }, devDependencies: { typescript: '~6.0.2', vite: '8.3.8' }, scripts: { dev: 'next dev' } }, null, 2) + '\n';
+  const floated = JSON.parse(floatPins(pkg));
+  assert.deepEqual(floated.dependencies, { next: '^15.5.4', react: '^19.1.0', 'canvas-confetti': '^99.0.0', local: 'file:../lib' });
+  assert.deepEqual(floated.devDependencies, { typescript: '~6.0.2', vite: '^8.3.8' });
+  assert.deepEqual(floated.scripts, { dev: 'next dev' });
+  assert.ok(floatPins(pkg).endsWith('}\n'));
 });

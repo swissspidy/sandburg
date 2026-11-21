@@ -2,7 +2,7 @@
  * A fidelity study's cold and warm passes over a corpus (scripts/corpus), with each run's answer
  * compared with the app's ground truth (meta.json's `expected`), and the per-framework table.
  *
- *   node scripts/fidelity-study.ts [corpus] [--parallel 3] [--rounds 1] [--only <regex>] [--out docs/fidelity/vN-node-vs-truth] [--report]
+ *   node scripts/fidelity-study.ts [corpus] [--parallel 3] [--rounds 1] [--only <regex>] [--per-framework <n>] [--out docs/fidelity/vN-node-vs-truth] [--report] [--fail-on-wrong]
  *
  * - cold: the batch starts from empty Sandburg stores (.sandburg/ removed). What it does not
  *   remove stays warm: npm's own download cache (~/.npm) and the OS's page cache. A store kept
@@ -29,6 +29,9 @@
  *   corpus, apps and the apps' meta.json, --parallel, --only and commit), over every round kept
  *   unless --rounds says how many.
  * - --only: the apps whose framework (meta.json) matches, e.g. 'vue|static|lit'.
+ * - --per-framework n: the first n apps of each framework, in the corpus's order (a sample for a
+ *   scheduled check, .github/workflows/canary.yml).
+ * - --fail-on-wrong: exit 1 when any run of either pass got its app wrong (for CI).
  * - --out writes <out>.json (cold) and <out>-warm.json (warm), each app with its phases, when it
  *   started and ended (ms from its pass's start), `neighbours`: the mean number of other runs open
  *   while it ran, and `cpu`: the machine's mean CPU use while it ran (Linux; else null). Per-app
@@ -54,6 +57,8 @@ const { values: args, positionals } = parseArgs({
     parallel: { type: 'string' },
     rounds: { type: 'string' },
     only: { type: 'string' },
+    'per-framework': { type: 'string' },
+    'fail-on-wrong': { type: 'boolean', default: false },
     out: { type: 'string' },
     report: { type: 'boolean', default: false },
     // Internal: run one pass in this process and print it (each pass is a process of its own).
@@ -163,6 +168,7 @@ const ran = args.report ? done[0].params : null;
 const corpus = ran?.corpus ?? resolve(positionals[0] ?? 'corpus');
 const parallel = ran?.parallel ?? count('parallel', args.parallel ?? '3');
 const only = ran ? ran.only : (args.only ?? null);
+const perFramework = args['per-framework'] !== undefined ? count('per-framework', args['per-framework']) : null;
 const items: (BatchItem & { project: string; label: string; meta: Meta })[] = [];
 if (ran) for (const label of ran.apps) items.push({ project: join(corpus, label), label, meta: ran.meta[label] });
 else {
@@ -170,7 +176,9 @@ else {
     const { project } = item;
     if (typeof project !== 'string') continue; // discovered items are paths
     const meta = JSON.parse(await readFile(join(project, 'meta.json'), 'utf8')) as Meta;
-    if (!only || new RegExp(only).test(meta.framework)) items.push({ ...item, project, label: item.label ?? basename(project), meta: { framework: meta.framework, fault: meta.fault, expected: meta.expected } });
+    if (only && !new RegExp(only).test(meta.framework)) continue;
+    if (perFramework !== null && items.filter((i) => i.meta.framework === meta.framework).length >= perFramework) continue;
+    items.push({ ...item, project, label: item.label ?? basename(project), meta: { framework: meta.framework, fault: meta.fault, expected: meta.expected } });
   }
 }
 if (!items.length) refuse(`no apps in ${corpus}${only ? ` matching ${only}` : ''}`);
@@ -184,7 +192,7 @@ const rounds = args.rounds !== undefined ? count('rounds', args.rounds) : ran ? 
  * https://github.com/swissspidy/sandburg/issues/117).
  */
 function pass(mode: 'cold' | 'warm'): Promise<Pass> {
-  const argv = [import.meta.filename, corpus, '--pass', mode, '--parallel', String(parallel), ...(only ? ['--only', only] : [])];
+  const argv = [import.meta.filename, corpus, '--pass', mode, '--parallel', String(parallel), ...(only ? ['--only', only] : []), ...(perFramework !== null ? ['--per-framework', String(perFramework)] : [])];
   return readPass<Pass>(spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'inherit'] }), `the ${mode} pass`);
 }
 
@@ -365,6 +373,7 @@ lines.push(
   `Runs more than 1.2× slower warm than the same round's cold run: ${slowerInRound.length ? slowerInRound.join(', ') : 'none'}.`,
 );
 console.log(lines.join('\n'));
+if (args['fail-on-wrong'] && wrong('cold') + wrong('warm') > 0) process.exitCode = 1;
 
 if (args.out) {
   const doc = (mode: 'cold' | 'warm', list: App[]) => ({
