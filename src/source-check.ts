@@ -15,7 +15,8 @@
  *   (`with`) is parsed again as a script.
  * - An undeclared import is a static `import … from` or `export … from` (not `import()` or
  *   `require()`, which an app may guard) of a package no package.json from the file up declares and
- *   no lockfile lists as installed (npm hoists what dependencies need). TypeScript's elided imports
+ *   no lockfile lists as installed (npm hoists what dependencies need; pnpm's isolated layout does
+ *   not, pnpmStrict, ADR 0072). TypeScript's elided imports
  *   (types, and imports nothing uses) do not count, as they do not reach the dev server.
  * - Single-file components (.vue, .svelte, .astro) are checked by their scripts, each a module of its own.
  *
@@ -30,6 +31,7 @@ import { matchesGlob } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import type { FileTree } from './types.ts';
+import { parseYaml } from './yaml-lite.ts';
 
 /** What the check found in one file, at its line (and column, for a syntax error). */
 export interface SourceFinding {
@@ -80,7 +82,7 @@ const PROVIDED = new Set(['server-only', 'client-only', 'styled-jsx']);
 const ASSET = /\.(?:css|scss|sass|less|styl|stylus|pcss|postcss|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|json|wasm|html?|md|mdx|txt|ya?ml|glsl|wgsl)$|\?/;
 const LOADERS: Record<string, esbuild.Loader> = { ts: 'ts', mts: 'ts', cts: 'ts', tsx: 'tsx', js: 'jsx', mjs: 'jsx', cjs: 'jsx', jsx: 'jsx' };
 const LOCKFILE = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock)$/;
-const CONFIG = /(?:^|\/)(?:package\.json|[tj]sconfig(?:\.[\w-]+)?\.json|[^/]*\.html?|[^/]*config\.[cm]?[jt]s|\.babelrc[^/]*)$/;
+const CONFIG = /(?:^|\/)(?:package\.json|[tj]sconfig(?:\.[\w-]+)?\.json|[^/]*\.html?|[^/]*config\.[cm]?[jt]s|\.babelrc[^/]*|\.npmrc|pnpm-workspace\.yaml)$/;
 
 /** The argument that runs this module as the check's process (checkSources). */
 const CHILD_FLAG = '--sandburg-source-check';
@@ -503,8 +505,74 @@ function tsconfigs(files: FileTree): (file: string) => TsConfig {
   };
 }
 
-/** The packages lockfiles list as installed where a file may import them: hoisted (npm, yarn), listed (pnpm, bun). */
-function installedPackages(files: FileTree): (file: string) => Set<string> {
+/** How a pnpm project's node_modules is laid out, where it is isolated (pnpmStrict). */
+export interface PnpmStrict {
+  /** Globs of the packages pnpm hoists into the project's node_modules all the same (public-hoist-pattern). */
+  publicHoist: string[];
+}
+
+/**
+ * Frameworks whose dev servers resolve a package from anywhere in the install, under pnpm too: an
+ * app imports what it does not declare and runs. Measured with each framework's fixture installed
+ * by pnpm 10 (ADR 0072): Nuxt serves a page and a server route that import h3, ofetch, defu or a
+ * transitive package (picomatch) it does not declare.
+ */
+const PNPM_LENIENT = new Set(['nuxt']);
+
+/** Whether a public-hoist-pattern matches a package name: as pnpm matches them, `*` any characters, a scope's `/` among them. */
+function hoistMatch(pattern: string, name: string): boolean {
+  return new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(name);
+}
+
+/** A setting's values in an .npmrc (`key=value` lines; a list repeats `key[]=`). */
+function npmrcValues(npmrc: string, key: string): string[] {
+  const out: string[] = [];
+  for (const line of npmrc.split(/\r?\n/)) {
+    const m = /^\s*([^=#;\s]+)\s*=\s*(.*?)\s*$/.exec(line);
+    if (m && (m[1] === key || m[1] === `${key}[]`)) out.push(m[2].replace(/^["']|["']$/g, ''));
+  }
+  return out;
+}
+
+/**
+ * pnpm's isolated layout, or null: a project that installs with pnpm (a pnpm-lock.yaml, or
+ * package.json's `packageManager` saying pnpm) and has no package-lock.json (Sandburg installs from
+ * that), whose node_modules is not hoisted (`shamefully-hoist`, or a `node-linker` other than
+ * isolated, in .npmrc or pnpm-workspace.yaml), and whose framework does not resolve from the whole
+ * install anyway (PNPM_LENIENT). There, a package imports only what it declares: npm hoists every
+ * package to the top, so an undeclared import that runs here fails with pnpm.
+ */
+export function pnpmStrict(files: FileTree): PnpmStrict | null {
+  if (typeof files['package-lock.json'] === 'string' || typeof files['npm-shrinkwrap.json'] === 'string') return null;
+  const pkg = parseJsonc(text(files, 'package.json') ?? '') as { packageManager?: unknown } | null;
+  const manager = typeof pkg?.packageManager === 'string' ? pkg.packageManager : '';
+  if (manager ? !manager.startsWith('pnpm@') : typeof files['pnpm-lock.yaml'] !== 'string') return null;
+  const npmrc = text(files, '.npmrc') ?? '';
+  const workspace = parseYaml(text(files, 'pnpm-workspace.yaml') ?? '');
+  const setting = (key: string) => (workspace && typeof workspace === 'object' && !Array.isArray(workspace) && Object.hasOwn(workspace, key) ? workspace[key] : undefined);
+  const hoistAll = npmrcValues(npmrc, 'shamefully-hoist').includes('true') || setting('shamefullyHoist') === 'true';
+  const linker = setting('nodeLinker') ?? npmrcValues(npmrc, 'node-linker').at(-1) ?? 'isolated';
+  if (hoistAll || linker !== 'isolated') return null;
+  // The framework of any package of the project (a monorepo's app among them).
+  for (const [path, source] of Object.entries(files)) {
+    if (!/(?:^|\/)package\.json$/.test(path) || /(?:^|\/)node_modules\//.test(path) || typeof source !== 'string') continue;
+    const manifest = parseJsonc(source) as Record<string, Record<string, unknown> | undefined> | null;
+    if (['dependencies', 'devDependencies'].some((field) => Object.keys(manifest?.[field] ?? {}).some((d) => PNPM_LENIENT.has(d)))) return null;
+  }
+  // public-hoist-pattern, given or pnpm's default: nothing since pnpm 10; ESLint's and Prettier's packages before.
+  const fromWorkspace = setting('publicHoistPattern');
+  const given = fromWorkspace !== undefined ? (Array.isArray(fromWorkspace) ? fromWorkspace : [fromWorkspace]).filter((p): p is string => typeof p === 'string') : npmrcValues(npmrc, 'public-hoist-pattern');
+  const major = Number(/^pnpm@(\d+)/.exec(manager)?.[1] ?? 10);
+  const patterns = fromWorkspace !== undefined || given.length ? given : major < 10 ? ['*eslint*', '*prettier*'] : [];
+  return { publicHoist: patterns.filter((p) => p && !p.startsWith('!')) };
+}
+
+/**
+ * The packages lockfiles list as installed where a file may import them: hoisted (npm, yarn), listed
+ * (pnpm, bun). With pnpm's isolated layout (`strict`), a pnpm-lock.yaml's packages are not: the
+ * project's node_modules holds only what it declares, and what `strict.publicHoist` matches.
+ */
+function installedPackages(files: FileTree, strict: PnpmStrict | null = null): (file: string) => Set<string> {
   const everywhere = new Set<string>();
   const under = new Map<string, Set<string>>();
   for (const path of Object.keys(files)) {
@@ -536,11 +604,12 @@ function installedPackages(files: FileTree): (file: string) => Set<string> {
       }
     } else if (path.endsWith('pnpm-lock.yaml')) {
       let inPackages = false;
+      const hoisted = (name: string) => !strict || strict.publicHoist.some((pattern) => hoistMatch(pattern, name));
       for (const line of source.split('\n')) {
         if (/^\S/.test(line)) inPackages = /^(?:packages|snapshots):/.test(line);
         // `name@1.0.0:` (lockfile v6 and later), `/name/1.0.0:` (v5).
         const m = inPackages ? (/^ {2}'?\/?((?:@[^/@'\s]+\/)?[^/@'\s(]+)@/.exec(line) ?? /^ {2}'?\/((?:@[^/@'\s]+\/)?[^/@'\s(]+)\/\d/.exec(line)) : null;
-        if (m) everywhere.add(m[1]);
+        if (m && hoisted(m[1])) everywhere.add(m[1]);
       }
     } else {
       const lock = parseJsonc(source) as { packages?: Record<string, unknown> } | null;
@@ -843,7 +912,7 @@ export async function checkSourcesHere(files: FileTree, options: SourceCheckOpti
     .slice(0, MAX_FILES);
   const tsconfigFor = tsconfigs(files);
   const { declared, workspaces } = declaredFor(files);
-  const installed = installedPackages(files);
+  const installed = installedPackages(files, pnpmStrict(files));
   const resolve = resolver(files, app, tsconfigFor, workspaces);
 
   // Each module, grouped by the TypeScript options it is parsed with.

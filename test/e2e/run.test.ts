@@ -173,6 +173,20 @@ test('importing an undeclared package is an app bug, not a runtime limitation', 
   assert.deepEqual([result.failure?.class, result.failure?.rule], ['app-bug', 'undeclared-import']);
 });
 
+test("a project that installs with pnpm fails on an import of a package it does not declare, as pnpm's node_modules gives it none; with npm it runs (ADR 0072)", async () => {
+  // react-dom's own dependency: npm hoists it to the top of node_modules, pnpm keeps it in react-dom's.
+  const page = `import { unstable_now } from 'scheduler';\nconsole.log(unstable_now());\n` + (counter.files['src/App.tsx'] as string);
+  const pkg = JSON.parse(counter.files['package.json'] as string);
+  const pnpm = variant('pnpm-undeclared', { 'src/App.tsx': page, 'package.json': JSON.stringify({ ...pkg, packageManager: 'pnpm@10.28.0' }) });
+  const result = await session.run(pnpm, { outDir, timeouts: { ready: 30_000 } });
+  assert.equal(result.status, 'error');
+  assert.deepEqual([result.failure?.class, result.failure?.phase, result.failure?.rule], ['app-bug', 'ready', 'undeclared-import']);
+  assert.match(result.failure?.message ?? '', /"scheduler"/);
+  const npm = variant('npm-undeclared', { 'src/App.tsx': page });
+  const ran = await session.run(npm, { checks: `${fixtureDir}/checks.spec.ts`, outDir, timeouts: { ready: 30_000 } });
+  assert.equal(ran.status, 'passed', JSON.stringify(ran.failure));
+});
+
 test("an error the app reports while its page never finishes loading fails the ready phase, not its deadline", async () => {
   // The dev server never answers a script the page waits for (as Angular's did once its dependency
   // optimizer crashed): the frame's load event never comes, and the app's error is reported meanwhile.
