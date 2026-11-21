@@ -11,9 +11,9 @@
   "dependencies": {
     "@solidjs/meta": "^0.29.4",
     "@solidjs/router": "^1.0.0",
-    "@solidjs/start": "2.1.0",
+    "@solidjs/start": "2.2.3",
     "date-fns": "^4.1.0",
-    "solid-js": "1.9.17",
+    "solid-js": "1.9.20",
     "vite": "^8.3.5"
   },
   "devDependencies": {}

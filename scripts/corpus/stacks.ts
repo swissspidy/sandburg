@@ -1,8 +1,8 @@
 /**
  * Scaffolds for the frameworks added to the corpus in fidelity study v7 (generate.ts picks each
  * app's stack, features and fault; this file writes its files). Each follows its framework's own
- * starter, as in fixtures/, with the framework's packages pinned on the day the corpus grew
- * (2026-10-28), as the v1–v6 apps pin Next.js and React.
+ * starter, as in fixtures/, with the framework's packages pinned on the day of the corpus's last update
+ * (2026-11-21, study v8; first 2026-10-28, v7), as the v1–v6 apps pin Next.js and React.
  */
 import { transformSync } from 'esbuild';
 import { FEATURES } from './features.ts';
@@ -17,17 +17,17 @@ export const UNDECLARED = 'dayjs';
 const DATA = JSON.stringify({ products: [{ id: 1, name: 'Lamp', price: 25 }, { id: 2, name: 'Chair', price: 80 }, { id: 3, name: 'Desk', price: 150 }] }, null, 2);
 
 const VERSIONS = {
-  vue: '3.5.44',
-  svelte: '5.57.3',
-  kit: '3.1.0',
-  nuxt: '4.6.3',
-  astro: '7.4.2',
-  solidStart: '2.1.0',
-  solid: '1.9.17',
-  reactRouter: '8.5.1',
+  vue: '3.5.46',
+  svelte: '5.59.1',
+  kit: '3.4.0',
+  nuxt: '4.6.4',
+  astro: '7.4.13',
+  solidStart: '2.2.3',
+  solid: '1.9.20',
+  reactRouter: '8.5.2',
   react: '19.3.1',
-  angular: '22.2.3',
-  angularCli: '22.2.4',
+  angular: '22.3.0',
+  angularCli: '22.3.0',
   lit: '3.3.3',
 };
 
@@ -258,7 +258,7 @@ ${indent(list.map((c) => `<${c.name}${c.feature === 'fetch' ? ' source="/api/pro
       meta.id,
       { dev: 'vite dev', build: 'vite build', preview: 'vite preview', prepare: "svelte-kit sync || echo ''", check: 'svelte-kit sync && svelte-check --tsconfig ./tsconfig.json' },
       featureDeps(meta, false),
-      { ...SVELTE_DEV, '@sveltejs/adapter-auto': '^8.0.0', '@sveltejs/kit': VERSIONS.kit },
+      { ...SVELTE_DEV, '@sveltejs/adapter-auto': '^9.0.0', '@sveltejs/kit': VERSIONS.kit },
       true,
     ),
   );
