@@ -24,8 +24,8 @@ import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
 import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
 import { recordRequestFailures, recordDocuments, RunState, unwrap } from './run-state.ts';
-import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, relevantFindings, watchSources, failOnUndeclaredWithPnpm } from './app-ready.ts';
-import { checkSources, pnpmStrict, type SourceFinding } from '../source-check.ts';
+import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, relevantFindings, watchSources, failOnUndeclaredImport } from './app-ready.ts';
+import { checkSources, strictLayout, type SourceFinding } from '../source-check.ts';
 import { appFilesFrom } from './app-files.ts';
 
 /** Options of a Session: the browser, the caches and stores it keeps on disk. */
@@ -609,20 +609,20 @@ export class Session {
               await host('ready', url);
               await waitForRender(frame, options.readySelector, () => host('ready', url), loading, rendered, over.signal);
             })();
-            // pnpm's isolated layout: a package imports only what it declares (source-check.ts, pnpmStrict).
-            const strict = pnpmStrict(project.files, project.app);
+            // pnpm's isolated layout, Yarn's Plug'n'Play, a Bun workspace: a package imports only what it declares (source-check.ts, strictLayout).
+            const strict = strictLayout(project.files, project.app);
             // What the app's processes read, and whether undeclared packages are installed after all (relevantFindings).
             const relevant = async (found: SourceFinding[]) => {
               const packages = found.filter((f) => f.rule === 'undeclared-import').map((f) => ({ name: f.message, from: f.file }));
               const answer = (await Promise.race([host('projectReads', packages), sleep(PROJECT_READS_MS).then(() => null)])) as ProjectReads | null;
               return relevantFindings(found, answer, strict);
             };
-            // With pnpm, the sources are checked from the start: an undeclared import fails the page there, not here.
+            // In a strict layout, the sources are checked from the start: an undeclared import fails the page there, not here.
             const early = strict !== null ? checkSources(project.files, { app: project.app }, { signal: deadline }) : null;
             // The project's sources, checked if the app has not rendered after 20 s: what classifies the phase if it times out.
             watchSources(run, (signal) => checkSources(project.files, { app: project.app }, { signal }), relevant, over.signal);
             await failFastOnAppError(render, run, loadingPage, frame).finally(() => over.abort());
-            if (early) await failOnUndeclaredWithPnpm(run, early, relevant);
+            if (early && strict) await failOnUndeclaredImport(run, strict, early, relevant);
             return frame;
           });
           // The app is idle (see settlingExpect): its servers have no request in flight and have been

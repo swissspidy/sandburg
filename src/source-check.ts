@@ -15,8 +15,8 @@
  *   (`with`) is parsed again as a script.
  * - An undeclared import is a static `import … from` or `export … from` (not `import()` or
  *   `require()`, which an app may guard) of a package no package.json from the file up declares and
- *   no lockfile lists as installed (npm hoists what dependencies need; pnpm's isolated layout does
- *   not, pnpmStrict, ADR 0072). TypeScript's elided imports
+ *   no lockfile lists as installed (npm hoists what dependencies need; pnpm's isolated layout, Yarn's
+ *   Plug'n'Play and a Bun workspace do not, strictLayout, ADR 0072). TypeScript's elided imports
  *   (types, and imports nothing uses) do not count, as they do not reach the dev server.
  * - Single-file components (.vue, .svelte, .astro) are checked by their scripts, each a module of its own.
  *
@@ -30,7 +30,8 @@ import { setPriority } from 'node:os';
 import { matchesGlob } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
-import type { FileTree } from './types.ts';
+import type { FileTree, PackageJson } from './types.ts';
+import { workspaceDirs } from './workspaces.ts';
 import { parseYaml } from './yaml-lite.ts';
 
 /** What the check found in one file, at its line (and column, for a syntax error). */
@@ -505,9 +506,13 @@ function tsconfigs(files: FileTree): (file: string) => TsConfig {
   };
 }
 
-/** How a pnpm project's node_modules is laid out, where it is isolated (pnpmStrict). */
-export interface PnpmStrict {
-  /** public-hoist-pattern: globs of the packages pnpm hoists into the project's node_modules all the same, and `!` exclusions. */
+/**
+ * A layout where a package imports only what it declares (strictLayout): pnpm's isolated
+ * node_modules, Yarn's Plug'n'Play, or a Bun workspace's isolated node_modules.
+ */
+export interface StrictLayout {
+  manager: 'pnpm' | 'yarn' | 'bun';
+  /** public-hoist-pattern (pnpm): globs of the packages hoisted into the project's node_modules all the same, and `!` exclusions. */
   publicHoist: string[];
 }
 
@@ -516,9 +521,10 @@ export interface PnpmStrict {
  * app imports what it does not declare and runs. Measured with each framework's fixture installed
  * by pnpm 10 (ADR 0072): Nuxt serves a page and a server route that import h3, ofetch, defu or a
  * transitive package (picomatch) it does not declare. Next.js, Vite, SvelteKit, Astro, SolidStart,
- * React Router and Angular fail such an import.
+ * React Router and Angular fail such an import. (Under Yarn's Plug'n'Play Nuxt does not run at all,
+ * and create-nuxt and the Angular CLI write `nodeLinker: node-modules` for Yarn.)
  */
-const PNPM_LENIENT = new Set(['nuxt']);
+const RESOLVES_ANYWHERE = new Set(['nuxt']);
 
 /**
  * Whether one glob matches a package name: as pnpm matches them, `*` any characters, a scope's `/`
@@ -557,7 +563,7 @@ function globMatch(pattern: string, name: string): boolean {
  * but those; otherwise in order, a matching pattern includes it and a later matching exclusion
  * takes it out again.
  */
-export function publiclyHoisted(strict: PnpmStrict, name: string): boolean {
+export function publiclyHoisted(strict: Pick<StrictLayout, 'publicHoist'>, name: string): boolean {
   const patterns = strict.publicHoist;
   if (!patterns.length) return false;
   if (patterns.every((p) => p.startsWith('!'))) return !patterns.some((p) => globMatch(p.slice(1), name));
@@ -581,45 +587,88 @@ function npmrcValues(npmrc: string, key: string): string[] {
 }
 
 /**
- * pnpm's isolated layout, or null: a project that installs with pnpm (a pnpm-lock.yaml, or
- * package.json's `packageManager` saying pnpm) and has no package-lock.json (Sandburg installs from
- * that), whose node_modules is not hoisted (`shamefully-hoist`, or a `node-linker` other than
- * isolated, in .npmrc or pnpm-workspace.yaml), and whose framework does not resolve from the whole
- * install anyway (PNPM_LENIENT): the framework of the app that runs (`app`, a workspace package's
- * directory; the root's otherwise) or of the root. There, a package imports only what it declares:
- * npm hoists every package to the top, so an undeclared import that runs here fails with pnpm.
+ * The project's layout where a package imports only what it declares, or null where every package
+ * is hoisted to the top of node_modules, as npm (which Sandburg installs with) lays it out. There, an
+ * undeclared import that runs here fails for the project's users (ADR 0072):
+ *
+ * - pnpm (a pnpm-lock.yaml, or `packageManager` naming pnpm): isolated, unless told to hoist
+ *   (`shamefully-hoist`, or a `node-linker` other than `isolated`, in .npmrc or pnpm-workspace.yaml);
+ *   what `public-hoist-pattern` matches is hoisted all the same.
+ * - Yarn 2 and later (a yarn.lock with `__metadata`, or `packageManager` naming yarn@2+): Plug'n'Play
+ *   by default, and `nodeLinker: pnpm` (in .yarnrc.yml); not `nodeLinker: node-modules`, nor
+ *   `pnpMode: loose`. Yarn 1 hoists.
+ * - Bun (a bun.lock, or `packageManager` naming bun): `linker = "isolated"` in bunfig.toml, or,
+ *   without a `linker`, a workspace with member packages whose bun.lock has a `configVersion` (Bun
+ *   1.3 and later). A single package, an older bun.lock or `linker = "hoisted"` hoist.
+ *
+ * Not with a package-lock.json (Sandburg installs from it), and not when the app that runs (`app`, a
+ * workspace package's directory; the root's otherwise) or the root uses a framework that resolves
+ * from the whole install anyway (RESOLVES_ANYWHERE): a sibling's framework does not count.
  */
-export function pnpmStrict(files: FileTree, app = ''): PnpmStrict | null {
+export function strictLayout(files: FileTree, app = ''): StrictLayout | null {
   if (typeof files['package-lock.json'] === 'string' || typeof files['npm-shrinkwrap.json'] === 'string') return null;
-  const pkg = parseJsonc(text(files, 'package.json') ?? '') as { packageManager?: unknown } | null;
+  const pkg = parseJsonc(text(files, 'package.json') ?? '') as PackageJson | null;
   const manager = typeof pkg?.packageManager === 'string' ? pkg.packageManager : '';
-  if (manager ? !manager.startsWith('pnpm@') : typeof files['pnpm-lock.yaml'] !== 'string') return null;
+  const tool = manager ? manager.split('@')[0] : typeof files['pnpm-lock.yaml'] === 'string' ? 'pnpm' : typeof files['yarn.lock'] === 'string' ? 'yarn' : typeof files['bun.lock'] === 'string' ? 'bun' : null;
+  const major = Number(/@(\d+)/.exec(manager)?.[1] ?? NaN);
+  const layout = tool === 'pnpm' ? pnpmLayout(files, major) : tool === 'yarn' ? yarnLayout(files, major) : tool === 'bun' ? bunLayout(files, pkg, manager) : null;
+  if (!layout) return null;
+  const dir = app.replace(/^\/+|\/+$/g, '');
+  for (const path of new Set(['package.json', dir ? `${dir}/package.json` : 'package.json'])) {
+    const manifest = parseJsonc(text(files, path) ?? '') as Record<string, Record<string, unknown> | undefined> | null;
+    if (['dependencies', 'devDependencies'].some((field) => Object.keys(manifest?.[field] ?? {}).some((d) => RESOLVES_ANYWHERE.has(d)))) return null;
+  }
+  return layout;
+}
+
+function pnpmLayout(files: FileTree, major: number): StrictLayout | null {
   const npmrc = text(files, '.npmrc') ?? '';
   const workspace = parseYaml(text(files, 'pnpm-workspace.yaml') ?? '');
   const setting = (key: string) => (workspace && typeof workspace === 'object' && !Array.isArray(workspace) && Object.hasOwn(workspace, key) ? workspace[key] : undefined);
   const hoistAll = npmrcValues(npmrc, 'shamefully-hoist').includes('true') || setting('shamefullyHoist') === 'true';
   const linker = setting('nodeLinker') ?? npmrcValues(npmrc, 'node-linker').at(-1) ?? 'isolated';
   if (hoistAll || linker !== 'isolated') return null;
-  // The framework of the app that runs, or of the root: not a sibling's (a monorepo's Nuxt docs beside a Next.js app).
-  const dir = app.replace(/^\/+|\/+$/g, '');
-  for (const path of new Set(['package.json', dir ? `${dir}/package.json` : 'package.json'])) {
-    const manifest = parseJsonc(text(files, path) ?? '') as Record<string, Record<string, unknown> | undefined> | null;
-    if (['dependencies', 'devDependencies'].some((field) => Object.keys(manifest?.[field] ?? {}).some((d) => PNPM_LENIENT.has(d)))) return null;
-  }
   // public-hoist-pattern, given or pnpm's default: nothing since pnpm 10; ESLint's and Prettier's packages before.
   const fromWorkspace = setting('publicHoistPattern');
   const given = fromWorkspace !== undefined ? (Array.isArray(fromWorkspace) ? fromWorkspace : [fromWorkspace]).filter((p): p is string => typeof p === 'string') : npmrcValues(npmrc, 'public-hoist-pattern');
-  const major = Number(/^pnpm@(\d+)/.exec(manager)?.[1] ?? 10);
   const patterns = fromWorkspace !== undefined || given.length ? given : major < 10 ? ['*eslint*', '*prettier*'] : [];
-  return { publicHoist: patterns.filter((p) => p && p !== '!') };
+  return { manager: 'pnpm', publicHoist: patterns.filter((p) => p && p !== '!') };
+}
+
+function yarnLayout(files: FileTree, major: number): StrictLayout | null {
+  // Yarn 1 (classic) hoists; Yarn 2 and later write `__metadata` into yarn.lock.
+  const berry = Number.isNaN(major) ? /^__metadata:/m.test(text(files, 'yarn.lock') ?? '') : major >= 2;
+  if (!berry) return null;
+  const rc = parseYaml(text(files, '.yarnrc.yml') ?? '');
+  const setting = (key: string) => (rc && typeof rc === 'object' && !Array.isArray(rc) && Object.hasOwn(rc, key) ? rc[key] : undefined);
+  const linker = setting('nodeLinker') ?? 'pnp';
+  if (linker === 'node-modules' || (linker === 'pnp' && setting('pnpMode') === 'loose')) return null;
+  return linker === 'pnp' || linker === 'pnpm' ? { manager: 'yarn', publicHoist: [] } : null;
+}
+
+function bunLayout(files: FileTree, pkg: PackageJson | null, manager: string): StrictLayout | null {
+  let section = '';
+  let linker: string | null = null;
+  for (const line of (text(files, 'bunfig.toml') ?? '').split(/\r?\n/)) {
+    const header = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+    if (header) section = header[1].trim();
+    const m = section === 'install' ? /^\s*linker\s*=\s*["']([^"']+)["']/.exec(line) : null;
+    if (m) linker = m[1];
+  }
+  if (linker === 'isolated') return { manager: 'bun', publicHoist: [] };
+  if (linker !== null) return null;
+  // Isolated by default from Bun 1.3 (bun.lock's `configVersion`) for a workspace with member packages.
+  const lock = text(files, 'bun.lock');
+  const isolatedByDefault = lock !== null ? /"configVersion"\s*:\s*[1-9]/.test(lock) : /^bun@(?:[2-9]|1\.(?:[3-9]|\d{2,}))/.test(manager);
+  return isolatedByDefault && workspaceDirs(files, pkg).some((d) => d !== '') ? { manager: 'bun', publicHoist: [] } : null;
 }
 
 /**
  * The packages lockfiles list as installed where a file may import them: hoisted (npm, yarn), listed
- * (pnpm, bun). With pnpm's isolated layout (`strict`), a pnpm-lock.yaml's packages are not: the
- * project's node_modules holds only what it declares, and what `strict.publicHoist` matches.
+ * (pnpm, bun). In a strict layout (`strict`, strictLayout) none are: the project's node_modules holds
+ * only what it declares, and what `strict.publicHoist` matches.
  */
-function installedPackages(files: FileTree, strict: PnpmStrict | null = null): (file: string) => Set<string> {
+function installedPackages(files: FileTree, strict: StrictLayout | null = null): (file: string) => Set<string> {
   const everywhere = new Set<string>();
   const under = new Map<string, Set<string>>();
   for (const path of Object.keys(files)) {
@@ -632,6 +681,8 @@ function installedPackages(files: FileTree, strict: PnpmStrict | null = null): (
       set.add(name);
       under.set(prefix, set);
     };
+    // In a strict layout a lockfile's packages are not in the project's node_modules, but what it hoists publicly.
+    const hoisted = (name: string) => !strict || publiclyHoisted(strict, name);
     if (/(?:package-lock|npm-shrinkwrap)\.json$/.test(path)) {
       const lock = parseJsonc(source) as { packages?: Record<string, unknown>; dependencies?: Record<string, unknown> } | null;
       for (const key of Object.keys(lock?.packages ?? {})) {
@@ -646,12 +697,11 @@ function installedPackages(files: FileTree, strict: PnpmStrict | null = null): (
         for (const entry of line.slice(0, -1).split(',')) {
           const descriptor = entry.trim().replace(/^"|"$/g, '');
           const at = descriptor.indexOf('@', 1);
-          if (at > 0) everywhere.add(descriptor.slice(0, at));
+          if (at > 0 && hoisted(descriptor.slice(0, at))) everywhere.add(descriptor.slice(0, at));
         }
       }
     } else if (path.endsWith('pnpm-lock.yaml')) {
       let inPackages = false;
-      const hoisted = (name: string) => !strict || publiclyHoisted(strict, name);
       for (const line of source.split('\n')) {
         if (/^\S/.test(line)) inPackages = /^(?:packages|snapshots):/.test(line);
         // `name@1.0.0:` (lockfile v6 and later), `/name/1.0.0:` (v5).
@@ -660,7 +710,10 @@ function installedPackages(files: FileTree, strict: PnpmStrict | null = null): (
       }
     } else {
       const lock = parseJsonc(source) as { packages?: Record<string, unknown> } | null;
-      for (const key of Object.keys(lock?.packages ?? {})) everywhere.add(key.split('/node_modules/').at(-1)!.replace(/^((?:@[^/]+\/)?[^/]+).*$/, '$1'));
+      for (const key of Object.keys(lock?.packages ?? {})) {
+        const name = key.split('/node_modules/').at(-1)!.replace(/^((?:@[^/]+\/)?[^/]+).*$/, '$1');
+        if (hoisted(name)) everywhere.add(name);
+      }
     }
   }
   return byDirectory((dir) => {
@@ -959,7 +1012,7 @@ export async function checkSourcesHere(files: FileTree, options: SourceCheckOpti
     .slice(0, MAX_FILES);
   const tsconfigFor = tsconfigs(files);
   const { declared, workspaces } = declaredFor(files);
-  const installed = installedPackages(files, pnpmStrict(files, options.app));
+  const installed = installedPackages(files, strictLayout(files, options.app));
   const resolve = resolver(files, app, tsconfigFor, workspaces);
 
   // Each module, grouped by the TypeScript options it is parsed with.
