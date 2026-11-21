@@ -185,6 +185,20 @@ test("public-hoist-pattern is read as pnpm 10's matcher reads it: in order, with
   assert.equal(hoisted(['!scheduler'], 'scheduler'), false);
   assert.equal(hoisted(['!scheduler'], 'react-is'), true);
   assert.equal(hoisted(['!scheduler', '!react-is'], 'react-is'), false);
+  // Literal characters are themselves (a `.` is no wildcard); `*` matches nothing too.
+  assert.equal(hoisted(['react.dom'], 'react-dom'), false);
+  assert.equal(hoisted(['react*dom*'], 'reactdom'), true);
+  assert.equal(hoisted(['*-is'], 'react-is'), true);
+  assert.equal(hoisted(['*-is'], 'react-isx'), false);
+});
+
+test("a project's public-hoist-pattern cannot stall the host: a pattern of many wildcards is matched at once, not backtracked", () => {
+  // As a regular expression, `a*a*…a*z` against a run of `a`s backtracks for seconds at 10 wildcards, and far longer at 100.
+  const pattern = `${'a*'.repeat(100)}z`;
+  const started = performance.now();
+  assert.equal(publiclyHoisted({ publicHoist: [pattern, `!${pattern}`] }, 'a'.repeat(214)), false);
+  assert.equal(publiclyHoisted({ publicHoist: [`${'a*'.repeat(100)}`] }, 'a'.repeat(214)), true);
+  if (timed) assert.ok(performance.now() - started < 100, `took ${performance.now() - started} ms`);
 });
 
 test("with pnpm's isolated layout, an import of a package only a dependency brings is undeclared, unless pnpm hoists it publicly", async () => {

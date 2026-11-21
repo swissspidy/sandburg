@@ -520,9 +520,35 @@ export interface PnpmStrict {
  */
 const PNPM_LENIENT = new Set(['nuxt']);
 
-/** Whether one glob matches a package name: as pnpm matches them, `*` any characters, a scope's `/` among them. */
+/**
+ * Whether one glob matches a package name: as pnpm matches them, `*` any characters, a scope's `/`
+ * among them, every other character itself. Matched directly, not as a regular expression: the
+ * pattern is the project's (.npmrc, pnpm-workspace.yaml), and `a*a*a*…z` backtracks for seconds in
+ * a regular expression. Here a mismatch goes back only to the last `*`, so the cost is at most the
+ * pattern's length times the name's.
+ */
 function globMatch(pattern: string, name: string): boolean {
-  return new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(name);
+  let p = 0;
+  let n = 0;
+  let star = -1;
+  let resume = 0;
+  while (n < name.length) {
+    if (p < pattern.length && pattern[p] === '*') {
+      star = p++;
+      resume = n;
+    } else if (p < pattern.length && pattern[p] === name[n]) {
+      p++;
+      n++;
+    } else if (star !== -1) {
+      // The last `*` takes one more character of the name.
+      p = star + 1;
+      n = ++resume;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[p] === '*') p++;
+  return p === pattern.length;
 }
 
 /**
