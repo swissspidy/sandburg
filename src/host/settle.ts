@@ -39,7 +39,8 @@ export function quiet(a: Activity, quietMs: number, longMs: number): boolean {
  *   `__svelte_meta` (5.59 assigns it only to elements it creates, not to those it hydrates). Never
  *   `'__svelte_meta' in e`: Svelte sets it to null on Element.prototype when its runtime loads, which
  *   since 5.59 is before it hydrates. A page with no control Svelte would handle (no button, input,
- *   select, textarea or contenteditable) has no click to lose: the servers decide.
+ *   select, textarea, contenteditable, tabindex or widget role such as role="button") has no click to
+ *   lose: the servers decide. A plain div with a click handler and neither is not seen as one.
  */
 export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | undefined {
   try {
@@ -55,10 +56,12 @@ export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | un
     const reactRoot = (node: Node | null) => !!node && Object.keys(node).some((k) => k.startsWith('__reactContainer$'));
     if ([doc, doc.body, doc.getElementById('root'), doc.getElementById('app'), doc.getElementById('__next')].some(reactRoot)) return true;
     if ('__sveltekit_dev' in w) {
-      const elements = [...(doc.body?.querySelectorAll('*') ?? [])].slice(0, 5000);
       const svelteOwn = (e: Element) => Object.hasOwn(e, '__svelte_meta') || Object.getOwnPropertySymbols(e).some((s) => s.description === 'events' || s.description === 'form reset');
-      if (elements.some(svelteOwn)) return true;
-      return elements.some((e) => e.matches('button, input, select, textarea, [contenteditable]')) ? false : undefined;
+      // The whole page: stops at the first element Svelte has hydrated.
+      for (const e of doc.body?.querySelectorAll('*') ?? []) if (svelteOwn(e)) return true;
+      // Svelte delegates a handler on any element: a custom control (role="button", tabindex) counts as one.
+      const controls = 'button, input, select, textarea, [contenteditable], [tabindex], [role="button"], [role="checkbox"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], [role="radio"], [role="slider"]';
+      return doc.body?.querySelector(controls) ? false : undefined;
     }
     const nuxt = doc.getElementById('__nuxt') as (Element & { __vue_app__?: { config?: { globalProperties?: { $nuxt?: { isHydrating?: unknown } } } } }) | null;
     if (!nuxt) return undefined;

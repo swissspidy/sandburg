@@ -101,6 +101,16 @@ test('SvelteKit: not until Svelte has hydrated its page, whatever the servers do
   assert.equal(await safe(), false);
   await page.evaluate(() => Object.assign(document.querySelector('input')!, { [Symbol('form reset')]: () => {} }));
   assert.equal(await safe(), true);
+  // A custom control (Svelte delegates its onclick like a button's) waits for its handler too.
+  await load('<script>window.__sveltekit_dev = { base: "" }; Element.prototype.__svelte_meta = null;</script><main><div role="button" tabindex="0">Open</div></main>');
+  assert.equal(await safe(), false);
+  await page.evaluate(() => Object.assign(document.querySelector('[role="button"]')!, { [Symbol('events')]: { click() {} } }));
+  assert.equal(await safe(), true);
+  // A control or a hydrated element past the first 5,000 elements is seen.
+  await load(`<script>window.__sveltekit_dev = { base: "" }</script><main>${'<p>x</p>'.repeat(6000)}<button>Late</button></main>`);
+  assert.equal(await safe(), false);
+  await page.evaluate(() => Object.assign(document.querySelector('button')!, { [Symbol('events')]: { click() {} } }));
+  assert.equal(await safe(), true);
   // No control a click or a fill could be lost on: the servers decide.
   await load('<script>window.__sveltekit_dev = { base: "" }</script><main><h1>About</h1><a href="/">Home</a></main>');
   assert.equal(await safe(), undefined);
