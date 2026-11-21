@@ -54,12 +54,15 @@ into a new project, which pnpm refuses to install; the fixture was measured with
   pnpm-lock.yaml, or its package.json's `packageManager` says pnpm, and it has no package-lock.json
   (from which Sandburg installs) and no `packageManager` naming another tool. Not when pnpm is told to
   hoist (`shamefully-hoist=true`, or a `node-linker` other than `isolated`, in .npmrc or
-  pnpm-workspace.yaml), and not for a project with Nuxt (above).
+  pnpm-workspace.yaml), and not when the app that runs uses Nuxt (above): its package.json or the
+  root's, not a sibling workspace package's (a monorepo's Nuxt docs beside its Next.js app).
 - **There, the source check counts as installed only what pnpm puts in the project's node_modules**:
   what package.json declares (as before, each package.json from the file up), and what
   `public-hoist-pattern` matches (.npmrc or pnpm-workspace.yaml; by default nothing since pnpm 10,
-  `*eslint*` and `*prettier*` when `packageManager` names pnpm 9 or older). A pnpm-lock.yaml's other
-  packages no longer count.
+  `*eslint*` and `*prettier*` when `packageManager` names pnpm 9 or older), read as pnpm 10's matcher
+  reads it (`publiclyHoisted`): in order, a matching pattern includes a package and a later matching
+  `!` exclusion takes it out; a list of exclusions only hoists every other package. A pnpm-lock.yaml's
+  other packages no longer count, and neither does one npm installed that pnpm would not hoist.
 - **The check starts with the ready phase, and an undeclared import in a file the app read fails the
   phase once the app has rendered** (`failOnUndeclaredWithPnpm`, `app-ready.ts`). What the app read is
   what its runtime recorded (ADR 0067): a file only another route imports was not read, and does not

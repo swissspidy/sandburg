@@ -6,7 +6,7 @@ import type { Frame, Page } from 'playwright-core';
 import type { ConsoleEntry } from '../types.ts';
 import { RunState } from './run-state.ts';
 import { appRendered } from '../host/rendered.ts';
-import type { SourceFinding } from '../source-check.ts';
+import { publiclyHoisted, type PnpmStrict, type SourceFinding } from '../source-check.ts';
 import type { ProjectReads } from '../host/types.ts';
 
 /** Grace period after a runtime asset fails before the phase gives up (the runtime may retry). */
@@ -204,15 +204,15 @@ const SOURCE_RELEVANCE_MS = 2_000;
  * undeclared import, only one whose package is not installed where the file imports it from (npm
  * hoists what dependencies need: Nuxt's h3, a Next app's @tanstack/query-core). Nothing, when the
  * runtime does not record what it read. `answer.installed` is in the order of the undeclared imports.
- * In a project with pnpm's isolated layout (`pnpmStrict`), what npm hoisted does not count: pnpm
- * gives the project only what it declares (source-check.ts, pnpmStrict).
+ * In a project with pnpm's isolated layout (`pnpmStrict`), what npm hoisted counts only when pnpm
+ * hoists it publicly too: pnpm gives the project only what it declares (source-check.ts, pnpmStrict).
  */
-export function relevantFindings(found: SourceFinding[], answer: ProjectReads | null, pnpmStrict = false): SourceFinding[] {
+export function relevantFindings(found: SourceFinding[], answer: ProjectReads | null, pnpmStrict: PnpmStrict | null = null): SourceFinding[] {
   if (!answer?.reads) return [];
   const read = new Set(answer.reads);
   let i = 0;
   return found.filter((f) => {
-    const installed = f.rule === 'undeclared-import' ? answer.installed[i++] && !pnpmStrict : false;
+    const installed = f.rule === 'undeclared-import' ? answer.installed[i++] && (!pnpmStrict || publiclyHoisted(pnpmStrict, f.message)) : false;
     return read.has(f.file) && !installed;
   });
 }
