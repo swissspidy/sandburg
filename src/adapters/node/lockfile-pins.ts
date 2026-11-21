@@ -1,5 +1,5 @@
 /**
- * The versions a pnpm-lock.yaml or yarn.lock pins, for a project without a package-lock.json
+ * The versions a pnpm-lock.yaml, yarn.lock or bun.lock pins, for a project without a package-lock.json
  * (ADR 0064). npm cannot read them, and their trees are not npm's (pnpm's is isolated, yarn's
  * descriptors are not locations), so they are not translated into a package-lock. Instead:
  *
@@ -20,20 +20,22 @@ import { isPackageName } from './spec-guard.ts';
 
 export interface LockPins {
   /** The lockfile the pins come from. */
-  source: 'pnpm-lock.yaml' | 'yarn.lock';
+  source: 'pnpm-lock.yaml' | 'yarn.lock' | 'bun.lock';
   /** The locked version of a package's direct dependency (package at `dir`, '' the root), or null. */
   direct(dir: string, name: string, spec: string): string | null;
   /** Packages the lockfile has in one version only: name → version. */
   single: Record<string, string>;
 }
 
-/** The pins of the project's pnpm-lock.yaml or yarn.lock, or null (none, a package-lock.json, or a lockfile this cannot read). */
+/** The pins of the project's pnpm-lock.yaml, yarn.lock or bun.lock, or null (none, a package-lock.json, or a lockfile this cannot read). */
 export function lockPins(files: FileTree): LockPins | null {
   if (typeof files['package-lock.json'] === 'string' || typeof files['npm-shrinkwrap.json'] === 'string') return null;
   const pnpm = files['pnpm-lock.yaml'];
   if (typeof pnpm === 'string') return pnpmPins(pnpm);
   const yarn = files['yarn.lock'];
   if (typeof yarn === 'string') return yarnPins(yarn);
+  const bun = files['bun.lock'];
+  if (typeof bun === 'string') return bunPins(bun);
   return null;
 }
 
@@ -166,4 +168,47 @@ function singles(versions: Map<string, Set<string>>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, set] of [...versions].sort(([a], [b]) => a.localeCompare(b))) if (set.size === 1) out[name] = [...set][0];
   return out;
+}
+
+/**
+ * A bun.lock (Bun 1.2 and later; the binary bun.lockb is not read): JSON with trailing commas.
+ * `workspaces` holds each package's specs, keyed by its directory ('' the root); `packages` the
+ * resolutions, `[ "<name>@<version>", … ]`, keyed by the name the package is installed under: a
+ * dependency's own name, or `<parent>/<name>` for a version installed under a package or workspace
+ * other than the root. An alias is keyed by the alias, with its real package in the value.
+ */
+function bunPins(text: string): LockPins | null {
+  let doc: { lockfileVersion?: unknown; workspaces?: Record<string, { name?: unknown }>; packages?: Record<string, unknown> };
+  try {
+    doc = JSON.parse(text.replace(/("(?:[^"\\]|\\.)*")|,(\s*[}\]])/g, (_m, str: string | undefined, close: string | undefined) => str ?? close!));
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== 'object' || !('lockfileVersion' in doc)) return null;
+  const packages = doc.packages && typeof doc.packages === 'object' ? doc.packages : {};
+  /** Name and version of a resolution; null for one that is not a registry version (workspace:, github:, a URL). */
+  const resolved = (key: string): { name: string; version: string } | null => {
+    const entry = Object.hasOwn(packages, key) ? packages[key] : undefined;
+    const id = Array.isArray(entry) && typeof entry[0] === 'string' ? entry[0] : '';
+    const at = id.lastIndexOf('@');
+    const name = id.slice(0, at);
+    const version = at > 0 ? semver.valid(id.slice(at + 1)) : null;
+    return version && isPackageName(name) ? { name, version } : null;
+  };
+  const workspaces = doc.workspaces && typeof doc.workspaces === 'object' ? doc.workspaces : {};
+  const direct = (dir: string, name: string, spec: string): string | null => {
+    if (!isPackageName(name)) return null;
+    const ws = Object.hasOwn(workspaces, dir) ? workspaces[dir] : undefined;
+    // A workspace's own version of a dependency is under its package name; else the hoisted one.
+    const own = dir && typeof ws?.name === 'string' ? resolved(`${ws.name}/${name}`) : null;
+    const r = own ?? resolved(name);
+    // An alias (`"sw": "npm:string-width@^4"`) resolves to another package: its spec is not a range anyway.
+    return r && r.name === name ? satisfying(r.version, spec) : null;
+  };
+  const versions = new Map<string, Set<string>>();
+  for (const key of Object.keys(packages)) {
+    const r = resolved(key);
+    if (r) versions.set(r.name, (versions.get(r.name) ?? new Set()).add(r.version));
+  }
+  return { source: 'bun.lock', direct, single: singles(versions) };
 }

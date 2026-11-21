@@ -113,15 +113,16 @@ directory after the start is at its real path, not at its link.
   `onlyBuiltDependencies`) declares no workspaces: such a project's `client/` and `server/`
   packages are installed as before.
 
-### pnpm-lock.yaml and yarn.lock pin versions
+### pnpm-lock.yaml, yarn.lock and bun.lock pin versions
 
-Without a package-lock.json (or npm-shrinkwrap.json), a pnpm-lock.yaml (v5, v6, v9) or yarn.lock
-(classic, berry) is read (`src/adapters/node/lockfile-pins.ts`; pnpm's YAML through
+Without a package-lock.json (or npm-shrinkwrap.json), a pnpm-lock.yaml (v5, v6, v9), yarn.lock
+(classic, berry) or bun.lock (Bun 1.2 and later; the binary bun.lockb is not read) is read (`src/adapters/node/lockfile-pins.ts`; pnpm's YAML through
 `src/yaml-lite.ts`, the subset pnpm writes). Their trees are not npm's (pnpm's is isolated, yarn's
 entries are descriptors, not locations), so they are not translated into a package-lock:
 
 - **Each package's direct dependencies are pinned** to the version the lockfile resolved for that
-  package and range (pnpm: its importer; yarn: the `name@range` descriptor), when it still satisfies
+  package and range (pnpm: its importer; yarn: the `name@range` descriptor; bun: the workspace's own
+  `<workspace name>/<name>` entry, else the hoisted `<name>`), when it still satisfies
   the range in package.json as npm reads it (no prerelease a range would not pick); a lockfile older
   than package.json is not used for that dependency. An alias (`"x": "npm:other@^1"`) is not pinned.
 - **Every other package the lockfile has in exactly one version is pinned to it**, with an

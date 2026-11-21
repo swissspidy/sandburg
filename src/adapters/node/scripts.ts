@@ -94,8 +94,8 @@ export function expandScript(files: Files, dir: string, command: string, depth =
       cwd = joinDir(cwd, args[0]);
       continue;
     }
-    if (cmd === 'npx' || cmd === 'pnpm' && args[0] === 'exec' || cmd === 'yarn' && args[0] === 'exec') {
-      const rest = cmd === 'npx' ? args.filter((a) => !/^(-y|--yes)$/.test(a)) : args.slice(1);
+    if (cmd === 'npx' || cmd === 'bunx' || ((cmd === 'pnpm' || cmd === 'yarn') && args[0] === 'exec') || (cmd === 'bun' && args[0] === 'x')) {
+      const rest = (cmd === 'npx' || cmd === 'bunx' ? args : args.slice(1)).filter((a) => !/^(-y|--yes|--bun)$/.test(a));
       leaves.push(...expandScript(files, cwd, rest.map(quote).join(' '), depth + 1));
       continue;
     }
@@ -197,7 +197,7 @@ function joinDir(base: string, rel: string): string {
 
 /** Whether a command runs its entry with a TypeScript runner (tsx, ts-node, …) rather than plain node. */
 export function isTsRunner(command: string): boolean {
-  const words = splitWords(command).filter((w) => !/^[A-Z_][A-Z0-9_]*=/.test(w) && w !== 'cross-env' && w !== 'npx');
+  const words = splitWords(command).filter((w) => !/^[A-Z_][A-Z0-9_]*=/.test(w) && w !== 'cross-env' && w !== 'npx' && w !== 'bunx');
   return /^(tsx|ts-node|ts-node-dev|ts-node-esm|esno|esr)$/.test(words[0] ?? '') || (words[0] === 'nodemon' && /\.[cm]?ts$/.test(words[words.length - 1] ?? ''));
 }
 
