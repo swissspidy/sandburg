@@ -1,5 +1,19 @@
 # sandburg
 
+## 0.4.0
+
+### Minor Changes
+
+- [#147](https://github.com/swissspidy/sandburg/pull/147) [`9ebc087`](https://github.com/swissspidy/sandburg/commit/9ebc0878ec68bd1837806c57e0370a6295a33b6a) Thanks [@swissspidy](https://github.com/swissspidy)! - A pnpm project that imports a package it does not declare fails, as it does with pnpm. Sandburg installs with npm, which hoists every package to the top of node_modules, so an app could import a package only one of its dependencies brings (`scheduler`, from `react-dom`) and pass, while `pnpm install` gives the project only what package.json declares, and its dev server fails the page (Next.js: `Module not found: Can't resolve 'scheduler'`). For a project with a pnpm-lock.yaml or `"packageManager": "pnpm@…"` (not hoisted with `shamefully-hoist` or `node-linker=hoisted`), the ready phase now fails on such an import in a file the app loads, as an app bug (`undeclared-import`) that names the package and the file. Packages pnpm hoists publicly (`public-hoist-pattern`) count as installed, and Nuxt projects are left as they were: Nuxt resolves an undeclared package under pnpm too.
+
+### Patch Changes
+
+- [#145](https://github.com/swissspidy/sandburg/pull/145) [`f013a1a`](https://github.com/swissspidy/sandburg/commit/f013a1a4c8615396236402c84cfbd97f5044df80) Thanks [@swissspidy](https://github.com/swissspidy)! - A project with a `bun.lock` (and no `package-lock.json`) installs at the versions it locks, as one with a `pnpm-lock.yaml` or `yarn.lock` does: each workspace's direct dependencies at their locked versions, and the packages locked in one version pinned with overrides. Before, the lockfile was ignored and the ranges in package.json installed the newest versions. Dev scripts that run `bunx <bin>` or `bun x <bin>` run the package's binary with Node, as `npx` does; before, they exited with 127.
+
+- [#138](https://github.com/swissspidy/sandburg/pull/138) [`08479e4`](https://github.com/swissspidy/sandburg/commit/08479e4fdca5bda5ae4232a8dec6c3b977d39cc6) Thanks [@dependabot](https://github.com/apps/dependabot)! - Playwright 1.65.0, with its Chromium build. Run `npx playwright@1.65.0 install chromium` once after updating (on Linux, add `--with-deps` for its system libraries), or set `SANDBURG_CHROMIUM`; the error Sandburg prints when the browser is missing says the same.
+
+- [#144](https://github.com/swissspidy/sandburg/pull/144) [`677c16a`](https://github.com/swissspidy/sandburg/commit/677c16ab6f7d223ae69eb7eb2429fc95f940b0d1) Thanks [@swissspidy](https://github.com/swissspidy)! - SvelteKit apps on Svelte 5.59 and later are hydrated before their functional checks start. Svelte 5.59 marks every element as soon as its runtime loads, before it hydrates, so the checks could start on server-rendered HTML whose buttons did nothing yet: a check's first click was lost, and a correct app failed (a counter clicked twice showed "Count: 1"). Sandburg now waits for Svelte's handlers or bindings on the page's elements, up to 10 s as before; a page without buttons, inputs or other controls is ready once its servers are quiet.
+
 ## 0.3.1
 
 ### Patch Changes
