@@ -33,8 +33,13 @@ export function quiet(a: Activity, quietMs: number, longMs: number): boolean {
  * - Nuxt mounts its app before its page component has hydrated (`isHydrating`), and its requests
  *   pause for 100 ms and more meanwhile.
  * - SvelteKit's page (its dev script sets `__sveltekit_dev`) is hydrated in one pass once its modules
- *   have loaded and run, and Svelte's dev build gives each element it hydrates `__svelte_meta`. Its
- *   requests can pause for 100 ms while the last modules run: a check then lost its first click.
+ *   have loaded and run. Its requests can pause for 100 ms while the last modules run: a check then
+ *   lost its first click. Hydrated: an element has a handler or a binding of Svelte's (own symbol
+ *   properties `events` and `form reset`, set as it hydrates), or, up to Svelte 5.58, its own
+ *   `__svelte_meta` (5.59 assigns it only to elements it creates, not to those it hydrates). Never
+ *   `'__svelte_meta' in e`: Svelte sets it to null on Element.prototype when its runtime loads, which
+ *   since 5.59 is before it hydrates. A page with no control Svelte would handle (no button, input,
+ *   select, textarea or contenteditable) has no click to lose: the servers decide.
  */
 export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | undefined {
   try {
@@ -49,7 +54,12 @@ export function inputSafe(w: (Window & { _$HY?: unknown }) | null): boolean | un
     }
     const reactRoot = (node: Node | null) => !!node && Object.keys(node).some((k) => k.startsWith('__reactContainer$'));
     if ([doc, doc.body, doc.getElementById('root'), doc.getElementById('app'), doc.getElementById('__next')].some(reactRoot)) return true;
-    if ('__sveltekit_dev' in w) return [...(doc.body?.querySelectorAll('*') ?? [])].slice(0, 200).some((e) => '__svelte_meta' in e);
+    if ('__sveltekit_dev' in w) {
+      const elements = [...(doc.body?.querySelectorAll('*') ?? [])].slice(0, 5000);
+      const svelteOwn = (e: Element) => Object.hasOwn(e, '__svelte_meta') || Object.getOwnPropertySymbols(e).some((s) => s.description === 'events' || s.description === 'form reset');
+      if (elements.some(svelteOwn)) return true;
+      return elements.some((e) => e.matches('button, input, select, textarea, [contenteditable]')) ? false : undefined;
+    }
     const nuxt = doc.getElementById('__nuxt') as (Element & { __vue_app__?: { config?: { globalProperties?: { $nuxt?: { isHydrating?: unknown } } } } }) | null;
     if (!nuxt) return undefined;
     const app = nuxt.__vue_app__?.config?.globalProperties?.$nuxt;
