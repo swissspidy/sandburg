@@ -1,5 +1,5 @@
 /**
- * The versions a pnpm-lock.yaml or yarn.lock pins (src/adapters/node/lockfile-pins.ts, ADR 0064),
+ * The versions a pnpm-lock.yaml, yarn.lock or bun.lock pins (src/adapters/node/lockfile-pins.ts, ADR 0064),
  * and how the install plan applies them (local-packages.ts).
  */
 import { test } from 'node:test';
@@ -166,6 +166,94 @@ test('a package-lock.json wins: the other lockfiles are not read', () => {
   assert.equal(lockPins({ 'npm-shrinkwrap.json': '{}', 'yarn.lock': YARN_1 }), null);
   assert.equal(lockPins({}), null);
   assert.equal(lockPins({ 'pnpm-lock.yaml': 'not: a lockfile' }), null);
+});
+
+// Written by `bun install` (Bun 1.4.4) for a root and a workspace, with an alias and a version
+// installed under a package (debug/ms) and under the workspace (@acme/ui/…); integrity shortened.
+const BUN_LOCK = `{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "app",
+      "dependencies": {
+        "@acme/ui": "workspace:*",
+        "debug": "2.6.9",
+        "ms": "^2.0.0",
+        "sw": "npm:string-width@^4.2.0",
+      },
+      "devDependencies": {
+        "is-number": "^7.0.0",
+      },
+    },
+    "packages/ui": {
+      "name": "@acme/ui",
+      "dependencies": {
+        "is-number": "^6.0.0",
+        "ms": "2.0.0",
+      },
+    },
+  },
+  "packages": {
+    "@acme/ui": ["@acme/ui@workspace:packages/ui"],
+
+    "debug": ["debug@2.6.9", "", { "dependencies": { "ms": "2.0.0" } }, "sha512-a=="],
+
+    "is-number": ["is-number@7.0.0", "", {}, "sha512-b=="],
+
+    "ms": ["ms@2.1.3", "", {}, "sha512-c=="],
+
+    "strip-ansi": ["strip-ansi@6.0.1", "", { "dependencies": { "ansi-regex": "^5.0.1" } }, "sha512-d=="],
+
+    "sw": ["string-width@4.2.3", "", { "dependencies": { "strip-ansi": "^6.0.1" } }, "sha512-e=="],
+
+    "@acme/ui/is-number": ["is-number@6.0.0", "", {}, "sha512-f=="],
+
+    "@acme/ui/ms": ["ms@2.0.0", "", {}, "sha512-g=="],
+
+    "debug/ms": ["ms@2.0.0", "", {}, "sha512-g=="],
+  }
+}
+`;
+
+test('bun.lock: each workspace\'s direct dependencies (its own version first), and the packages locked in one version', () => {
+  const pins = lockPins({ 'bun.lock': BUN_LOCK })!;
+  assert.equal(pins.source, 'bun.lock');
+  assert.equal(pins.direct('', 'ms', '^2.0.0'), '2.1.3');
+  assert.equal(pins.direct('', 'debug', '2.6.9'), '2.6.9');
+  assert.equal(pins.direct('', 'is-number', '^7.0.0'), '7.0.0');
+  assert.equal(pins.direct('packages/ui', 'ms', '2.0.0'), '2.0.0', "the workspace's own version, not the root's");
+  assert.equal(pins.direct('packages/ui', 'is-number', '^6.0.0'), '6.0.0');
+  assert.equal(pins.direct('', '@acme/ui', 'workspace:*'), null, 'a workspace is not a version');
+  assert.equal(pins.direct('', 'sw', 'npm:string-width@^4.2.0'), null, 'an alias is not pinned by its own name');
+  assert.equal(pins.direct('', 'ms', '^3.0.0'), null, 'a lockfile older than package.json');
+  assert.equal(pins.direct('', 'missing', '^1.0.0'), null);
+  // ms and is-number are locked in two versions each; the alias counts as its real package.
+  assert.deepEqual(pins.single, { debug: '2.6.9', 'string-width': '4.2.3', 'strip-ansi': '6.0.1' });
+});
+
+test('bun.lock comes after the other lockfiles, and one that does not parse pins nothing', () => {
+  assert.equal(lockPins({ 'package-lock.json': '{}', 'bun.lock': BUN_LOCK }), null);
+  assert.equal(lockPins({ 'yarn.lock': YARN_1, 'bun.lock': BUN_LOCK })!.source, 'yarn.lock');
+  assert.equal(lockPins({ 'bun.lock': '{ "workspaces": {} }' }), null, 'no lockfileVersion');
+  assert.equal(lockPins({ 'bun.lock': '{ not json' }), null);
+  // A string that holds a comma before a brace is left as it is.
+  const tricky = '{ "lockfileVersion": 1, "workspaces": { "": { "dependencies": { "x": "^1.0.0" } } }, "packages": { "x": ["x@1.0.0", ",}", {}, "sha512-h"], }, }';
+  assert.deepEqual(lockPins({ 'bun.lock': tricky })!.single, { x: '1.0.0' });
+});
+
+test('a bun.lock pins the install plan of a Bun workspace', () => {
+  const pkg: PackageJson = { name: 'app', workspaces: ['packages/*'], dependencies: { ms: '^2.0.0', debug: '2.6.9', '@acme/ui': 'workspace:*' }, devDependencies: { 'is-number': '^7.0.0' } };
+  const files = {
+    'package.json': JSON.stringify(pkg),
+    'packages/ui/package.json': JSON.stringify({ name: '@acme/ui', dependencies: { ms: '2.0.0', 'is-number': '^6.0.0' } }),
+    'bun.lock': BUN_LOCK,
+  };
+  const p = installPlan(files, pkg);
+  assert.equal(p.pinned, 'bun.lock');
+  assert.equal(p.root.dependencies?.debug, '2.6.9');
+  assert.equal(p.root.devDependencies?.['is-number'], '7.0.0');
+  assert.equal((p.root.overrides as Record<string, string> | undefined)?.['strip-ansi'], '6.0.1');
 });
 
 test('the plan pins direct dependencies and overrides the single-version packages it does not name itself', () => {

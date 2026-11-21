@@ -136,6 +136,15 @@ test('a command that is not a Node program exits with 127, as sh does for one it
   assert.equal(await run('make').exit, 127);
 });
 
+test('npx, bunx and bun x run a package\'s binary with Node; bunx\'s --bun is dropped', async () => {
+  const files = { '/app/node_modules/.sandburg-bins.json': JSON.stringify({ vite: 'node_modules/vite/bin/vite.js' }) };
+  for (const script of ['npx vite --port 3000', 'bunx --bun vite --port 3000', 'bun x vite --port 3000']) {
+    const r = run(script, { files });
+    assert.equal(await r.exit, 0, script);
+    assert.deepEqual(r.argv(), ['/app/node_modules/vite/bin/vite.js --port 3000'], script);
+  }
+});
+
 test('a workspace package\'s script runs in its directory: npm -w, pnpm --filter, yarn workspace (by name from the workspace file, or by path)', async () => {
   const files = {
     '/app/package.json': JSON.stringify({ scripts: { dev: 'npm run dev --workspace=web' } }),
