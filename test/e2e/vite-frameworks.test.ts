@@ -98,6 +98,28 @@ test("a SolidStart app's Babel compiles are kept for its next run, and only for 
   for (const [name, sources] of own) assert.deepEqual(after.get(name), sources);
 });
 
+test("a SvelteKit page's first click counts: the checks wait for Svelte to hydrate it, however long its client takes (Svelte 5.59, #144)", async () => {
+  // The client's init hook waits 2.5 s on a timer before the page hydrates: no request is in flight
+  // meanwhile, so the servers look quiet, and the server-rendered button has no handler yet. Svelte
+  // 5.59 marks Element.prototype as its runtime loads, before that: checks that took that for
+  // hydration clicked into the gap, and the one click below was lost ("Clicked 0 times").
+  const project = await loadProject(fixture('sveltekit-app'));
+  const slow = projectFromFiles(
+    { ...project.files, 'src/hooks.client.ts': 'export async function init() {\n  await new Promise((r) => setTimeout(r, 2500));\n}\n' },
+    { name: 'sveltekit-slow-hydration', path: fixture('sveltekit-app') },
+  );
+  const result = await session.run(slow, {
+    outDir,
+    checks: {
+      'one click, no retry': async ({ app, expect }) => {
+        await app.getByRole('button', { name: 'Clicked 0 times' }).click();
+        await expect(app.getByRole('button', { name: 'Clicked 1 times' })).toBeVisible({ timeout: 3000 });
+      },
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 test('a SvelteKit load() that throws is an app bug', async () => {
   const project = await loadProject(fixture('sveltekit-app'));
   const broken = projectFromFiles(

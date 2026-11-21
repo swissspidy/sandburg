@@ -1,0 +1,77 @@
+# Each week, Sandburg on the frameworks' newest releases, whether or not a pull request ran CI since.
+# The fixtures and the corpus take each framework's newest release within its major when installed
+# (fixtures: caret ranges, no lockfile; the corpus: `generate.ts --latest`). A release that breaks
+# Sandburg (Svelte 5.59 hid SvelteKit's hydration, #144) fails this workflow, not a user's run.
+name: Canary
+
+on:
+  schedule:
+    - cron: '17 4 * * 1' # Mondays, 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  corpus:
+    # Two apps of each of the corpus's 14 frameworks, generated with today's releases, cold and warm,
+    # against their ground truth: a wrong answer fails the job (scripts/fidelity-study.ts).
+    name: Corpus sample on the newest releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: $/.github/actions/setup-chromium
+      - run: node scripts/corpus/generate.ts "${RUNNER_TEMP}/corpus" 232 1 --latest
+      - name: Study the sample
+        run: |
+          set -o pipefail
+          node scripts/fidelity-study.ts "${RUNNER_TEMP}/corpus" --parallel 3 --per-framework 2 --fail-on-wrong | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: canary-corpus-runs
+          path: .sandburg/runs
+          retention-days: 14
+          if-no-files-found: ignore
+
+  e2e:
+    # The suites that run each framework's fixture, as CI runs them on a pull request.
+    name: E2E (${{ matrix.suite }}) on the newest releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [angular, frameworks, fullstack, vite-frameworks]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: $/.github/actions/setup-chromium
+      - run: node --test --test-reporter=spec --test-concurrency=1 "test/e2e/${MATRIX_SUITE}.test.ts"
+        env:
+          MATRIX_SUITE: ${{ matrix.suite }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: canary-e2e-${{ matrix.suite }}-runs
+          path: .sandburg/test-runs
+          retention-days: 14
+          if-no-files-found: ignore

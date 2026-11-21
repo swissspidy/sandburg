@@ -69,6 +69,12 @@ packed from the same commit, on `fixtures/vite-react-counter`), and each e2e fil
 Docker reference tests run there too. Each job reports its tests' times, with a warning annotation for
 a file over its budget in `test/budgets.json`.
 Those jobs run on Linux; macOS and Windows run typecheck, the unit and runtime tests and the e2e `run` file.
+Each Monday the Canary workflow (`.github/workflows/canary.yml`) runs Sandburg on the frameworks' newest
+releases, whether or not a pull request ran since: the e2e files that run each framework's fixture (the
+fixtures install each framework's newest release within its major), and a sample of the corpus, two
+apps of each framework, generated with `node scripts/corpus/generate.ts <dir> 232 1 --latest` (each
+exact version a caret range) and studied cold and warm with `scripts/fidelity-study.ts --per-framework 2
+--fail-on-wrong`, which fails on any wrong answer. It also runs from the Actions tab (workflow_dispatch).
 A pull request that changes `src/`, `pages/`, `scripts/bench.ts`, the unit tests with timing assertions,
 `package-lock.json`, the perf workflow or `.github/actions/setup-chromium/` is also benchmarked against its base branch: `vite-react-counter` and `next-app-router`, warm and cold.
 That job fails only when a median is more than 30% slower, or when a side has no result; it also runs
