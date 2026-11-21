@@ -221,7 +221,7 @@ export function relevantFindings(found: SourceFinding[], answer: ProjectReads | 
  * In a project with pnpm's isolated layout (source-check.ts, pnpmStrict), fails the ready phase on an
  * undeclared import in a file the app has read (`relevant`, relevantFindings), once the app has
  * rendered: with pnpm, that import resolves to nothing, and the dev server fails the page or module
- * that has it (measured: Next.js, Vite, SvelteKit; ADR 0072). npm, which Sandburg installs with,
+ * that has it (measured: every supported framework but Nuxt; ADR 0072). npm, which Sandburg installs with,
  * hoists every package to the top of node_modules, where the import resolves. `found` is the source
  * check, started with the phase. The error is the one Node gives, which classify() takes for an
  * undeclared import (an app bug).

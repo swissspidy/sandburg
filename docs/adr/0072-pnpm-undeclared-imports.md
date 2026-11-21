@@ -39,9 +39,14 @@ brings and the project does not declare added, and the real dev server asked for
 | SvelteKit 3.4 | `devalue` in `src/routes/+page.svelte` | 500, `Cannot find module 'devalue'` |
 | Astro 7.4 | `html-escaper` in `src/pages/index.astro` | 500, `Cannot find module 'html-escaper'` |
 | SolidStart 2.2 | `seroval` in `src/routes/index.tsx` | the page never finishes (as SolidStart does on any unresolvable import, ADR 0067) |
+| React Router 8.5 | `@remix-run/route-pattern` in `app/routes/home.tsx` | 500, `Cannot find module '@remix-run/route-pattern'` |
+| Angular 22.3 (`ng serve`) | `mrmime` in `src/main.ts` | bundle generation fails, `TS2307: Cannot find module 'mrmime'` |
 | Nuxt 4.6 | `h3` in a server route; `ofetch`, `defu` and `picomatch` (a transitive package) in pages and routes | **200**: resolved |
 
-Nuxt resolves a package from anywhere in the install, under pnpm too: an undeclared import there runs.
+Nuxt resolves a package from anywhere in the install, under pnpm too: an undeclared import there runs. Every
+other framework Sandburg supports fails it. (The Angular CLI writes `"packageManager": "npm@…"`
+into a new project, which pnpm refuses to install; the fixture was measured without it, as
+`ng new --package-manager pnpm` writes it.)
 
 ## Decision
 
@@ -82,7 +87,7 @@ Nuxt resolves a package from anywhere in the install, under pnpm too: an undecla
   is what its users get from `pnpm install`; the failure says which package and where.
 - Frameworks that resolve like Nuxt are listed by measurement (`PNPM_LENIENT`), not inferred: a
   framework that does so and is not listed gives a false alarm, which a fixture installed by pnpm
-  shows. React Router and Angular were not measured when this was written.
+  shows. A new framework, or a new major of one, is measured the same way.
 - Imitating pnpm's layout itself (symlinks into `node_modules/.pnpm`) was not done: every bundler and
   the runtime resolve through the file system, and the layout would change what every install,
   store and warm start shares. The static check covers the case that matters (an app's own import),

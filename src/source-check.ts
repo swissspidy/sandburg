@@ -515,7 +515,8 @@ export interface PnpmStrict {
  * Frameworks whose dev servers resolve a package from anywhere in the install, under pnpm too: an
  * app imports what it does not declare and runs. Measured with each framework's fixture installed
  * by pnpm 10 (ADR 0072): Nuxt serves a page and a server route that import h3, ofetch, defu or a
- * transitive package (picomatch) it does not declare.
+ * transitive package (picomatch) it does not declare. Next.js, Vite, SvelteKit, Astro, SolidStart,
+ * React Router and Angular fail such an import.
  */
 const PNPM_LENIENT = new Set(['nuxt']);
 
