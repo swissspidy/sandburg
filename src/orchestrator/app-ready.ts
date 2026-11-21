@@ -204,15 +204,37 @@ const SOURCE_RELEVANCE_MS = 2_000;
  * undeclared import, only one whose package is not installed where the file imports it from (npm
  * hoists what dependencies need: Nuxt's h3, a Next app's @tanstack/query-core). Nothing, when the
  * runtime does not record what it read. `answer.installed` is in the order of the undeclared imports.
+ * In a project with pnpm's isolated layout (`pnpmStrict`), what npm hoisted does not count: pnpm
+ * gives the project only what it declares (source-check.ts, pnpmStrict).
  */
-export function relevantFindings(found: SourceFinding[], answer: ProjectReads | null): SourceFinding[] {
+export function relevantFindings(found: SourceFinding[], answer: ProjectReads | null, pnpmStrict = false): SourceFinding[] {
   if (!answer?.reads) return [];
   const read = new Set(answer.reads);
   let i = 0;
   return found.filter((f) => {
-    const installed = f.rule === 'undeclared-import' ? answer.installed[i++] : false;
+    const installed = f.rule === 'undeclared-import' ? answer.installed[i++] && !pnpmStrict : false;
     return read.has(f.file) && !installed;
   });
+}
+
+/**
+ * In a project with pnpm's isolated layout (source-check.ts, pnpmStrict), fails the ready phase on an
+ * undeclared import in a file the app has read (`relevant`, relevantFindings), once the app has
+ * rendered: with pnpm, that import resolves to nothing, and the dev server fails the page or module
+ * that has it (measured: every supported framework but Nuxt; ADR 0072). npm, which Sandburg installs with,
+ * hoists every package to the top of node_modules, where the import resolves. `found` is the source
+ * check, started with the phase. The error is the one Node gives, which classify() takes for an
+ * undeclared import (an app bug).
+ */
+export async function failOnUndeclaredWithPnpm(run: RunState, found: Promise<SourceFinding[]>, relevant: (found: SourceFinding[]) => Promise<SourceFinding[]>): Promise<void> {
+  const undeclared = (await found).filter((f) => f.rule === 'undeclared-import');
+  const bearing = undeclared.length ? await relevant(undeclared) : [];
+  if (!bearing.length) return;
+  run.sourceFindings = bearing;
+  const f = bearing[0];
+  throw new Error(
+    `Cannot find package '${f.message}' imported from ${f.file}:${f.line}: the project installs with pnpm, whose node_modules gives a package only what it declares (npm, which Sandburg installs with, hoists it). Add "${f.message}" to package.json.`,
+  );
 }
 
 /**

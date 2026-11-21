@@ -2,7 +2,8 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Frame } from 'playwright-core';
-import { failFastOnAppError, failFastOnRuntimeFetch, relevantFindings, waitForRender, watchSources } from '../../src/orchestrator/app-ready.ts';
+import { failFastOnAppError, failFastOnRuntimeFetch, failOnUndeclaredWithPnpm, relevantFindings, waitForRender, watchSources } from '../../src/orchestrator/app-ready.ts';
+import { classify } from '../../src/classify.ts';
 import type { SourceFinding } from '../../src/source-check.ts';
 import type { RunState } from '../../src/orchestrator/run-state.ts';
 import type { ConsoleEntry, PageError } from '../../src/types.ts';
@@ -265,6 +266,36 @@ test("what bears on the app: findings in files its processes read, and undeclare
   // A runtime that does not record reads: nothing bears on the app.
   assert.deepEqual(relevantFindings([syntax], { reads: null, installed: [] }), []);
   assert.deepEqual(relevantFindings([syntax], null), []);
+  // pnpm's isolated layout: what npm hoisted (h3) is not installed for the app.
+  assert.deepEqual(relevantFindings([syntax, h3, faker, dayjs], answer, true), [syntax, h3, dayjs]);
+});
+
+test("with pnpm's isolated layout, an undeclared import in a file the app read fails the ready phase as Node's error, which classifies as an undeclared import", async () => {
+  const scheduler: SourceFinding = { rule: 'undeclared-import', file: 'app/page.tsx', line: 1, message: 'scheduler' };
+  const syntax: SourceFinding = { rule: 'compile-error', file: 'app/old.tsx', line: 3, column: 1, message: 'x' };
+  const unread: SourceFinding = { rule: 'undeclared-import', file: 'app/other/page.tsx', line: 2, message: 'dayjs' };
+  const reads = ['app/page.tsx', 'app/old.tsx'];
+  const asked: SourceFinding[][] = [];
+  const relevant = async (found: SourceFinding[]) => (asked.push(found), relevantFindings(found, { reads, installed: found.map(() => true) }, true));
+  const run = runState();
+  const error = await failOnUndeclaredWithPnpm(asRun(run), Promise.resolve([syntax, scheduler, unread]), relevant).then(() => null, (e: Error) => e);
+  assert.match(error?.message ?? '', /^Cannot find package 'scheduler' imported from app\/page\.tsx:1: the project installs with pnpm/);
+  // Only undeclared imports are matched: the app rendered, so a file that does not parse is not its problem here.
+  assert.deepEqual(asked, [[scheduler, unread]]);
+  assert.deepEqual(run.sourceFindings, [scheduler]);
+  const failure = classify({
+    probe: { verdict: 'supported' },
+    phases: [{ name: 'ready', status: 'failed', durationMs: 1, error: { name: 'Error', message: error!.message } }],
+    checks: [],
+    pageErrors: [],
+    infraError: null,
+    declaredDependencies: ['next', 'react', 'react-dom'],
+  });
+  assert.deepEqual([failure?.class, failure?.phase, failure?.rule, failure?.message], ['app-bug', 'ready', 'undeclared-import', 'imports undeclared package "scheduler"']);
+  // Nothing the app read: the phase goes on.
+  const quiet = runState();
+  await failOnUndeclaredWithPnpm(asRun(quiet), Promise.resolve([unread, syntax]), relevant);
+  assert.equal(quiet.sourceFindings, null);
 });
 
 test("the sources are checked once, after 20 s without the app rendering, and what bears on the app is kept, matched again every 2 s, until the phase is over; it never fails the phase", async (t) => {

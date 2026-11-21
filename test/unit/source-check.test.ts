@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { checkSources, checkSourcesHere, describeFinding } from '../../src/source-check.ts';
+import { checkSources, checkSourcesHere, describeFinding, pnpmStrict } from '../../src/source-check.ts';
 
 const pkg = (deps: Record<string, string> = {}, extra: object = {}) => JSON.stringify({ name: 'app', dependencies: deps, ...extra });
 /** A Vite app's page, whose script is the app's entry. */
@@ -108,7 +108,7 @@ test("what a project declares: each package.json from the file's directory up, w
   assert.deepEqual(site, []);
 });
 
-test('a package a lockfile lists as installed is not undeclared: hoisted by npm (elk: vue-router, h3) or yarn, listed by pnpm or bun; a peer of a workspace package', async () => {
+test('a package a lockfile lists as installed is not undeclared: hoisted by npm (elk: vue-router, h3) or yarn, listed by pnpm hoisting everything (shamefully-hoist) or bun; a peer of a workspace package', async () => {
   const app = (lockfile: Record<string, string>) => ({
     'package.json': pkg({ vue: '^3.5.0' }),
     'index.html': page(),
@@ -121,7 +121,14 @@ test('a package a lockfile lists as installed is not undeclared: hoisted by npm 
   const yarn = '# yarn lockfile v1\n\n"vue-router@^4.0.0", vue-router@^4.1.0:\n  version "4.4.0"\n\nh3@^1.0.0:\n  version "1.13.0"\n';
   assert.deepEqual(await check(app({ 'yarn.lock': yarn })), ['imports undeclared package "dayjs" (src/main.ts:3)']);
   const pnpm = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      vue:\n        specifier: ^3.5.0\n\npackages:\n\n  vue-router@4.4.0:\n    resolution: {integrity: x}\n\n  h3@1.13.0:\n    resolution: {integrity: x}\n";
-  assert.deepEqual(await check(app({ 'pnpm-lock.yaml': pnpm })), ['imports undeclared package "dayjs" (src/main.ts:3)']);
+  // pnpm hoisting everything (shamefully-hoist) lays node_modules out as npm does.
+  assert.deepEqual(await check(app({ 'pnpm-lock.yaml': pnpm, '.npmrc': 'shamefully-hoist=true\n' })), ['imports undeclared package "dayjs" (src/main.ts:3)']);
+  // Its default, isolated layout gives the app only what it declares (pnpmStrict).
+  assert.deepEqual(await check(app({ 'pnpm-lock.yaml': pnpm })), [
+    'imports undeclared package "vue-router" (src/main.ts:1)',
+    'imports undeclared package "h3" (src/main.ts:2)',
+    'imports undeclared package "dayjs" (src/main.ts:3)',
+  ]);
   const bun = '{\n  "lockfileVersion": 1,\n  "packages": {\n    "vue-router": ["vue-router@4.4.0", "", {}, "sha"],\n    "h3": ["h3@1.13.0", "", {}, "sha"],\n  },\n}\n';
   assert.deepEqual(await check(app({ 'bun.lock': bun })), ['imports undeclared package "dayjs" (src/main.ts:3)']);
   // A monorepo whose app imports react, declared only as packages/ui's peer: installed at the root.
@@ -136,6 +143,50 @@ test('a package a lockfile lists as installed is not undeclared: hoisted by npm 
     'apps/web',
   );
   assert.deepEqual(peer, []);
+});
+
+test("pnpm's isolated layout: a project that installs with pnpm, not hoisted, whose framework does not resolve from the whole install", () => {
+  const lock = "lockfileVersion: '9.0'\n";
+  const app = (files: Record<string, string> = {}, extra: object = {}) => ({ 'package.json': pkg({ react: '^19.0.0' }, extra), ...files });
+  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock })), { publicHoist: [] });
+  assert.deepEqual(pnpmStrict(app({}, { packageManager: 'pnpm@10.28.0' })), { publicHoist: [] }, 'packageManager alone');
+  assert.equal(pnpmStrict(app({})), null, 'npm: no pnpm-lock.yaml, no packageManager');
+  assert.equal(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'package-lock.json': '{}' })), null, 'Sandburg installs from the package-lock.json');
+  assert.equal(pnpmStrict(app({ 'pnpm-lock.yaml': lock }, { packageManager: 'yarn@4.5.0' })), null, 'packageManager names another');
+  // Hoisted: .npmrc or pnpm-workspace.yaml.
+  const hoisted: Record<string, string>[] = [{ '.npmrc': 'shamefully-hoist=true\n' }, { '.npmrc': 'node-linker = hoisted\n' }, { 'pnpm-workspace.yaml': 'shamefullyHoist: true\n' }, { 'pnpm-workspace.yaml': "nodeLinker: 'hoisted'\n" }];
+  for (const files of hoisted) {
+    assert.equal(pnpmStrict(app({ 'pnpm-lock.yaml': lock, ...files })), null, JSON.stringify(files));
+  }
+  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'shamefully-hoist=false\nnode-linker=isolated\n' })), { publicHoist: [] });
+  // Nuxt resolves what the app does not declare from the whole install, under pnpm too; in a monorepo's app as well.
+  assert.equal(pnpmStrict({ 'package.json': pkg({ nuxt: '^4.6.4' }), 'pnpm-lock.yaml': lock }), null);
+  assert.equal(pnpmStrict({ 'package.json': pkg(), 'apps/web/package.json': pkg({ nuxt: '^4.6.4' }), 'pnpm-lock.yaml': lock }), null);
+  // public-hoist-pattern: given (.npmrc or pnpm-workspace.yaml), or pnpm 9's default; a negation is not a package.
+  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, '.npmrc': 'public-hoist-pattern[]=*types*\npublic-hoist-pattern[]=!@types/node\n' })), { publicHoist: ['*types*'] });
+  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': "publicHoistPattern:\n  - 'scheduler'\n" })), { publicHoist: ['scheduler'] });
+  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock }, { packageManager: 'pnpm@9.15.0' })), { publicHoist: ['*eslint*', '*prettier*'] });
+  assert.deepEqual(pnpmStrict(app({ 'pnpm-lock.yaml': lock, 'pnpm-workspace.yaml': 'publicHoistPattern: []\n' }, { packageManager: 'pnpm@9.15.0' })), { publicHoist: [] });
+});
+
+test("with pnpm's isolated layout, an import of a package only a dependency brings is undeclared, unless pnpm hoists it publicly", async () => {
+  // As `pnpm create next-app` writes it (Next.js 16.4), with a page that imports react-dom's scheduler.
+  const lock = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      next:\n        specifier: 16.4.6\n        version: 16.4.6\n\npackages:\n\n  scheduler@0.27.0:\n    resolution: {integrity: x}\n\n  styled-jsx@5.1.6:\n    resolution: {integrity: x}\n";
+  const app = (files: Record<string, string> = {}) => ({
+    'package.json': pkg({ next: '16.4.6', react: '19.3.0', 'react-dom': '19.3.0' }, { packageManager: 'pnpm@10.28.0' }),
+    'pnpm-lock.yaml': lock,
+    'pnpm-workspace.yaml': 'ignoredBuiltDependencies:\n  - sharp\n',
+    'app/page.tsx': "import { unstable_now } from 'scheduler';\nimport React from 'react';\nexport default function Home() {\n  return <p>{unstable_now()}{React.version}</p>;\n}\n",
+    ...files,
+  });
+  assert.deepEqual(await check(app()), ['imports undeclared package "scheduler" (app/page.tsx:1)']);
+  assert.deepEqual(await check(app({ '.npmrc': 'public-hoist-pattern[]=sched*\n' })), []);
+  // pnpm's `*` matches a scope's `/` too: *eslint* hoists @typescript-eslint/utils.
+  const scoped = { 'app/lint.ts': "import { ESLintUtils } from '@typescript-eslint/utils';\nexport default ESLintUtils;\n", 'app/page.tsx': "import './lint';\nexport default function Home() {\n  return null;\n}\n" };
+  const withUtils = lock + "\n  '@typescript-eslint/utils@8.0.0':\n    resolution: {integrity: x}\n";
+  assert.deepEqual(await check(app({ ...scoped, 'pnpm-lock.yaml': withUtils })), ['imports undeclared package "@typescript-eslint/utils" (app/lint.ts:1)']);
+  assert.deepEqual(await check(app({ ...scoped, 'pnpm-lock.yaml': withUtils, '.npmrc': 'public-hoist-pattern[]=*eslint*\n' })), []);
+  assert.deepEqual(await check(app({ '.npmrc': 'shamefully-hoist=true\n' })), []);
 });
 
 test("components are checked by their scripts, each a module, at the file's own lines, whatever their start tags hold", async () => {
@@ -315,6 +366,7 @@ test('a commented-out script is not a script; main.* is an entry at the root or 
   const findings = await check({
     'package.json': pkg({ vue: '^3.5.0', astro: '^5.0.0' }),
     'pnpm-lock.yaml': "lockfileVersion: 5.4\n\nspecifiers:\n  vue: ^3.3.0\n\npackages:\n\n  /h3/1.8.0:\n    resolution: {integrity: x}\n\n  /@vue/shared/3.3.0:\n    resolution: {integrity: x}\n",
+    '.npmrc': 'shamefully-hoist = true\n',
     'index.html': page(),
     'src/main.ts': "import A from './A.vue';\nimport { defineEventHandler } from 'h3';\nimport { toDisplayString } from '@vue/shared';\nexport default [A, defineEventHandler, toDisplayString];\n",
     'src/A.vue': '<template>\n  <!-- <script>const x = ;</script> -->\n  <p />\n</template>\n<script setup lang="ts">\nimport { type Properties } from \'csstype\';\nconst p: Properties = {};\n</script>\n',
