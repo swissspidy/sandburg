@@ -57,13 +57,11 @@ onMounted(load);
 </template>
 
 <style>
-main {
-  max-width: 36rem;
-  margin: 0 auto;
-  padding: 1.5rem;
-}
-ul {
-  list-style: none;
-  padding: 0;
+[role='alert'] {
+  margin: 0 0 1rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: #fdecec;
+  color: #a1212a;
 }
 </style>

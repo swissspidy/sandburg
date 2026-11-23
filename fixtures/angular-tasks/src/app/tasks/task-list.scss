@@ -1,0 +1,57 @@
+$radius: 8px;
+$gap: 0.5rem;
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem $gap;
+
+  label {
+    flex-basis: 100%;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: $radius;
+  }
+
+  button {
+    padding: 0.45rem 0.9rem;
+    border: 0;
+    border-radius: $radius;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 500;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      filter: brightness(1.12);
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+}
+
+p {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  li {
+    border-top: 1px solid var(--border);
+  }
+}

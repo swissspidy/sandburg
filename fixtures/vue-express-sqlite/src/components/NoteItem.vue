@@ -20,16 +20,27 @@ const emit = defineEmits<{ pin: [id: number]; remove: [id: number] }>();
 </template>
 
 <style scoped>
-li {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  padding: 0.25rem 0;
-}
 span {
   flex: 1;
 }
+.pinned {
+  margin: 0 -0.75rem;
+  padding-inline: 0.75rem;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
 .pinned span {
-  font-weight: 700;
+  font-weight: 600;
+}
+button {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.875rem;
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+button:hover {
+  filter: none;
+  background: var(--bg);
 }
 </style>
