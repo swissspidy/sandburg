@@ -8,7 +8,7 @@ import { PluralPipe } from './plural.pipe';
   selector: 'app-task-list',
   imports: [ReactiveFormsModule, TaskItem, PluralPipe],
   templateUrl: './task-list.html',
-  styleUrl: './task-list.css',
+  styleUrl: './task-list.scss',
 })
 export class TaskList {
   protected readonly store = inject(TaskStore);
