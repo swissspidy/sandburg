@@ -39,7 +39,7 @@ button {
   cursor: pointer;
 }
 button:hover {
-  filter: brightness(1.12);
+  background: color-mix(in srgb, var(--accent), black 15%);
 }
 button:disabled {
   opacity: 0.5;

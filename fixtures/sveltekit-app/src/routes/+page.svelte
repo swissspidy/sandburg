@@ -24,7 +24,7 @@
 		cursor: pointer;
 	}
 	button:hover {
-		filter: brightness(1.12);
+		background: color-mix(in srgb, var(--accent), black 15%);
 	}
 	nav {
 		margin-top: 1.5rem;
