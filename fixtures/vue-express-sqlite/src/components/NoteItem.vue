@@ -27,6 +27,7 @@ span {
   margin: 0 -0.75rem;
   padding-inline: 0.75rem;
   border-radius: 8px;
+  border-top-color: transparent;
   background: var(--accent-soft);
 }
 .pinned span {
