@@ -41,7 +41,6 @@ button {
   border-color: var(--border);
 }
 button:hover {
-  filter: none;
   background: var(--bg);
 }
 </style>
