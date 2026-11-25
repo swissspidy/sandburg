@@ -134,7 +134,7 @@ export async function failFastOnAppError(render: Promise<void>, run: RunState, l
         const errs = run.pageErrors.slice(seenErrors).filter((e) => e.source === 'app');
         // The page's own 503 is a dev server still loading (see waitForRender), not the app failing. A
         // later error for the same page is not: Nuxt answers 503 while it builds, then 500 for a page
-        // it cannot render (and that error page refuses to be framed, so the frame shows the browser's).
+        // it cannot render (an error page the frame shows: the service worker lets the host frame it).
         const loading503 = (c: ConsoleEntry) => !!c.url && /\b503\b/.test(c.text) && run.documents.some((d) => d.status === 503 && d.url === c.url);
         // The browser's report of one of the page's own server errors ("Failed to load resource: … status
         // of 500") is the server-error rule's below, which checks again whether the page has recovered.

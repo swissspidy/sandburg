@@ -157,6 +157,25 @@ async function runtimeModule(request, path) {
 }
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+
+/**
+ * The app renders in the host page's frame (#app), on the host page's own origin; without Sandburg (the
+ * Docker reference, a real browser) it is the top-level page. An app that refuses to be framed
+ * (X-Frame-Options, or CSP's frame-ancestors: Helmet's defaults, Nuxt's error page) would show the
+ * browser's error page there instead. forward() drops X-Frame-Options, and frame-ancestors becomes
+ * 'self' (the host page's origin) in each policy of each CSP header, its other directives unchanged.
+ * An app that said no with X-Frame-Options alone gets frame-ancestors 'self' in its place, so other
+ * pages (another run's, on another *.sandburg.localhost origin) still cannot frame it.
+ */
+const CSP_HEADERS = new Set(['content-security-policy', 'content-security-policy-report-only']);
+const FRAME_ANCESTORS = /(^|[;,])(\s*)frame-ancestors(?=[\s;,]|$)[^;,]*/gi;
+function framedBySelf(policy) {
+  return policy.replace(FRAME_ANCESTORS, "$1$2frame-ancestors 'self'");
+}
+// Only ASCII whitespace separates a directive, as CSP parses it: a frame-ancestors after another space
+// (a non-breaking one) is ignored by the browser, so it does not stand in for X-Frame-Options.
+const HAS_FRAME_ANCESTORS = /(^|[;,])[\t\n\f\r ]*frame-ancestors(?=[\t\n\f\r ;,]|$)/i;
+
 const SHIM = (hooks.shim ?? '') + `<script src="${WS_SHIM}"></script>`;
 
 /**
@@ -226,8 +245,19 @@ async function forward(request, url, path) {
     replies.set(id, (m) => {
       if (m.type === 'start' || m.type === 'full') {
         // Set-Cookie cannot be set from a service worker response; the page applies cookies itself.
+        // The app may be framed by the host page whatever it says (framedBySelf).
         const h = new Headers();
-        for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
+        let refusesFraming = false;
+        let enforcesAncestors = false;
+        for (const [k, v] of m.headers) {
+          const name = k.toLowerCase();
+          if (name === 'x-frame-options') refusesFraming = true;
+          if (name === 'content-security-policy' && HAS_FRAME_ANCESTORS.test(v)) enforcesAncestors = true;
+          if (name === 'set-cookie' || name === 'x-frame-options') continue;
+          h.append(k, CSP_HEADERS.has(name) ? framedBySelf(v) : v);
+        }
+        // X-Frame-Options as frame-ancestors 'self', in a policy of its own (the app's others are unchanged).
+        if (refusesFraming && !enforcesAncestors) h.append('content-security-policy', "frame-ancestors 'self'");
         // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
         if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', hooks.coep ?? 'credentialless');
         if (path) {

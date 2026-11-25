@@ -95,6 +95,13 @@ the worker, and the response streams back in chunks. Details:
 - **Cookies.** The host page sends `document.cookie` and applies
   `Set-Cookie` itself, because a service worker cannot. It cannot honor
   `HttpOnly`.
+- **Framing.** The app renders in the host page's frame, on the host page's
+  origin; outside Sandburg it is the top-level page. So `X-Frame-Options` is
+  dropped from its responses, and `frame-ancestors` becomes `'self'` in each
+  policy of its `Content-Security-Policy` (and `-Report-Only`) headers, the
+  other directives as they were. Before, an app that refuses to be framed
+  (Helmet's defaults, Nuxt's error page: ADR 0066) showed the browser's error
+  page in the frame. Added later (issue #159).
 - **Compression.** `Accept-Encoding` is removed from requests. Browsers do
   not decode compressed bodies in responses a service worker builds.
 - **Outbound traffic.** `fetch` and `https.request` go through the browser
