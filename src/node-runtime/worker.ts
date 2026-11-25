@@ -635,7 +635,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   hideWorkerGlobals();
   post({ type: 'ready' });
   // A worker thread starts its entry right away: its parent may be blocked in Atomics.wait until it runs.
-  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv, preload: thread.process?.preload, script: thread.script });
+  if (thread) run({ type: 'run', main: thread.main, argv: thread.argv, preload: thread.process?.preload, script: thread.script, evalAs: thread.evalAs });
   if (thread?.process) exitWhenIdle();
 }
 
@@ -708,7 +708,7 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
   try {
     // --require / --import (loaded in order, before the entry).
     for (const p of msg.preload ?? []) moduleSystem.Module._load(p, null, false);
-    const exports = moduleSystem.Module._load(msg.main, null, true);
+    const exports = msg.evalAs ? moduleSystem.runEval(msg.main, msg.evalAs) : moduleSystem.Module._load(msg.main, null, true);
     // An async main module (top-level await): its rejection is uncaught, as an ES module's evaluation's is in Node.
     const tla = (exports as Record<string, unknown> | null)?.__sandburg_tla as Promise<unknown> | undefined;
     if (tla && typeof tla.then === 'function') tla.catch((e: unknown) => uncaught.uncaught(e, 'unhandledRejection'));

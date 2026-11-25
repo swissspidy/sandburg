@@ -603,6 +603,31 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   return worker;
 }
 
+/**
+ * Keeps a program given as text (node -e, -p, -v, stdin, a worker's eval) where its runtime reads it
+ * (ThreadInit.evalAs): in the project's .sandburg/, hidden from its file tree, not in the program's cwd,
+ * under a name no other runtime picks. dropEvalScript removes it once that runtime is over.
+ */
+export function writeEvalScript(host: ThreadHost, code: string): string {
+  const root = host.root();
+  const dir = `${root === '/' ? '' : root}/.sandburg`;
+  host.vfs().mkdir(dir, true);
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
+  const file = `${dir}/eval-${id}.js`;
+  host.vfs().write(file, new TextEncoder().encode(code));
+  return file;
+}
+
+/** Removes the program a runtime started with, when it was given as text (writeEvalScript). */
+export function dropEvalScript(host: ThreadHost, init: ThreadInit): void {
+  if (!init.evalAs) return;
+  try {
+    host.vfs().unlink(init.main);
+  } catch {
+    // Already gone: the program removed it (or all of .sandburg/) itself.
+  }
+}
+
 let nextThreadId = 1;
 const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
 
@@ -611,6 +636,7 @@ export function createWorkerThreads(host: ThreadHost) {
     readonly threadId: number;
     readonly resourceLimits = {};
     private worker: globalThis.Worker;
+    private init: ThreadInit;
     private exited = false;
     stdin = null;
     stdout: EventEmitter;
@@ -622,26 +648,39 @@ export function createWorkerThreads(host: ThreadHost) {
       this.stdout = new EventEmitter();
       this.stderr = new EventEmitter();
       let main: string;
-      if (options.eval) {
-        main = `${host.cwd()}/.sandburg/worker-eval-${this.threadId}.js`;
-        host.vfs().mkdir(main.slice(0, main.lastIndexOf('/')), true);
-        host.vfs().write(main, new TextEncoder().encode(String(filename)));
-      } else {
+      if (options.eval) main = writeEvalScript(host, String(filename));
+      else {
         const f = filename instanceof URL ? filename.href : String(filename);
         main = f.startsWith('file:') ? decodeURIComponent(new URL(f).pathname) : host.resolvePath(f);
       }
       const env = options.env === SHARE_ENV || options.env === undefined ? host.env() : (options.env as Record<string, string>);
-      const thread: ThreadInit = { id: this.threadId, workerData: options.workerData, env: { ...env }, argv: (options.argv ?? []).map(String), main, mailboxes: mailboxesFor(options.transferList) };
-      this.worker = startRuntime(
-        host,
-        thread,
-        (m) => this.onChild(m),
-        (message) => {
-          this.emit('error', new Error(message));
-          this.finish(1);
-        },
-        options.transferList ?? [],
-      );
+      const thread: ThreadInit = {
+        id: this.threadId,
+        workerData: options.workerData,
+        env: { ...env },
+        argv: (options.argv ?? []).map(String),
+        main,
+        mailboxes: mailboxesFor(options.transferList),
+        // As in Node: its requests resolve from the cwd, and process.argv[1] is its name.
+        ...(options.eval ? { evalAs: '[worker eval]', script: '[worker eval]' } : {}),
+      };
+      this.init = thread;
+      try {
+        this.worker = startRuntime(
+          host,
+          thread,
+          (m) => this.onChild(m),
+          (message) => {
+            this.emit('error', new Error(message));
+            this.finish(1);
+          },
+          options.transferList ?? [],
+        );
+      } catch (e) {
+        // No Worker comes of it (workerData that cannot be cloned): its program given as text goes too.
+        dropEvalScript(host, thread);
+        throw e;
+      }
     }
 
     private onChild(m: ToParent) {
@@ -686,6 +725,7 @@ export function createWorkerThreads(host: ThreadHost) {
       if (this.exited) return;
       this.exited = true;
       this.worker.terminate();
+      dropEvalScript(host, this.init);
       this.emit('exit', code);
     }
 

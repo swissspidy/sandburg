@@ -394,6 +394,25 @@ export function createModuleSystem(host: LoaderHost) {
 
   Module.runMain = (main?: string) => Module._load(main ?? host.argv1(), null, true);
 
+  /**
+   * Runs a program given as text (node -e, -p, `node -` reading stdin, a worker's eval), kept in
+   * `file`, as Node runs it: as the main module `name` ('[eval]', '[stdin]', '[worker eval]') of the
+   * cwd, so its requests resolve from the cwd (`require('./x')`, its node_modules), not from where its
+   * text is kept.
+   */
+  const runEval = (file: string, name: string) => {
+    const cwd = host.cwd();
+    const filename = `${cwd === '/' ? '' : cwd}/${name}`;
+    const mod = new Module(name, null);
+    mod.filename = filename;
+    mod.paths = Module._nodeModulePaths(cwd);
+    Module.mainModule = mod;
+    loadJs(mod, filename, file);
+    mod.loaded = true;
+    awaitableWhileEvaluating(mod.exports);
+    return mod.exports;
+  };
+
   Module.prototype.require = function (this: Mod, id: string) {
     if (typeof id !== 'string') throw Object.assign(new TypeError('The "id" argument must be of type string'), { code: 'ERR_INVALID_ARG_TYPE' });
     const exports = Module._load(id, this, false);
@@ -444,7 +463,9 @@ export function createModuleSystem(host: LoaderHost) {
     const params = this.esm
       ? ['exports', 'require', 'module', '__sandburg_filename', '__sandburg_dirname', '__sandburg_import_meta_url']
       : ['exports', 'require', 'module', '__filename', '__dirname', '__sandburg_import_meta_url'];
-    const source = `(function (${params.join(', ')}) {${stripShebang(content)}\n})\n//# sourceURL=${filename}`;
+    // V8 ignores a sourceURL with whitespace in it (a frame of '[worker eval]', or of a path with a space,
+    // would read <anonymous>): it is escaped as in a URL.
+    const source = `(function (${params.join(', ')}) {${stripShebang(content)}\n})\n//# sourceURL=${filename.replace(/\s/g, encodeURIComponent)}`;
     const fn = (0, eval)(source) as (...args: unknown[]) => unknown;
     if (!this.esm) return fn.call(this.exports, this.exports, require, this, filename, dir, `file://${filename}`);
     try {
@@ -474,14 +495,15 @@ export function createModuleSystem(host: LoaderHost) {
   // import() too: the browser would fetch the module itself instead of loading it through this loader.
   const needsLowering = (code: string) => NEEDS_LOWERING.test(code);
 
-  const loadJs = (m: Mod, filename: string) => {
+  /** `from`: where the module's text is kept when it is not at `filename` (a program given as text: runEval). */
+  const loadJs = (m: Mod, filename: string, from?: string) => {
     let code: string;
-    const installed = inNodeModules(filename) ? host.compiledNodeModule(filename) : null;
+    const installed = from === undefined && inNodeModules(filename) ? host.compiledNodeModule(filename) : null;
     if (installed !== null) {
       code = installed;
     } else {
       // Project files, and files written at run time (e.g. Vite's bundled config under node_modules/.vite-temp).
-      code = readText(filename);
+      code = readText(from ?? filename);
       // Node detects the syntax only where package.json has no "type": a "commonjs" scope (next dev's
       // .next/dev, with its 8 MB chunks) is CommonJS without parsing the file to find out.
       let esm = filename.endsWith('.mjs');
@@ -492,7 +514,7 @@ export function createModuleSystem(host: LoaderHost) {
       if (esm || needsLowering(code)) code = host.compile(code, filename, esm ? 'esm' : 'cjs');
     }
     if (code.startsWith(ESM_MARKER)) m.esm = true;
-    if (installed === null) compileWaiting(m, code, filename, () => host.compile(readText(filename), filename, 'esm', true));
+    if (installed === null) compileWaiting(m, code, filename, () => host.compile(readText(from ?? filename), filename, 'esm', true));
     else m._compile(code, filename);
   };
   const loadTs = (m: Mod, filename: string) => {
@@ -519,9 +541,9 @@ export function createModuleSystem(host: LoaderHost) {
   };
 
   Module._extensions = Object.assign(Object.create(null), {
-    '.js': loadJs,
-    '.cjs': loadJs,
-    '.mjs': loadJs,
+    '.js': (m: Mod, filename: string) => loadJs(m, filename),
+    '.cjs': (m: Mod, filename: string) => loadJs(m, filename),
+    '.mjs': (m: Mod, filename: string) => loadJs(m, filename),
     '.json': (m: Mod, filename: string) => {
       try {
         m.exports = JSON.parse(readText(filename));
@@ -548,7 +570,7 @@ export function createModuleSystem(host: LoaderHost) {
     return require;
   }
 
-  return { Module, makeRequire, isBuiltin };
+  return { Module, makeRequire, isBuiltin, runEval };
 
   // --- helpers that close over host ---------------------------------------------------------
 }
