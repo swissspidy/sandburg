@@ -61,7 +61,14 @@ async function getPort() {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin) return;
+  if (url.origin !== self.location.origin) {
+    // The app's markup may name its own servers by an absolute URL built from Host (localhost:<port>,
+    // as process.ts sends it): <link href="http://localhost:3000/style.css">. They are served here,
+    // as ws-shim.js does for fetch and XMLHttpRequest; other origins go to the network.
+    const port = localPort(url);
+    if (port) event.respondWith(forward(event.request, url, `/__sandburg_backend/${port}${url.pathname}${url.search}`));
+    return;
+  }
   if (hooks.fetch && hooks.fetch(event, url)) return;
   if (url.pathname === '/__sandburg/node-worker.js' || url.pathname === WS_SHIM || RUNTIME_LIB.test(url.pathname)) {
     event.respondWith(runtimeScript(event.request, url.pathname));
@@ -76,6 +83,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
   event.respondWith(forward(event.request, url));
 });
+
+/** The port of an http(s)://localhost:<port> URL (and 127.0.0.1, 0.0.0.0, [::1]), else null. */
+function localPort(url) {
+  if (!/^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/.test(url.hostname) || !/^https?:$/.test(url.protocol)) return null;
+  return url.port || (url.protocol === 'https:' ? '443' : '80');
+}
 
 /** The WebSocket shim each app page loads (SHIM below): fetched as the app starts, then answered from memory. */
 const WS_SHIM = '/__sandburg/ws-shim.js';
@@ -144,6 +157,25 @@ async function runtimeModule(request, path) {
 }
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+
+/**
+ * The app renders in the host page's frame (#app), on the host page's own origin; without Sandburg (the
+ * Docker reference, a real browser) it is the top-level page. An app that refuses to be framed
+ * (X-Frame-Options, or CSP's frame-ancestors: Helmet's defaults, Nuxt's error page) would show the
+ * browser's error page there instead. forward() drops X-Frame-Options, and frame-ancestors becomes
+ * 'self' (the host page's origin) in each policy of each CSP header, its other directives unchanged.
+ * An app that said no with X-Frame-Options alone gets frame-ancestors 'self' in its place, so other
+ * pages (another run's, on another *.sandburg.localhost origin) still cannot frame it.
+ */
+const CSP_HEADERS = new Set(['content-security-policy', 'content-security-policy-report-only']);
+const FRAME_ANCESTORS = /(^|[;,])(\s*)frame-ancestors(?=[\s;,]|$)[^;,]*/gi;
+function framedBySelf(policy) {
+  return policy.replace(FRAME_ANCESTORS, "$1$2frame-ancestors 'self'");
+}
+// Only ASCII whitespace separates a directive, as CSP parses it: a frame-ancestors after another space
+// (a non-breaking one) is ignored by the browser, so it does not stand in for X-Frame-Options.
+const HAS_FRAME_ANCESTORS = /(^|[;,])[\t\n\f\r ]*frame-ancestors(?=[\t\n\f\r ;,]|$)/i;
+
 const SHIM = (hooks.shim ?? '') + `<script src="${WS_SHIM}"></script>`;
 
 /**
@@ -178,7 +210,11 @@ function injectShim() {
   });
 }
 
-async function forward(request, url) {
+/**
+ * Forwards an app request to the runtime. `path` is where it goes when it is not the app's own URL
+ * (a server's localhost URL, served by its port): the browser treats its answer as cross-origin.
+ */
+async function forward(request, url, path) {
   let p;
   try {
     p = await getPort();
@@ -195,7 +231,7 @@ async function forward(request, url) {
     const referrer = new URL(request.referrer);
     headers.push(['referer', hooks.appPath && referrer.origin === self.location.origin ? referrer.origin + hooks.appPath(referrer) : request.referrer]);
   }
-  p.postMessage({ type: 'request', id, method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [body] : []);
+  p.postMessage({ type: 'request', id, method: request.method, url: path ?? (hooks.appPath ? hooks.appPath(url) : url.pathname + url.search), headers, body }, body ? [body] : []);
   return new Promise((resolve) => {
     let controller;
     const stream = new ReadableStream({
@@ -209,13 +245,33 @@ async function forward(request, url) {
     replies.set(id, (m) => {
       if (m.type === 'start' || m.type === 'full') {
         // Set-Cookie cannot be set from a service worker response; the page applies cookies itself.
+        // The app may be framed by the host page whatever it says (framedBySelf).
         const h = new Headers();
-        for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
+        let refusesFraming = false;
+        let enforcesAncestors = false;
+        for (const [k, v] of m.headers) {
+          const name = k.toLowerCase();
+          if (name === 'x-frame-options') refusesFraming = true;
+          if (name === 'content-security-policy' && HAS_FRAME_ANCESTORS.test(v)) enforcesAncestors = true;
+          if (name === 'set-cookie' || name === 'x-frame-options') continue;
+          h.append(k, CSP_HEADERS.has(name) ? framedBySelf(v) : v);
+        }
+        // X-Frame-Options as frame-ancestors 'self', in a policy of its own (the app's others are unchanged).
+        if (refusesFraming && !enforcesAncestors) h.append('content-security-policy', "frame-ancestors 'self'");
         // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
         if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', hooks.coep ?? 'credentialless');
-        if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
+        if (path) {
+          // On the developer's machine the page and this server share an origin: the page may use its
+          // answers as its own (a module script, a font), where a browser checks them as cross-origin.
+          h.set('cross-origin-resource-policy', 'cross-origin');
+          if (request.mode === 'cors') {
+            h.set('access-control-allow-origin', self.location.origin);
+            h.set('access-control-allow-credentials', 'true');
+          }
+        } else if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
         // A redirect to one of the app's own paths (/login) stays where the deployment serves the app.
-        if (hooks.sitePath && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
+        // (A server's localhost URL resolves it against its own origin, which comes back here.)
+        if (hooks.sitePath && !path && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
         // A whole response (the runtime had it all in one task): no more messages for it.
         if (m.type === 'full') {
@@ -237,7 +293,9 @@ async function forward(request, url) {
         } catch {}
         replies.delete(id);
       } else if (m.type === 'error') {
-        resolve(new Response(m.message, { status: 502, headers: { 'content-type': 'text/plain' } }));
+        // A localhost URL that no server answers (nothing listens there) fails as a refused connection
+        // would: a program's fetch() in the runtime sees ECONNREFUSED.
+        resolve(path ? Response.error() : new Response(m.message, { status: 502, headers: { 'content-type': 'text/plain' } }));
         try {
           controller.error(new Error(m.message));
         } catch {}
