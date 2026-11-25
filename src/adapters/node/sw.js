@@ -61,7 +61,14 @@ async function getPort() {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin) return;
+  if (url.origin !== self.location.origin) {
+    // The app's markup may name its own servers by an absolute URL built from Host (localhost:<port>,
+    // as process.ts sends it): <link href="http://localhost:3000/style.css">. They are served here,
+    // as ws-shim.js does for fetch and XMLHttpRequest; other origins go to the network.
+    const port = localPort(url);
+    if (port) event.respondWith(forward(event.request, url, `/__sandburg_backend/${port}${url.pathname}${url.search}`));
+    return;
+  }
   if (hooks.fetch && hooks.fetch(event, url)) return;
   if (url.pathname === '/__sandburg/node-worker.js' || url.pathname === WS_SHIM || RUNTIME_LIB.test(url.pathname)) {
     event.respondWith(runtimeScript(event.request, url.pathname));
@@ -76,6 +83,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
   event.respondWith(forward(event.request, url));
 });
+
+/** The port of an http(s)://localhost:<port> URL (and 127.0.0.1, 0.0.0.0, [::1]), else null. */
+function localPort(url) {
+  if (!/^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/.test(url.hostname) || !/^https?:$/.test(url.protocol)) return null;
+  return url.port || (url.protocol === 'https:' ? '443' : '80');
+}
 
 /** The WebSocket shim each app page loads (SHIM below): fetched as the app starts, then answered from memory. */
 const WS_SHIM = '/__sandburg/ws-shim.js';
@@ -178,7 +191,11 @@ function injectShim() {
   });
 }
 
-async function forward(request, url) {
+/**
+ * Forwards an app request to the runtime. `path` is where it goes when it is not the app's own URL
+ * (a server's localhost URL, served by its port): the browser treats its answer as cross-origin.
+ */
+async function forward(request, url, path) {
   let p;
   try {
     p = await getPort();
@@ -195,7 +212,7 @@ async function forward(request, url) {
     const referrer = new URL(request.referrer);
     headers.push(['referer', hooks.appPath && referrer.origin === self.location.origin ? referrer.origin + hooks.appPath(referrer) : request.referrer]);
   }
-  p.postMessage({ type: 'request', id, method: request.method, url: hooks.appPath ? hooks.appPath(url) : url.pathname + url.search, headers, body }, body ? [body] : []);
+  p.postMessage({ type: 'request', id, method: request.method, url: path ?? (hooks.appPath ? hooks.appPath(url) : url.pathname + url.search), headers, body }, body ? [body] : []);
   return new Promise((resolve) => {
     let controller;
     const stream = new ReadableStream({
@@ -213,9 +230,18 @@ async function forward(request, url) {
         for (const [k, v] of m.headers) if (k.toLowerCase() !== 'set-cookie') h.append(k, v);
         // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
         if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', hooks.coep ?? 'credentialless');
-        if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
+        if (path) {
+          // On the developer's machine the page and this server share an origin: the page may use its
+          // answers as its own (a module script, a font), where a browser checks them as cross-origin.
+          h.set('cross-origin-resource-policy', 'cross-origin');
+          if (request.mode === 'cors') {
+            h.set('access-control-allow-origin', self.location.origin);
+            h.set('access-control-allow-credentials', 'true');
+          }
+        } else if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
         // A redirect to one of the app's own paths (/login) stays where the deployment serves the app.
-        if (hooks.sitePath && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
+        // (A server's localhost URL resolves it against its own origin, which comes back here.)
+        if (hooks.sitePath && !path && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));
         let body = NULL_BODY.has(m.status) || request.method === 'HEAD' ? null : stream;
         // A whole response (the runtime had it all in one task): no more messages for it.
         if (m.type === 'full') {
@@ -237,7 +263,9 @@ async function forward(request, url) {
         } catch {}
         replies.delete(id);
       } else if (m.type === 'error') {
-        resolve(new Response(m.message, { status: 502, headers: { 'content-type': 'text/plain' } }));
+        // A localhost URL that no server answers (nothing listens there) fails as a refused connection
+        // would: a program's fetch() in the runtime sees ECONNREFUSED.
+        resolve(path ? Response.error() : new Response(m.message, { status: 502, headers: { 'content-type': 'text/plain' } }));
         try {
           controller.error(new Error(m.message));
         } catch {}

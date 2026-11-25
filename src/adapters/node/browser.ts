@@ -369,7 +369,7 @@ export function createAdapter(): RuntimeAdapter {
         if (!direct) return p.request(port, request, reply);
         const target = Number(direct[1]);
         if (!p.ports.includes(target)) return reply.postMessage({ type: 'error', message: `nothing is listening on localhost:${target}` });
-        p.request(target, { ...request, url: (direct[2] ?? '/') + (direct[3] ?? '') }, reply);
+        p.request(target, { ...request, url: (direct[2] ?? '/') + (direct[3] ?? '') }, reply, true);
       });
       // Edits to the running app (sandburg open, checks that exercise hot reloading).
       window.__sandburgWriteFile = (path: string, content: string) => p.writeFile(path, content);

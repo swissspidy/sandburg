@@ -174,6 +174,11 @@ export class NodeProcess {
   private pending = new Map<number, BridgeReply>();
   /** When each pending request was sent (see activity()). */
   private sent = new Map<number, number>();
+  /**
+   * The port each pending request went to, for its redirects (unlocalize); null for one the page sent to
+   * a server by its localhost URL (/__sandburg_backend/<port>/…), whose redirects keep theirs.
+   */
+  private answering = new Map<number, number | null>();
   private lastRequest = performance.now();
   private sockets = new Map<number, MessagePort>();
   private nextId = 1;
@@ -306,10 +311,14 @@ export class NodeProcess {
     return `http://localhost:${this.appPort ?? port}`;
   }
 
-  /** An absolute URL of one of the program's servers (http://localhost:<port>/…) as a path on the page's origin. */
-  private unlocalize(url: string): string {
+  /**
+   * A redirect's absolute URL of the server that answered (http://localhost:<port>/…) as a path on the
+   * page's origin, where that server is. Another server's URL stays absolute: the browser asks for it
+   * and the service worker serves it from that server (sw.js), where a bare path would reach this one.
+   */
+  private unlocalize(url: string, port: number | null | undefined): string {
     const m = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::(\d+))?(?=[/?#]|$)/.exec(url);
-    return m && this.ports.includes(Number(m[1] ?? 80)) ? url.slice(m[0].length) || '/' : url;
+    return m && port != null && Number(m[1] ?? 80) === port ? url.slice(m[0].length) || '/' : url;
   }
 
   /** Origin or Referer from the page, rewritten to localOrigin. */
@@ -317,8 +326,11 @@ export class NodeProcess {
     return value === location.origin || value.startsWith(location.origin + '/') ? this.localOrigin(port) + value.slice(location.origin.length) : value;
   }
 
-  /** Forwards a request from the service worker to the server on `port`; the response streams back over `reply`. */
-  request(port: number, request: BridgedRequest, reply: BridgeReply): void {
+  /**
+   * Forwards a request from the service worker to the server on `port`; the response streams back over
+   * `reply`. `byLocalUrl`: the page asked for the server by its localhost URL (/__sandburg_backend/<port>/…).
+   */
+  request(port: number, request: BridgedRequest, reply: BridgeReply, byLocalUrl = false): void {
     // A program that only exited may leave child processes serving (see 'exit'); one that failed (also
     // after it exited: the page's compiler, a WebAssembly thread) may never answer.
     const gone = this.terminated ? `${this.label} stopped` : this.failure ? `${this.label} crashed: ${this.failure.message.split('\n')[0]}` : null;
@@ -329,6 +341,7 @@ export class NodeProcess {
     }
     const id = this.nextId++;
     this.pending.set(id, reply);
+    this.answering.set(id, byLocalUrl ? null : port);
     this.lastActivity = this.lastRequest = performance.now();
     this.sent.set(id, this.lastRequest);
     // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
@@ -515,7 +528,7 @@ export class NodeProcess {
         if (!reply) break;
         for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
         // A redirect to the server's own address (built from Host, now localhost) stays on the page's origin.
-        const headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v) : v]);
+        const headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v, this.answering.get(m.id)) : v]);
         if (m.type === 'response-start') {
           reply.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
           break;
@@ -525,6 +538,7 @@ export class NodeProcess {
         reply.close();
         this.pending.delete(m.id);
         this.sent.delete(m.id);
+        this.answering.delete(m.id);
         break;
       }
       case 'ws-accept':
@@ -550,12 +564,14 @@ export class NodeProcess {
         this.pending.get(m.id)?.close();
         this.pending.delete(m.id);
         this.sent.delete(m.id);
+        this.answering.delete(m.id);
         break;
       case 'response-error':
         this.pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
         this.pending.get(m.id)?.close();
         this.pending.delete(m.id);
         this.sent.delete(m.id);
+        this.answering.delete(m.id);
         break;
       // The page's runtime is started with init right away, and has no parent for process.send();
       // the page sends requests with their whole body (a streamed one's server says what it read).
