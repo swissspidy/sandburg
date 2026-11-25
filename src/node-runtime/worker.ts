@@ -487,7 +487,9 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
   // process.getBuiltinModule (Node 22.3): a built-in by its name, else undefined (no package is loaded).
   proc.getBuiltinModule = (id: unknown) => {
     if (typeof id !== 'string') throw Object.assign(new TypeError(`The "id" argument must be of type string. Received ${received(id)}`), { code: 'ERR_INVALID_ARG_TYPE' });
-    return moduleSystem.Module.isBuiltin(id) ? builtin(id.replace(/^node:/, '')) : undefined;
+    const name = id.replace(/^node:/, '');
+    // A built-in the runtime does not have (node:test/reporters) is undefined, as an unavailable one is in Node.
+    return moduleSystem.Module.isBuiltin(id) && (name === 'module' || name in table) ? builtin(name) : undefined;
   };
 
   // `new AsyncFunction(…params, body)` with the body lowered like all other code (see interop.ts).

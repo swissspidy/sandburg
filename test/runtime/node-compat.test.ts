@@ -2648,7 +2648,7 @@ fs.closeSync(fd);
 const os = require('os').constants;
 out.constants = [os.errno.ENOENT, os.errno.EACCES, Object.keys(os.errno).length, os.priority.PRIORITY_HIGH, os.dlopen.RTLD_NOW, os.UV_UDP_REUSEADDR, fs.constants.S_IFSOCK, fs.constants.O_NOFOLLOW, fs.constants.UV_DIRENT_DIR, Object.keys(fs.constants), require('constants').ENOENT, require('constants').SIGTERM, require('constants').O_DIRECTORY, require('constants').RTLD_LAZY];
 
-out.querystring = [qs.escape('a b&ü/~*'), qs.escape(5), qs.unescape('a%20b+c%zz%C3%BC'), qs.unescape('a+b', true), qs.unescape('%zz+x', true), qs.unescapeBuffer('a%41+%zz', true).toString(), [...qs.unescapeBuffer('%e2%82%')], failure(() => qs.escape('\\ud800'))];
+out.querystring = [qs.unescape('100%5g'), qs.unescapeBuffer('%4zz').toString(), qs.escape('a b&ü/~*'), qs.escape(5), qs.unescape('a%20b+c%zz%C3%BC'), qs.unescape('a+b', true), qs.unescape('%zz+x', true), qs.unescapeBuffer('a%41+%zz', true).toString(), [...qs.unescapeBuffer('%e2%82%')], failure(() => qs.escape('\\ud800'))];
 
 const r = new stream.Readable({ read() {} });
 const w = new stream.Writable({ write(c, e, cb) { cb(); } });
@@ -2687,7 +2687,7 @@ out.urlPattern = [typeof URLPattern, new URLPattern({ pathname: '/users/:id' }).
     punycode: ["2.1.0","maana-pta","mañana","user@xn--maana-pta.com","mañana.bücher.com","a.b.c",[97,128512],"a😀",["RangeError",null,"Invalid input"]],
     fs: [["function","function","function","function","undefined","undefined","function","function"],["function","function","undefined","undefined"],"ok","ok",["Error","EBADF","EBADF: bad file descriptor, fchmod"],["TypeError","ERR_INVALID_ARG_TYPE","The \"fd\" argument must be of type number. Received type string ('x')"],["TypeError","ERR_INVALID_ARG_VALUE","The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received 'zz'"],"ok",["TypeError","ERR_INVALID_ARG_TYPE","The \"uid\" argument must be of type number. Received type string ('a')"],"ok","ENOENT"],
     constants: [2,13,79,-14,2,4,49152,131072,2,["UV_FS_SYMLINK_DIR","UV_FS_SYMLINK_JUNCTION","O_RDONLY","O_WRONLY","O_RDWR","UV_DIRENT_UNKNOWN","UV_DIRENT_FILE","UV_DIRENT_DIR","UV_DIRENT_LINK","UV_DIRENT_FIFO","UV_DIRENT_SOCKET","UV_DIRENT_CHAR","UV_DIRENT_BLOCK","S_IFMT","S_IFREG","S_IFDIR","S_IFCHR","S_IFBLK","S_IFIFO","S_IFLNK","S_IFSOCK","O_CREAT","O_EXCL","UV_FS_O_FILEMAP","UV_FS_O_TEMPORARY","UV_FS_O_SHORT_LIVED","UV_FS_O_SEQUENTIAL","UV_FS_O_RANDOM","O_NOCTTY","O_TRUNC","O_APPEND","O_DIRECTORY","O_NOATIME","O_NOFOLLOW","O_SYNC","O_DSYNC","O_DIRECT","O_NONBLOCK","S_IRWXU","S_IRUSR","S_IWUSR","S_IXUSR","S_IRWXG","S_IRGRP","S_IWGRP","S_IXGRP","S_IRWXO","S_IROTH","S_IWOTH","S_IXOTH","F_OK","R_OK","W_OK","X_OK","UV_FS_COPYFILE_EXCL","COPYFILE_EXCL","UV_FS_COPYFILE_FICLONE","COPYFILE_FICLONE","UV_FS_COPYFILE_FICLONE_FORCE","COPYFILE_FICLONE_FORCE"],2,15,65536,1],
-    querystring: ["a%20b%26%C3%BC%2F~*","5","a b+c%zzü","a+b","%zz x","aA %zz",[226,130,37],["URIError","ERR_INVALID_URI","URI malformed"]],
+    querystring: ["100%5g","%4zz","a%20b%26%C3%BC%2F~*","5","a b+c%zzü","a+b","%zz x","aA %zz",[226,130,37],["URIError","ERR_INVALID_URI","URI malformed"]],
     stream: [false,null,true,null,null,true,null,false,true,false],
     vm: ["function",42],
     urlPattern: ["function","42"],

@@ -32,7 +32,9 @@ export function unescapeBuffer(s: string, decodeSpaces?: boolean): Buffer {
       continue;
     }
     if (c === 37 && index < maxLength) {
-      const high = hex(s.charCodeAt(++index));
+      // As Node's: c is the character after the %, so a lone hex digit is kept as itself.
+      c = s.charCodeAt(++index);
+      const high = hex(c);
       if (high < 0) {
         out[outIndex++] = 37;
         continue;
