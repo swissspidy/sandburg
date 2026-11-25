@@ -22,7 +22,7 @@ import { NO_SNAPSHOT, SnapshotStore } from '../store.ts';
 import { pageRendererMemory, type RendererMemory } from './renderer-memory.ts';
 import { collectGarbage, type DevtoolsSession } from './collect-garbage.ts';
 import { traceTransfer, tracingTransfers } from '../transfer-trace.ts';
-import { browserSandbox, missingBrowser, launchOptions, sandboxUnavailable } from './launch.ts';
+import { browserSandbox, missingBrowser, launchOptions, oldBrowser, sandboxUnavailable } from './launch.ts';
 import { recordRequestFailures, recordDocuments, RunState, unwrap } from './run-state.ts';
 import { failFastOnRuntimeFetch, appFrame, waitForRender, failFastOnAppError, relevantFindings, watchSources, failOnUndeclaredImport } from './app-ready.ts';
 import { checkSources, strictLayout, type SourceFinding } from '../source-check.ts';
@@ -249,6 +249,8 @@ export class Session {
     try {
       const launch = launchOptions({ ...this.options, browserSandbox: this.browserSandbox });
       this.browser = await chromium.launch(launch);
+      const old = oldBrowser(this.browser.version());
+      if (old) process.emitWarning(old);
       const dir = this.options.codeCacheDir === undefined ? '.sandburg/code-cache' : this.options.codeCacheDir;
       this.codeCache = new CodeCache(this.browser, (launch.args ?? []).join(' '), dir === null ? null : resolve(dir));
     } catch (err) {

@@ -1,7 +1,8 @@
 /** Chromium's launch options (src/orchestrator/launch.ts). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BrowserSetupError, browserSandbox, launchOptions, playwrightDisabledFeatures, sandboxUnavailable } from '../../src/orchestrator/launch.ts';
+import { createRequire } from 'node:module';
+import { BrowserSetupError, MIN_CHROMIUM, browserSandbox, launchOptions, oldBrowser, playwrightDisabledFeatures, sandboxUnavailable } from '../../src/orchestrator/launch.ts';
 
 test("one --disable-features switch: Playwright's features and Sandburg's, in place of Playwright's own", () => {
   const features = playwrightDisabledFeatures();
@@ -70,4 +71,15 @@ test("Playwright's SIGINT, SIGTERM and SIGHUP listeners are left out for a calle
   assert.deepEqual(Object.fromEntries(Object.entries(launchOptions({ handleSignals: false })).filter(([k]) => k.startsWith('handleSIG'))), off);
   // A library caller's session keeps Playwright's defaults (they close the browser on a signal).
   for (const options of [{}, { handleSignals: true }]) assert.deepEqual(Object.keys(launchOptions(options)).filter((k) => k.startsWith('handleSIG')), []);
+});
+
+test('a browser older than Chromium 157 is warned of: its WebAssembly threads see memory growth late (ADR 0070)', () => {
+  assert.match(oldBrowser('156.0.7999.1') ?? '', /^Chromium 156\.0\.7999\.1 is older than 157: .*memory access out of bounds/);
+  assert.equal(oldBrowser('157.0.8000.0'), null);
+  assert.equal(oldBrowser('159.0.8154.6'), null);
+  assert.equal(oldBrowser('HeadlessChrome'), null, 'a version it cannot read is not warned of');
+  // Playwright's own build is never warned of: a Playwright that went back past 157 fails here.
+  const require = createRequire(import.meta.url);
+  const browsers = require(require.resolve('playwright-core/package.json').replace(/package\.json$/, 'browsers.json')) as { browsers: { name: string; browserVersion: string }[] };
+  for (const b of browsers.browsers.filter((b) => b.name.startsWith('chromium'))) assert.ok(Number.parseInt(b.browserVersion, 10) >= MIN_CHROMIUM, `${b.name} ${b.browserVersion}`);
 });

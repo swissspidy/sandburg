@@ -1,6 +1,6 @@
 # Draft V8 bug report: other threads see shared memory growth late (bulk memory and atomic ops trap)
 
-Draft, not filed (ADR 0070). Upstream: https://issues.chromium.org/issues (component Blink>JavaScript>WebAssembly).
+Not filed: fixed upstream in Chromium 157 ([crbug.com/529880019](https://crbug.com/529880019), [crbug.com/533026477](https://crbug.com/533026477)), and Sandburg's guard is removed (ADR 0070, "Since Chromium 157"). Kept as the record of the race and its reduced test case.
 
 ## Summary
 
@@ -185,5 +185,5 @@ atomic it waited on.
 ## Workaround
 
 Before a bulk memory or atomic operation, compare its end with `memory.size` and run `memory.grow 0`
-when it is past it. Sandburg rewrites modules with shared memory to do this
-(`src/node-runtime/wasm-grow-guard.ts`).
+when it is past it. Sandburg rewrote modules with shared memory to do this
+(`src/node-runtime/wasm-grow-guard.ts`, removed once Playwright's Chromium had the fix).

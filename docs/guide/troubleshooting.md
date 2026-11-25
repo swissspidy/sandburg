@@ -12,7 +12,9 @@ error: Chromium for Playwright 1.65.1 is not installed. Run: npx playwright@1.65
 - `npx playwright@<version> install chromium` installs it; on Linux, add `--with-deps` for its system
   libraries (that runs apt, with `sudo`).
 - `SANDBURG_CHROMIUM=/path/to/chrome` uses another Chromium instead (`executablePath` in
-  `SessionOptions`).
+  `SessionOptions`). It should be Chromium 157 or later: in older ones, WebAssembly threads can trap
+  with `memory access out of bounds` on memory another thread just grew (rolldown's WebAssembly build
+  does), and Sandburg warns when it launches one.
 - From a checkout, `npx playwright install chromium` installs the Chromium of the Playwright version
   the checkout pins.
 

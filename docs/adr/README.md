@@ -73,7 +73,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0067](0067-diagnosis-followups.md) | Diagnosis follow-ups: a page's later 5xx, error-named paths, and checking the sources of an app that hangs | Accepted |
 | [0068](0068-uncaught-exceptions-and-signals.md) | Uncaught exceptions, unhandled rejections and signals as in Node; signals stop a command cleanly | Accepted |
 | [0069](0069-http-timeouts-bodies.md) | http shim: server timeouts, streamed request bodies, and when a connection's events come | Accepted |
-| [0070](0070-wasm-memory-growth-race.md) | The rolldown trap: V8 sees shared memory growth late; modules with shared memory are guarded | Accepted |
+| [0070](0070-wasm-memory-growth-race.md) | The rolldown trap: V8 sees shared memory growth late; modules with shared memory are guarded | Superseded in part (fixed in Chromium 157; guard removed) |
 | [0071](0071-warm-slower-than-cold.md) | Warm runs slower than cold in fidelity study v7: the method, not the runs | Accepted |
 | [0072](0072-pnpm-undeclared-imports.md) | Strict layouts (pnpm's isolated node_modules, Yarn's Plug'n'Play, Bun workspaces; not Nuxt): an import of a package the project does not declare fails, as there | Accepted |
 | [0073](0073-git-dependencies.md) | Git dependencies, fetched by the host and linked | Accepted |
