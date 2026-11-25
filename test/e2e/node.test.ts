@@ -370,6 +370,8 @@ test("a server's own fetch() of its localhost URL carries no page cookies, and i
         "require('node:http').createServer(async (q, s) => {",
         "  if (q.url === '/echo') return s.writeHead(200, { 'set-cookie': 'from=' + (q.headers['x-from'] || 'page') + '; Path=/' }).end('cookie=' + (q.headers.cookie || ''));",
         "  if (q.url === '/probe') return s.end(await (await fetch('http://localhost:3000/echo', { headers: { 'x-from': 'server' } })).text());",
+        // A worker of the app's own, named as the runtime's script is: its fetch() is the page's.
+        "  if (q.url === '/workers/__sandburg/node-worker.js') return s.writeHead(200, { 'content-type': 'text/javascript' }).end(\"onmessage = async () => postMessage(await (await fetch('http://localhost:3000/echo', { headers: { 'x-from': 'worker' } })).text());\");",
         "  s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><title>cookies</title><h1>cookies</h1>');",
         "}).listen(3000);",
       ].join('\n'),
@@ -386,7 +388,13 @@ test("a server's own fetch() of its localhost URL carries no page cookies, and i
           const server = await (await fetch('/probe')).text();
           const afterServer = document.cookie;
           const page = await (await fetch('/echo')).text();
-          return { server, afterServer, page, afterPage: document.cookie };
+          const afterPage = document.cookie;
+          const worker = new Worker('/workers/__sandburg/node-worker.js');
+          const fromWorker = await new Promise((resolve) => {
+            worker.onmessage = (e) => resolve(e.data);
+            worker.postMessage('go');
+          });
+          return { server, afterServer, page, afterPage, fromWorker };
         });
         // The server's fetch: no page cookie sent, and its answer's from=server not set in the page.
         expect(seen.server).toBe('cookie=');
@@ -394,6 +402,8 @@ test("a server's own fetch() of its localhost URL carries no page cookies, and i
         // The page's own request: its cookie sent, and the answer's cookie set.
         expect(seen.page).toBe('cookie=sess=browser');
         expect(seen.afterPage).toBe('sess=browser; from=page');
+        // The app's own worker, though its script is named as the runtime's: the page's cookies go with its fetch().
+        expect(seen.fromWorker).toBe('cookie=sess=browser; from=page');
       },
     },
   });

@@ -14,7 +14,8 @@ let port = null;
 let waiting = [];
 /**
  * A static deployment (the demos, site/) sets these before it imports this file: its own answers to
- * host requests (fetch returns true when it responded), where its host page is, the app's path
+ * host requests (fetch returns true when it responded), where its host page is, which workers are
+ * the runtime's (isRuntime: a program's fetch() is Node's, without the page's cookies), the app's path
  * prefix, markup to put before the WebSocket shim, and the embedder policy for app documents
  * (coep: require-corp where the browser has no credentialless).
  */
@@ -86,16 +87,25 @@ self.addEventListener('fetch', (event) => {
 
 /**
  * Whether the program itself sent the request: a fetch() in one of its runtimes, as a server's code
- * calls fetch('http://localhost:3000/api'). A runtime is a worker whose script is the runtime's own,
- * node-worker.js or a spare's node-spare.js, wherever the host serves them (__sandburgBase); not the
- * app's page, nor a worker of the app's own. On the developer's machine Node's fetch() sends no
- * browser cookies, and the cookies it is answered with stay out of the browser (process.ts).
+ * calls fetch('http://localhost:3000/api'). Not the app's page, nor a worker of the app's own. On the
+ * developer's machine Node's fetch() sends no browser cookies, and the cookies it is answered with
+ * stay out of the browser (process.ts).
  */
-const RUNTIME_WORKER = /\/node-(?:worker|spare)\.js$/;
 async function sentByProgram(event) {
   if (!event.clientId) return false;
   const client = await self.clients.get(event.clientId);
-  return client?.type === 'worker' && RUNTIME_WORKER.test(new URL(client.url).pathname);
+  return client?.type === 'worker' && isRuntime(new URL(client.url));
+}
+
+/**
+ * Whether a worker's script is the runtime's own: node-worker.js or a spare's node-spare.js, served by
+ * the host, never by the app. Here the host's paths are /__sandburg/ (the fetch listener sends them to
+ * the host before the app sees them), so an app's worker of the same name elsewhere is the app's; a
+ * static deployment that serves the runtime under a path of its own says which (hooks.isRuntime).
+ */
+const RUNTIME_WORKER = /^\/__sandburg\/node-(?:worker|spare)\.js$/;
+function isRuntime(url) {
+  return url.origin === self.location.origin && (hooks.isRuntime ? hooks.isRuntime(url) : RUNTIME_WORKER.test(url.pathname));
 }
 
 /**
