@@ -463,7 +463,9 @@ export function createModuleSystem(host: LoaderHost) {
     const params = this.esm
       ? ['exports', 'require', 'module', '__sandburg_filename', '__sandburg_dirname', '__sandburg_import_meta_url']
       : ['exports', 'require', 'module', '__filename', '__dirname', '__sandburg_import_meta_url'];
-    const source = `(function (${params.join(', ')}) {${stripShebang(content)}\n})\n//# sourceURL=${filename}`;
+    // V8 ignores a sourceURL with whitespace in it (a frame of '[worker eval]', or of a path with a space,
+    // would read <anonymous>): it is escaped as in a URL.
+    const source = `(function (${params.join(', ')}) {${stripShebang(content)}\n})\n//# sourceURL=${filename.replace(/\s/g, encodeURIComponent)}`;
     const fn = (0, eval)(source) as (...args: unknown[]) => unknown;
     if (!this.esm) return fn.call(this.exports, this.exports, require, this, filename, dir, `file://${filename}`);
     try {

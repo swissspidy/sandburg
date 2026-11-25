@@ -436,6 +436,10 @@ test('child_process and worker_threads: a program given as text (node -e/-p/-v, 
           const w = new Worker("require('worker_threads').parentPort.postMessage([require('./lib/local'), module.filename, process.argv.slice(1)])", { eval: true });
           [out.worker] = await once(w, 'message');
           await w.terminate();
+          // Its stack frames name it (V8 drops a sourceURL with a space: '[worker eval]' is escaped).
+          const failing = new Worker("throw new Error('boom')", { eval: true });
+          const [error] = await once(failing, 'error');
+          out.workerFrame = error.stack.split('\\n').some((line) => line.includes('/app/[worker%20eval]:1:'));
           out.app = fs.readdirSync('/app');
           out.lib = fs.readdirSync('/app/lib');
           out.kept = fs.existsSync('/app/.sandburg') ? fs.readdirSync('/app/.sandburg') : [];
@@ -457,6 +461,7 @@ test('child_process and worker_threads: a program given as text (node -e/-p/-v, 
     thrown: 1,
     killed: 'SIGTERM',
     worker: ['local', '/app/[worker eval]', ['[worker eval]']],
+    workerFrame: true,
     // Sandburg's own directory (hidden from the project's file tree), and nothing left in it.
     app: ['.sandburg', 'lib', 'main.js', 'node_modules'],
     lib: ['local.js'],
