@@ -28,3 +28,44 @@ declare module 'sha.js/hash.js' {
 
 /** The host's esbuild version (bundle.ts defines it). */
 declare const __SANDBURG_ESBUILD__: string;
+
+/** elliptic, as node:crypto's key module (builtins/crypto-keys.ts) uses it. */
+declare module 'elliptic' {
+  interface BN {
+    toArray(endian: 'be', length?: number): number[];
+    toString(base: 16): string;
+  }
+  interface Signature {
+    r: BN;
+    s: BN;
+    toDER(): number[];
+  }
+  export namespace ec {
+    interface KeyPair {
+      getPublic(compact: boolean, enc: 'array'): number[];
+      sign(msg: number[]): Signature;
+      validate(): { result: boolean; reason: string | null };
+    }
+  }
+  export class ec {
+    constructor(curve: string);
+    /** The curve's order. */
+    n: BN;
+    keyFromPrivate(priv: number[]): ec.KeyPair;
+    keyFromPublic(pub: number[]): ec.KeyPair;
+    verify(msg: number[], signature: { r: string; s: string }, key: ec.KeyPair): boolean;
+  }
+  export namespace eddsa {
+    interface KeyPair {
+      getPublic(): number[];
+    }
+  }
+  export class eddsa {
+    constructor(curve: 'ed25519');
+    keyFromSecret(secret: number[]): eddsa.KeyPair;
+    sign(msg: number[], secret: number[]): { toBytes(): number[] };
+    verify(msg: number[], sig: number[], pub: number[]): boolean;
+  }
+  const elliptic: { ec: typeof ec; eddsa: typeof eddsa };
+  export default elliptic;
+}

@@ -10,6 +10,8 @@ export type RuntimeLib = keyof typeof RUNTIME_LIBS;
 /** Where a loaded library puts its exports, and where the runtime's script keeps its CommonJS modules by path. */
 export const LIBS_KEY = 'sandburg.libs';
 export const MODULES_KEY = 'sandburg.modules';
+/** Where node:crypto's library keeps its KeyObject, sign and verify (builtins/crypto-keys.ts): a symbol on crypto-browserify's exports, so the library is one entry of LIBS_KEY. */
+export const CRYPTO_KEYS_KEY = 'sandburg.cryptoKeys';
 
 /** crypto-browserify's exports (node:crypto takes what it does not have itself from there). */
 export const CRYPTO_LIB_KEYS = [
