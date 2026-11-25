@@ -93,6 +93,11 @@ export interface ThreadInit {
   main: string;
   /** process.argv[1], when it is not `main`: `-` for `node -`, none (null) for `node` reading its program from stdin. */
   script?: string | null;
+  /**
+   * `main` keeps a program given as text (node -e, -p, -v, stdin, a worker's eval), under the project's
+   * .sandburg/: it runs as this module of the cwd ('[eval]', '[stdin]', '[worker eval]'), as in Node.
+   */
+  evalAs?: string;
   /** The project's files when the thread started (see projectSnapshot): reads of them while they are unchanged, and while the parent is blocked. */
   snapshot?: ProjectSnapshot | Record<string, Uint8Array>;
   /** The mailboxes of the ports in the transfer list (see message-ports.ts). */
@@ -176,8 +181,8 @@ export type ToWorker =
   /** From the parent thread to this worker thread's parentPort. */
   | { type: 'wt-message'; data: unknown; mailboxes?: (Mailbox | null)[] }
   /** `track`: project directories whose files the runtime notes changes to from now on (see read-cache's ifChanged). */
-  /** `script`: what process.argv[1] reads when it is not `main` (null: none, as for a program read from stdin). */
-  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[]; script?: string | null }
+  /** `script`: what process.argv[1] reads when it is not `main` (null: none, as for a program read from stdin). `evalAs`: as ThreadInit's. */
+  | { type: 'run'; main: string; argv?: string[]; preload?: string[]; track?: string[]; script?: string | null; evalAs?: string }
   /** Before init: start the spare runtimes for threads now (the page sends it as a run mounts: SPARES_AT_MOUNT in adapters/node/browser.ts). */
   | { type: 'spares' }
   /**

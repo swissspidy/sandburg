@@ -15,7 +15,7 @@
 import { EventEmitter } from 'events';
 import util from 'util';
 import { Readable, Writable } from 'stream';
-import { liveRuntimes, startRuntime, type ThreadHost } from './threads.ts';
+import { dropEvalScript, liveRuntimes, startRuntime, writeEvalScript, type ThreadHost } from './threads.ts';
 import { SIGNALS, timers } from './builtins/process.ts';
 import { UNHANDLED_REJECTIONS, type UnhandledRejections } from './uncaught.ts';
 import { runScript } from './shell.ts';
@@ -204,17 +204,18 @@ export function createChildProcess(host: ChildProcessHost) {
     const { conditions, preload } = nodeOptions(execArgv, env);
     let main: string;
     const pid = nextPid++;
-    if (cmd.evalCode !== null) {
-      main = `${cwd}/[eval-${pid}].js`;
-      host.vfs().write(main, new TextEncoder().encode(cmd.evalCode));
-    } else main = cmd.script!.startsWith('/') ? cmd.script! : `${cwd}/${cmd.script}`.replace(/\/\.\//g, '/');
+    // A program given as text runs as Node's [eval] (or [stdin]) of its cwd; its text is kept out of the
+    // project's files until the child is over (ChildProcess.finish, runSync).
+    if (cmd.evalCode !== null) main = writeEvalScript(host, cmd.evalCode);
+    else main = cmd.script!.startsWith('/') ? cmd.script! : `${cwd}/${cmd.script}`.replace(/\/\.\//g, '/');
     const init: ThreadInit = {
       id: pid,
       workerData: null,
       env,
       argv: cmd.args,
       main,
-      ...(script !== undefined ? { script } : {}),
+      // process.argv[1]: none for node -e (as in Node), `-` or none for a program from stdin.
+      ...(cmd.evalCode !== null ? { evalAs: script === undefined ? '[eval]' : '[stdin]', script: script ?? null } : {}),
       process: { cwd, execArgv, conditions, preload: preload.map((p) => (p.startsWith('.') ? `${cwd}/${p}` : p)), ipc: stdio.includes('ipc') },
     };
     return { ...common, kind: 'node', init };
@@ -233,6 +234,8 @@ export function createChildProcess(host: ChildProcessHost) {
     spawnfile = '';
     spawnargs: string[] = [];
     private worker: globalThis.Worker | null = null;
+    /** What its Node program started with (not for a shell command). */
+    private init: ThreadInit | null = null;
     private shell: { kill(): void } | null = null;
     private done = false;
     /** A signal (not kill(0)'s probe) is ending it: its program's or script's own end is not its exit. */
@@ -246,6 +249,7 @@ export function createChildProcess(host: ChildProcessHost) {
       if (p.kind === 'shell') return this.runShell(p.script, p.cwd, p.env, p.stdio, options);
       if (p.kind === 'fail') return this.fail(p.command);
       const { argv, stdio, init } = p;
+      this.init = init;
       this.pid = init.id;
       const ipc = init.process!.ipc;
 
@@ -270,23 +274,29 @@ export function createChildProcess(host: ChildProcessHost) {
       this.connected = ipc;
       options.signal?.addEventListener('abort', () => this.kill('SIGTERM'), { once: true });
 
-      this.worker = startRuntime(
-        host,
-        init,
-        (m) => {
-          if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text);
-          else if (m.type === 'message') this.emit('message', m.data);
-          else if (m.type === 'exit') this.finish(Number(m.code ?? 0), null);
-          else if (m.type === 'fatal') {
-            write(2, `${m.stack ?? m.message}\n`);
+      try {
+        this.worker = startRuntime(
+          host,
+          init,
+          (m) => {
+            if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text);
+            else if (m.type === 'message') this.emit('message', m.data);
+            else if (m.type === 'exit') this.finish(Number(m.code ?? 0), null);
+            else if (m.type === 'fatal') {
+              write(2, `${m.stack ?? m.message}\n`);
+              this.finish(1, null);
+            }
+          },
+          (message) => {
+            write(2, `${message}\n`);
             this.finish(1, null);
-          }
-        },
-        (message) => {
-          write(2, `${message}\n`);
-          this.finish(1, null);
-        },
-      );
+          },
+        );
+      } catch (e) {
+        // The child never started: its program given as text goes too (finish() does not run).
+        dropEvalScript(host, init);
+        throw e;
+      }
       timers.setTimeout(() => this.emit('spawn'), 0);
     }
 
@@ -356,6 +366,7 @@ export function createChildProcess(host: ChildProcessHost) {
       if (this.done) return;
       this.done = true;
       this.worker?.terminate();
+      if (this.init) dropEvalScript(host, this.init);
       this.exitCode = code;
       this.signalCode = signal;
       if (this.connected) {
@@ -510,8 +521,15 @@ export function createChildProcess(host: ChildProcessHost) {
       }
       return true;
     };
-    /** Runs a Node program to its end: its exit code, or null once stopped. */
+    /** Runs a Node program to its end: its exit code, or null once stopped. Its program given as text goes with it. */
     const runNode = (init: ThreadInit): number | null => {
+      try {
+        return runNodeProgram(init);
+      } finally {
+        dropEvalScript(host, init);
+      }
+    };
+    const runNodeProgram = (init: ThreadInit): number | null => {
       if (stopped) return null;
       if (performance.now() >= deadline) {
         stopped = { timedOut: true };
