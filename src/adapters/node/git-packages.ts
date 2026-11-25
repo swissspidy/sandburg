@@ -30,16 +30,19 @@ import { UnsupportedDependencyError, unsupportedDependency } from './spec-guard.
 import { isText } from '../../store.ts';
 import type { FileTree, Project } from '../../types.ts';
 
-/** At most this many git packages per project (each git package may name more). */
-const MAX_PACKAGES = 50;
-/** A repository's files: at most this many, and this many bytes unpacked (its archive: as many, compressed). */
-const MAX_FILES = 20_000;
-const MAX_BYTES = 256 * 1024 * 1024;
-/** A project's git packages together: at most this many files and bytes. */
-const MAX_TOTAL_FILES = 50_000;
-const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
-/** Repositories' files kept in memory across runs: at most this many bytes (the disk keeps them all). */
-const MEMORY_BYTES = 256 * 1024 * 1024;
+/** What the host fetches for git dependencies, at most (the tests lower them). */
+export const gitLimits = {
+  /** Git specs per project (each git package may name more). */
+  packages: 50,
+  /** One repository: files, and bytes unpacked; a response (an archive, a pack) is no larger either. */
+  files: 20_000,
+  bytes: 256 * 1024 * 1024,
+  /** A project's git packages together: files and bytes unpacked, and bytes received, across the fetches it runs at once. */
+  totalFiles: 50_000,
+  totalBytes: 512 * 1024 * 1024,
+  /** Repositories' files kept in memory across runs (the disk keeps them all). */
+  memoryBytes: 256 * 1024 * 1024,
+};
 /** How long a branch or tag's commit is taken as known without asking again. */
 const REF_TTL_MS = 5 * 60_000;
 const TIMEOUT_MS = 60_000;
@@ -72,7 +75,7 @@ async function hostFetch(url: string, origins: Set<string>, init: RequestInit = 
 }
 
 /** isomorphic-git's HTTP client, over hostFetch (so its requests stay on the repository's host). */
-function httpClient(origins: Set<string>): Parameters<typeof git.listServerRefs>[0]['http'] {
+function httpClient(origins: Set<string>, budget?: Budget): Parameters<typeof git.listServerRefs>[0]['http'] {
   return {
     async request({ url, method = 'GET', headers = {}, body }) {
       let data: Uint8Array | undefined;
@@ -82,7 +85,8 @@ function httpClient(origins: Set<string>): Parameters<typeof git.listServerRefs>
         data = Buffer.concat(parts);
       }
       const res = await hostFetch(url, origins, { method, headers, body: data as BodyInit | undefined });
-      const bytes = new Uint8Array(await res.arrayBuffer());
+      // Bounded as an archive is: no response larger than a repository may be, nor than the project has left.
+      const bytes = await readCapped(res, url, budget);
       return {
         url: res.url || url,
         method,
@@ -164,7 +168,7 @@ function limiter(label: string, budget: Budget) {
     bytes += size;
     budget.files++;
     budget.bytes += size;
-    if (files > MAX_FILES || bytes > MAX_BYTES) throw new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (over ${MAX_FILES} files or ${MAX_BYTES / 2 ** 20} MB)`);
+    if (files > gitLimits.files || bytes > gitLimits.bytes) throw new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (over ${gitLimits.files} files or ${gitLimits.bytes / 2 ** 20} MB)`);
     overBudget(label, budget);
   };
 }
@@ -173,10 +177,12 @@ function limiter(label: string, budget: Budget) {
 interface Budget {
   files: number;
   bytes: number;
+  /** Bytes received (archives, packs), as they arrive. */
+  received: number;
 }
 
 function overBudget(label: string, budget: Budget): void {
-  if (budget.files > MAX_TOTAL_FILES || budget.bytes > MAX_TOTAL_BYTES) throw new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${MAX_TOTAL_FILES} files or ${MAX_TOTAL_BYTES / 2 ** 20} MB)`);
+  if (budget.files > gitLimits.totalFiles || budget.bytes > gitLimits.totalBytes) throw new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${gitLimits.totalFiles} files or ${gitLimits.totalBytes / 2 ** 20} MB)`);
 }
 
 /** Whether a path of the repository is part of the package: not its git metadata, nor installed packages. */
@@ -201,10 +207,16 @@ async function fromArchive(spec: GitSpec, sha: string, label: string, budget: Bu
     return null; // the clone may still work
   }
   const count = limiter(label, budget);
-  // No more than the project has left of its budget, either.
-  const gz = await readCapped(res, Math.max(0, Math.min(MAX_BYTES, MAX_TOTAL_BYTES - budget.bytes)), label);
+  const gz = await readCapped(res, label, budget);
   const files: FileTree = {};
-  for (const f of untar(gunzipSync(gz, { maxOutputLength: MAX_BYTES }))) {
+  let tar: Uint8Array;
+  try {
+    tar = gunzipSync(gz, { maxOutputLength: gitLimits.bytes });
+  } catch (e) {
+    if ((e as { code?: string }).code === 'ERR_BUFFER_TOO_LARGE' || e instanceof RangeError) throw new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (over ${gitLimits.bytes / 2 ** 20} MB unpacked)`);
+    throw e;
+  }
+  for (const f of untar(tar)) {
     if (!kept(f.path)) continue;
     count(f.data.length);
     files[f.path] = content(f.data);
@@ -215,7 +227,7 @@ async function fromArchive(spec: GitSpec, sha: string, label: string, budget: Bu
 /** A commit's files by a shallow fetch with isomorphic-git (a host without archives, or when its archive failed). */
 async function fromClone(spec: GitSpec, sha: string, label: string, ref: string | null, budget: Budget): Promise<FileTree> {
   const tmp = await mkdtemp(join(cacheRoot(), '.clone-'));
-  const http = httpClient(originsOf(spec));
+  const http = httpClient(originsOf(spec), budget);
   try {
     await git.init({ fs, dir: tmp });
     await git.addRemote({ fs, dir: tmp, remote: 'origin', url: spec.url });
@@ -265,19 +277,36 @@ const trees = new Map<string, { files: Promise<FileTree>; bytes: number }>();
 /** The bytes a file tree holds (its strings). */
 const treeBytes = (tree: FileTree) => Object.values(tree).reduce((n, c) => n + (typeof c === 'string' ? c.length : c.base64.length), 0);
 
-/** A response's body, refused past `max` bytes (by its length, or as it arrives) rather than read whole. */
-async function readCapped(res: Response, max: number, label: string): Promise<Uint8Array> {
-  const tooLarge = () => new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (an archive over ${max / 2 ** 20} MB)`);
+/**
+ * A response's body, refused past a repository's limit (by its length, or as it arrives) and, with
+ * a budget, once the project's fetches have received more than theirs together: every response
+ * the parallel fetches read counts into it as it arrives, not when it is done.
+ */
+async function readCapped(res: Response, label: string, budget?: Budget): Promise<Uint8Array> {
+  const max = gitLimits.bytes;
+  const tooLarge = () => new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (a response over ${max / 2 ** 20} MB)`);
+  const overTotal = () => budget && budget.received > gitLimits.totalBytes;
+  const tooMuch = () => new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${gitLimits.totalBytes / 2 ** 20} MB received)`);
   if (Number(res.headers.get('content-length') ?? 0) > max) {
     await res.body?.cancel();
     throw tooLarge();
   }
   const parts: Uint8Array[] = [];
   let size = 0;
-  for await (const chunk of res.body ?? []) {
-    size += chunk.length;
-    if (size > max) throw tooLarge();
-    parts.push(chunk);
+  const reader = res.body?.getReader();
+  try {
+    for (;;) {
+      const next = await reader?.read();
+      if (!next || next.done) break;
+      size += next.value.length;
+      if (budget) budget.received += next.value.length;
+      if (size > max) throw tooLarge();
+      if (overTotal()) throw tooMuch();
+      parts.push(next.value);
+    }
+  } catch (e) {
+    await reader?.cancel().catch(() => {});
+    throw e;
   }
   return Buffer.concat(parts);
 }
@@ -310,7 +339,7 @@ function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean
         for (const e of trees.values()) total += e.bytes;
         // The newest last: a tree over the cap on its own goes too (its project still has it).
         for (const [key, e] of trees) {
-          if (total <= MEMORY_BYTES) break;
+          if (total <= gitLimits.memoryBytes) break;
           total -= e.bytes;
           trees.delete(key);
         }
@@ -358,7 +387,7 @@ export async function withGitPackages(project: Project, options: { offline?: boo
   const map: Record<string, string> = {};
   let count = 0;
   // What this call fetches, as it unpacks: the parallel fetches stop once they are over the project's budget together.
-  const fetching: Budget = { files: 0, bytes: 0 };
+  const fetching: Budget = { files: 0, bytes: 0, received: 0 };
   // Given up on (options.signal): this call rejects at once. A fetch it started that other runs may
   // share goes on, bounded by its requests' timeouts, and is kept for them.
   const { signal } = options;
@@ -379,7 +408,7 @@ export async function withGitPackages(project: Project, options: { offline?: boo
       pending.map(async ({ dir, name, spec: raw }) => {
         const spec = parseGitSpec(raw, hosts);
         if (!spec || !('url' in spec)) throw unsupportedDependency(name, raw, spec?.unsupported ?? 'not a git repository');
-        if (++count > MAX_PACKAGES) throw unsupportedDependency(name, raw, `more than ${MAX_PACKAGES} git dependencies`);
+        if (++count > gitLimits.packages) throw unsupportedDependency(name, raw, `more than ${gitLimits.packages} git dependencies`);
         const label = `${name}@${raw}`;
         const started = Date.now();
         const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await until(resolveCommit(spec, label, options.offline === true)));
@@ -394,7 +423,7 @@ export async function withGitPackages(project: Project, options: { offline?: boo
           totalBytes += typeof data === 'string' ? data.length : data.base64.length;
         }
         totalFiles += n;
-        if (totalFiles > MAX_TOTAL_FILES || totalBytes > MAX_TOTAL_BYTES) throw new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${MAX_TOTAL_FILES} files or ${MAX_TOTAL_BYTES / 2 ** 20} MB)`);
+        if (totalFiles > gitLimits.totalFiles || totalBytes > gitLimits.totalBytes) throw new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${gitLimits.totalFiles} files or ${gitLimits.totalBytes / 2 ** 20} MB)`);
         if (!n || typeof tree[`${prefix}package.json`] !== 'string') throw appError(`git: ${label}: no package.json at ${spec.subdir || 'the repository root'} (commit ${sha.slice(0, 12)})`);
         map[raw.trim()] = at;
         options.log?.(`git: ${label} → ${sha.slice(0, 12)} (${n} files, ${Date.now() - started} ms)${unprepared(tree, prefix)}`);

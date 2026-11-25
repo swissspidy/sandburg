@@ -8,7 +8,7 @@ import { afterEach, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { parseGitSpec, looksLikeGit } from '../../src/adapters/node/git-spec.ts';
-import { withGitPackages } from '../../src/adapters/node/git-packages.ts';
+import { gitLimits, withGitPackages } from '../../src/adapters/node/git-packages.ts';
 import { planOf } from '../../src/adapters/node/local-packages.ts';
 import { node } from '../../src/adapters/node/index.ts';
 import { browserInstall, linkedBin } from '../../src/adapters/node/plan.ts';
@@ -254,4 +254,29 @@ test('a fetch the run gave up on rejects at once with the run\'s reason, and the
   // Another run gets the same commit's files from the fetch that went on.
   const again = await withGitPackages(project({ lib: `github:user/lib#${sha}` }));
   assert.equal(again.files[`.sandburg/git/github.com-user-lib-${sha.slice(0, 12)}/index.js`], "module.exports = '3.0.0';");
+});
+
+test('responses count against the limits as they arrive: parallel archives together, and a git protocol response on its own', async (t) => {
+  process.env.SANDBURG_GIT_DIR = tempDir('sandburg-git-');
+  const saved = { ...gitLimits };
+  t.after(() => Object.assign(gitLimits, saved));
+  // Two archives, each within a repository's limit, over the project's together.
+  const [a, b] = ['2'.repeat(40), '3'.repeat(40)];
+  const archive = (sha: string) => () => new Response(tarball(lib('4.0.0'), `lib-${sha}`));
+  fakeGitHub({ [`https://codeload.github.com/user/lib/tar.gz/${a}`]: archive(a), [`https://codeload.github.com/user/lib/tar.gz/${b}`]: archive(b) });
+  const size = tarball(lib('4.0.0'), `lib-${a}`).length;
+  Object.assign(gitLimits, { bytes: 100_000, totalBytes: size + size / 2 });
+  const together = await withGitPackages(project({ x: `github:user/lib#${a}`, y: `github:user/lib#${b}` })).catch((e: Error) => e);
+  assert.match((together as Error).message, /too large together \(over .* MB received\)/);
+  // A git protocol response (here the ref listing) larger than a repository may be.
+  Object.assign(gitLimits, saved, { bytes: 50 });
+  const listing = await withGitPackages(project({ z: 'github:user/lib#a-branch' })).catch((e: Error & { code?: string }) => e);
+  assert.match((listing as Error).message, /too large to fetch \(a response over/);
+  assert.equal((listing as { code?: string }).code, 'UNSUPPORTED');
+  // An archive that unpacks to more than a repository may: Sandburg's refusal, not zlib's.
+  const c = '4'.repeat(40);
+  Object.assign(gitLimits, saved, { bytes: size + 10 });
+  fakeGitHub({ [`https://codeload.github.com/user/lib/tar.gz/${c}`]: archive(c) });
+  const unpacked = await withGitPackages(project({ w: `github:user/lib#${c}` })).catch((e: Error) => e);
+  assert.match((unpacked as Error).message, /too large to fetch \(over .* MB unpacked\)/);
 });
