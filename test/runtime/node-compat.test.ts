@@ -2512,3 +2512,231 @@ const resolved = (run) => new Promise((resolve) => run((err, records) => resolve
     dns: [["127.0.0.1"],["127.0.0.1"],[{"address":"127.0.0.1","ttl":0}],["::1"],["ENODATA","queryMx","example.com"],["ENODATA","queryTxt","example.com"],["127.0.0.1"],["ENODATA","queryAaaa","127.0.0.1"],["ENODATA","querySrv","example.com"],["TypeError","ERR_INVALID_ARG_VALUE","The argument 'rrtype' is invalid. Received 'BOGUS'"]],
   });
 });
+
+test('events as Node 24 has them: on (emitters and EventTargets, close, error, abort), errorMonitor, captureRejections (option, static, symbol), get/setMaxListeners, once with a signal', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const events = require('events');
+const { EventEmitter, on, once, errorMonitor, captureRejectionSymbol } = events;
+const f = (fn) => { try { return fn(); } catch (e) { return [e.name, e.code, e.message]; } };
+const out = {};
+out.basics = [String(errorMonitor), String(captureRejectionSymbol), captureRejectionSymbol === Symbol.for('nodejs.rejection'), events.captureRejections, events.usingDomains, String(events.kMaxEventTargetListeners), String(events.kMaxEventTargetListenersWarned), events === EventEmitter, events.defaultMaxListeners];
+out.errors = [f(() => new EventEmitter({ captureRejections: 'yes' })), f(() => { events.captureRejections = 1; }), f(() => events.getMaxListeners({}))];
+const e = new EventEmitter(); e.setMaxListeners(3);
+out.max = [events.getMaxListeners(e), events.getMaxListeners(new EventTarget()), events.getMaxListeners(new EventEmitter())];
+events.setMaxListeners(7, e); out.max.push(e.getMaxListeners());
+const seen = [];
+const m = new EventEmitter();
+m.on(errorMonitor, (err) => seen.push(['monitor', err.message]));
+m.on('error', (err) => seen.push(['error', err.message]));
+m.emit('error', new Error('boom'));
+const lone = new EventEmitter(); lone.on(errorMonitor, (err) => seen.push(['monitor-lone', err.message]));
+seen.push(f(() => lone.emit('error', new Error('uncaught'))));
+out.monitor = seen;
+(async () => {
+  const c = new EventEmitter({ captureRejections: true });
+  const got = [];
+  c.on('error', (err) => got.push(['error', err.message]));
+  c.on('ev', async () => { throw new Error('async fail'); });
+  c.emit('ev');
+  class Custom extends EventEmitter { constructor() { super({ captureRejections: true }); } [captureRejectionSymbol](err, ev, ...args) { got.push(['custom', err.message, ev, ...args]); } }
+  const cu = new Custom(); cu.on('x', async () => { throw new Error('c fail'); }); cu.emit('x', 1, 2);
+  await new Promise((r) => setTimeout(r, 10));
+  out.capture = got;
+  const it = new EventEmitter();
+  setTimeout(() => { it.emit('d', 1); it.emit('d', 2, 3); it.emit('end'); }, 1);
+  const items = [];
+  for await (const v of on(it, 'd', { close: ['end'] })) items.push(v);
+  out.on = [items, it.listenerCount('d'), it.listenerCount('end'), it.listenerCount('error')];
+  const it2 = new EventEmitter();
+  setTimeout(() => it2.emit('error', new Error('it err')), 1);
+  try { for await (const v of on(it2, 'd')) void v; } catch (err) { out.onError = [err.message, it2.listenerCount('d')]; }
+  const ac = new AbortController();
+  const it3 = new EventEmitter();
+  setTimeout(() => ac.abort(), 1);
+  try { for await (const v of on(it3, 'd', { signal: ac.signal })) void v; } catch (err) { out.onAbort = [err.name, err.code, it3.listenerCount('d')]; }
+  const it4 = new EventEmitter();
+  const iter = on(it4, 'd');
+  it4.emit('d', 'queued');
+  out.onQueued = [await iter.next(), await iter.return(), it4.listenerCount('d'), await iter.next()];
+  const t = new EventTarget();
+  setTimeout(() => { t.dispatchEvent(new Event('ping')); }, 1);
+  for await (const [ev] of on(t, 'ping')) { out.onTarget = ev.type; break; }
+  out.onceTarget = (await Promise.all([once(t, 'pong'), Promise.resolve().then(() => t.dispatchEvent(new Event('pong')))]))[0][0].type;
+  const ac2 = new AbortController(); ac2.abort();
+  out.onceAbort = await once(new EventEmitter(), 'x', { signal: ac2.signal }).catch((err) => [err.name, err.code]);
+  console.log(JSON.stringify(out));
+})();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // Expected: what Node 24 prints for main.js.
+  assert.deepEqual(JSON.parse(out.stdout), {
+    basics: ["Symbol(events.errorMonitor)","Symbol(nodejs.rejection)",true,false,false,"Symbol(events.maxEventTargetListeners)","Symbol(events.maxEventTargetListenersWarned)",true,10],
+    errors: [["TypeError","ERR_INVALID_ARG_TYPE","The \"options.captureRejections\" property must be of type boolean. Received type string ('yes')"],["TypeError","ERR_INVALID_ARG_TYPE","The \"EventEmitter.captureRejections\" property must be of type boolean. Received type number (1)"],["TypeError","ERR_INVALID_ARG_TYPE","The \"emitter\" argument must be an instance of EventEmitter or EventTarget. Received an instance of Object"]],
+    max: [3,10,10,7],
+    monitor: [["monitor","boom"],["error","boom"],["monitor-lone","uncaught"],["Error",null,"uncaught"]],
+    capture: [["error","async fail"],["custom","c fail","x",1,2]],
+    on: [[[1],[2,3]],0,0,0],
+    onError: ["it err",0],
+    onAbort: ["AbortError","ABORT_ERR",0],
+    onQueued: [{"value":["queued"],"done":false},{"done":true},0,{"done":true}],
+    onTarget: "ping",
+    onceTarget: "pong",
+    onceAbort: ["AbortError","ABORT_ERR"],
+  });
+});
+
+test('built-ins Node 24 has: util.types.isKeyObject/isCryptoKey/isFloat16Array, process.getBuiltinModule (and sqlite only with node:), punycode, fs.fchmod/fchown/lchown, os and fs constants, querystring.escape/unescape/unescapeBuffer, stream.isDestroyed/isWritable/duplexPair, vm.createScript, url.URLPattern', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const util = require('util');
+const fs = require('fs');
+const path = require('path');
+const stream = require('stream');
+const qs = require('querystring');
+const punycode = require('punycode');
+const { isBuiltin, builtinModules } = require('module');
+const failure = (fn) => {
+  try {
+    const r = fn();
+    return r === undefined ? 'ok' : r;
+  } catch (e) {
+    return [e.name, e.code, e.message];
+  }
+};
+const out = {};
+
+out.types = [util.types.isKeyObject({}), util.types.isKeyObject(Object.assign(Object.create({ [Symbol.toStringTag]: 'KeyObject' }), { type: 'secret' })), util.types.isCryptoKey({}), util.types.isFloat16Array(new Float32Array(1))];
+
+out.builtins = [
+  process.getBuiltinModule('fs') === fs,
+  process.getBuiltinModule('node:path') === path,
+  process.getBuiltinModule('node:sqlite') === require('node:sqlite'),
+  process.getBuiltinModule('sqlite'),
+  process.getBuiltinModule('left-pad'),
+  failure(() => process.getBuiltinModule(5)),
+  isBuiltin('sqlite'),
+  isBuiltin('node:sqlite'),
+  isBuiltin('test'),
+  builtinModules.includes('sqlite'),
+  builtinModules.includes('node:sqlite'),
+  failure(() => require('sqlite'))[1],
+];
+
+out.punycode = [punycode.version, punycode.encode('mañana'), punycode.decode('maana-pta'), punycode.toASCII('user@mañana.com'), punycode.toUnicode('xn--maana-pta.xn--bcher-kva.com'), punycode.toASCII('a。b．c'), punycode.ucs2.decode('a😀'), punycode.ucs2.encode([97, 128512]), failure(() => punycode.decode('ü'))];
+
+const file = path.join(process.cwd(), 'perm.txt');
+fs.writeFileSync(file, 'x');
+const fd = fs.openSync(file, 'r');
+out.fs = [
+  ['fchmod', 'fchmodSync', 'fchown', 'fchownSync', 'lchmod', 'lchmodSync', 'lchown', 'lchownSync'].map((n) => typeof fs[n]),
+  ['lchmod', 'lchown', 'fchmod', 'fchown'].map((n) => typeof fs.promises[n]),
+  failure(() => fs.fchmodSync(fd, 0o644)),
+  failure(() => fs.fchmodSync(fd, '755')),
+  failure(() => fs.fchmodSync(9999, 0o644)),
+  failure(() => fs.fchmodSync('x', 0o644)),
+  failure(() => fs.fchmodSync(fd, 'zz')),
+  failure(() => fs.fchownSync(fd, 0, 0)),
+  failure(() => fs.fchownSync(fd, 'a', 0)),
+  failure(() => fs.lchownSync(file, 0, 0)),
+  failure(() => fs.lchownSync(path.join(process.cwd(), 'missing.txt'), 0, 0))[1],
+];
+fs.closeSync(fd);
+
+const os = require('os').constants;
+out.constants = [os.errno.ENOENT, os.errno.EACCES, Object.keys(os.errno).length, os.priority.PRIORITY_HIGH, os.dlopen.RTLD_NOW, os.UV_UDP_REUSEADDR, fs.constants.S_IFSOCK, fs.constants.O_NOFOLLOW, fs.constants.UV_DIRENT_DIR, Object.keys(fs.constants), require('constants').ENOENT, require('constants').SIGTERM, require('constants').O_DIRECTORY, require('constants').RTLD_LAZY];
+
+out.querystring = [qs.unescape('100%5g'), qs.unescapeBuffer('%4zz').toString(), qs.escape('a b&ü/~*'), qs.escape(5), qs.unescape('a%20b+c%zz%C3%BC'), qs.unescape('a+b', true), qs.unescape('%zz+x', true), qs.unescapeBuffer('a%41+%zz', true).toString(), [...qs.unescapeBuffer('%e2%82%')], failure(() => qs.escape('\\ud800'))];
+
+const r = new stream.Readable({ read() {} });
+const w = new stream.Writable({ write(c, e, cb) { cb(); } });
+out.stream = [stream.isDestroyed(r), stream.isDestroyed({}), stream.isWritable(w), stream.isWritable(r), stream.isWritable({}), stream.isReadable(r), stream.isReadable({})];
+w.end();
+r.destroy();
+out.stream.push(stream.isWritable(w), stream.isDestroyed(r), stream.isReadable(r));
+
+const vm = require('vm');
+out.vm = [typeof vm.createScript, vm.createScript('6 * 7').runInThisContext()];
+const { URLPattern } = require('url');
+out.urlPattern = [typeof URLPattern, new URLPattern({ pathname: '/users/:id' }).exec('https://x.test/users/42')?.pathname.groups.id];
+
+(async () => {
+  const [a, b] = stream.duplexPair();
+  const got = [];
+  b.on('data', (d) => got.push(d.toString()));
+  const ended = new Promise((res) => b.on('end', res));
+  a.write('hello');
+  a.end(' world');
+  await ended;
+  out.duplexPair = got.join('');
+  out.lchmodPromise = await fs.promises.lchmod(file, 0o644).catch((e) => [e.code, e.message]);
+  out.fchmodCallback = await new Promise((res) => fs.fchmod(9999, 0o644, (e) => res(e?.code)));
+  fs.unlinkSync(file);
+  console.log(JSON.stringify(out));
+})();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // Expected: what Node 24 prints for main.js.
+  assert.deepEqual(JSON.parse(out.stdout), {
+    types: [false,false,false,false],
+    builtins: [true,true,true,null,null,["TypeError","ERR_INVALID_ARG_TYPE","The \"id\" argument must be of type string. Received type number (5)"],false,true,false,false,true,"MODULE_NOT_FOUND"],
+    punycode: ["2.1.0","maana-pta","mañana","user@xn--maana-pta.com","mañana.bücher.com","a.b.c",[97,128512],"a😀",["RangeError",null,"Invalid input"]],
+    fs: [["function","function","function","function","undefined","undefined","function","function"],["function","function","undefined","undefined"],"ok","ok",["Error","EBADF","EBADF: bad file descriptor, fchmod"],["TypeError","ERR_INVALID_ARG_TYPE","The \"fd\" argument must be of type number. Received type string ('x')"],["TypeError","ERR_INVALID_ARG_VALUE","The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received 'zz'"],"ok",["TypeError","ERR_INVALID_ARG_TYPE","The \"uid\" argument must be of type number. Received type string ('a')"],"ok","ENOENT"],
+    constants: [2,13,79,-14,2,4,49152,131072,2,["UV_FS_SYMLINK_DIR","UV_FS_SYMLINK_JUNCTION","O_RDONLY","O_WRONLY","O_RDWR","UV_DIRENT_UNKNOWN","UV_DIRENT_FILE","UV_DIRENT_DIR","UV_DIRENT_LINK","UV_DIRENT_FIFO","UV_DIRENT_SOCKET","UV_DIRENT_CHAR","UV_DIRENT_BLOCK","S_IFMT","S_IFREG","S_IFDIR","S_IFCHR","S_IFBLK","S_IFIFO","S_IFLNK","S_IFSOCK","O_CREAT","O_EXCL","UV_FS_O_FILEMAP","UV_FS_O_TEMPORARY","UV_FS_O_SHORT_LIVED","UV_FS_O_SEQUENTIAL","UV_FS_O_RANDOM","O_NOCTTY","O_TRUNC","O_APPEND","O_DIRECTORY","O_NOATIME","O_NOFOLLOW","O_SYNC","O_DSYNC","O_DIRECT","O_NONBLOCK","S_IRWXU","S_IRUSR","S_IWUSR","S_IXUSR","S_IRWXG","S_IRGRP","S_IWGRP","S_IXGRP","S_IRWXO","S_IROTH","S_IWOTH","S_IXOTH","F_OK","R_OK","W_OK","X_OK","UV_FS_COPYFILE_EXCL","COPYFILE_EXCL","UV_FS_COPYFILE_FICLONE","COPYFILE_FICLONE","UV_FS_COPYFILE_FICLONE_FORCE","COPYFILE_FICLONE_FORCE"],2,15,65536,1],
+    querystring: ["100%5g","%4zz","a%20b%26%C3%BC%2F~*","5","a b+c%zzü","a+b","%zz x","aA %zz",[226,130,37],["URIError","ERR_INVALID_URI","URI malformed"]],
+    stream: [false,null,true,null,null,true,null,false,true,false],
+    vm: ["function",42],
+    urlPattern: ["function","42"],
+    duplexPair: "hello world",
+    lchmodPromise: ["ERR_METHOD_NOT_IMPLEMENTED","The lchmod() method is not implemented"],
+    fchmodCallback: "EBADF",
+  });
+});
+
+test('stream.duplexPair as Node 24 has it: a write completes when the other side reads it, end waits for its end, destroying a side ends the other (or destroys it, for an error)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const st = require('stream');
+const log = [];
+const [a, b] = st.duplexPair();
+a.write('one', () => log.push('cb one'));
+a.write('', () => log.push('cb empty'));
+log.push('after writes');
+const [e, f] = st.duplexPair();
+f.on('end', () => log.push('f end after e.destroy()'));
+f.resume();
+e.destroy();
+const [g, h] = st.duplexPair();
+g.on('error', () => {});
+h.on('error', (err) => log.push('h error ' + err.message));
+g.destroy(new Error('boom'));
+setTimeout(() => {
+  log.push('before read', 'f ' + [f.destroyed, f.readableEnded], 'h destroyed ' + h.destroyed);
+  b.on('data', (d) => log.push('b data ' + d));
+  a.end('two', () => log.push('a end cb'));
+  b.on('end', () => log.push('b end'));
+  a.on('finish', () => log.push('a finish'));
+}, 10);
+setTimeout(async () => {
+  const [x, y] = st.duplexPair();
+  let n = 0;
+  y.on('data', (d) => (n += d.length));
+  await new Promise((res) => x.end(Buffer.alloc(200000, 1), res));
+  log.push('big ' + n);
+  const [p, q] = st.duplexPair();
+  q.resume();
+  await st.promises.pipeline(st.Readable.from(['x', 'y']), p);
+  log.push('pipeline done');
+  console.log(JSON.stringify(log));
+}, 50);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // Expected: what Node 24 prints for main.js.
+  assert.deepEqual(JSON.parse(out.stdout), ["after writes","cb one","cb empty","f end after e.destroy()","before read","f false,true","h destroyed true","b data one","b data two","b end","a end cb","a finish","big 200000","pipeline done"]);
+});

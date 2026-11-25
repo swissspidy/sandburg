@@ -8,7 +8,7 @@ import { Readable, Writable } from 'readable-stream';
 import { FsError, norm, type VStat, type Vfs } from '../vfs.ts';
 import { bindContext } from '../async-context.ts';
 import { realpath } from '../links.ts';
-import { onLaterIo, PROMISIFY_CUSTOM } from './process.ts';
+import { onLaterIo, PROMISIFY_CUSTOM, received } from './process.ts';
 
 type PathLike = string | Buffer | URL;
 type Encoding = BufferEncoding | null | undefined;
@@ -18,11 +18,15 @@ const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 const S_IFCHR = 0o020000;
 
+/** fs.constants, as Node's on Linux (x64), in its order. */
 const constants = {
-  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
-  O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024,
-  S_IFMT: 0o170000, S_IFREG, S_IFDIR, S_IFLNK: 0o120000,
-  COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, UV_FS_O_FILEMAP: 0,
+  UV_FS_SYMLINK_DIR: 1, UV_FS_SYMLINK_JUNCTION: 2, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, UV_DIRENT_UNKNOWN: 0, UV_DIRENT_FILE: 1, UV_DIRENT_DIR: 2, UV_DIRENT_LINK: 3,
+  UV_DIRENT_FIFO: 4, UV_DIRENT_SOCKET: 5, UV_DIRENT_CHAR: 6, UV_DIRENT_BLOCK: 7, S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192, S_IFBLK: 24576,
+  S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152, O_CREAT: 64, O_EXCL: 128, UV_FS_O_FILEMAP: 0, UV_FS_O_TEMPORARY: 0, UV_FS_O_SHORT_LIVED: 0, UV_FS_O_SEQUENTIAL: 0,
+  UV_FS_O_RANDOM: 0, O_NOCTTY: 256, O_TRUNC: 512, O_APPEND: 1024, O_DIRECTORY: 65536, O_NOATIME: 262144, O_NOFOLLOW: 131072, O_SYNC: 1052672, O_DSYNC: 4096,
+  O_DIRECT: 16384, O_NONBLOCK: 2048, S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64, S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8, S_IRWXO: 7, S_IROTH: 4,
+  S_IWOTH: 2, S_IXOTH: 1, F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1, UV_FS_COPYFILE_FICLONE: 2, COPYFILE_FICLONE: 2,
+  UV_FS_COPYFILE_FICLONE_FORCE: 4, COPYFILE_FICLONE_FORCE: 4,
 };
 
 /** open(2)'s flags for each flag string, as Node maps them (the synchronous ones, 'rs+' and 'as', as the others). */
@@ -280,6 +284,19 @@ export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' 
   const STDIO: Record<number, 'stdout' | 'stderr' | undefined> = { 1: 'stdout', 2: 'stderr' };
   const stdioDecoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
   const isStdio = (fd: number) => fd === 0 || fd === 1 || fd === 2;
+  const invalidType = (name: string, v: unknown) => Object.assign(new TypeError(`The "${name}" argument must be of type number. Received ${received(v)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+  function checkFd(fd: unknown, syscall: string): void {
+    if (typeof fd !== 'number') throw invalidType('fd', fd);
+    if (!fds.has(fd)) throw Object.assign(new Error(`EBADF: bad file descriptor, ${syscall}`), { errno: -9, code: 'EBADF', syscall });
+  }
+  function checkMode(mode: unknown): void {
+    if (typeof mode === 'string' ? !/^[0-7]+$/.test(mode) : !(Number.isInteger(mode) && (mode as number) >= 0 && (mode as number) <= 0xffffffff)) {
+      throw Object.assign(new TypeError(`The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received ${typeof mode === 'string' ? `'${mode}'` : String(mode)}`), { code: 'ERR_INVALID_ARG_VALUE' });
+    }
+  }
+  function checkOwner(id: unknown, name: string): void {
+    if (typeof id !== 'number') throw invalidType(name, id);
+  }
   function fdPath(fd: number): string {
     const f = fds.get(fd);
     if (!f) throw new FsError('EBADF', 'read', String(fd));
@@ -426,6 +443,21 @@ export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' 
     fdatasyncSync: () => {},
     chmodSync: () => {},
     chownSync: () => {},
+    // Modes and owners are not kept: these check their arguments and that the file is there, as Node's.
+    fchmodSync: (fd: number, mode: number | string) => {
+      checkFd(fd, 'fchmod');
+      checkMode(mode);
+    },
+    fchownSync: (fd: number, uid: number, gid: number) => {
+      checkOwner(uid, 'uid');
+      checkOwner(gid, 'gid');
+      checkFd(fd, 'fchown');
+    },
+    lchownSync: (p: PathLike, uid: number, gid: number) => {
+      checkOwner(uid, 'uid');
+      checkOwner(gid, 'gid');
+      if (!vfs.exists(abs(p))) throw new FsError('ENOENT', 'lchown', abs(p));
+    },
     utimesSync: () => {},
     futimesSync: () => {},
     lutimesSync: () => {},
@@ -483,7 +515,8 @@ export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' 
       }
       later(() => (error ? cb(error) : cb(null, result)));
     };
-    promisified[base] = async (...args: unknown[]) => withoutStack(() => (fn as (...a: unknown[]) => unknown)(...args));
+    // fs/promises has no fd functions (a FileHandle's methods are those).
+    if (base !== 'fchmod' && base !== 'fchown') promisified[base] = async (...args: unknown[]) => withoutStack(() => (fn as (...a: unknown[]) => unknown)(...args));
   }
   // fs-extra looks for it when it loads, and warns without.
   Object.assign(callbackified.realpath, { native: callbackified.realpath });
@@ -743,6 +776,10 @@ export function createFs(vfs: Vfs, cwd: () => string, write?: (stream: 'stdout' 
     })();
   }) as never;
 
+  // On Linux, Node has no lchmod: fs/promises' rejects (and fs has none).
+  promisified.lchmod = async () => {
+    throw Object.assign(new Error('The lchmod() method is not implemented'), { code: 'ERR_METHOD_NOT_IMPLEMENTED' });
+  };
   const promises = { ...promisified, constants };
   return {
     ...sync,

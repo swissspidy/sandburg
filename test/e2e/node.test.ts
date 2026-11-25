@@ -301,6 +301,65 @@ test('a project without dependencies runs (npm creates no node_modules for it)',
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+// The page's server sees Host: localhost:3000 (process.ts), and an app that builds absolute URLs from
+// it (Express' `http://${req.get('host')}/…`) puts that origin in its markup: not the page's origin.
+test('a page whose markup loads its assets from http://localhost:<port> (URLs built from Host) gets them', async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'absolute-assets', private: true, scripts: { dev: 'node server.js' } }),
+      'server.js': [
+        "const assets = {",
+        "  '/style.css': ['text/css', 'h1 { color: rgb(0, 128, 0); }'],",
+        "  '/classic.js': ['text/javascript', \"document.querySelector('#classic').textContent = 'classic ran';\"],",
+        "  '/module.js': ['text/javascript', \"document.querySelector('#module').textContent = 'module ran';\"],",
+        "  '/pixel.svg': ['image/svg+xml', '<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"7\" height=\"5\"/>'],",
+        "  '/same.css': ['text/css', '#same { color: rgb(0, 0, 255); }'],",
+        "  '/real.css': ['text/css', '#redirected { color: rgb(128, 0, 128); }'],",
+        "};",
+        // A localhost port where nothing listens is still a refused connection to the program.
+        "let refused = 'pending';",
+        "require('node:http').get('http://localhost:3999/', () => (refused = 'answered')).on('error', (e) => (refused = e.code));",
+        "require('node:http').createServer((q, s) => {",
+        "  if (q.url === '/refused') return s.end(refused);",
+        "  const asset = assets[q.url];",
+        "  if (asset) return s.writeHead(200, { 'content-type': asset[0] }).end(asset[1]);",
+        "  const base = 'http://' + q.headers.host;",
+        // A redirect to another path of the same server, by its absolute URL.
+        "  if (q.url === '/moved.css') return s.writeHead(302, { location: base + '/same.css' }).end();",
+        "  s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><html><head>' +",
+        "    '<link rel=\"stylesheet\" href=\"' + base + '/style.css\">' +",
+        "    '<link rel=\"stylesheet\" href=\"' + base + '/moved.css\">' +",
+        "    '<link rel=\"stylesheet\" href=\"http://localhost:3001/redirect.css\">' +",
+        "    '<script src=\"' + base + '/classic.js\" defer></script>' +",
+        "    '<script type=\"module\" src=\"' + base.replace('localhost', '127.0.0.1') + '/module.js\"></script>' +",
+        "    '</head><body><h1>' + base + '</h1><p id=\"classic\"></p><p id=\"module\"></p><p id=\"same\">same</p><p id=\"redirected\">redirected</p><img alt=\"pixel\" src=\"' + base + '/pixel.svg\"></body></html>');",
+        "}).listen(3000);",
+        // Another server, whose stylesheet redirects to the page's server: the browser must get it from 3000.
+        "require('node:http').createServer((q, s) => s.writeHead(302, { location: 'http://localhost:3000/real.css' }).end()).listen(3001);",
+      ].join('\n'),
+    },
+    { name: 'absolute-assets', path: 'absolute-assets' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: {
+      assets: async ({ app, expect }) => {
+        const heading = app.getByRole('heading', { level: 1 });
+        await expect(heading).toHaveText('http://localhost:3000');
+        await expect(heading).toHaveCSS('color', 'rgb(0, 128, 0)');
+        await expect(app.locator('#classic')).toHaveText('classic ran');
+        await expect(app.locator('#module')).toHaveText('module ran');
+        await expect(app.getByAltText('pixel')).toHaveJSProperty('naturalWidth', 7);
+        // Redirects: to another path of the same server, and from another server's URL to the page's server.
+        await expect(app.locator('#same')).toHaveCSS('color', 'rgb(0, 0, 255)');
+        await expect(app.locator('#redirected')).toHaveCSS('color', 'rgb(128, 0, 128)');
+        await expect.poll(() => app.evaluate(async () => (await fetch('/refused')).text())).toBe('ECONNREFUSED');
+      },
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 test('a server that runs synchronous commands as it starts (node -p, a git revision with a fallback) runs', async () => {
   const project = projectFromFiles(
     {
