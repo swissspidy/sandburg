@@ -156,21 +156,34 @@ const content = (data: Uint8Array): FileTree[string] => {
 };
 
 /** Counts what a repository unpacks to, and stops one that is too large. */
-function limiter(label: string) {
+function limiter(label: string, budget: Budget) {
   let files = 0;
   let bytes = 0;
   return (size: number) => {
     files++;
     bytes += size;
+    budget.files++;
+    budget.bytes += size;
     if (files > MAX_FILES || bytes > MAX_BYTES) throw new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (over ${MAX_FILES} files or ${MAX_BYTES / 2 ** 20} MB)`);
+    overBudget(label, budget);
   };
+}
+
+/** What one project's git fetches have unpacked so far, together: every fetch it runs at once counts into it as it goes. */
+interface Budget {
+  files: number;
+  bytes: number;
+}
+
+function overBudget(label: string, budget: Budget): void {
+  if (budget.files > MAX_TOTAL_FILES || budget.bytes > MAX_TOTAL_BYTES) throw new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${MAX_TOTAL_FILES} files or ${MAX_TOTAL_BYTES / 2 ** 20} MB)`);
 }
 
 /** Whether a path of the repository is part of the package: not its git metadata, nor installed packages. */
 const kept = (path: string) => !path.split('/').some((p) => p === '.git' || p === 'node_modules');
 
 /** A commit's files from its host's archive (GitHub, GitLab, Bitbucket), or null when the host has no such archive. */
-async function fromArchive(spec: GitSpec, sha: string, label: string): Promise<FileTree | null> {
+async function fromArchive(spec: GitSpec, sha: string, label: string, budget: Budget): Promise<FileTree | null> {
   const name = spec.path.split('/').pop()!;
   const url =
     spec.host === 'github'
@@ -187,8 +200,9 @@ async function fromArchive(spec: GitSpec, sha: string, label: string): Promise<F
     await res.body?.cancel();
     return null; // the clone may still work
   }
-  const count = limiter(label);
-  const gz = await readCapped(res, MAX_BYTES, label);
+  const count = limiter(label, budget);
+  // No more than the project has left of its budget, either.
+  const gz = await readCapped(res, Math.max(0, Math.min(MAX_BYTES, MAX_TOTAL_BYTES - budget.bytes)), label);
   const files: FileTree = {};
   for (const f of untar(gunzipSync(gz, { maxOutputLength: MAX_BYTES }))) {
     if (!kept(f.path)) continue;
@@ -199,7 +213,7 @@ async function fromArchive(spec: GitSpec, sha: string, label: string): Promise<F
 }
 
 /** A commit's files by a shallow fetch with isomorphic-git (a host without archives, or when its archive failed). */
-async function fromClone(spec: GitSpec, sha: string, label: string, ref: string | null): Promise<FileTree> {
+async function fromClone(spec: GitSpec, sha: string, label: string, ref: string | null, budget: Budget): Promise<FileTree> {
   const tmp = await mkdtemp(join(cacheRoot(), '.clone-'));
   const http = httpClient(originsOf(spec));
   try {
@@ -218,7 +232,7 @@ async function fromClone(spec: GitSpec, sha: string, label: string, ref: string 
       if (remoteRef) await fetchOne(remoteRef);
       if (!(await has())) await fetchOne(remoteRef, null);
     }
-    const count = limiter(label);
+    const count = limiter(label, budget);
     const files: FileTree = {};
     await git.walk({
       fs,
@@ -269,7 +283,7 @@ async function readCapped(res: Response, max: number, label: string): Promise<Ui
 }
 
 /** A commit's files: from memory, the disk, the host's archive or a clone, in that order. */
-function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean): Promise<FileTree> {
+function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean, budget: Budget): Promise<FileTree> {
   const id = `${spec.origin}/${spec.path}#${sha}`;
   let pending = trees.get(id)?.files;
   if (!pending) {
@@ -280,7 +294,7 @@ function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean
       if (offline) throw new Error(`git: ${label}: offline, and commit ${sha} has not been fetched before`);
       await mkdir(cacheRoot(), { recursive: true });
       const ref = spec.committish && !FULL_SHA.test(spec.committish) ? spec.committish : null;
-      const files = (await fromArchive(spec, sha, label)) ?? (await fromClone(spec, sha, label, ref));
+      const files = (await fromArchive(spec, sha, label, budget)) ?? (await fromClone(spec, sha, label, ref, budget));
       const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}`;
       await writeFile(tmp, JSON.stringify(files));
       await rename(tmp, file);
@@ -294,9 +308,9 @@ function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean
         // Bounded by bytes: the oldest go first (the disk still has them).
         let total = 0;
         for (const e of trees.values()) total += e.bytes;
+        // The newest last: a tree over the cap on its own goes too (its project still has it).
         for (const [key, e] of trees) {
           if (total <= MEMORY_BYTES) break;
-          if (e === entry) continue;
           total -= e.bytes;
           trees.delete(key);
         }
@@ -343,6 +357,8 @@ export async function withGitPackages(project: Project, options: { offline?: boo
   let files = project.files;
   const map: Record<string, string> = {};
   let count = 0;
+  // What this call fetches, as it unpacks: the parallel fetches stop once they are over the project's budget together.
+  const fetching: Budget = { files: 0, bytes: 0 };
   let totalFiles = 0;
   let totalBytes = 0;
   for (;;) {
@@ -360,7 +376,7 @@ export async function withGitPackages(project: Project, options: { offline?: boo
         const label = `${name}@${raw}`;
         const started = Date.now();
         const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await resolveCommit(spec, label, options.offline === true));
-        const tree = await commitFiles(spec, sha, label, options.offline === true);
+        const tree = await commitFiles(spec, sha, label, options.offline === true, fetching);
         const at = dirOf(spec, sha);
         const prefix = spec.subdir ? `${spec.subdir}/` : '';
         let n = 0;
