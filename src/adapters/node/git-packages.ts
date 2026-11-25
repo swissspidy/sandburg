@@ -16,7 +16,7 @@
  * The host fetches from the repository's host only: no redirect leaves it (a project names the URL,
  * and the host must not become its way into an internal address).
  */
-import { mkdir, readFile, rename, rm, writeFile, mkdtemp } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile, mkdtemp } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
@@ -321,7 +321,14 @@ function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean
   if (!pending) {
     pending = (async () => {
       const file = join(cacheRoot(), `${createHash('sha256').update(id).digest('hex').slice(0, 32)}.json`);
-      const cached = await readFile(file, 'utf8').then((t) => JSON.parse(t) as FileTree, () => null);
+      // Charged to the project's budget by its size before it is read: parallel reads of cached
+      // repositories are bounded together, as downloads are.
+      const size = await stat(file).then((st) => st.size, () => null);
+      if (size !== null) {
+        budget.received += size;
+        if (budget.received > gitLimits.totalBytes) throw new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${gitLimits.totalBytes / 2 ** 20} MB read)`);
+      }
+      const cached = size === null ? null : await readFile(file, 'utf8').then((t) => JSON.parse(t) as FileTree, () => null);
       if (cached) return cached;
       if (offline) throw new Error(`git: ${label}: offline, and commit ${sha} has not been fetched before`);
       await mkdir(cacheRoot(), { recursive: true });

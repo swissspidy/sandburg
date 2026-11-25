@@ -7,6 +7,9 @@
 import { afterEach, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { parseGitSpec, looksLikeGit } from '../../src/adapters/node/git-spec.ts';
 import { gitLimits, withGitPackages } from '../../src/adapters/node/git-packages.ts';
 import { planOf } from '../../src/adapters/node/local-packages.ts';
@@ -288,6 +291,21 @@ test('responses count against the limits as they arrive: parallel archives toget
   assert.match((clone as Error).message, /too large to fetch \(a response over/);
   assert.equal((clone as { code?: string }).code, 'UNSUPPORTED');
   assert.ok(requests.some((r) => r.startsWith('GET https://git.example.com/')), requests.join('\n'));
+  // Cached repositories are charged by their size before they are read, parallel reads together.
+  const cache = tempDir('sandburg-git-');
+  process.env.SANDBURG_GIT_DIR = cache;
+  const cachedTree = JSON.stringify({ 'package.json': JSON.stringify({ name: 'lib', version: '5.0.0' }), 'index.js': 'x'.repeat(400) });
+  const [d, e] = ['6'.repeat(40), '7'.repeat(40)];
+  for (const sha of [d, e]) writeFileSync(join(cache, `${createHash('sha256').update(`https://github.com/user/lib#${sha}`).digest('hex').slice(0, 32)}.json`), cachedTree);
+  fakeGitHub();
+  Object.assign(gitLimits, saved, { totalBytes: cachedTree.length + cachedTree.length / 2 });
+  const read = await withGitPackages(project({ d: `github:user/lib#${d}`, e: `github:user/lib#${e}` })).catch((err: Error) => err);
+  assert.match((read as Error).message, /too large together \(over .* MB read\)/);
+  assert.deepEqual(requests, [], 'from the disk, nothing fetched');
+  // Within the budget, the same entries are read and used.
+  Object.assign(gitLimits, saved);
+  const ok = await withGitPackages(project({ d: `github:user/lib#${d}` }));
+  assert.equal(ok.files[`.sandburg/git/github.com-user-lib-${d.slice(0, 12)}/index.js`], 'x'.repeat(400));
   // An archive that unpacks to more than a repository may: Sandburg's refusal, not zlib's.
   const c = '4'.repeat(40);
   Object.assign(gitLimits, saved, { bytes: size + 10 });
