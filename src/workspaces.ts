@@ -73,6 +73,7 @@ export function workspaceDirs(files: FileTree, pkg: PackageJson | null): string[
   if (!patterns) return [];
   return Object.keys(files)
     .map((p) => /^(.+)\/package\.json$/.exec(p)?.[1])
-    .filter((d): d is string => !!d && isWorkspace(d, patterns))
+    // Never Sandburg's own files (a git dependency it fetched into .sandburg/git/), whatever a glob matches.
+    .filter((d): d is string => !!d && !d.split('/').includes('.sandburg') && isWorkspace(d, patterns))
     .sort();
 }

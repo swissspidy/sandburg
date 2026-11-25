@@ -19,6 +19,8 @@ import { parseArgs } from '@pkgjs/parseargs';
 import { asyncHooks, EventEmitterAsyncResource } from './async-context.ts';
 import { createFs } from './builtins/fs.ts';
 import { http, https } from './builtins/http.ts';
+import { qsEscape, qsUnescape, unescapeBuffer } from './builtins/querystring.ts';
+import { punycode } from './builtins/punycode.ts';
 import { PROMISIFY_CUSTOM, received, timers, timersPromises } from './builtins/process.ts';
 import * as misc from './builtins/misc.ts';
 import { net } from './builtins/net.ts';
@@ -66,11 +68,69 @@ export function buildBuiltins() {
     LegacyStream.call(this, opts);
   }
   Stream.prototype = LegacyStream.prototype;
+  type StreamLike = { readable?: boolean; writable?: boolean; readableEnded?: boolean; writableEnded?: boolean; destroyed?: boolean; _readableState?: { destroyed?: boolean }; _writableState?: { destroyed?: boolean }; on?: unknown; pipe?: unknown; write?: unknown } | null | undefined;
+  // As Node's: null for what is not a Node stream.
+  function isDestroyed(s: StreamLike): boolean | null {
+    const isStream = !!s && (!!s._readableState || !!s._writableState || (typeof s.on === 'function' && (typeof s.pipe === 'function' || typeof s.write === 'function')));
+    if (!isStream) return null;
+    return !!(s.destroyed || (s._writableState ?? s._readableState)?.destroyed);
+  }
+  /**
+   * Two Duplex streams, each one's writes the other's reads (stream.duplexPair), as Node 24's
+   * (lib/internal/streams/duplexpair.js): a write completes once the other side reads it, end waits
+   * for the other side's 'end', and destroying a side ends the other (or destroys it, for an error).
+   */
+  function duplexPair(options?: object): [InstanceType<typeof rs.Duplex>, InstanceType<typeof rs.Duplex>] {
+    type Side = InstanceType<typeof rs.Duplex>;
+    const peers = new Map<Side, Side>();
+    const pending = new Map<Side, () => void>();
+    const nextTick = (fn: () => void) => (globalThis as unknown as { process: { nextTick(fn: () => void): void } }).process.nextTick(fn);
+    const side = (): Side =>
+      new rs.Duplex({
+        ...options,
+        read() {
+          const resume = pending.get(this);
+          pending.delete(this);
+          resume?.();
+        },
+        write(chunk: Uint8Array, _encoding, cb) {
+          const peer = peers.get(this)!;
+          if (chunk.length === 0) return nextTick(cb);
+          peer.push(chunk);
+          pending.set(peer, cb);
+        },
+        final(cb) {
+          const peer = peers.get(this)!;
+          peer.on('end', cb);
+          peer.push(null);
+        },
+        destroy(err, cb) {
+          const peer = peers.get(this);
+          if (peer && !peer.destroyed) {
+            nextTick(() => {
+              if (peer.destroyed) return;
+              // As Node's: the other side is destroyed without the error (no unhandled 'error' there).
+              if (err) peer.destroy();
+              else peer.push(null);
+            });
+          }
+          cb(err);
+        },
+      });
+    const a = side();
+    const b = side();
+    peers.set(a, b);
+    peers.set(b, a);
+    return [a, b];
+  }
   const stream = Object.assign(Stream as unknown as Record<string, unknown>, rs, {
     Stream,
     promises: rs.promises ?? { pipeline: util.promisify(rs.pipeline), finished: util.promisify(rs.finished) },
-    isReadable: (s: { readable?: boolean }) => !!s?.readable,
+    isReadable: (s: StreamLike) => (typeof s?.readable !== 'boolean' ? null : !isDestroyed(s) && s.readable && !s.readableEnded),
+    isWritable: (s: StreamLike) => (typeof s?.writable !== 'boolean' ? null : !isDestroyed(s) && s.writable && !s.writableEnded),
+    isDestroyed,
     isErrored: (s: { errored?: unknown }) => !!s?.errored,
+    duplexPair,
     getDefaultHighWaterMark: () => 65536,
     setDefaultHighWaterMark: () => {},
   });
@@ -119,7 +179,16 @@ export function buildBuiltins() {
     });
 
   const nodeUtil = Object.assign(Object.create(null), util, {
-    types: { ...(util as unknown as { types?: object }).types, isPromise: (v: unknown) => v instanceof Promise, isUint8Array: (v: unknown) => v instanceof Uint8Array, isAnyArrayBuffer: (v: unknown) => v instanceof ArrayBuffer, isArrayBufferView: ArrayBuffer.isView, isNativeError: (v: unknown) => v instanceof Error, isProxy: () => false, isExternal: () => false, isBoxedPrimitive: () => false, isModuleNamespaceObject: () => false },
+    types: { ...(util as unknown as { types?: object }).types, isPromise: (v: unknown) => v instanceof Promise, isUint8Array: (v: unknown) => v instanceof Uint8Array, isAnyArrayBuffer: (v: unknown) => v instanceof ArrayBuffer, isArrayBufferView: ArrayBuffer.isView, isNativeError: (v: unknown) => v instanceof Error, isProxy: () => false, isExternal: () => false, isBoxedPrimitive: () => false, isModuleNamespaceObject: () => false,
+      // A KeyObject is node:crypto's (looked up only for what says it is one: crypto's library loads with it).
+      isKeyObject: (v: unknown) => {
+        if (Object.prototype.toString.call(v) !== '[object KeyObject]') return false;
+        const KeyObject = (cryptoModule() as { KeyObject?: abstract new (...a: never[]) => unknown }).KeyObject;
+        return typeof KeyObject === 'function' && v instanceof KeyObject;
+      },
+      isCryptoKey: (v: unknown) => typeof CryptoKey === 'function' && v instanceof CryptoKey,
+      isFloat16Array: (v: unknown) => typeof (globalThis as { Float16Array?: unknown }).Float16Array === 'function' && v instanceof (globalThis as unknown as { Float16Array: new () => unknown }).Float16Array,
+    },
     TextEncoder,
     TextDecoder,
     stripVTControlCharacters: (s: string) => s.replace(/\u001b\[[0-9;]*[A-Za-z]/g, ''),
@@ -318,6 +387,12 @@ export function buildBuiltins() {
     return crypto;
   };
 
+  let cryptoMade: Record<string, unknown> | undefined;
+  /** node:crypto, made once (util.types.isKeyObject asks for its KeyObject). */
+  function cryptoModule() {
+    return (cryptoMade ??= makeCrypto());
+  }
+
   // node:zlib: native streams over browserify-zlib, a runtime library loaded the first time a program
   // uses one of its members (its sync functions, classes, a stream that is flushed): Vite requires
   // zlib as it starts and does not use it in dev.
@@ -359,7 +434,7 @@ export function buildBuiltins() {
     'path/posix': () => path,
     'path/win32': () => path,
     buffer: () => ({ Buffer, SlowBuffer: Buffer, kMaxLength: 2 ** 31 - 1, kStringMaxLength: 2 ** 29, constants: { MAX_LENGTH: 2 ** 31 - 1, MAX_STRING_LENGTH: 2 ** 29 }, Blob, File, atob, btoa, isUtf8: () => true, isAscii: (b: Uint8Array) => b.every((x) => x < 128), transcode: (b: Uint8Array) => b, INSPECT_MAX_BYTES: 50 }),
-    events: () => Object.assign(events, { EventEmitter, EventEmitterAsyncResource, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), setMaxListeners: () => {}, addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
+    events: () => Object.assign(events, { EventEmitter, EventEmitterAsyncResource, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
     stream: () => stream,
     'stream/promises': () => stream.promises,
     'stream/web': () => ({ ReadableStream, WritableStream, TransformStream, TextEncoderStream, TextDecoderStream, ByteLengthQueuingStrategy, CountQueuingStrategy, CompressionStream, DecompressionStream }),
@@ -395,10 +470,10 @@ export function buildBuiltins() {
     sys: () => nodeUtil,
     assert: () => assert,
     'assert/strict': () => assertStrict,
-    url: () => url,
-    querystring: () => querystring,
-    punycode: () => ({ toASCII: (s: string) => url.domainToASCII(s), toUnicode: (s: string) => s, encode: (s: string) => s, decode: (s: string) => s }),
-    crypto: makeCrypto,
+    url: () => Object.assign(url, { URLPattern: (globalThis as { URLPattern?: unknown }).URLPattern }),
+    querystring: () => ({ ...querystring, escape: qsEscape, unescape: qsUnescape, unescapeBuffer }),
+    punycode: () => punycode,
+    crypto: cryptoModule,
     zlib: makeZlib,
     os: () => misc.os,
     tty: () => misc.tty,
@@ -427,7 +502,11 @@ export function buildBuiltins() {
     'timers/promises': () => timersPromises,
     process: () => proc,
     console: () => console,
-    constants: () => ({ ...misc.os.constants.signals, ...fs.constants }),
+    // As Node's: os.constants' dlopen, errno, priority and signals, then fs's and crypto's constants.
+    constants: () => {
+      const { dlopen, errno, priority, signals } = misc.os.constants;
+      return { ...dlopen, ...errno, ...priority, ...signals, ...fs.constants, ...(cryptoModule().constants as object) };
+    },
     readline: () => misc.readline,
     'readline/promises': () => misc.readline.promises,
     inspector: () => misc.inspector,

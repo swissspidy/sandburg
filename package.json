@@ -50,6 +50,7 @@
     "esbuild": "0.28.2",
     "esbuild-wasm": "0.28.2",
     "events": "^3.3.0",
+    "isomorphic-git": "1.44.12",
     "ivya": "^1.8.2",
     "path-browserify": "^1.0.1",
     "playwright-core": "1.65.0",

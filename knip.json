@@ -13,6 +13,7 @@
     "src/node-runtime/lib-globals.js",
     "src/node-runtime/builtins/crypto-keys.ts",
     "src/node-runtime/process-alias.cjs",
+    "src/node-runtime/events.cjs",
     "src/node-runtime/url-querystring.cjs",
     "src/host/host.ts",
     "src/adapters/node/browser.ts",
@@ -37,7 +38,6 @@
   "ignoreDependencies": [
     "assert",
     "buffer",
-    "events",
     "string_decoder",
     "url",
     "util",
