@@ -90,11 +90,11 @@ const CIPHERS = [
   'aes-192-cfb8', 'aes-192-ctr', 'aes-192-ecb', 'aes-192-gcm', 'aes-192-ofb', 'aes-256-cbc', 'aes-256-cfb', 'aes-256-cfb1', 'aes-256-cfb8', 'aes-256-ctr', 'aes-256-ecb',
   'aes-256-gcm', 'aes-256-ofb', 'aes128', 'aes192', 'aes256', 'des', 'des-cbc', 'des-ecb', 'des-ede', 'des-ede-cbc', 'des-ede3', 'des-ede3-cbc', 'des3',
 ];
-/** The digests createHash takes here (its own and create-hash's) and the signature algorithms createSign takes (browserify-sign's), sorted as Node's list is. */
+/** The digests createHash, createHmac and createSign take here (hash.ts's and create-hash's, by Node's names for them), in the order of Node's list. */
 const HASHES = [
-  'DSA', 'DSA-RIPEMD160', 'DSA-SHA', 'DSA-SHA1', 'DSA-SHA224', 'DSA-SHA256', 'DSA-SHA384', 'DSA-SHA512', 'DSA-WITH-SHA224', 'DSA-WITH-SHA256', 'DSA-WITH-SHA384', 'DSA-WITH-SHA512',
-  'RSA-MD5', 'RSA-RIPEMD160', 'RSA-SHA1', 'RSA-SHA224', 'RSA-SHA256', 'RSA-SHA384', 'RSA-SHA512', 'ecdsa-with-SHA1', 'md5', 'md5WithRSAEncryption', 'ripemd160', 'ripemd160WithRSA',
-  'rmd160', 'sha1', 'sha224', 'sha224WithRSAEncryption', 'sha256', 'sha256WithRSAEncryption', 'sha384', 'sha384WithRSAEncryption', 'sha512', 'sha512WithRSAEncryption',
+  'RSA-MD5', 'RSA-RIPEMD160', 'RSA-SHA1', 'RSA-SHA224', 'RSA-SHA256', 'RSA-SHA384', 'RSA-SHA512', 'md5', 'md5WithRSAEncryption', 'ripemd', 'ripemd-160', 'ripemd160',
+  'ripemd160WithRSA', 'rmd160', 'sha-1', 'sha-224', 'sha-256', 'sha-384', 'sha-512', 'sha1', 'sha1WithRSAEncryption', 'sha224', 'sha224WithRSAEncryption', 'sha256',
+  'sha256WithRSAEncryption', 'sha384', 'sha384WithRSAEncryption', 'sha512', 'sha512WithRSAEncryption',
 ];
 /** The curves createECDH takes here (create-ecdh's), by their OpenSSL names as Node lists them. */
 const CURVES = ['prime192v1', 'prime256v1', 'secp224r1', 'secp256k1', 'secp384r1', 'secp521r1'];

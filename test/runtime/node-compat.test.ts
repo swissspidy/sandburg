@@ -2822,7 +2822,7 @@ out.timingSafeEqual = [
   failure(() => crypto.timingSafeEqual('a', 'a')),
 ];
 out.lists = [
-  crypto.getCiphers().every((c) => crypto.createCipheriv(c, Buffer.alloc(keyLength(c)), c.endsWith('ecb') ? null : Buffer.alloc(c.endsWith('gcm') ? 12 : c.startsWith('des') ? 8 : 16)).update('x').length >= 0),
+  crypto.getCiphers().every((c) => crypto.createCipheriv(c, Buffer.alloc(keyLength(c)), /ecb$|^des-ede3?$/.test(c) ? null : Buffer.alloc(c.endsWith('gcm') ? 12 : c.startsWith('des') ? 8 : 16)).update('x').length >= 0),
   crypto.getHashes().filter((h) => !/[A-Z]/.test(h)).filter((h) => !h.includes('With')).every((h) => crypto.createHash(h).update('x').digest('hex').length > 0),
   crypto.getCurves().every((c) => crypto.createECDH(c).generateKeys().length > 0),
   crypto.constants.RSA_PKCS1_OAEP_PADDING,
@@ -2919,6 +2919,81 @@ crypto.sign(null, data, keys.ed, (err, sig) => {
     errors: [["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected private."],["Error","ERR_OSSL_INVALID_DIGEST","error:1C80007A:Provider routines::invalid digest"],["Error","ERR_OSSL_UNSUPPORTED","error:1E08010C:DECODER routines::unsupported"],["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected private."],["TypeError","ERR_INVALID_ARG_TYPE","The \"handle\" argument must be of type object. Received an instance of Object"]],
     async: [null,true],
   });
+});
+
+// Encrypted copies of KEYS' keys (passphrase 'pw') as Node wrote them (PBES2 PKCS#8 and OpenSSL's legacy PEM encryption), and a 512-bit RSA key.
+const ENCRYPTED_KEYS = {"pkcs8":"-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIC5TBfBgkqhkiG9w0BBQ0wUjAxBgkqhkiG9w0BBQwwJAQQg/q1qQu3xox8oXt9\nfLszIQICCAAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEMz/uiicsur5xzjr\nqhT3YbkEggKAJ/CPXp15nALSGAOuNxazpXIKgYvp+F3/GtSMSLB4f8w4BSuO+qBf\nMrHISLkQXj1ttihFgTrukSicQGneqMHme15+lA00QnI4o4zyrhHL9X1vIDsQ37mz\nn1pHap/eQnNUHm/wb7pTViULtYGnUuQPN4MUq4YeOt5OyioTYsxGJyOOOxfqF9xC\nGlaEGKcD2qRh+XJNwOMwmTt5GgtioQJndTNVqaVFjzFLuDt48nmkiBNs/MCbSeUH\nrz2NhxdV8KH7VXVJSsUfknlKp71IOTw6othSIdLa5P4TUGGvO4ebUtuWLr3a32Wj\nvlfGcI8QaKUCWrLv4y+9EpkxngzDwQF62+kis4O54dAENvEELb1lBIr1U20e6dIe\ngQLUccwIo/gZJ3F6bwlosU8Uttwm0xNx8Gvx/D762lmQpTDV9nVFO6r0qMAJQ8Ro\nYM8zDcMainP47UWMUYosnreZJxif642wZPOIwEnvhZPtAs/UYD1QfvZBASpCbBM3\nvon/UnpnsrstD9LBikW3rPgwqVyFzM4v0eF2SmKx1mDFnSpNboHu9Njpdf8krJIt\nyUA1GBilkhYtHLvW9Hs1HEfeN4/cPvmBR6CIbUQKZTwmmGF89SrMvEOyDXHYFhpa\nM6SRQijzFfq6eqQSU34mTNrJEV6VdqL0lY9bLtwDCb37GbUU9p7nAvkMuak3yAXQ\nnf6iMELLeMLBT3Le2NzDTxUWqG7fOKROdYzwwLNMQTSN7BUfTdinMQCGNN4OKl6J\nUbjAdWhHBu+EUu8h8t5tjIQieaBEEKZ/BmO9vnulFp8j7Cx0kOE+PNfJ3z77ojn7\nWSnG2IwDYFz1eQftDPMvCP1kPPR+5/XywA==\n-----END ENCRYPTED PRIVATE KEY-----\n","legacy":"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,F8F871D77A7D22321B9DCA075A3F5330\n\ntTp4S4yUnQdUoJ9lVOR6LEcfZZ/w8bipFg/aCWHZtocy+xqxnbwaRt43hbe33Txt\neWNiyNnjSDEeLjbDI7nv3nsSp3ipCNKo2aHefcs2N6oJjfYYDLFA+QFVkyWLXLiZ\njh/soUypBprgeLTgahwzKTwsDHBjCZ5fg5/OEpxN7bjuclOtydw5XaPr0mzNjsu4\nyyUJl96Bs+eYq/+tFrrk+GrImK9LD73FP2aAhNdd/il9U08/p3ai+K5NI17dkhqy\nFB3A0tqObbapY3siGCw7r0Biz+u36kAOj3gwEVZ+6+D0MAN/KHLpPACmwcM+TcTJ\nP+loZudnKADWNp7meJDZxP+LkNMMTaJHXkMR4UKxBaVz5yzeT+g7odsafY0Pi/Dr\nYTtWevWFDM6W7Y3OPdb2NRR2Qj8c1MfhCfoUJzHcf5JpVh8bUYcfMtp2/Fr7iuVK\n6GjaXC7aspJ+l1tRCMgBoy7hjP5zsI4GgPpeMH1UJ832ktkxMLtR0CtXFNEoytbe\nnnilrg9EUxjg/IF7H63/n+Io0HqsoXxbGeO2f178BuM1JuYAQ5ujAnSRuN1oVYfR\neOWYmIoFsjFvc+WnJsH3jPCW5E0AXF9UtCHJuC7VzQ66XdjHhlcvV6sZOD77aHs+\nNgpeQLqed7ybqtUpr5iAVIjQ1+NrEUs9OrBpwfVACti4d2ofYfRdFCSxteAGIS1T\nwwvE8vaY5xt3Bh2pdYg1Nr2JhMzWRy7wq7Je9KQ3X6Mi0cGgalxB/LVkpuXZkzS1\nrDf1wY+vxNE2BdOGaEy3SgiJNY5432Z2SnokbrhfL9iDWikFigE7CEsHBxLd35bQ\n-----END RSA PRIVATE KEY-----\n","legacy3des":"-----BEGIN EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,15B073035406F94B\n\nGaocuEkpdp8zF+7XlxYwdUsbkTAgo2swydZU8ufkP3FGEUsSLhrxGEIrqxdTyohz\npofpJYd/x6ihYvqjgUjfmi7lUWsPEwbiYU+cilCOmSLtYOjkHUzzyWPe2cPUcA4J\nB79fEl6sqzs+BueycSL7S0ntqS69DUsi+zbJdX5s/uc=\n-----END EC PRIVATE KEY-----\n","ecDer":"MIH0MF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBAlBHOH7V6Y1JGSIA0Jx3rRAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBAgQQLSOScH1JQYxaCClDVk3xaQSBkAh+AKgk221DvQR1K9N2BtUAbHlghfolju7KohIEHDVCKtcjewbMXYkrKbG3STBJkZ+xCwZsAAPuidY5BZBZze1fc8Y74gV/GCsaAGuSXczu0QXAdFCsgh6oVSm/IOiwmzFlqBk57hmL3cmShLZycAsgFhekuWuPV11xSkwWb9Z1OSgZLfCUiqFPT9fMRsyx8g==","edPkcs8":"-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIGjMF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBAeWbjwKkeSDRvVf2Xd\nG4TVAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBFgQQaMWr2EIWC1Lqv77i\nvNtrRwRAyuNYsqjZlvlys12oPv5XimmlGUxgeY3Q/Ahzl4cBa5u+bqGVYbGDit8S\n3T2KeTt8KeusFRBjM/yjp5UiMXZvoA==\n-----END ENCRYPTED PRIVATE KEY-----\n","rsa512":"-----BEGIN PRIVATE KEY-----\nMIIBUwIBADANBgkqhkiG9w0BAQEFAASCAT0wggE5AgEAAkEAncU8VSm/hmf3XTng\nYb26pwC++B7wkLgFNU7qKHHQReZktSEJl63yybyTQ+DD5Fx3yO7PS57Wglo7ooU+\nqpWe+QIDAQABAkAdFUu+4zhEHYwy6kVbny72NCP/9ywfcVy8a/SsSfa7u6fCYeIR\naBraSO0J8DHTSgxdRZuDoH65Ner6qtXxUjEBAiEAyh9AyUqCE3209OHKMqttYhM9\nkIHnKXrYA+8WMu+de2ECIQDH03D+GMkJAy6k9HyqyfEa79w+sr87wJI2VRPJl5Qi\nmQIgZxqwOr5WQkkSwQRY16YZAzmbYxbQ65jtjnwsz8jphaECIGXksXdAGDLaRoyi\nhndoJeOAb6Qg7VaAqY2+8CoZetXxAiBU6FKCXRiAbsEbpCfQ2i9niPRMdLZlaFsC\nAZptUzabVQ==\n-----END PRIVATE KEY-----\n"};
+
+test('crypto as Node 24 has it where review found differences: IVs (null only for ECB, never empty for GCM), a secret KeyObject as a cipher key, constructible Cipheriv/Sign/Verify, digest aliases, encrypted private keys, EC JWK checks, strict ECDSA DER, PSS salt and scrypt maxmem', async () => {
+  const out = await h.run(
+    {
+      'enc.json': JSON.stringify(ENCRYPTED_KEYS),
+      'main.js': `const crypto = require('crypto');
+const ENC = JSON.parse(require('fs').readFileSync(__dirname + '/enc.json', 'utf8'));
+const failure = (fn) => { try { return fn(); } catch (e) { return [e.name, e.code, e.message]; } };
+const data = Buffer.from('payload');
+const k16 = Buffer.alloc(16, 1);
+const out = {};
+out.iv = [
+  failure(() => crypto.createCipheriv('aes-128-gcm', k16, null)),
+  failure(() => crypto.createCipheriv('aes-128-gcm', k16, Buffer.alloc(0))),
+  failure(() => crypto.createCipheriv('aes-128-cbc', k16, undefined)),
+  failure(() => crypto.createCipheriv('aes-128-ecb', k16, 'abc')),
+  failure(() => crypto.createDecipheriv('aes128', k16, null)),
+  crypto.createCipheriv('aes-128-ecb', k16, null).update('0123456789abcdef', 'utf8', 'hex'),
+  crypto.createCipheriv('des-ede3', Buffer.alloc(24, 3), null).update('01234567', 'utf8', 'hex'),
+  crypto.createCipheriv('aes-128-cbc', crypto.createSecretKey(k16), Buffer.alloc(16)).update('0123456789abcdef', 'utf8', 'hex'),
+  failure(() => crypto.createCipheriv('aes-128-cbc', crypto.createPublicKey(ENC.edPkcs8.length ? crypto.createPrivateKey({ key: ENC.edPkcs8, passphrase: 'pw' }) : null), Buffer.alloc(16))),
+];
+const ctor = (C, ...a) => typeof new C(...a).update;
+out.constructible = [ctor(crypto.Cipheriv, 'aes-128-cbc', k16, Buffer.alloc(16)), ctor(crypto.Decipheriv, 'aes-128-cbc', k16, Buffer.alloc(16)), ctor(crypto.Sign, 'sha256'), ctor(crypto.Verify, 'sha256'), crypto.Sign('sha256') instanceof crypto.Sign, crypto.createVerify('sha256') instanceof crypto.Verify];
+const HASHES = ['RSA-MD5', 'RSA-RIPEMD160', 'RSA-SHA1', 'RSA-SHA224', 'RSA-SHA256', 'RSA-SHA384', 'RSA-SHA512', 'md5', 'md5WithRSAEncryption', 'ripemd', 'ripemd-160', 'ripemd160', 'ripemd160WithRSA', 'rmd160', 'sha-1', 'sha-224', 'sha-256', 'sha-384', 'sha-512', 'sha1', 'sha1WithRSAEncryption', 'sha224', 'sha224WithRSAEncryption', 'sha256', 'sha256WithRSAEncryption', 'sha384', 'sha384WithRSAEncryption', 'sha512', 'sha512WithRSAEncryption'];
+out.hashes = [HASHES.every((h) => crypto.getHashes().includes(h)), HASHES.map((h) => crypto.createHash(h).update('x').digest('hex').slice(0, 8)).join(' '), crypto.createHmac('RSA-RIPEMD160', 'k').update('x').digest('hex')];
+const rsa = crypto.createPrivateKey({ key: ENC.pkcs8, passphrase: 'pw' });
+out.signAliases = ['ripemd160WithRSA', 'RSA-RIPEMD160', 'sha-256', 'sha1WithRSAEncryption'].map((a) => crypto.createSign(a).update(data).sign(rsa, 'hex').slice(0, 16));
+out.encrypted = [
+  rsa.export({ format: 'jwk' }).d.slice(0, 12),
+  crypto.createPrivateKey({ key: ENC.legacy, passphrase: 'pw' }).export({ format: 'jwk' }).d.slice(0, 12),
+  crypto.createPrivateKey({ key: ENC.legacy3des, passphrase: 'pw' }).export({ format: 'jwk' }).d,
+  crypto.createPrivateKey({ key: Buffer.from(ENC.ecDer, 'base64'), format: 'der', type: 'pkcs8', passphrase: 'pw' }).export({ format: 'jwk' }).d,
+  crypto.createPrivateKey({ key: ENC.edPkcs8, passphrase: Buffer.from('pw') }).export({ format: 'jwk' }).d,
+  crypto.createSign('RSA-SHA256').update(data).sign({ key: ENC.pkcs8, passphrase: 'pw' }, 'hex').slice(0, 16),
+  crypto.sign('sha256', data, { key: ENC.legacy, passphrase: 'pw' }).toString('hex').slice(0, 16),
+  crypto.createPublicKey({ key: ENC.pkcs8, passphrase: 'pw' }).asymmetricKeyType,
+  failure(() => crypto.createPrivateKey(ENC.pkcs8))[1],
+  failure(() => crypto.createPrivateKey({ key: ENC.pkcs8, passphrase: 'wrong' }))[1],
+  failure(() => crypto.createPrivateKey({ key: ENC.legacy, passphrase: 'wrong!' }))[1],
+];
+const ecJwk = crypto.createPrivateKey({ key: ENC.legacy3des, passphrase: 'pw' }).export({ format: 'jwk' });
+const other = crypto.createPrivateKey({ key: Buffer.from(ENC.ecDer, 'base64'), format: 'der', type: 'pkcs8', passphrase: 'pw' }).export({ format: 'jwk' });
+out.jwk = [
+  failure(() => crypto.createPrivateKey({ key: { ...ecJwk, d: other.d === ecJwk.d ? 'AA' : (() => { const b = Buffer.from(ecJwk.d, 'base64url'); b[31] ^= 1; return b.toString('base64url'); })() }, format: 'jwk' })),
+  failure(() => crypto.createPrivateKey({ key: { ...ecJwk, d: Buffer.alloc(32).toString('base64url') }, format: 'jwk' })),
+  failure(() => crypto.createPrivateKey({ key: { ...ecJwk, d: Buffer.alloc(32, 0xff).toString('base64url') }, format: 'jwk' })),
+  crypto.createPrivateKey({ key: ecJwk, format: 'jwk' }).asymmetricKeyType,
+];
+const edDer = crypto.createPrivateKey({ key: ENC.edPkcs8, passphrase: 'pw' }).export({ format: 'der', type: 'pkcs8' });
+const edKey = crypto.createPrivateKey({ key: edDer, format: 'der', type: 'pkcs8' });
+const edPub = crypto.createPublicKey(edKey);
+edDer.fill(0);
+out.edSeed = crypto.verify(null, data, edPub, crypto.sign(null, data, edKey));
+const ec = crypto.createPrivateKey({ key: ENC.legacy3des, passphrase: 'pw' });
+const sig = crypto.sign('sha256', data, ec);
+const r = sig.subarray(4, 4 + sig[3]);
+const s = sig.subarray(4 + sig[3]);
+const padded = Buffer.concat([Buffer.from([0x02, r.length + 1, 0]), r]);
+out.der = [crypto.verify('sha256', data, ec, sig), crypto.verify('sha256', data, ec, Buffer.concat([Buffer.from([0x30, padded.length + s.length]), padded, s]))];
+out.pss = failure(() => crypto.sign('sha512', data, { key: ENC.rsa512, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }))[0];
+out.oaep = [
+  crypto.privateDecrypt(rsa, crypto.publicEncrypt({ key: crypto.createPublicKey(rsa), oaepHash: 'sha1' }, data)).toString(),
+];
+out.scrypt = [failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 18, r: 1, p: 1 }))[1], failure(() => crypto.scryptSync('a', 'b', 8, { N: 16, r: 8, p: 65536 }))[1], failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 16, r: 1, p: 1, maxmem: 2 ** 30 }))[1], crypto.scryptSync('a', 'b', 8, { N: 2 ** 10, r: 8, p: 1, maxmem: 128 * 8 * (2 ** 10 + 3) }).length, failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 10, r: 8, p: 1, maxmem: 128 * 8 * (2 ** 10 + 3) - 1 }))[1]];
+console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {"iv":[["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],["TypeError","ERR_INVALID_ARG_TYPE","The \"iv\" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received undefined"],["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],"b716c6f6914fe5848b4f913f2ba0c5ed","fbf110d38696c58b","b716c6f6914fe5848b4f913f2ba0c5ed",["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected secret."]],"constructible":["function","function","function","function",true,true],"hashes":[true,"9dd4e461 11ff33c6 11f6ad8e 54a2f7f9 2d711642 d752c2c5 a4abd444 9dd4e461 9dd4e461 11ff33c6 11ff33c6 11ff33c6 11ff33c6 11ff33c6 11f6ad8e 54a2f7f9 2d711642 d752c2c5 a4abd444 11f6ad8e 11f6ad8e 54a2f7f9 54a2f7f9 2d711642 2d711642 d752c2c5 d752c2c5 a4abd444 a4abd444","3123189442cbedfb0b8f9695da4f685e181111e4"],"signAliases":["3fccf70eeece6b38","3fccf70eeece6b38","0cdde6e698d15d22","84f8a1059ca5a20b"],"encrypted":["HrlPNXCCDCZd","HrlPNXCCDCZd","dDLKNRLCmNASsMepC4z6UXzuEeBVe-zBWGRVIac12hU","dDLKNRLCmNASsMepC4z6UXzuEeBVe-zBWGRVIac12hU","Ah418Ohdg8ehHs4syXRrWlHmf0UrZ6fWwLHCCKMAAbw","0cdde6e698d15d22","0cdde6e698d15d22","rsa","ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED","ERR_OSSL_BAD_DECRYPT","ERR_OSSL_BAD_DECRYPT"],"jwk":[["TypeError","ERR_CRYPTO_INVALID_JWK","Invalid JWK EC key"],["TypeError","ERR_CRYPTO_INVALID_JWK","Invalid JWK EC key"],["TypeError","ERR_CRYPTO_INVALID_JWK","Invalid JWK EC key"],"ec"],"edSeed":true,"der":[true,false],"pss":"Error","oaep":["payload"],"scrypt":["ERR_CRYPTO_INVALID_SCRYPT_PARAMS","ERR_CRYPTO_INVALID_SCRYPT_PARAMS","ERR_CRYPTO_INVALID_SCRYPT_PARAMS",8,"ERR_CRYPTO_INVALID_SCRYPT_PARAMS"]});
 });
 
 test('require("constants") and os.constants.signals as Node 24 has them (with crypto\'s constants, and defaultCipherList as node:crypto was loaded first); util.types.isKeyObject of a KeyObject', async () => {

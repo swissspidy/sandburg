@@ -1,18 +1,21 @@
 import { Buffer } from 'buffer';
 import { Writable } from 'readable-stream';
 import elliptic, { type ec as EC, type eddsa as EdDSA } from 'elliptic';
+import cryptoLib from 'crypto-browserify';
 
 /**
  * node:crypto's KeyObject (createSecretKey, createPublicKey, createPrivateKey), sign and verify, and
  * createSign and createVerify over them: what JWT libraries (jsonwebtoken, jose's Node build) and
- * webhook signature checks use. Part of node:crypto's runtime library (bundle.ts), as crypto-browserify
- * is, so a program that does not use keys does not load it.
+ * webhook signature checks use. Part of node:crypto's runtime library (bundle.ts), with crypto-browserify:
+ * both load when a program first uses a member of node:crypto that is not the runtime's own (hashes, HMACs
+ * and random bytes are; a program that uses only those loads neither).
  *
  * These are synchronous in Node, so they cannot be the browser's WebCrypto (whose every call is a
  * promise): RSA is BigInt arithmetic here, ECDSA and Ed25519 are elliptic's (crypto-browserify's).
  * Keys: RSA, EC (P-256, P-384, P-521, secp256k1) and Ed25519, as PEM, DER (PKCS#1, PKCS#8, SPKI, SEC1
  * and an X.509 certificate's public key) or JWK. Signatures: PKCS#1 v1.5 and PSS, ECDSA (DER or IEEE
- * P1363) and Ed25519. Not here: encrypted private keys (a passphrase), DSA, RSA-PSS keys, X25519.
+ * P1363) and Ed25519. Encrypted private keys read with their passphrase (PBES2 PKCS#8 and OpenSSL's
+ * legacy PEM encryption), not written. Not here: DSA, RSA-PSS keys, X25519.
  */
 
 interface Hasher {
@@ -160,6 +163,15 @@ function modPow(base: bigint, exp: bigint, m: bigint): bigint {
   return r;
 }
 const mod = (a: bigint, m: bigint) => ((a % m) + m) % m;
+/** a^-1 mod m, or null when a and m are not coprime. */
+function modInverse(a: bigint, m: bigint): bigint | null {
+  let [r0, r1, t0, t1] = [m, mod(a, m), 0n, 1n];
+  while (r1 !== 0n) {
+    const qt = r0 / r1;
+    [r0, r1, t0, t1] = [r1, r0 - qt * r1, t1, t0 - qt * t1];
+  }
+  return r0 === 1n ? mod(t0, m) : null;
+}
 
 const b64u = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString('base64url');
 const fromB64u = (s: unknown, kty: string) => {
@@ -244,6 +256,7 @@ function ecPrivate(seqT: Tlv, curve?: Curve): Ec {
 }
 function edFromSeed(seed: Uint8Array): Ed {
   if (seed.length !== 32) throw unsupported();
+  seed = Uint8Array.from(seed); // not a view of the caller's DER, which they may change
   return { kind: 'ed25519', seed, pub: Uint8Array.from(eddsa().keyFromSecret(Array.from(seed)).getPublic()) };
 }
 
@@ -333,6 +346,10 @@ function fromJwk(jwk: Record<string, unknown>, wantPrivate: boolean): Asym {
     if (!wantPrivate) return { kind: 'ec', curve: c, pub };
     const d = fromB64u(jwk.d, 'EC');
     if (d.length !== c.size) throw invalidJwk('EC');
+    // As OpenSSL's check: d in [1, n) and its point the given one.
+    const dn = toBig(d);
+    if (dn === 0n || dn >= BigInt(`0x${ecOf(c).n.toString(16)}`)) throw invalidJwk('EC');
+    if (Buffer.compare(Uint8Array.from(ecOf(c).keyFromPrivate(Array.from(d)).getPublic(false, 'array')), pub) !== 0) throw invalidJwk('EC');
     return { kind: 'ec', curve: c, pub, d };
   }
   if (kty === 'OKP') {
@@ -376,16 +393,21 @@ function pem(label: string, der: Uint8Array): string {
 }
 
 /** A key from PEM text: a private key (when one is wanted or allowed), a public key or a certificate's. */
-function fromPem(text: string, want: 'public' | 'private' | 'any'): Asym {
+function fromPem(text: string, want: 'public' | 'private' | 'any', passphrase?: unknown): Asym {
   const m = PEM.exec(text);
   if (!m) throw unsupported();
-  if (/Proc-Type:|DEK-Info:/.test(m[2]) || m[1] === 'ENCRYPTED PRIVATE KEY') throw unavailable('An encrypted private key');
-  const der = new Uint8Array(Buffer.from(m[2].replace(/\s+/g, ''), 'base64'));
+  let der: Uint8Array;
+  let label = m[1];
+  const headers = /^([\s\S]*?)\r?\n\r?\n/.exec(m[2].replace(/^\s+/, ''));
+  if (headers && /Proc-Type:\s*4,ENCRYPTED/.test(headers[1])) {
+    der = decryptLegacy(headers[1], new Uint8Array(Buffer.from(m[2].replace(/^\s+/, '').slice(headers[0].length).replace(/\s+/g, ''), 'base64')), passphrase);
+  } else der = new Uint8Array(Buffer.from(m[2].replace(/\s+/g, ''), 'base64'));
+  if (label === 'ENCRYPTED PRIVATE KEY') [der, label] = [decryptPkcs8(der, passphrase), 'PRIVATE KEY'];
   const priv = (k: Asym) => {
     if (want === 'public') return publicOf(k);
     return k;
   };
-  switch (m[1]) {
+  switch (label) {
     case 'PRIVATE KEY':
       return priv(fromPkcs8(der));
     case 'RSA PRIVATE KEY':
@@ -394,14 +416,84 @@ function fromPem(text: string, want: 'public' | 'private' | 'any'): Asym {
       return priv(ecPrivate(readOne(der)));
   }
   if (want === 'private') throw unsupported();
-  if (m[1] === 'PUBLIC KEY') return fromSpki(der);
-  if (m[1] === 'RSA PUBLIC KEY') return rsaPublic(readOne(der));
-  if (m[1] === 'CERTIFICATE') return fromCertificate(der);
+  if (label === 'PUBLIC KEY') return fromSpki(der);
+  if (label === 'RSA PUBLIC KEY') return rsaPublic(readOne(der));
+  if (label === 'CERTIFICATE') return fromCertificate(der);
   throw unsupported();
 }
-function fromDer(der: Uint8Array, type: unknown, want: 'public' | 'private'): Asym {
+// --- encrypted private keys ---
+
+const PBES2 = '1.2.840.113549.1.5.13';
+const PBKDF2 = '1.2.840.113549.1.5.12';
+const PRFS: Record<string, string> = { '1.2.840.113549.2.7': 'sha1', '1.2.840.113549.2.8': 'sha224', '1.2.840.113549.2.9': 'sha256', '1.2.840.113549.2.10': 'sha384', '1.2.840.113549.2.11': 'sha512' };
+/** PBES2's ciphers and OpenSSL's legacy PEM ones (DEK-Info): the cipher and its key length. */
+const PBE_CIPHERS: Record<string, [string, number]> = {
+  '2.16.840.1.101.3.4.1.2': ['aes-128-cbc', 16],
+  '2.16.840.1.101.3.4.1.22': ['aes-192-cbc', 24],
+  '2.16.840.1.101.3.4.1.42': ['aes-256-cbc', 32],
+  '1.2.840.113549.3.7': ['des-ede3-cbc', 24],
+  '1.3.14.3.2.7': ['des-cbc', 8],
+};
+const LEGACY_CIPHERS: Record<string, [string, number]> = { 'AES-128-CBC': ['aes-128-cbc', 16], 'AES-192-CBC': ['aes-192-cbc', 24], 'AES-256-CBC': ['aes-256-cbc', 32], 'DES-EDE3-CBC': ['des-ede3-cbc', 24], 'DES-CBC': ['des-cbc', 8] };
+const badDecrypt = () => err(new Error('error:1C800064:Provider routines::bad decrypt'), 'ERR_OSSL_BAD_DECRYPT');
+/** An encrypted key's passphrase; without one, Node 24's error (OpenSSL's, its prompt cancelled). */
+function passphraseOf(p: unknown): Buffer {
+  if (p == null) throw err(new Error('error:07880109:common libcrypto routines::interrupted or cancelled'), 'ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED');
+  const b = bytesOf(p);
+  if (!b) throw argType('key.passphrase', BYTES, p);
+  return Buffer.from(b);
+}
+function decipher(alg: string, key: Uint8Array, iv: Uint8Array, data: Uint8Array): Uint8Array {
+  try {
+    const d = cryptoLib.createDecipheriv(alg, key, iv);
+    return new Uint8Array(Buffer.concat([d.update(data), d.final()]));
+  } catch {
+    throw badDecrypt();
+  }
+}
+const isEncryptedPkcs8 = (der: Uint8Array) => {
+  try {
+    return children(readOne(der))[0]?.tag === 0x30;
+  } catch {
+    return false;
+  }
+};
+/** PKCS#8's EncryptedPrivateKeyInfo (PBES2 with PBKDF2, what Node and OpenSSL write) to its PrivateKeyInfo. */
+function decryptPkcs8(der: Uint8Array, passphrase: unknown): Uint8Array {
+  const [algT, dataT] = children(readOne(der));
+  if (!algT || dataT?.tag !== 0x04) throw unsupported();
+  const [idT, paramsT] = children(algT);
+  if (readOid(idT) !== PBES2) throw unavailable('A private key encrypted by PBES1');
+  const [kdfT, encT] = children(paramsT);
+  const [kdfId, kdfParams] = children(kdfT);
+  if (readOid(kdfId) !== PBKDF2) throw unavailable('A private key encrypted with a key derivation other than PBKDF2');
+  const [saltT, iterT, ...rest] = children(kdfParams);
+  const prfT = rest.find((x) => x.tag === 0x30);
+  const prf = prfT ? PRFS[readOid(children(prfT)[0])] : 'sha1';
+  const [cipherId, ivT] = children(encT);
+  const cipher = PBE_CIPHERS[readOid(cipherId)];
+  if (!prf || !cipher || saltT.tag !== 0x04 || ivT?.tag !== 0x04) throw unsupported();
+  const key = cryptoLib.pbkdf2Sync(passphraseOf(passphrase), saltT.v, Number(readInt(iterT)), cipher[1], prf);
+  return decipher(cipher[0], key, ivT.v, dataT.v);
+}
+/** OpenSSL's legacy PEM encryption (Proc-Type and DEK-Info headers): EVP_BytesToKey with MD5, once. */
+function decryptLegacy(headers: string, body: Uint8Array, passphrase: unknown): Uint8Array {
+  const dek = /DEK-Info:\s*([A-Z0-9-]+),([0-9A-Fa-f]+)/.exec(headers);
+  const cipher = dek && LEGACY_CIPHERS[dek[1]];
+  if (!dek || !cipher) throw unsupported();
+  const iv = Buffer.from(dek[2], 'hex');
+  const pass = passphraseOf(passphrase);
+  const key: Buffer[] = [];
+  for (let prev = Buffer.alloc(0), got = 0; got < cipher[1]; got += prev.length) {
+    prev = cryptoLib.createHash('md5').update(Buffer.concat([prev, pass, iv.subarray(0, 8)])).digest();
+    key.push(prev);
+  }
+  return decipher(cipher[0], Buffer.concat(key).subarray(0, cipher[1]), iv, body);
+}
+
+function fromDer(der: Uint8Array, type: unknown, want: 'public' | 'private', passphrase?: unknown): Asym {
   if (want === 'private') {
-    if (type === 'pkcs8') return fromPkcs8(der);
+    if (type === 'pkcs8') return fromPkcs8(isEncryptedPkcs8(der) ? decryptPkcs8(der, passphrase) : der);
     if (type === 'pkcs1') return rsaPrivate(readOne(der));
     if (type === 'sec1') return ecPrivate(readOne(der));
     throw argValue('key.type', type);
@@ -534,8 +626,9 @@ function parseKey(input: unknown, want: 'public' | 'private' | 'any', name = 'ke
   let format: unknown = 'pem';
   let type: unknown;
   let encoding: unknown;
+  let passphrase: unknown;
   if (typeof input === 'object' && input !== null && !(input instanceof KeyObject) && !ArrayBuffer.isView(input) && !(input instanceof ArrayBuffer)) {
-    ({ key, format = 'pem', type, encoding } = input as Record<string, unknown>);
+    ({ key, format = 'pem', type, encoding, passphrase } = input as Record<string, unknown>);
     if (format === 'jwk') {
       if (typeof key !== 'object' || key === null) throw argType('key.key', 'of type object', key);
       const jwk = key as Record<string, unknown>;
@@ -546,12 +639,12 @@ function parseKey(input: unknown, want: 'public' | 'private' | 'any', name = 'ke
   if (key instanceof KeyObject) throw argType(name, KEY_INPUT, key);
   const b = bytesOf(key, encoding);
   if (!b) throw argType(name, KEY_INPUT, key);
-  if (format === 'pem') return fromPem(Buffer.from(b).toString('utf8'), want);
+  if (format === 'pem') return fromPem(Buffer.from(b).toString('utf8'), want, passphrase);
   if (format !== 'der') throw argValue('key.format', format);
   // createPublicKey takes a private key too (its public key), as a PEM private key.
   const priv = type === 'pkcs8' || type === 'sec1' || (type === 'pkcs1' && (want === 'private' || looksPrivatePkcs1(b)));
   if (want === 'private' || priv) {
-    const k = fromDer(b, type, 'private');
+    const k = fromDer(b, type, 'private', passphrase);
     return want === 'public' ? publicOf(k) : k;
   }
   return fromDer(b, type, 'public');
@@ -603,14 +696,15 @@ const HASH_OIDS: Record<string, string> = {
   sha512: '2.16.840.1.101.3.4.2.3',
   ripemd160: '1.3.36.3.2.1',
 };
-/** A digest's name as createHash takes it, from what sign, verify and createSign take ('SHA256', 'RSA-SHA256', 'sha256WithRSAEncryption', 'ecdsa-with-SHA256'). */
+/** A digest's name as createHash takes it, from what sign, verify and createSign take ('SHA256', 'RSA-SHA256', 'sha256WithRSAEncryption', 'ripemd160WithRSA', 'ecdsa-with-SHA256'). */
 function digestName(alg: unknown): string {
   if (typeof alg !== 'string') throw argType('algorithm', 'of type string', alg);
   const n = alg
     .toLowerCase()
     .replace(/^rsa-|^ecdsa-with-/, '')
-    .replace(/withrsaencryption$/, '')
-    .replace(/^rmd160$|^ripemd$/, 'ripemd160');
+    .replace(/withrsa(encryption)?$/, '')
+    .replace(/^sha-/, 'sha')
+    .replace(/^rmd160$|^ripemd(-160)?$/, 'ripemd160');
   if (!(n in HASH_OIDS)) throw invalidDigest(alg);
   return n;
 }
@@ -621,11 +715,22 @@ export function makeSigning(deps: KeyDeps) {
     for (const p of parts) h.update(p);
     return new Uint8Array(h.digest());
   };
+  // m^d mod n by the CRT, blinded as OpenSSL's is: on m·r^e for a random r, then times r^-1, so the
+  // exponentiations never see the input (BigInt arithmetic is not constant-time).
   const rsaPrivateOp = (k: Rsa, m: bigint) => {
     const { p, q, dp, dq, qi } = k.priv!;
-    const m1 = modPow(m, dp, p);
-    const m2 = modPow(m, dq, q);
-    return m2 + mod(qi * (m1 - m2), p) * q;
+    const len = Math.ceil(bitLength(k.n) / 8);
+    let r: bigint;
+    let rInv: bigint | null;
+    do {
+      r = mod(toBig(deps.randomBytes(len)), k.n);
+      rInv = r > 1n ? modInverse(r, k.n) : null;
+    } while (rInv === null);
+    const blinded = mod(m * modPow(r, k.e, k.n), k.n);
+    const m1 = modPow(blinded, dp, p);
+    const m2 = modPow(blinded, dq, q);
+    const s = m2 + mod(qi * (m1 - m2), p) * q;
+    return mod(s * rInv, k.n);
   };
   const pkcs1Encoded = (name: string, digest: Uint8Array, len: number) => {
     const t = seq(seq(oid(HASH_OIDS[name]), NULL), octets(digest));
@@ -673,7 +778,7 @@ export function makeSigning(deps: KeyDeps) {
       let sLen = saltLengthOf(opts, -2);
       if (sLen === -1) sLen = hLen;
       else if (sLen === -2) sLen = emLen - hLen - 2;
-      if (emLen < hLen + sLen + 2) throw err(new Error('error:1C8000A3:Provider routines::data too large for key size'), 'ERR_OSSL_DATA_TOO_LARGE_FOR_KEY_SIZE');
+      if (sLen < 0 || emLen < hLen + sLen + 2) throw err(new Error('error:1C8000A3:Provider routines::data too large for key size'), 'ERR_OSSL_DATA_TOO_LARGE_FOR_KEY_SIZE');
       const salt = deps.randomBytes(sLen);
       const h = hash(name, new Uint8Array(8), digest, salt);
       const db = new Uint8Array(emLen - hLen - 1);
@@ -728,7 +833,9 @@ export function makeSigning(deps: KeyDeps) {
       if (dsaEncoding(opts) === 'der') {
         try {
           const f = children(readOne(sig));
-          if (f.length !== 2 || f[0].tag !== 2 || f[1].tag !== 2) return false;
+          // Strict DER, as OpenSSL's check: two INTEGERs, each nonnegative and minimally encoded.
+          const strict = (t: Tlv) => t.tag === 2 && t.v.length > 0 && !(t.v[0] & 0x80) && !(t.v.length > 1 && t.v[0] === 0 && !(t.v[1] & 0x80));
+          if (f.length !== 2 || !strict(f[0]) || !strict(f[1])) return false;
           [r, s] = [f[0].v, f[1].v];
         } catch {
           return false;
@@ -846,21 +953,36 @@ export function makeSigning(deps: KeyDeps) {
   }
   const createSign = (algorithm: unknown, options?: object) => new Sign(algorithm, options);
   const createVerify = (algorithm: unknown, options?: object) => new Verify(algorithm, options);
+  // crypto.Sign and crypto.Verify, as Node's: called or constructed (with new, the object returned is the instance).
+  const constructible = <T>(name: string, make: (algorithm: unknown, options?: object) => T, prototype: object) => {
+    const fn = function (algorithm: unknown, options?: object) {
+      return make(algorithm, options);
+    };
+    return Object.defineProperties(fn, { name: { value: name }, prototype: { value: prototype } });
+  };
+  const SignFn = constructible('Sign', createSign, Sign.prototype);
+  const VerifyFn = constructible('Verify', createVerify, Verify.prototype);
 
-  return { sign, verify, Sign: createSign, Verify: createVerify, createSign, createVerify };
+  return { sign, verify, Sign: SignFn, Verify: VerifyFn, createSign, createVerify };
 }
 
 /**
  * crypto-browserify's publicEncrypt and its kin read PEM (or { key, padding, passphrase }): a KeyObject
- * becomes its PEM for them.
+ * becomes its PEM for them. They have OAEP with SHA-1 only and no label: other OAEP options are refused,
+ * not ignored.
  */
-export function pemForEncryption(key: unknown): unknown {
+export function pemForEncryption(key: unknown, op = 'publicEncrypt'): unknown {
   const asPem = (k: KeyObject) => {
     const h = handleOf(k);
     if ('secret' in h) throw wrongKeyType('secret', 'public or private');
     return k.type === 'private' ? pem('PRIVATE KEY', pkcs8(h.asym)) : pem('PUBLIC KEY', spki(h.asym));
   };
   if (key instanceof KeyObject) return asPem(key);
-  if (typeof key === 'object' && key !== null && (key as { key?: unknown }).key instanceof KeyObject) return { ...key, key: asPem((key as { key: KeyObject }).key) };
+  if (typeof key === 'object' && key !== null && !ArrayBuffer.isView(key)) {
+    const { oaepHash, oaepLabel } = key as { oaepHash?: unknown; oaepLabel?: unknown };
+    if (oaepHash !== undefined && (typeof oaepHash !== 'string' || !['sha1', 'sha-1', 'rsa-sha1'].includes(oaepHash.toLowerCase()))) throw unavailable(`${op} with oaepHash ${String(oaepHash)}`);
+    if (oaepLabel != null && (bytesOf(oaepLabel)?.length ?? 1) > 0) throw unavailable(`${op} with an oaepLabel`);
+    if ((key as { key?: unknown }).key instanceof KeyObject) return { ...key, key: asPem((key as { key: KeyObject }).key) };
+  }
   return key;
 }

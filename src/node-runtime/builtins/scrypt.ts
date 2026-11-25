@@ -106,7 +106,8 @@ function params(keylen: unknown, options: ScryptOptions | undefined) {
   const p = pick(o.p, o.parallelization, 1, ['p', 'parallelization']);
   const maxmem = o.maxmem ?? 32 << 20;
   for (const v of [N, r, p, maxmem]) if (!Number.isSafeInteger(v) || v < 0) throw invalidParams();
-  if (N < 2 || (N & (N - 1)) !== 0 || r < 1 || p < 1 || p * r > 2 ** 30 - 1 || 128 * N * r > maxmem) throw invalidParams();
+  // OpenSSL's checks: N < 2^(16r), and the memory scrypt takes (B, and V and X for ROMix) within maxmem.
+  if (N < 2 || (N & (N - 1)) !== 0 || r < 1 || p < 1 || p * r > 2 ** 30 - 1 || (16 * r <= 63 && N >= 2 ** (16 * r)) || 128 * r * (N + p + 2) > maxmem) throw invalidParams();
   return { N, r, p };
 }
 

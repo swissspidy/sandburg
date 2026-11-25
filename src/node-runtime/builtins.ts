@@ -24,7 +24,7 @@ import { punycode } from './builtins/punycode.ts';
 import { PROMISIFY_CUSTOM, received, timers, timersPromises } from './builtins/process.ts';
 import * as misc from './builtins/misc.ts';
 import { net } from './builtins/net.ts';
-import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
+import { Hash, Hmac, hashAlgorithm, ripemdName } from './builtins/hash.ts';
 import { scrypt, scryptSync } from './builtins/scrypt.ts';
 import { CONSTANTS, getCiphers, getCurves, getHashes, makeHkdf, timingSafeEqual } from './builtins/crypto-extra.ts';
 import type * as CryptoKeys from './builtins/crypto-keys.ts';
@@ -261,7 +261,7 @@ export function buildBuiltins() {
       const name = hashAlgorithm(alg);
       if (name) return new Hash(name);
       try {
-        return withBase64Url(lib().createHash as (a: string, o?: unknown) => { digest(enc?: string): Buffer | string })(alg, options);
+        return withBase64Url(lib().createHash as (a: string, o?: unknown) => { digest(enc?: string): Buffer | string })(ripemdName(alg), options);
       } catch {
         throw new Error('Digest method not supported');
       }
@@ -270,7 +270,7 @@ export function buildBuiltins() {
       const name = hashAlgorithm(alg);
       if (name) return new Hmac(name, key);
       try {
-        return withBase64Url(lib().createHmac as (a: string, k: unknown, o?: unknown) => { digest(enc?: string): Buffer | string })(alg, key, options);
+        return withBase64Url(lib().createHmac as (a: string, k: unknown, o?: unknown) => { digest(enc?: string): Buffer | string })(ripemdName(alg), key, options);
       } catch {
         throw Object.assign(new TypeError(`Invalid digest: ${alg}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
       }
@@ -323,9 +323,24 @@ export function buildBuiltins() {
       // As Node's: on the next tick, without an error (undefined).
       queueMicrotask(() => cb(undefined, n));
     };
-    // Node takes a null IV for a mode without one (ECB); browserify-aes and browserify-des read its length.
-    const withIv = (name: 'createCipheriv' | 'createDecipheriv') => (alg: string, key: unknown, iv: unknown, options?: unknown) =>
-      (lib()[name] as (a: string, k: unknown, i: unknown, o?: unknown) => unknown)(alg, key, iv ?? Buffer.alloc(0), options);
+    // As Node's: a null IV only for a mode without one (ECB, which browserify-aes and browserify-des
+    // take as an empty IV), never an empty one for GCM (the nonce), and a secret KeyObject as the key.
+    const invalidIv = () => Object.assign(new TypeError('Invalid initialization vector'), { code: 'ERR_CRYPTO_INVALID_IV' });
+    const withIv = (name: 'createCipheriv' | 'createDecipheriv') =>
+      function (alg: string, key: unknown, iv: unknown, options?: unknown) {
+        const mode = typeof alg === 'string' ? alg.toLowerCase() : '';
+        const ecb = mode.endsWith('-ecb') || mode === 'des-ede' || mode === 'des-ede3';
+        if (iv !== null && typeof iv !== 'string' && !ArrayBuffer.isView(iv) && !(iv instanceof ArrayBuffer)) {
+          throw Object.assign(new TypeError(`The "iv" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received ${received(iv)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+        }
+        const ivLength = iv === null ? 0 : typeof iv === 'string' ? Buffer.byteLength(iv) : iv.byteLength;
+        if (ecb ? ivLength > 0 : iv === null || (mode.endsWith('-gcm') && ivLength === 0)) throw invalidIv();
+        if (key instanceof keysLib().KeyObject) {
+          if (key.type !== 'secret') throw Object.assign(new TypeError(`Invalid key object type ${key.type}, expected secret.`), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+          key = (key as unknown as { export(): Buffer }).export();
+        }
+        return (lib()[name] as (a: string, k: unknown, i: unknown, o?: unknown) => unknown)(alg, key, iv ?? Buffer.alloc(0), options);
+      };
     const createCipheriv = withIv('createCipheriv');
     const createDecipheriv = withIv('createDecipheriv');
     // KeyObject, sign and verify (builtins/crypto-keys.ts), from the same library when first used.
@@ -335,7 +350,7 @@ export function buildBuiltins() {
       const k = keysLib();
       signing ??= k.makeSigning({ createHash: createHash as never, randomBytes: randomBytes as never });
       const withKeyObject = (name: 'publicEncrypt' | 'privateDecrypt' | 'privateEncrypt' | 'publicDecrypt') => (key: unknown, buffer: unknown) =>
-        (lib()[name] as (k: unknown, b: unknown) => Buffer)(k.pemForEncryption(key), buffer);
+        (lib()[name] as (k: unknown, b: unknown) => Buffer)(k.pemForEncryption(key, name), buffer);
       return {
         ...signing,
         KeyObject: k.KeyObject,

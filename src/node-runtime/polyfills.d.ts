@@ -33,6 +33,7 @@ declare const __SANDBURG_ESBUILD__: string;
 declare module 'elliptic' {
   interface BN {
     toArray(endian: 'be', length?: number): number[];
+    toString(base: 16): string;
   }
   interface Signature {
     r: BN;
@@ -48,6 +49,8 @@ declare module 'elliptic' {
   }
   export class ec {
     constructor(curve: string);
+    /** The curve's order. */
+    n: BN;
     keyFromPrivate(priv: number[]): ec.KeyPair;
     keyFromPublic(pub: number[]): ec.KeyPair;
     verify(msg: number[], signature: { r: string; s: string }, key: ec.KeyPair): boolean;
