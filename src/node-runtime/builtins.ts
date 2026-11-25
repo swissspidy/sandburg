@@ -505,7 +505,10 @@ export function buildBuiltins() {
     // As Node's: os.constants' dlopen, errno, priority and signals, then fs's and crypto's constants.
     constants: () => {
       const { dlopen, errno, priority, signals } = misc.os.constants;
-      return { ...dlopen, ...errno, ...priority, ...signals, ...fs.constants, ...(cryptoModule().constants as object) };
+      // As Node's: crypto.constants' defaultCipherList is among them only when node:crypto was loaded first.
+      const cryptoLoaded = cryptoMade !== undefined;
+      const { defaultCipherList, ...crypto } = cryptoModule().constants as Record<string, unknown>;
+      return { ...dlopen, ...errno, ...priority, ...signals, ...fs.constants, ...crypto, ...(cryptoLoaded ? { defaultCipherList } : {}) };
     },
     readline: () => misc.readline,
     'readline/promises': () => misc.readline.promises,
