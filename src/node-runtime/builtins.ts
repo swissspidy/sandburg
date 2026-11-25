@@ -26,7 +26,7 @@ import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
 import { scrypt, scryptSync } from './builtins/scrypt.ts';
 import { CONSTANTS, getCiphers, getCurves, getHashes, makeHkdf, timingSafeEqual } from './builtins/crypto-extra.ts';
 import type * as CryptoKeys from './builtins/crypto-keys.ts';
-import { CRYPTO_LIB_KEYS, LIBS_KEY, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
+import { CRYPTO_KEYS_KEY, CRYPTO_LIB_KEYS, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
 import { FsError } from './vfs.ts';
 import { stdinInput, vfs, proc, runtimeLib, lazyMember, childProcess, wasiChildThread, base, WARM_RUNTIMES, threads, thread, write, sqliteFiles } from './worker.ts';
 
@@ -261,10 +261,7 @@ export function buildBuiltins() {
     const createDecipheriv = withIv('createDecipheriv');
     // KeyObject, sign and verify (builtins/crypto-keys.ts), from the same library when first used.
     let signing: ReturnType<typeof CryptoKeys.makeSigning> | undefined;
-    const keysLib = () => {
-      lib();
-      return (globalThis as unknown as Record<symbol, { cryptoKeys: typeof CryptoKeys }>)[Symbol.for(LIBS_KEY)].cryptoKeys;
-    };
+    const keysLib = () => (lib() as unknown as Record<symbol, typeof CryptoKeys>)[Symbol.for(CRYPTO_KEYS_KEY)];
     const keys = (): Record<string, unknown> => {
       const k = keysLib();
       signing ??= k.makeSigning({ createHash: createHash as never, randomBytes: randomBytes as never });
