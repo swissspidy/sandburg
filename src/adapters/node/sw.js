@@ -66,7 +66,7 @@ self.addEventListener('fetch', (event) => {
     // as process.ts sends it): <link href="http://localhost:3000/style.css">. They are served here,
     // as ws-shim.js does for fetch and XMLHttpRequest; other origins go to the network.
     const port = localPort(url);
-    if (port) event.respondWith(forward(event.request, url, `/__sandburg_backend/${port}${url.pathname}${url.search}`));
+    if (port) event.respondWith(sentByProgram(event).then((fromProgram) => forward(event.request, url, `/__sandburg_backend/${port}${url.pathname}${url.search}`, fromProgram)));
     return;
   }
   if (hooks.fetch && hooks.fetch(event, url)) return;
@@ -83,6 +83,31 @@ self.addEventListener('fetch', (event) => {
   if (event.request.mode === 'navigate' && event.request.destination === 'document') return;
   event.respondWith(forward(event.request, url));
 });
+
+/**
+ * Whether the program itself sent the request: a fetch() in one of its runtimes (workers whose script
+ * is Sandburg's, under /__sandburg/), as a server's code calls fetch('http://localhost:3000/api').
+ * Not the app's page, nor a worker of the app's own. On the developer's machine Node's fetch() sends
+ * no browser cookies, and the cookies it is answered with stay out of the browser (process.ts).
+ */
+async function sentByProgram(event) {
+  if (!event.clientId) return false;
+  const client = await self.clients.get(event.clientId);
+  return client?.type === 'worker' && new URL(client.url).pathname.includes('/__sandburg/');
+}
+
+/**
+ * The browser's CORS check of a response to a cors-mode request (Fetch's "CORS check"): its
+ * Access-Control-Allow-Origin is the page's origin, or * when no credentials go with it; with
+ * credentials, Access-Control-Allow-Credentials is true. (These are simple GETs of the page's
+ * markup: a script, a font, an image; the page's fetch() of a localhost URL goes through ws-shim.js.)
+ */
+function corsAllows(request, headers) {
+  if (request.mode !== 'cors') return true;
+  const allow = headers.get('access-control-allow-origin');
+  if (request.credentials === 'include') return allow === self.location.origin && headers.get('access-control-allow-credentials') === 'true';
+  return allow === '*' || allow === self.location.origin;
+}
 
 /** The port of an http(s)://localhost:<port> URL (and 127.0.0.1, 0.0.0.0, [::1]), else null. */
 function localPort(url) {
@@ -214,7 +239,7 @@ function injectShim() {
  * Forwards an app request to the runtime. `path` is where it goes when it is not the app's own URL
  * (a server's localhost URL, served by its port): the browser treats its answer as cross-origin.
  */
-async function forward(request, url, path) {
+async function forward(request, url, path, fromProgram = false) {
   let p;
   try {
     p = await getPort();
@@ -231,7 +256,7 @@ async function forward(request, url, path) {
     const referrer = new URL(request.referrer);
     headers.push(['referer', hooks.appPath && referrer.origin === self.location.origin ? referrer.origin + hooks.appPath(referrer) : request.referrer]);
   }
-  p.postMessage({ type: 'request', id, method: request.method, url: path ?? (hooks.appPath ? hooks.appPath(url) : url.pathname + url.search), headers, body }, body ? [body] : []);
+  p.postMessage({ type: 'request', id, method: request.method, url: path ?? (hooks.appPath ? hooks.appPath(url) : url.pathname + url.search), headers, body, fromProgram }, body ? [body] : []);
   return new Promise((resolve) => {
     let controller;
     const stream = new ReadableStream({
@@ -260,15 +285,16 @@ async function forward(request, url, path) {
         if (refusesFraming && !enforcesAncestors) h.append('content-security-policy', "frame-ancestors 'self'");
         // The host page may be cross-origin isolated (WebAssembly threads); app documents must be too.
         if (!h.has('cross-origin-embedder-policy')) h.set('cross-origin-embedder-policy', hooks.coep ?? 'credentialless');
-        if (path) {
-          // On the developer's machine the page and this server share an origin: the page may use its
-          // answers as its own (a module script, a font), where a browser checks them as cross-origin.
-          h.set('cross-origin-resource-policy', 'cross-origin');
-          if (request.mode === 'cors') {
-            h.set('access-control-allow-origin', self.location.origin);
-            h.set('access-control-allow-credentials', 'true');
-          }
-        } else if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
+        // (A server's answer to a localhost URL has its CORS and CORP headers from the page: crossPort in process.ts.)
+        if (!h.has('cross-origin-resource-policy')) h.set('cross-origin-resource-policy', 'same-origin');
+        // The browser does not check a service worker's own response against CORS: for a localhost URL
+        // the page asked for in cors mode (a module script, a font), the check is here, and a refusal is
+        // a network error, as the browser's own would be. The program's fetch() is Node's: none.
+        if (path && !fromProgram && !corsAllows(request, h)) {
+          replies.delete(id);
+          resolve(Response.error());
+          return;
+        }
         // A redirect to one of the app's own paths (/login) stays where the deployment serves the app.
         // (A server's localhost URL resolves it against its own origin, which comes back here.)
         if (hooks.sitePath && !path && h.has('location')) h.set('location', hooks.sitePath(h.get('location')));

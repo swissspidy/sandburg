@@ -175,10 +175,12 @@ export class NodeProcess {
   /** When each pending request was sent (see activity()). */
   private sent = new Map<number, number>();
   /**
-   * The port each pending request went to, for its redirects (unlocalize); null for one the page sent to
-   * a server by its localhost URL (/__sandburg_backend/<port>/…), whose redirects keep theirs.
+   * The port each pending request went to, and whether the page asked for the server by its localhost
+   * URL (/__sandburg_backend/<port>/…): for its redirects (unlocalize) and its CORS headers (crossPort).
    */
-  private answering = new Map<number, number | null>();
+  private answering = new Map<number, { port: number; byLocalUrl: boolean }>();
+  /** Pending requests the program sent itself (its fetch()): no page cookies go with them or come of them. */
+  private fromProgram = new Set<number>();
   private lastRequest = performance.now();
   private sockets = new Map<number, MessagePort>();
   private nextId = 1;
@@ -321,6 +323,28 @@ export class NodeProcess {
     return m && port != null && Number(m[1] ?? 80) === port ? url.slice(m[0].length) || '/' : url;
   }
 
+  /**
+   * The CORS and CORP headers of a server's answer to the page's request by its localhost URL, as the
+   * page's browser on the developer's machine would judge them. The page's own server (its port) is
+   * the page's origin there: it may use the answer as its own (a module script, a font). Another port
+   * is another origin: the server's own Access-Control-Allow-Origin decides, the page's localhost origin
+   * in it (what the server saw as Origin, localize) read as the page's real origin, and nothing granted
+   * that it did not grant. CORP same-site is met by any localhost port; same-origin only by the page's.
+   * The program's own fetch() is Node's, which checks no CORS: its answers are granted.
+   */
+  private crossPort(headers: [string, string][], port: number, fromProgram: boolean): [string, string][] {
+    const own = fromProgram || port === (this.appPort ?? port);
+    const lower = (name: string) => headers.find(([k]) => k.toLowerCase() === name)?.[1];
+    const keep = headers.filter(([k]) => !/^(access-control-allow-origin|access-control-allow-credentials|cross-origin-resource-policy)$/i.test(k));
+    if (own) return [...keep, ['access-control-allow-origin', location.origin], ['access-control-allow-credentials', 'true'], ['cross-origin-resource-policy', 'cross-origin']];
+    const allowOrigin = lower('access-control-allow-origin');
+    const credentials = lower('access-control-allow-credentials');
+    const out: [string, string][] = [...keep, ['cross-origin-resource-policy', lower('cross-origin-resource-policy')?.trim().toLowerCase() === 'same-origin' ? 'same-origin' : 'cross-origin']];
+    if (allowOrigin !== undefined) out.push(['access-control-allow-origin', allowOrigin.trim() === this.localOrigin(port) ? location.origin : allowOrigin]);
+    if (credentials !== undefined) out.push(['access-control-allow-credentials', credentials]);
+    return out;
+  }
+
   /** Origin or Referer from the page, rewritten to localOrigin. */
   private localize(value: string, port: number): string {
     return value === location.origin || value.startsWith(location.origin + '/') ? this.localOrigin(port) + value.slice(location.origin.length) : value;
@@ -341,14 +365,16 @@ export class NodeProcess {
     }
     const id = this.nextId++;
     this.pending.set(id, reply);
-    this.answering.set(id, byLocalUrl ? null : port);
+    this.answering.set(id, { port, byLocalUrl });
+    if (request.fromProgram) this.fromProgram.add(id);
     this.lastActivity = this.lastRequest = performance.now();
     this.sent.set(id, this.lastRequest);
     // No Accept-Encoding: the browser does not decode compressed bodies of service-worker Responses.
     const headers: [string, string][] = request.headers
       .filter(([k]) => !/^(cookie|accept-encoding|host)$/i.test(k))
       .map(([k, v]) => (/^(origin|referer)$/i.test(k) ? [k, this.localize(v, port)] : [k, v]));
-    if (document.cookie) headers.push(['cookie', document.cookie]);
+    // The page's cookies, as its browser sends them; not with the program's own fetch(), as Node's sends none.
+    if (document.cookie && !request.fromProgram) headers.push(['cookie', document.cookie]);
     // The server is at localhost:<port>, as on the developer's machine (a service worker's request carries no Host).
     headers.push(['host', `localhost:${port}`]);
     this.send({ type: 'request', id, port, method: request.method, url: request.url, headers, body: request.body }, request.body ? [request.body] : []);
@@ -526,9 +552,12 @@ export class NodeProcess {
         // Only for a request of the page's: not one the page no longer waits for (nor another runtime's).
         const reply = this.pending.get(m.id);
         if (!reply) break;
-        for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
+        // Cookies a server answers the page with are the page's; those it answers the program's fetch() with are not.
+        if (!this.fromProgram.has(m.id)) for (const [k, v] of m.headers) if (k.toLowerCase() === 'set-cookie') applyCookie(v);
         // A redirect to the server's own address (built from Host, now localhost) stays on the page's origin.
-        const headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v, this.answering.get(m.id)) : v]);
+        const target = this.answering.get(m.id);
+        let headers = m.headers.map(([k, v]): [string, string] => [k, k.toLowerCase() === 'location' ? this.unlocalize(v, target && !target.byLocalUrl ? target.port : null) : v]);
+        if (target?.byLocalUrl) headers = this.crossPort(headers, target.port, this.fromProgram.has(m.id));
         if (m.type === 'response-start') {
           reply.postMessage({ type: 'start', status: m.status, statusText: m.statusText, headers });
           break;
@@ -539,6 +568,7 @@ export class NodeProcess {
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         this.answering.delete(m.id);
+        this.fromProgram.delete(m.id);
         break;
       }
       case 'ws-accept':
@@ -565,6 +595,7 @@ export class NodeProcess {
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         this.answering.delete(m.id);
+        this.fromProgram.delete(m.id);
         break;
       case 'response-error':
         this.pending.get(m.id)?.postMessage({ type: 'error', message: m.message });
@@ -572,6 +603,7 @@ export class NodeProcess {
         this.pending.delete(m.id);
         this.sent.delete(m.id);
         this.answering.delete(m.id);
+        this.fromProgram.delete(m.id);
         break;
       // The page's runtime is started with init right away, and has no parent for process.send();
       // the page sends requests with their whole body (a streamed one's server says what it read).
