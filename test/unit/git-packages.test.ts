@@ -273,6 +273,21 @@ test('responses count against the limits as they arrive: parallel archives toget
   const listing = await withGitPackages(project({ z: 'github:user/lib#a-branch' })).catch((e: Error & { code?: string }) => e);
   assert.match((listing as Error).message, /too large to fetch \(a response over/);
   assert.equal((listing as { code?: string }).code, 'UNSUPPORTED');
+  // Ref listings count into the project's budget too, from parallel resolutions together.
+  fakeGitHub();
+  Object.assign(gitLimits, saved, { totalBytes: 300 });
+  const refs = await withGitPackages(project({ p: 'github:user/lib#feature-a', q: 'github:user/lib#feature-b' })).catch((e: Error) => e);
+  assert.match((refs as Error).message, /too large together \(over .* MB received\)/);
+  // A clone's protocol responses (another host, no archive) are bounded as an archive is.
+  process.env.SANDBURG_GIT_HOSTS = 'git.example.com';
+  t.after(() => delete process.env.SANDBURG_GIT_HOSTS);
+  const discovery = `${pkt('# service=git-upload-pack\n')}0000${pkt('version 2\n')}${pkt('ls-refs=unborn\n')}${pkt('fetch=shallow\n')}${pkt('object-format=sha1\n')}0000`;
+  fakeGitHub({ 'https://git.example.com/a/b.git/info/refs?service=git-upload-pack': () => new Response(discovery) });
+  Object.assign(gitLimits, saved, { bytes: discovery.length - 1 });
+  const clone = await withGitPackages(project({ r: `git+https://git.example.com/a/b.git#${'5'.repeat(40)}` })).catch((e: Error & { code?: string }) => e);
+  assert.match((clone as Error).message, /too large to fetch \(a response over/);
+  assert.equal((clone as { code?: string }).code, 'UNSUPPORTED');
+  assert.ok(requests.some((r) => r.startsWith('GET https://git.example.com/')), requests.join('\n'));
   // An archive that unpacks to more than a repository may: Sandburg's refusal, not zlib's.
   const c = '4'.repeat(40);
   Object.assign(gitLimits, saved, { bytes: size + 10 });

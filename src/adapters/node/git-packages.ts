@@ -109,13 +109,13 @@ function originsOf(spec: GitSpec): Set<string> {
 const refs = new Map<string, { sha: string; at: number }>();
 
 /** The commit a spec names: its full id, the lockfile's, or the server's answer for its ref. */
-async function resolveCommit(spec: GitSpec, label: string, offline: boolean): Promise<string> {
+async function resolveCommit(spec: GitSpec, label: string, offline: boolean, budget?: Budget): Promise<string> {
   if (spec.committish && FULL_SHA.test(spec.committish)) return spec.committish;
   const key = `${spec.url}#${spec.semver !== null ? `semver:${spec.semver}` : (spec.committish ?? '')}`;
   const known = refs.get(key);
   if (known && (offline || Date.now() - known.at < REF_TTL_MS)) return known.sha;
   if (offline) throw new Error(`git: ${label}: offline, and which commit it names is not known (pin a full commit id)`);
-  const http = httpClient(originsOf(spec));
+  const http = httpClient(originsOf(spec), budget);
   const list = async (prefix: string) => {
     try {
       return await git.listServerRefs({ http, url: spec.url, protocolVersion: 2, prefix, symrefs: true, peelTags: true });
@@ -235,7 +235,10 @@ async function fromClone(spec: GitSpec, sha: string, label: string, ref: string 
     // depth null: the whole history.
     const fetchOne = (remoteRef: string | undefined, depth: number | null = 1) => git.fetch({ fs, http, dir: tmp, remote: 'origin', remoteRef, singleBranch: true, depth: depth ?? undefined, tags: false });
     const has = () => git.readCommit({ fs, dir: tmp, oid: sha }).then(() => true, () => false);
-    await fetchOne(sha).catch(() => {});
+    // A refusal (too large) is final; anything else, and the commit is looked for by its ref.
+    await fetchOne(sha).catch((e: unknown) => {
+      if (e instanceof UnsupportedDependencyError) throw e;
+    });
     if (!(await has())) {
       // The ref that names it (a branch may have moved past a locked commit: then its history); for a
       // commit by its id, the branch or tag at it, else the default branch's history, which has it if anything does.
@@ -411,7 +414,7 @@ export async function withGitPackages(project: Project, options: { offline?: boo
         if (++count > gitLimits.packages) throw unsupportedDependency(name, raw, `more than ${gitLimits.packages} git dependencies`);
         const label = `${name}@${raw}`;
         const started = Date.now();
-        const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await until(resolveCommit(spec, label, options.offline === true)));
+        const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await until(resolveCommit(spec, label, options.offline === true, fetching)));
         const tree = await until(commitFiles(spec, sha, label, options.offline === true, fetching));
         const at = dirOf(spec, sha);
         const prefix = spec.subdir ? `${spec.subdir}/` : '';
