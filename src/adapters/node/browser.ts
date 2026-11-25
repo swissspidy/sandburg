@@ -208,11 +208,16 @@ type Installed = Extract<InstallWorkerMessage, { type: 'done' }>;
 /**
  * The install in the page (browser-npm/install.ts), in a worker of its own (install-worker.ts): the
  * resolution, the untarring and packing node_modules into shared memory would block the page's
- * main thread for seconds on a large tree. The worker ends with the install.
+ * main thread for seconds on a large tree. The worker ends with the install, or when the run is
+ * disposed (`signal`): a page may run another project next (the demo site's generator).
  */
-function installInWorker(parts: BrowserInstallPart[], log: (line: string) => void): Promise<Installed> {
+function installInWorker(parts: BrowserInstallPart[], log: (line: string) => void, signal: AbortSignal): Promise<Installed> {
+  if (signal.aborted) return Promise.reject(new AdapterError('INTERNAL', 'the run was disposed before the install'));
   const worker = new Worker(`${hostBase()}/install-worker.js`);
+  let aborted: () => void = () => {};
   return new Promise<Installed>((resolve, reject) => {
+    aborted = () => reject(new AdapterError('INTERNAL', 'the run was disposed during the install'));
+    signal.addEventListener('abort', aborted, { once: true });
     worker.onmessage = (e: MessageEvent<InstallWorkerMessage>) => {
       const m = e.data;
       if (m.type === 'log') return log(m.line);
@@ -226,7 +231,10 @@ function installInWorker(parts: BrowserInstallPart[], log: (line: string) => voi
       reject(new AdapterError('INTERNAL', `the page's installer failed: ${e.message || 'worker error'}`));
     };
     worker.postMessage({ parts } satisfies InstallWorkerRequest);
-  }).finally(() => worker.terminate());
+  }).finally(() => {
+    signal.removeEventListener('abort', aborted);
+    worker.terminate();
+  });
 }
 
 /** A port to the page's compiler for a runtime (each runtime blocks on its own; see compile-worker.ts). */
@@ -297,7 +305,7 @@ export function createAdapter(): RuntimeAdapter {
             proc?.fail(compilerError);
           };
         }
-        const result = await installInWorker(host.browserInstall, (line) => ctx.log('stdout', line));
+        const result = await installInWorker(host.browserInstall, (line) => ctx.log('stdout', line), ctx.signal);
         pack = { sab: result.sab, index: result.index };
         nodeModules = Object.fromEntries(Object.entries(pack.index).map(([path, [, length]]) => [path, length]));
         resolved = result.resolved;
