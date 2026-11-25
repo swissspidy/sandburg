@@ -23,6 +23,7 @@ import { PROMISIFY_CUSTOM, received, timers, timersPromises } from './builtins/p
 import * as misc from './builtins/misc.ts';
 import { net } from './builtins/net.ts';
 import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
+import { scrypt, scryptSync } from './builtins/scrypt.ts';
 import { CRYPTO_LIB_KEYS, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
 import { FsError } from './vfs.ts';
 import { stdinInput, vfs, proc, runtimeLib, lazyMember, childProcess, wasiChildThread, base, WARM_RUNTIMES, threads, thread, write, sqliteFiles } from './worker.ts';
@@ -270,6 +271,8 @@ export function buildBuiltins() {
       getRandomValues: <T extends ArrayBufferView>(a: T) => globalThis.crypto.getRandomValues(a as never) as T,
       randomUUID: () => globalThis.crypto.randomUUID(),
       randomInt,
+      scrypt,
+      scryptSync,
       timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
       getHashes: () => ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'],
       getCiphers: () => [],

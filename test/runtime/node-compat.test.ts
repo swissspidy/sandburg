@@ -2512,3 +2512,44 @@ const resolved = (run) => new Promise((resolve) => run((err, records) => resolve
     dns: [["127.0.0.1"],["127.0.0.1"],[{"address":"127.0.0.1","ttl":0}],["::1"],["ENODATA","queryMx","example.com"],["ENODATA","queryTxt","example.com"],["127.0.0.1"],["ENODATA","queryAaaa","127.0.0.1"],["ENODATA","querySrv","example.com"],["TypeError","ERR_INVALID_ARG_VALUE","The argument 'rrtype' is invalid. Received 'BOGUS'"]],
   });
 });
+
+test('crypto.scrypt and scryptSync (RFC 7914), as Node derives them: password hashes apps seed and check', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const crypto = require('crypto');
+const failure = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    return [e.name, e.code];
+  }
+};
+const out = {};
+out.vectors = [
+  crypto.scryptSync('', '', 64, { N: 16, r: 1, p: 1 }).toString('hex'),
+  crypto.scryptSync('password', 'NaCl', 64, { N: 1024, r: 8, p: 16 }).toString('hex'),
+  crypto.scryptSync('pleaseletmein', 'SodiumChloride', 64).toString('hex'),
+];
+const salt = crypto.randomBytes(16);
+const hash = crypto.scryptSync('hunter2', salt, 32, { cost: 1024 });
+out.verify = [crypto.timingSafeEqual(hash, crypto.scryptSync('hunter2', salt, 32, { N: 1024 })), crypto.scryptSync('x', 'y', 17).length];
+out.errors = [failure(() => crypto.scryptSync('a', 'b', 8, { N: 3 })), failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 20 })), failure(() => crypto.scryptSync('a', 'b', 8, { N: 2, cost: 2 }))];
+crypto.scrypt('pw', 'salt', 16, { N: 16 }, (err, key) => {
+  out.async = [err, key.toString('hex')];
+  console.log(JSON.stringify(out));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    vectors: [
+      '77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442fcd0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906',
+      'fdbabe1c9d3472007856e7190d01e9fe7c6ad7cbc8237830e77376634b3731622eaf30d92e22a3886ff109279d9830dac727afb94a83ee6d8360cbdfa2cc0640',
+      '7023bdcb3afd7348461c06cd81fd38ebfda8fbba904f8e3ea9b543f6545da1f2d5432955613f0fcf62d49705242a9af9e61e85dc0d651e40dfcf017b45575887',
+    ],
+    verify: [true, 17],
+    errors: [['RangeError', 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS'], ['RangeError', 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS'], ['Error', 'ERR_CRYPTO_SCRYPT_INVALID_PARAMETER']],
+    async: [null, 'c5d06c368e4a07b8a98e9a06773fcf4a'],
+  });
+});
