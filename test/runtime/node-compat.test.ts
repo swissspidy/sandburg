@@ -351,7 +351,9 @@ test("http: a response a handler writes after its process exited is not sent", {
 });
 
 test('http: process.exit() in a request handler ends the process with its code', { timeout: 30_000 }, async () => {
-  const out = await h.run({ 'main.js': `require('http').createServer(() => process.exit(7)).listen(3000);` }, '/app/main.js', [{ url: '/' }], undefined, { linger: 300 });
+  const out = await h.run(
+    {
+      'main.js': `require('http').createServer(() => process.exit(7)).listen(3000);` }, '/app/main.js', [{ url: '/' }], undefined, { linger: 300 });
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.deepEqual(out.ends, [['response-error', 0], ['exit', 7]]);
   assert.equal(out.responses[0].body, 'the process exited with code 7');
@@ -2551,5 +2553,68 @@ crypto.scrypt('pw', 'salt', 16, { N: 16 }, (err, key) => {
     verify: [true, 17],
     errors: [['RangeError', 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS'], ['RangeError', 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS'], ['Error', 'ERR_CRYPTO_SCRYPT_INVALID_PARAMETER']],
     async: [null, 'c5d06c368e4a07b8a98e9a06773fcf4a'],
+  });
+});
+
+test('crypto.hkdf and hkdfSync (RFC 5869), timingSafeEqual, the ciphers, hashes and curves listed (each works here) and constants, as Node has them', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const crypto = require('crypto');
+const failure = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    return [e.name, e.code, e.message];
+  }
+};
+const hex = (ab) => Buffer.from(ab).toString('hex');
+const out = {};
+const keyLength = (c) => {
+  const aes = /^aes-?(128|192|256)/.exec(c);
+  if (aes) return Number(aes[1]) / 8;
+  return /^des(3|-ede3)/.test(c) ? 24 : c.startsWith('des-ede') ? 16 : 8;
+};
+out.hkdf = [
+  hex(crypto.hkdfSync('sha256', 'key', 'salt', 'info', 42)),
+  hex(crypto.hkdfSync('sha512', 'key', '', '', 100)),
+  hex(crypto.hkdfSync('SHA1', new Uint8Array([1, 2]), Buffer.alloc(0), new ArrayBuffer(3), 30)),
+  hex(crypto.hkdfSync('ripemd160', 'k', 's', 'i', 24)),
+  crypto.hkdfSync('sha256', 'k', 's', 'i', 255 * 32).byteLength,
+];
+out.hkdfErrors = [
+  failure(() => crypto.hkdfSync('sha256', 'k', 's', 'i', 255 * 32 + 1)),
+  failure(() => crypto.hkdfSync('bogus', 'k', 's', 'i', 8)),
+  failure(() => crypto.hkdfSync('sha256', 'k', 's', Buffer.alloc(1025), 8)),
+  failure(() => crypto.hkdfSync('sha256', 5, 's', 'i', 8)),
+  failure(() => crypto.hkdfSync('sha256', 'k', 's', 'i', '8')),
+];
+out.timingSafeEqual = [
+  crypto.timingSafeEqual(Buffer.from('ab'), Buffer.from('ab')),
+  crypto.timingSafeEqual(Buffer.from('ab'), Buffer.from('ac')),
+  crypto.timingSafeEqual(new Uint16Array([1]), Buffer.from([1, 0])),
+  failure(() => crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('ab'))),
+  failure(() => crypto.timingSafeEqual('a', 'a')),
+];
+out.lists = [
+  crypto.getCiphers().every((c) => crypto.createCipheriv(c, Buffer.alloc(keyLength(c)), c.endsWith('ecb') ? null : Buffer.alloc(c.endsWith('gcm') ? 12 : c.startsWith('des') ? 8 : 16)).update('x').length >= 0),
+  crypto.getHashes().filter((h) => !/[A-Z]/.test(h)).filter((h) => !h.includes('With')).every((h) => crypto.createHash(h).update('x').digest('hex').length > 0),
+  crypto.getCurves().every((c) => crypto.createECDH(c).generateKeys().length > 0),
+  crypto.constants.RSA_PKCS1_OAEP_PADDING,
+  crypto.constants.POINT_CONVERSION_UNCOMPRESSED,
+];
+crypto.hkdf('sha256', 'key', 'salt', 'info', 16, (err, key) => {
+  out.async = [err, key instanceof ArrayBuffer, hex(key)];
+  console.log(JSON.stringify(out));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    hkdf: ["9ca0d662557439e3b83365f2da4626d35da195c6d9d1779f09838cf9e408966ece99106e2585ace6f083","60ed0b819793aba3c33a17021859ac9708e0644e3b78992e6eae96e16465604a482ad7574d682e6be37dfeffbc79d9619d717ebfa2814128c9cd832791e405733dade3aebc2e2a4c36c7f85a9097a131b2b524ed3504ba113e931ccf4fdd5e0b72eeb565","68efbf21b38bac28f9583319bdbece033af6cadc08551e93307c457bc4cd","e813e2b52c7a890d17de6b58ef90f60d19d7f232d177f591",8160],
+    hkdfErrors: [["RangeError","ERR_CRYPTO_INVALID_KEYLEN","Invalid key length"],["TypeError","ERR_CRYPTO_INVALID_DIGEST","Invalid digest: bogus"],["RangeError","ERR_OUT_OF_RANGE","The value of \"info\" is out of range. It must be must not contain more than 1024 bytes. Received 1025"],["TypeError","ERR_INVALID_ARG_TYPE","The \"ikm\" argument must be of type string or an instance of SecretKeyObject, ArrayBuffer, TypedArray, DataView, or Buffer. Received type number (5)"],["TypeError","ERR_INVALID_ARG_TYPE","The \"length\" argument must be of type number. Received type string ('8')"]],
+    timingSafeEqual: [true,false,true,["RangeError","ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH","Input buffers must have the same byte length"],["TypeError","ERR_INVALID_ARG_TYPE","The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."]],
+    lists: [true,true,true,4,4],
+    async: [null,true,"9ca0d662557439e3b83365f2da4626d3"],
   });
 });

@@ -24,6 +24,7 @@ import * as misc from './builtins/misc.ts';
 import { net } from './builtins/net.ts';
 import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
 import { scrypt, scryptSync } from './builtins/scrypt.ts';
+import { CONSTANTS, getCiphers, getCurves, getHashes, makeHkdf, timingSafeEqual } from './builtins/crypto-extra.ts';
 import { CRYPTO_LIB_KEYS, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
 import { FsError } from './vfs.ts';
 import { stdinInput, vfs, proc, runtimeLib, lazyMember, childProcess, wasiChildThread, base, WARM_RUNTIMES, threads, thread, write, sqliteFiles } from './worker.ts';
@@ -251,6 +252,11 @@ export function buildBuiltins() {
       // As Node's: on the next tick, without an error (undefined).
       queueMicrotask(() => cb(undefined, n));
     };
+    // Node takes a null IV for a mode without one (ECB); browserify-aes and browserify-des read its length.
+    const withIv = (name: 'createCipheriv' | 'createDecipheriv') => (alg: string, key: unknown, iv: unknown, options?: unknown) =>
+      (lib()[name] as (a: string, k: unknown, i: unknown, o?: unknown) => unknown)(alg, key, iv ?? Buffer.alloc(0), options);
+    const createCipheriv = withIv('createCipheriv');
+    const createDecipheriv = withIv('createDecipheriv');
     // crypto-browserify's other members, from the library when first used (its keys, in its order:
     // a test checks them against the library).
     const crypto = Object.create(null) as Record<string, unknown>;
@@ -258,6 +264,10 @@ export function buildBuiltins() {
     Object.assign(crypto, {
       createHash,
       createHmac,
+      createCipheriv,
+      Cipheriv: createCipheriv,
+      createDecipheriv,
+      Decipheriv: createDecipheriv,
       Hash: createHash,
       Hmac: createHmac,
       randomBytes,
@@ -273,10 +283,13 @@ export function buildBuiltins() {
       randomInt,
       scrypt,
       scryptSync,
-      timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]),
-      getHashes: () => ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'],
-      getCiphers: () => [],
-      constants: {},
+      ...makeHkdf(createHmac as never),
+      timingSafeEqual,
+      getHashes,
+      getCiphers,
+      listCiphers: getCiphers,
+      getCurves,
+      constants: CONSTANTS,
       hash: (alg: string, data: string, enc: BufferEncoding = 'hex') => (createHash as unknown as (a: string) => { update(d: string): { digest(e: string): string } })(alg).update(data).digest(enc),
     });
     return crypto;
