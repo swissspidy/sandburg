@@ -72,29 +72,52 @@ export function buildBuiltins() {
     if (!isStream) return null;
     return !!(s.destroyed || (s._writableState ?? s._readableState)?.destroyed);
   }
-  /** Two Duplex streams, each one's writes the other's reads (stream.duplexPair, Node 22.6). */
+  /**
+   * Two Duplex streams, each one's writes the other's reads (stream.duplexPair), as Node 24's
+   * (lib/internal/streams/duplexpair.js): a write completes once the other side reads it, end waits
+   * for the other side's 'end', and destroying a side ends the other (or destroys it, for an error).
+   */
   function duplexPair(options?: object): [InstanceType<typeof rs.Duplex>, InstanceType<typeof rs.Duplex>] {
-    const waiting = new Map<object, () => void>();
-    const side = (other: () => InstanceType<typeof rs.Duplex>) =>
+    type Side = InstanceType<typeof rs.Duplex>;
+    const peers = new Map<Side, Side>();
+    const pending = new Map<Side, () => void>();
+    const nextTick = (fn: () => void) => (globalThis as unknown as { process: { nextTick(fn: () => void): void } }).process.nextTick(fn);
+    const side = (): Side =>
       new rs.Duplex({
         ...options,
         read() {
-          const resume = waiting.get(this);
-          waiting.delete(this);
+          const resume = pending.get(this);
+          pending.delete(this);
           resume?.();
         },
-        write(chunk, _encoding, cb) {
-          const to = other();
-          if (to.push(chunk)) cb();
-          else waiting.set(to, cb);
+        write(chunk: Uint8Array, _encoding, cb) {
+          const peer = peers.get(this)!;
+          if (chunk.length === 0) return nextTick(cb);
+          peer.push(chunk);
+          pending.set(peer, cb);
         },
         final(cb) {
-          other().push(null);
-          cb();
+          const peer = peers.get(this)!;
+          peer.on('end', cb);
+          peer.push(null);
+        },
+        destroy(err, cb) {
+          const peer = peers.get(this);
+          if (peer && !peer.destroyed) {
+            nextTick(() => {
+              if (peer.destroyed) return;
+              // As Node's: the other side is destroyed without the error (no unhandled 'error' there).
+              if (err) peer.destroy();
+              else peer.push(null);
+            });
+          }
+          cb(err);
         },
       });
-    const a: InstanceType<typeof rs.Duplex> = side(() => b);
-    const b: InstanceType<typeof rs.Duplex> = side(() => a);
+    const a = side();
+    const b = side();
+    peers.set(a, b);
+    peers.set(b, a);
     return [a, b];
   }
   const stream = Object.assign(Stream as unknown as Record<string, unknown>, rs, {

@@ -2696,3 +2696,47 @@ out.urlPattern = [typeof URLPattern, new URLPattern({ pathname: '/users/:id' }).
     fchmodCallback: "EBADF",
   });
 });
+
+test('stream.duplexPair as Node 24 has it: a write completes when the other side reads it, end waits for its end, destroying a side ends the other (or destroys it, for an error)', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const st = require('stream');
+const log = [];
+const [a, b] = st.duplexPair();
+a.write('one', () => log.push('cb one'));
+a.write('', () => log.push('cb empty'));
+log.push('after writes');
+const [e, f] = st.duplexPair();
+f.on('end', () => log.push('f end after e.destroy()'));
+f.resume();
+e.destroy();
+const [g, h] = st.duplexPair();
+g.on('error', () => {});
+h.on('error', (err) => log.push('h error ' + err.message));
+g.destroy(new Error('boom'));
+setTimeout(() => {
+  log.push('before read', 'f ' + [f.destroyed, f.readableEnded], 'h destroyed ' + h.destroyed);
+  b.on('data', (d) => log.push('b data ' + d));
+  a.end('two', () => log.push('a end cb'));
+  b.on('end', () => log.push('b end'));
+  a.on('finish', () => log.push('a finish'));
+}, 10);
+setTimeout(async () => {
+  const [x, y] = st.duplexPair();
+  let n = 0;
+  y.on('data', (d) => (n += d.length));
+  await new Promise((res) => x.end(Buffer.alloc(200000, 1), res));
+  log.push('big ' + n);
+  const [p, q] = st.duplexPair();
+  q.resume();
+  await st.promises.pipeline(st.Readable.from(['x', 'y']), p);
+  log.push('pipeline done');
+  console.log(JSON.stringify(log));
+}, 50);`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // Expected: what Node 24 prints for main.js.
+  assert.deepEqual(JSON.parse(out.stdout), ["after writes","cb one","cb empty","f end after e.destroy()","before read","f false,true","h destroyed true","b data one","b data two","b end","a end cb","a finish","big 200000","pipeline done"]);
+});
