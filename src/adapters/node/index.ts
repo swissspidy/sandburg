@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import { frontendProxy } from './scripts.ts';
-import { browserInstall, devScript, isSimple, packageDirs, nestedInstall, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
+import { browserInstall, devScript, isSimple, linkedBin, packageDirs, nestedInstall, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
 import { planOf } from './local-packages.ts';
 import { UnsupportedDependencyError, unsupportedDependency } from './spec-guard.ts';
 import { withGitPackages } from './git-packages.ts';
@@ -307,7 +307,8 @@ async function hostInstall(project: Project, log: (line: string) => void, option
     const cmd = startCommand(project);
     const script = devScript(project);
     if (cmd && (!script || isSimple(project, script))) {
-      const main = cmd.bin ? await resolveBin(info.dir, cmd.bin) : cmd.file;
+      // A linked package's binary (a workspace's, a git package's) first: it is the project's own dependency.
+      const main = cmd.bin ? (linkedBin(project, plan, cmd.bin) ?? (await resolveBin(info.dir, cmd.bin))) : cmd.file;
       // The app's fault, as in the page (browser.ts): classified by its code.
       if (!main) throw Object.assign(new Error(`the dev script runs "${cmd.bin}", which no installed package provides`), { code: 'APP' });
       start = { main, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
@@ -422,9 +423,10 @@ export const node: AdapterDescriptor = {
     const scripts = project.packageJson?.scripts ?? {};
     return { verdict: 'unsupported', reason: `no way to start this project in the node runtime (dev/start script: "${scripts.dev ?? scripts.start ?? ''}")` };
   },
-  sources(project, options) {
-    // A project without git dependencies is itself (planOf only reads its files).
-    if (project.framework === 'static' || !planOf(project).git.length) return Promise.resolve(project);
+  async sources(project, options) {
+    // A project without git dependencies is itself (planOf only reads its files). Async: a plan that
+    // fails rejects, for the install phase to report.
+    if (project.framework === 'static' || !planOf(project).git.length) return project;
     return withGitPackages(project, options);
   },
   hostInstall(project, log, options): Promise<HostInstall> {

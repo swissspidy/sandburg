@@ -25,16 +25,21 @@ import git from 'isomorphic-git';
 import semver from 'semver';
 import { untar } from './browser-npm/tar.ts';
 import { FULL_SHA, extraGitHosts, parseGitSpec, type GitSpec } from './git-spec.ts';
-import { GIT_DIR, GIT_FILE, installPlan } from './local-packages.ts';
+import { GIT_DIR, GIT_FILE, installPlan, type InstallPlan } from './local-packages.ts';
 import { UnsupportedDependencyError, unsupportedDependency } from './spec-guard.ts';
 import { isText } from '../../store.ts';
 import type { FileTree, Project } from '../../types.ts';
 
 /** At most this many git packages per project (each git package may name more). */
 const MAX_PACKAGES = 50;
-/** A repository's files: at most this many, and this many bytes unpacked. */
+/** A repository's files: at most this many, and this many bytes unpacked (its archive: as many, compressed). */
 const MAX_FILES = 20_000;
 const MAX_BYTES = 256 * 1024 * 1024;
+/** A project's git packages together: at most this many files and bytes. */
+const MAX_TOTAL_FILES = 50_000;
+const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+/** Repositories' files kept in memory across runs: at most this many bytes (the disk keeps them all). */
+const MEMORY_BYTES = 256 * 1024 * 1024;
 /** How long a branch or tag's commit is taken as known without asking again. */
 const REF_TTL_MS = 5 * 60_000;
 const TIMEOUT_MS = 60_000;
@@ -183,7 +188,7 @@ async function fromArchive(spec: GitSpec, sha: string, label: string): Promise<F
     return null; // the clone may still work
   }
   const count = limiter(label);
-  const gz = new Uint8Array(await res.arrayBuffer());
+  const gz = await readCapped(res, MAX_BYTES, label);
   const files: FileTree = {};
   for (const f of untar(gunzipSync(gz, { maxOutputLength: MAX_BYTES }))) {
     if (!kept(f.path)) continue;
@@ -201,13 +206,18 @@ async function fromClone(spec: GitSpec, sha: string, label: string, ref: string 
     await git.init({ fs, dir: tmp });
     await git.addRemote({ fs, dir: tmp, remote: 'origin', url: spec.url });
     // The commit by its id (most hosts serve any reachable one), else the ref that names it.
-    const fetchOne = (remoteRef: string | undefined, depth: number | undefined = 1) => git.fetch({ fs, http, dir: tmp, remote: 'origin', remoteRef, singleBranch: true, depth, tags: false });
-    await fetchOne(sha).catch(async () => {
-      if (ref) return fetchOne(ref);
-      // A commit by its id: the branch or tag at it, else the default branch's history, which has it if anything does.
-      const at = (await git.listServerRefs({ http, url: spec.url, protocolVersion: 2, prefix: 'refs/', peelTags: true })).find((r) => (r.peeled ?? r.oid) === sha && !r.ref.endsWith('^{}'));
-      return at ? fetchOne(at.ref) : fetchOne(undefined, undefined);
-    });
+    // depth null: the whole history.
+    const fetchOne = (remoteRef: string | undefined, depth: number | null = 1) => git.fetch({ fs, http, dir: tmp, remote: 'origin', remoteRef, singleBranch: true, depth: depth ?? undefined, tags: false });
+    const has = () => git.readCommit({ fs, dir: tmp, oid: sha }).then(() => true, () => false);
+    await fetchOne(sha).catch(() => {});
+    if (!(await has())) {
+      // The ref that names it (a branch may have moved past a locked commit: then its history); for a
+      // commit by its id, the branch or tag at it, else the default branch's history, which has it if anything does.
+      const at = ref ? null : (await git.listServerRefs({ http, url: spec.url, protocolVersion: 2, prefix: 'refs/', peelTags: true })).find((r) => (r.peeled ?? r.oid) === sha && !r.ref.endsWith('^{}'));
+      const remoteRef = ref ?? at?.ref;
+      if (remoteRef) await fetchOne(remoteRef);
+      if (!(await has())) await fetchOne(remoteRef, null);
+    }
     const count = limiter(label);
     const files: FileTree = {};
     await git.walk({
@@ -235,13 +245,33 @@ async function fromClone(spec: GitSpec, sha: string, label: string, ref: string 
   }
 }
 
-/** Repositories' files by commit, in this process (a batch's projects often share one). */
-const trees = new Map<string, Promise<FileTree>>();
+/** Repositories' files by commit, in this process (a batch's projects often share one), with their sizes once known. */
+const trees = new Map<string, { files: Promise<FileTree>; bytes: number }>();
+
+/** The bytes a file tree holds (its strings). */
+const treeBytes = (tree: FileTree) => Object.values(tree).reduce((n, c) => n + (typeof c === 'string' ? c.length : c.base64.length), 0);
+
+/** A response's body, refused past `max` bytes (by its length, or as it arrives) rather than read whole. */
+async function readCapped(res: Response, max: number, label: string): Promise<Uint8Array> {
+  const tooLarge = () => new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (an archive over ${max / 2 ** 20} MB)`);
+  if (Number(res.headers.get('content-length') ?? 0) > max) {
+    await res.body?.cancel();
+    throw tooLarge();
+  }
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of res.body ?? []) {
+    size += chunk.length;
+    if (size > max) throw tooLarge();
+    parts.push(chunk);
+  }
+  return Buffer.concat(parts);
+}
 
 /** A commit's files: from memory, the disk, the host's archive or a clone, in that order. */
 function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean): Promise<FileTree> {
   const id = `${spec.origin}/${spec.path}#${sha}`;
-  let pending = trees.get(id);
+  let pending = trees.get(id)?.files;
   if (!pending) {
     pending = (async () => {
       const file = join(cacheRoot(), `${createHash('sha256').update(id).digest('hex').slice(0, 32)}.json`);
@@ -256,10 +286,23 @@ function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean
       await rename(tmp, file);
       return files;
     })();
-    trees.set(id, pending);
-    pending.catch(() => trees.delete(id));
-    // Bounded: the oldest goes first.
-    if (trees.size > 64) trees.delete(trees.keys().next().value!);
+    const entry = { files: pending, bytes: 0 };
+    trees.set(id, entry);
+    pending.then(
+      (tree) => {
+        entry.bytes = treeBytes(tree);
+        // Bounded by bytes: the oldest go first (the disk still has them).
+        let total = 0;
+        for (const e of trees.values()) total += e.bytes;
+        for (const [key, e] of trees) {
+          if (total <= MEMORY_BYTES) break;
+          if (e === entry) continue;
+          total -= e.bytes;
+          trees.delete(key);
+        }
+      },
+      () => trees.delete(id),
+    );
   }
   return pending;
 }
@@ -271,6 +314,8 @@ function lockedCommit(files: FileTree, name: string, spec: GitSpec, hosts: strin
   try {
     const lock = JSON.parse(text) as { packages?: Record<string, { resolved?: unknown; version?: unknown }>; dependencies?: Record<string, { version?: unknown }> };
     const entry = lock.packages?.[`node_modules/${name}`] ?? lock.dependencies?.[name];
+    // A semver: range takes the locked commit only while the locked version is in it.
+    if (spec.semver !== null && !(typeof entry?.version === 'string' && semver.valid(entry.version) && semver.satisfies(entry.version, spec.semver, { loose: true }))) return null;
     for (const value of [(entry as { resolved?: unknown })?.resolved, entry?.version]) {
       if (typeof value !== 'string') continue;
       const locked = parseGitSpec(value, hosts);
@@ -298,8 +343,13 @@ export async function withGitPackages(project: Project, options: { offline?: boo
   let files = project.files;
   const map: Record<string, string> = {};
   let count = 0;
+  let totalFiles = 0;
+  let totalBytes = 0;
   for (;;) {
-    const pending = installPlan(files, project.packageJson, hosts).git;
+    // One fetch per spec, however many packages name it: the root's, if it names it (its lockfile's commit applies).
+    const bySpec = new Map<string, InstallPlan['git'][number]>();
+    for (const g of installPlan(files, project.packageJson, hosts).git) if (!bySpec.has(g.spec) || !g.dir) bySpec.set(g.spec, g);
+    const pending = [...bySpec.values()];
     if (!pending.length) break;
     const added: FileTree = {};
     await Promise.all(
@@ -309,7 +359,7 @@ export async function withGitPackages(project: Project, options: { offline?: boo
         if (++count > MAX_PACKAGES) throw unsupportedDependency(name, raw, `more than ${MAX_PACKAGES} git dependencies`);
         const label = `${name}@${raw}`;
         const started = Date.now();
-        const sha = (!dir && !spec.semver && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await resolveCommit(spec, label, options.offline === true));
+        const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await resolveCommit(spec, label, options.offline === true));
         const tree = await commitFiles(spec, sha, label, options.offline === true);
         const at = dirOf(spec, sha);
         const prefix = spec.subdir ? `${spec.subdir}/` : '';
@@ -318,7 +368,10 @@ export async function withGitPackages(project: Project, options: { offline?: boo
           if (!path.startsWith(prefix)) continue;
           added[`${at}/${path.slice(prefix.length)}`] = data;
           n++;
+          totalBytes += typeof data === 'string' ? data.length : data.base64.length;
         }
+        totalFiles += n;
+        if (totalFiles > MAX_TOTAL_FILES || totalBytes > MAX_TOTAL_BYTES) throw new UnsupportedDependencyError(`git: ${label}: the project's git dependencies are too large together (over ${MAX_TOTAL_FILES} files or ${MAX_TOTAL_BYTES / 2 ** 20} MB)`);
         if (!n || typeof tree[`${prefix}package.json`] !== 'string') throw appError(`git: ${label}: no package.json at ${spec.subdir || 'the repository root'} (commit ${sha.slice(0, 12)})`);
         map[raw.trim()] = at;
         options.log?.(`git: ${label} → ${sha.slice(0, 12)} (${n} files, ${Date.now() - started} ms)${unprepared(tree, prefix)}`);

@@ -11,6 +11,7 @@ import { parseGitSpec, looksLikeGit } from '../../src/adapters/node/git-spec.ts'
 import { withGitPackages } from '../../src/adapters/node/git-packages.ts';
 import { planOf } from '../../src/adapters/node/local-packages.ts';
 import { node } from '../../src/adapters/node/index.ts';
+import { browserInstall, linkedBin } from '../../src/adapters/node/plan.ts';
 import { projectFromFiles } from '../../src/project.ts';
 import { classify } from '../../src/classify.ts';
 import { tempDir } from './temp-dir.ts';
@@ -179,4 +180,53 @@ test('the node adapter fetches git dependencies as the project\'s sources; a pro
   assert.equal(node.probe(project({ lib: 'github:user/lib' })).verdict, 'supported');
   const split = projectFromFiles({ 'package.json': JSON.stringify({ scripts: { dev: 'node server/s.js' } }), 'server/package.json': JSON.stringify({ dependencies: { lib: 'github:user/lib' } }) }, { name: 's', path: 's' });
   assert.equal(node.probe(split).verdict, 'unsupported');
+});
+
+test('one fetch per spec, however many packages name it; the root\'s lockfile commit applies to all, and to a semver: range it is in', async () => {
+  process.env.SANDBURG_GIT_DIR = tempDir('sandburg-git-');
+  fakeGitHub();
+  const lock = (version: string) => JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/lib': { version, resolved: `git+ssh://git@github.com/user/lib.git#${SHA.tag}` } } });
+  const mono = (spec: string, version: string) =>
+    projectFromFiles(
+      {
+        'package.json': JSON.stringify({ name: 'mono', workspaces: ['packages/*'], dependencies: { lib: spec } }),
+        'packages/a/package.json': JSON.stringify({ name: 'a', dependencies: { lib: spec } }),
+        'packages/b/package.json': JSON.stringify({ name: 'b', dependencies: { lib: spec } }),
+        'package-lock.json': lock(version),
+      },
+      { name: 'mono', path: 'mono' },
+    );
+  const lines: string[] = [];
+  const p = await withGitPackages(mono('github:user/lib#main', '1.0.0'), { log: (l) => lines.push(l) });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(p.files['.sandburg/git.json'] as string), { 'github:user/lib#main': `.sandburg/git/github.com-user-lib-${SHA.tag.slice(0, 12)}` });
+  assert.ok(!requests.some((r) => r.includes('upload-pack')), requests.join('\n'));
+  // semver: the locked version is in the range: its commit, no listing.
+  requests = [];
+  const inRange = await withGitPackages(mono('github:user/lib#semver:^1', '1.0.0'));
+  assert.ok(inRange.files[`.sandburg/git/github.com-user-lib-${SHA.tag.slice(0, 12)}/package.json`]);
+  assert.ok(!requests.some((r) => r.includes('upload-pack')), requests.join('\n'));
+  // Not in the range: resolved from the tags.
+  requests = [];
+  await withGitPackages(mono('github:user/lib#semver:^2', '1.0.0')).catch(() => {});
+  assert.ok(requests.some((r) => r.includes('upload-pack')), requests.join('\n'));
+});
+
+test('an archive larger than a repository may be is refused before it is read', async () => {
+  process.env.SANDBURG_GIT_DIR = tempDir('sandburg-git-');
+  const sha = 'f'.repeat(40);
+  fakeGitHub({ [`https://codeload.github.com/user/lib/tar.gz/${sha}`]: () => new Response('x', { headers: { 'content-length': String(2 ** 40) } }) });
+  const e = await withGitPackages(project({ lib: `github:user/lib#${sha}` })).catch((err: Error & { code?: string }) => err);
+  assert.match((e as Error).message, /too large to fetch/);
+  assert.equal((e as { code?: string }).code, 'UNSUPPORTED');
+});
+
+test('a dev script that runs a git package\'s binary starts it from the package\'s linked files', async () => {
+  const dir = '.sandburg/git/github.com-user-tool-0123456789ab';
+  const p = projectFromFiles({ 'package.json': JSON.stringify({ scripts: { dev: 'tool --port 3000' }, dependencies: { tool: 'github:user/tool' } }) }, { name: 't', path: 't' });
+  const fetched = { ...p, files: { ...p.files, [`${dir}/package.json`]: JSON.stringify({ name: 'tool', bin: { tool: './bin/tool.js' } }), [`${dir}/bin/tool.js`]: '', '.sandburg/git.json': JSON.stringify({ 'github:user/tool': dir }) } };
+  const plan = planOf(fetched);
+  assert.equal(linkedBin(fetched, plan, 'tool'), 'node_modules/tool/bin/tool.js');
+  assert.equal(linkedBin(fetched, plan, 'other'), null);
+  assert.deepEqual(browserInstall(fetched).start, { main: 'node_modules/tool/bin/tool.js', argv: ['--port', '3000'], command: 'tool --port 3000', tsRunner: false });
 });

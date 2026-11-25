@@ -182,6 +182,10 @@ test('a fetched git dependency is a local package: linked, its registry dependen
   const locked = JSON.parse(p.lockfile!) as { packages: Record<string, unknown> };
   assert.deepEqual(Object.keys(locked.packages), ['', 'node_modules/ms']);
   assert.doesNotThrow(() => assertRegistryLockfile(p.lockfile!));
+  // A workspace glob that reaches .sandburg/ never makes a fetched package a workspace.
+  const globbed = plan({ '': { name: 'app', workspaces: ['**'], dependencies: { b: 'github:a/b' } }, [dir]: { name: 'b', version: '1.0.0' } }, { '.sandburg/git.json': JSON.stringify({ 'github:a/b': dir }) });
+  assert.deepEqual(globbed.workspaces, {});
+  assert.deepEqual(globbed.links, { 'node_modules/b': dir });
   // A map entry outside .sandburg/git/ is not the host's: ignored, so the dependency stays pending.
   const forged = plan({ '': { dependencies: { b: 'github:a/b' } }, lib: { name: 'b' } }, { '.sandburg/git.json': JSON.stringify({ 'github:a/b': 'lib' }) });
   assert.deepEqual(forged.links, {});

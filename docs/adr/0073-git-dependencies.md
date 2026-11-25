@@ -79,8 +79,16 @@ before, ADR 0054).
 A commit id names the repository's content, but an archive is not checked against it: the host
 trusts the repository's host over TLS for the archive of a commit, as npm trusts the registry for a
 tarball without an integrity, and keeps it by commit. A clone (other hosts) is checked by git's object
-ids. Limits: 20 000 files and 256 MB unpacked per repository, 50 git packages per project; `.git/` and
-`node_modules/` in a repository are left out.
+ids. Limits: 20 000 files and 256 MB unpacked per repository (an archive larger than that is refused
+before it is read), 50 000 files and 512 MB for a project's git packages together, 50 distinct git
+specs per project (a spec several workspaces name is fetched once, the root's lockfile commit for
+all); the repositories kept in memory across runs are bounded at 256 MB, the oldest dropped (the
+disk keeps them, as it keeps installs). `.git/` and `node_modules/` in a repository are left out.
+
+A git package's binaries are the project's: a dev script that runs one (`"dev": "tool"`) starts it
+from the package's linked files, before an installed package's of the same name (`linkedBin`, for
+workspaces and `file:` packages too). A `semver:` range takes the lockfile's commit while the locked
+version is in it.
 
 ### Errors
 

@@ -593,8 +593,12 @@ export class Session {
       if (ok) {
         const steps = async () => {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
-          // The project's files with its git dependencies' (without them if they failed: the install reports it).
-          const files = sourced ? (await sourced.catch(() => project)).files : project.files;
+          // The project's files with its git dependencies' (without them if they failed, or take longer than
+          // the install may: the install phase, which waits for them too, reports it).
+          let giveUp: NodeJS.Timeout | undefined;
+          const files = sourced
+            ? (await Promise.race([sourced.catch(() => project), new Promise<Project>((resolve) => (giveUp = setTimeout(() => resolve(project), timeouts.install)))]).finally(() => clearTimeout(giveUp))).files
+            : project.files;
           await run.phase('mount', timeouts.mount, () => watch(host('mount', files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
             const hostData = hostInstall ? await hostInstall : undefined;
