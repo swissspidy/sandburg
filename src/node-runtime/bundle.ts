@@ -8,7 +8,7 @@ import { cachedBuild } from './bundle-cache.ts';
 import { dedupedPath } from './bundle-dedupe.ts';
 import { dirname, join, relative, sep } from 'node:path';
 import { source } from '../sources.ts';
-import { LIBS_KEY, MODULES_KEY, RUNTIME_LIBS, type RuntimeLib } from './libs.ts';
+import { CRYPTO_KEYS_KEY, LIBS_KEY, MODULES_KEY, RUNTIME_LIBS, type RuntimeLib } from './libs.ts';
 import { SPARE_NAME, SPARE_WAKE } from './names.ts';
 
 const here = (p: string) => source(`node-runtime/${p}`);
@@ -150,7 +150,9 @@ const libs = new Map<RuntimeLib, Promise<string>>();
 
 /** Each library's script: what the runtime takes from the package. */
 const LIB_ENTRY: Record<RuntimeLib, (libs: string) => string> = {
-  crypto: (libs) => `(${libs} ??= {}).crypto = require(${JSON.stringify(RUNTIME_LIBS.crypto)});`,
+  // With KeyObject, sign and verify (builtins/crypto-keys.ts), which build on its elliptic.
+  crypto: (libs) =>
+    `(${libs} ??= {}).crypto = require(${JSON.stringify(RUNTIME_LIBS.crypto)});\n${libs}.crypto[Symbol.for(${JSON.stringify(CRYPTO_KEYS_KEY)})] = require('./builtins/crypto-keys.ts');`,
   zlib: (libs) => `(${libs} ??= {}).zlib = require(${JSON.stringify(RUNTIME_LIBS.zlib)});`,
   // napi-rs' runtime re-exports WASI from @tybys/wasm-util; the rest of it is emnapi, which node:wasi does not use.
   wasi: (libs) => `import { WASI } from '@tybys/wasm-util';\n(${libs} ??= {}).wasi = { WASI };`,

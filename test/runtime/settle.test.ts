@@ -17,7 +17,7 @@ const load = async (html: string) => {
   page = await browser.newPage();
   await page.setContent(html);
 };
-const safe = () => page.evaluate(`(${inputSafe.toString()})(window)`) as Promise<boolean | undefined>;
+const safe = () => page.evaluate<boolean | undefined>(`(${inputSafe.toString()})(window)`);
 
 test('quiet: no request for a moment, and none young in flight', () => {
   assert.equal(quiet({ inflight: 0, idleMs: 0, sinceRequestMs: 150, newestInflightMs: null }, 100, 1000), true);

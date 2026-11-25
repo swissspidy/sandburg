@@ -264,7 +264,9 @@ const ALGORITHMS: Record<string, Algorithm> = {
   },
 };
 // The names Node (OpenSSL) also knows these by.
-const ALIASES: Record<string, string> = { 'sha-1': 'sha1', 'sha-224': 'sha224', 'sha-256': 'sha256', 'sha-384': 'sha384', 'sha-512': 'sha512', 'rsa-md5': 'md5', 'rsa-sha1': 'sha1', 'rsa-sha256': 'sha256', 'rsa-sha384': 'sha384', 'rsa-sha512': 'sha512', 'rsa-sha224': 'sha224' };
+const ALIASES: Record<string, string> = { 'sha-1': 'sha1', 'sha-224': 'sha224', 'sha-256': 'sha256', 'sha-384': 'sha384', 'sha-512': 'sha512' };
+for (const n of ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']) ALIASES[`rsa-${n}`] = ALIASES[`${n}withrsaencryption`] = n;
+const RIPEMD = new Set(['ripemd160', 'rsa-ripemd160', 'ripemd160withrsa', 'ripemd', 'ripemd-160', 'rmd160']);
 
 /** The algorithm a name stands for, if it is one of these (names are case-insensitive, as in Node). */
 export function hashAlgorithm(name: unknown): string | null {
@@ -272,6 +274,8 @@ export function hashAlgorithm(name: unknown): string | null {
   const n = name.toLowerCase();
   return n in ALGORITHMS ? n : (ALIASES[n] ?? null);
 }
+/** A name of RIPEMD-160 (create-hash's, by its own name) as create-hash takes it, else the name. */
+export const ripemdName = (name: string) => (typeof name === 'string' && RIPEMD.has(name.toLowerCase()) ? 'ripemd160' : name);
 
 /** A hash's running state: update() with bytes, then digest() once. */
 export class HashState {

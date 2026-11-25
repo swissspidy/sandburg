@@ -18,7 +18,6 @@ import { createBetterSqlite3 } from './builtins/sqlite/better-sqlite3.ts';
 import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
 import pathBrowserify from 'path-browserify';
 import { installAsyncContext } from './async-context.ts';
-import { installWasmGrowGuard } from './wasm-grow-guard.ts';
 import { trackPending } from './track-pending.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverConnections, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
@@ -94,7 +93,6 @@ export function runtimeLib<T>(name: RuntimeLib): T {
 }
 
 installAsyncContext();
-installWasmGrowGuard();
 
 export let base = '/__sandburg';
 /** What the process's standard input holds (a synchronous child's `input`): fd 0 and process.stdin read it. */

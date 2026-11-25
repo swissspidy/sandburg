@@ -2740,3 +2740,283 @@ setTimeout(async () => {
   // Expected: what Node 24 prints for main.js.
   assert.deepEqual(JSON.parse(out.stdout), ["after writes","cb one","cb empty","f end after e.destroy()","before read","f false,true","h destroyed true","b data one","b data two","b end","a end cb","a finish","big 200000","pipeline done"]);
 });
+
+test('crypto.scrypt and scryptSync (RFC 7914), as Node derives them: password hashes apps seed and check', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const crypto = require('crypto');
+const failure = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    return [e.name, e.code];
+  }
+};
+const out = {};
+out.vectors = [
+  crypto.scryptSync('', '', 64, { N: 16, r: 1, p: 1 }).toString('hex'),
+  crypto.scryptSync('password', 'NaCl', 64, { N: 1024, r: 8, p: 16 }).toString('hex'),
+  crypto.scryptSync('pleaseletmein', 'SodiumChloride', 64).toString('hex'),
+];
+const salt = crypto.randomBytes(16);
+const hash = crypto.scryptSync('hunter2', salt, 32, { cost: 1024 });
+out.verify = [crypto.timingSafeEqual(hash, crypto.scryptSync('hunter2', salt, 32, { N: 1024 })), crypto.scryptSync('x', 'y', 17).length];
+out.errors = [failure(() => crypto.scryptSync('a', 'b', 8, { N: 3 })), failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 20 })), failure(() => crypto.scryptSync('a', 'b', 8, { N: 2, cost: 2 }))];
+crypto.scrypt('pw', 'salt', 16, { N: 16 }, (err, key) => {
+  out.async = [err, key.toString('hex')];
+  console.log(JSON.stringify(out));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    vectors: [
+      '77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442fcd0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906',
+      'fdbabe1c9d3472007856e7190d01e9fe7c6ad7cbc8237830e77376634b3731622eaf30d92e22a3886ff109279d9830dac727afb94a83ee6d8360cbdfa2cc0640',
+      '7023bdcb3afd7348461c06cd81fd38ebfda8fbba904f8e3ea9b543f6545da1f2d5432955613f0fcf62d49705242a9af9e61e85dc0d651e40dfcf017b45575887',
+    ],
+    verify: [true, 17],
+    errors: [['RangeError', 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS'], ['RangeError', 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS'], ['TypeError', 'ERR_INCOMPATIBLE_OPTION_PAIR']],
+    async: [null, 'c5d06c368e4a07b8a98e9a06773fcf4a'],
+  });
+});
+
+test('crypto.hkdf and hkdfSync (RFC 5869), timingSafeEqual, the ciphers, hashes and curves listed (each works here) and constants, as Node has them', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const crypto = require('crypto');
+const failure = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    return [e.name, e.code, e.message];
+  }
+};
+const hex = (ab) => Buffer.from(ab).toString('hex');
+const out = {};
+const keyLength = (c) => {
+  const aes = /^aes-?(128|192|256)/.exec(c);
+  if (aes) return Number(aes[1]) / 8;
+  return /^des(3|-ede3)/.test(c) ? 24 : c.startsWith('des-ede') ? 16 : 8;
+};
+out.hkdf = [
+  hex(crypto.hkdfSync('sha256', 'key', 'salt', 'info', 42)),
+  hex(crypto.hkdfSync('sha512', 'key', '', '', 100)),
+  hex(crypto.hkdfSync('SHA1', new Uint8Array([1, 2]), Buffer.alloc(0), new ArrayBuffer(3), 30)),
+  hex(crypto.hkdfSync('ripemd160', 'k', 's', 'i', 24)),
+  crypto.hkdfSync('sha256', 'k', 's', 'i', 255 * 32).byteLength,
+];
+out.hkdfErrors = [
+  failure(() => crypto.hkdfSync('sha256', 'k', 's', 'i', 255 * 32 + 1)),
+  failure(() => crypto.hkdfSync('bogus', 'k', 's', 'i', 8)),
+  failure(() => crypto.hkdfSync('sha256', 'k', 's', Buffer.alloc(1025), 8)),
+  failure(() => crypto.hkdfSync('sha256', 5, 's', 'i', 8)),
+  failure(() => crypto.hkdfSync('sha256', 'k', 's', 'i', '8')),
+];
+out.timingSafeEqual = [
+  crypto.timingSafeEqual(Buffer.from('ab'), Buffer.from('ab')),
+  crypto.timingSafeEqual(Buffer.from('ab'), Buffer.from('ac')),
+  crypto.timingSafeEqual(new Uint16Array([1]), Buffer.from([1, 0])),
+  failure(() => crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('ab'))),
+  failure(() => crypto.timingSafeEqual('a', 'a')),
+];
+out.lists = [
+  crypto.getCiphers().every((c) => crypto.createCipheriv(c, Buffer.alloc(keyLength(c)), /ecb$|^des-ede3?$/.test(c) ? null : Buffer.alloc(c.endsWith('gcm') ? 12 : c.startsWith('des') ? 8 : 16)).update('x').length >= 0),
+  crypto.getHashes().filter((h) => !/[A-Z]/.test(h)).filter((h) => !h.includes('With')).every((h) => crypto.createHash(h).update('x').digest('hex').length > 0),
+  crypto.getCurves().every((c) => crypto.createECDH(c).generateKeys().length > 0),
+  crypto.constants.RSA_PKCS1_OAEP_PADDING,
+  crypto.constants.POINT_CONVERSION_UNCOMPRESSED,
+];
+crypto.hkdf('sha256', 'key', 'salt', 'info', 16, (err, key) => {
+  out.async = [err, key instanceof ArrayBuffer, hex(key)];
+  console.log(JSON.stringify(out));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    hkdf: ["9ca0d662557439e3b83365f2da4626d35da195c6d9d1779f09838cf9e408966ece99106e2585ace6f083","60ed0b819793aba3c33a17021859ac9708e0644e3b78992e6eae96e16465604a482ad7574d682e6be37dfeffbc79d9619d717ebfa2814128c9cd832791e405733dade3aebc2e2a4c36c7f85a9097a131b2b524ed3504ba113e931ccf4fdd5e0b72eeb565","68efbf21b38bac28f9583319bdbece033af6cadc08551e93307c457bc4cd","e813e2b52c7a890d17de6b58ef90f60d19d7f232d177f591",8160],
+    hkdfErrors: [["RangeError","ERR_CRYPTO_INVALID_KEYLEN","Invalid key length"],["TypeError","ERR_CRYPTO_INVALID_DIGEST","Invalid digest: bogus"],["RangeError","ERR_OUT_OF_RANGE","The value of \"info\" is out of range. It must be must not contain more than 1024 bytes. Received 1025"],["TypeError","ERR_INVALID_ARG_TYPE","The \"ikm\" argument must be of type string or an instance of SecretKeyObject, ArrayBuffer, TypedArray, DataView, or Buffer. Received type number (5)"],["TypeError","ERR_INVALID_ARG_TYPE","The \"length\" argument must be of type number. Received type string ('8')"]],
+    timingSafeEqual: [true,false,true,["RangeError","ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH","Input buffers must have the same byte length"],["TypeError","ERR_INVALID_ARG_TYPE","The \"buf1\" argument must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView."]],
+    lists: [true,true,true,4,4],
+    async: [null,true,"9ca0d662557439e3b83365f2da4626d3"],
+  });
+});
+
+// Keys as Node generated them; the expected values are what Node gives for main.js.
+const KEYS = {
+  rsa: "-----BEGIN RSA PRIVATE KEY-----\nMIICXAIBAAKBgQC1SVymOC40VGSsvlu9pKm8s9QTgoXLKJ/j4uosBwN37Gq1gU7C\nsXXUUjq5vtnqYNCtbuILjJu8p6bBZBli6/61m5ZUxV9AR208fkVeMtFqzEyr9VlF\nnAARw9sT6Disq90YoaLksQRyuc1U7qZqG7VghFRhSNtpSjXsfgLAn9A1UQIDAQAB\nAoGAHrlPNXCCDCZdZZVhcPOOPMfxYlkVmcfJyVJ0w39wzAtKTnaaxY5T3OcOwtog\njoNX+ny3XKO45TE4pr/zOXurkAy5Dg0hlPTCMUJPovvudKlst8zBKh/HBB28V23C\nCUChw31gHpgcNssPRvsbFNkxbkmraRwZrN/KH2eL+3t+uK0CQQDgMNJXwpBe6GFz\nu6Uobbn4b6vhXQLxLF4SoIEMV1RLAZ1yie8lHw1LcYGIFKnvifT+sQDtb7dkAJTB\nbY1RBT33AkEAzwInCVYcTDNPPYAshg7EKwYo6L9G3QvljU8DkFzQ4jp2HC8EbjbI\nZSkkIX3Qk6asJdUY3zGur06Np59u7F709wJAI4g5XkVtAk3MXD5qT70MU47HbCGE\nvNquUj90FJOmvXiVDrlD2NtSDRoBUKMNx/RSiydcoUUqiMP6z6lgU24EQwJAEloM\nf+VkaNT7p2YfjFruxSmsosWiUKJnXVmt5TR1SDkKk4EPkX3F0kINc/KldRGHnWsA\n43iSFfSO1ldqDAZ3DQJBAJEvH8aWPO+JGgj+X1sBxqvhPdAOIsGOMd06J9wz0DvB\nKLBmqpcc4G2GehhAdw//Q2bWSsZmfAeTkXXaZTRtzwM=\n-----END RSA PRIVATE KEY-----\n",
+  ec: "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIHQyyjUSwpjQErDHqQuM+lF87hHgVXvswVhkVSGnNdoVoAoGCCqGSM49\nAwEHoUQDQgAEwbvfoJ5OzoffN6mRR/N6EUxxDagdHjXPD0iRiVcvwUagl/gSaaTP\nXd/jCuSV8f9+yj+NuKjuw36mFePne7iajA==\n-----END EC PRIVATE KEY-----\n",
+  ed: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAIeNfDoXYPHoR7OLMl0a1pR5n9FK2en1sCxwgijAAG8\n-----END PRIVATE KEY-----\n",
+  nodeSigs: {"ec":"30450221009ece18495d0aade24391fda6a5de8433a70b6e0b3708e5175cef58ee687e7f350220083c7f12ce3efdf93acdea9d9c1cf2ff3a5ad50ea738c10b5d6d469d46f57990","ecP1363":"7cec7cc8f71ba32571fc9ae7279db57194daa36545c7b28059c566237dfab0d21c7bcba3e20c01fa292251c23f066f65dcc923f378d6c554c33a611000a46a71","pss":"3f38d9f0f77b79606d023f9a726a36ba36d381e9bc657b77a307d2599f0dd3f999e27527cf49f56ad216fd3e0a9d03c36d54c8607b34d525fd30f95e2ab46d92d3569a8c72d09743d6a3360cc2a0b10f8912cf0ce6b2725da3c5be00f427914b80b7022289d439d591cbf51e7801933112d37ee7c9bc9abb492181e17d3a9a01"},
+};
+
+test('crypto.KeyObject (createSecretKey, createPublicKey, createPrivateKey), sign and verify, createSign and createVerify, as Node has them: RSA, ECDSA and Ed25519 keys and signatures', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const KEYS = ${JSON.stringify(KEYS)};
+const crypto = require('crypto');
+const { rsa, ec, ed, nodeSigs } = KEYS;
+const failure = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    return [e.name, e.code, e.message];
+  }
+};
+const data = Buffer.from('payload');
+const out = {};
+const secret = crypto.createSecretKey(Buffer.from('s3cret'));
+out.secret = [secret.type, secret.symmetricKeySize, secret instanceof crypto.KeyObject, String(secret), secret.export().toString(), secret.export({ format: 'jwk' }), crypto.createHmac('sha256', secret).update(data).digest('hex')];
+const keys = { rsa: crypto.createPrivateKey(rsa), ec: crypto.createPrivateKey(ec), ed: crypto.createPrivateKey(ed) };
+out.keys = Object.entries(keys).map(([name, key]) => {
+  const pub = crypto.createPublicKey(key);
+  const details = key.asymmetricKeyDetails;
+  return [name, key.type, key.asymmetricKeyType, typeof details.publicExponent === 'bigint' ? { ...details, publicExponent: String(details.publicExponent) } : details, pub.type, pub.export({ format: 'pem', type: 'spki' }), key.export({ format: 'jwk' }), pub.equals(crypto.createPublicKey({ key: pub.export({ format: 'der', type: 'spki' }), format: 'der', type: 'spki' }))];
+});
+const pubs = Object.fromEntries(Object.entries(keys).map(([n, k]) => [n, crypto.createPublicKey(k)]));
+out.deterministic = [crypto.sign('sha256', data, keys.rsa).toString('hex'), crypto.sign(null, data, ed).toString('hex')];
+out.verify = [
+  crypto.verify('sha256', data, pubs.rsa, Buffer.from(out.deterministic[0], 'hex')),
+  crypto.verify(null, data, pubs.ed, Buffer.from(out.deterministic[1], 'hex')),
+  crypto.verify('sha256', data, pubs.ec, crypto.sign('sha256', data, keys.ec)),
+  crypto.verify('sha256', data, ec, Buffer.from(nodeSigs.ec, 'hex')),
+  crypto.verify('sha256', data, { key: pubs.ec, dsaEncoding: 'ieee-p1363' }, Buffer.from(nodeSigs.ecP1363, 'hex')),
+  crypto.verify('sha256', data, { key: rsa, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }, Buffer.from(nodeSigs.pss, 'hex')),
+  crypto.verify('sha256', data, { key: pubs.rsa, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }, crypto.sign('sha256', data, { key: keys.rsa, padding: crypto.constants.RSA_PKCS1_PSS_PADDING })),
+  crypto.verify('sha256', Buffer.from('tampered'), pubs.ec, Buffer.from(nodeSigs.ec, 'hex')),
+];
+const signer = crypto.createSign('RSA-SHA256');
+signer.write(data.subarray(0, 3));
+signer.update(data.subarray(3));
+const verifier = crypto.createVerify('sha256');
+verifier.update(data);
+const encrypted = crypto.publicEncrypt(pubs.rsa, Buffer.from('a secret'));
+out.streams = [signer.sign(keys.rsa, 'hex') === out.deterministic[0], verifier.verify(pubs.rsa, out.deterministic[0], 'hex'), crypto.privateDecrypt(keys.rsa, encrypted).toString()];
+out.errors = [
+  failure(() => crypto.sign('sha256', data, pubs.ec)),
+  failure(() => crypto.sign('sha256', data, keys.ed)),
+  failure(() => crypto.createPrivateKey('not a key')),
+  failure(() => crypto.createPublicKey(pubs.rsa)),
+  failure(() => new crypto.KeyObject('secret', {})),
+];
+crypto.sign(null, data, keys.ed, (err, sig) => {
+  out.async = [err, sig.toString('hex') === out.deterministic[1]];
+  console.log(JSON.stringify(out));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    secret: ["secret",6,true,"[object KeyObject]","s3cret",{"kty":"oct","k":"czNjcmV0"},"ca981e262c89fa9bf971f04e7ce6353515a2e00da34add385b8f0e1b86414e3e"],
+    keys: [["rsa","private","rsa",{"modulusLength":1024,"publicExponent":"65537"},"public","-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC1SVymOC40VGSsvlu9pKm8s9QT\ngoXLKJ/j4uosBwN37Gq1gU7CsXXUUjq5vtnqYNCtbuILjJu8p6bBZBli6/61m5ZU\nxV9AR208fkVeMtFqzEyr9VlFnAARw9sT6Disq90YoaLksQRyuc1U7qZqG7VghFRh\nSNtpSjXsfgLAn9A1UQIDAQAB\n-----END PUBLIC KEY-----\n",{"kty":"RSA","n":"tUlcpjguNFRkrL5bvaSpvLPUE4KFyyif4-LqLAcDd-xqtYFOwrF11FI6ub7Z6mDQrW7iC4ybvKemwWQZYuv-tZuWVMVfQEdtPH5FXjLRasxMq_VZRZwAEcPbE-g4rKvdGKGi5LEEcrnNVO6mahu1YIRUYUjbaUo17H4CwJ_QNVE","e":"AQAB","d":"HrlPNXCCDCZdZZVhcPOOPMfxYlkVmcfJyVJ0w39wzAtKTnaaxY5T3OcOwtogjoNX-ny3XKO45TE4pr_zOXurkAy5Dg0hlPTCMUJPovvudKlst8zBKh_HBB28V23CCUChw31gHpgcNssPRvsbFNkxbkmraRwZrN_KH2eL-3t-uK0","p":"4DDSV8KQXuhhc7ulKG25-G-r4V0C8SxeEqCBDFdUSwGdconvJR8NS3GBiBSp74n0_rEA7W-3ZACUwW2NUQU99w","q":"zwInCVYcTDNPPYAshg7EKwYo6L9G3QvljU8DkFzQ4jp2HC8EbjbIZSkkIX3Qk6asJdUY3zGur06Np59u7F709w","dp":"I4g5XkVtAk3MXD5qT70MU47HbCGEvNquUj90FJOmvXiVDrlD2NtSDRoBUKMNx_RSiydcoUUqiMP6z6lgU24EQw","dq":"EloMf-VkaNT7p2YfjFruxSmsosWiUKJnXVmt5TR1SDkKk4EPkX3F0kINc_KldRGHnWsA43iSFfSO1ldqDAZ3DQ","qi":"kS8fxpY874kaCP5fWwHGq-E90A4iwY4x3Ton3DPQO8EosGaqlxzgbYZ6GEB3D_9DZtZKxmZ8B5ORddplNG3PAw"},true],["ec","private","ec",{"namedCurve":"prime256v1"},"public","-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwbvfoJ5OzoffN6mRR/N6EUxxDagd\nHjXPD0iRiVcvwUagl/gSaaTPXd/jCuSV8f9+yj+NuKjuw36mFePne7iajA==\n-----END PUBLIC KEY-----\n",{"kty":"EC","x":"wbvfoJ5OzoffN6mRR_N6EUxxDagdHjXPD0iRiVcvwUY","y":"oJf4Emmkz13f4wrklfH_fso_jbio7sN-phXj53u4mow","crv":"P-256","d":"dDLKNRLCmNASsMepC4z6UXzuEeBVe-zBWGRVIac12hU"},true],["ed","private","ed25519",{},"public","-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAlsl/Zj5y00JqPSwyiXsWqih2+0E15UjsfLMXufvCPUI=\n-----END PUBLIC KEY-----\n",{"kty":"OKP","crv":"Ed25519","x":"lsl_Zj5y00JqPSwyiXsWqih2-0E15UjsfLMXufvCPUI","d":"Ah418Ohdg8ehHs4syXRrWlHmf0UrZ6fWwLHCCKMAAbw"},true]],
+    deterministic: ["0cdde6e698d15d226ab962478b0d0dfe7ac1d1e980d8dcc2b54920b6832b5ebbd15239691271c801d2eec9d4eed5e1e179fbe4e66aafe8fc96638691223141f492ab96623f7e82f709298e0d0fbc4a6cba7f6b258962d4cdca89a7fb6e06e1717cf9587b41a47b2a9376b7dd8f77340ac8f2c68123f0c1cd2a5285b8885d7bd2","56e64f735bee1f5e2e047e327f268dc3c40b65a88f35bba0c8c1ba86aa4671097a9181991990972253a5da7998e44b8ddc68b6f1eb35daa7aecaef6518768507"],
+    verify: [true,true,true,true,true,true,true,false],
+    streams: [true,true,"a secret"],
+    errors: [["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected private."],["Error","ERR_OSSL_INVALID_DIGEST","error:1C80007A:Provider routines::invalid digest"],["Error","ERR_OSSL_UNSUPPORTED","error:1E08010C:DECODER routines::unsupported"],["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected private."],["TypeError","ERR_INVALID_ARG_TYPE","The \"handle\" argument must be of type object. Received an instance of Object"]],
+    async: [null,true],
+  });
+});
+
+// Encrypted copies of KEYS' keys (passphrase 'pw') as Node wrote them (PBES2 PKCS#8 and OpenSSL's legacy PEM encryption), and a 512-bit RSA key.
+const ENCRYPTED_KEYS = {"pkcs8":"-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIC5TBfBgkqhkiG9w0BBQ0wUjAxBgkqhkiG9w0BBQwwJAQQg/q1qQu3xox8oXt9\nfLszIQICCAAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEMz/uiicsur5xzjr\nqhT3YbkEggKAJ/CPXp15nALSGAOuNxazpXIKgYvp+F3/GtSMSLB4f8w4BSuO+qBf\nMrHISLkQXj1ttihFgTrukSicQGneqMHme15+lA00QnI4o4zyrhHL9X1vIDsQ37mz\nn1pHap/eQnNUHm/wb7pTViULtYGnUuQPN4MUq4YeOt5OyioTYsxGJyOOOxfqF9xC\nGlaEGKcD2qRh+XJNwOMwmTt5GgtioQJndTNVqaVFjzFLuDt48nmkiBNs/MCbSeUH\nrz2NhxdV8KH7VXVJSsUfknlKp71IOTw6othSIdLa5P4TUGGvO4ebUtuWLr3a32Wj\nvlfGcI8QaKUCWrLv4y+9EpkxngzDwQF62+kis4O54dAENvEELb1lBIr1U20e6dIe\ngQLUccwIo/gZJ3F6bwlosU8Uttwm0xNx8Gvx/D762lmQpTDV9nVFO6r0qMAJQ8Ro\nYM8zDcMainP47UWMUYosnreZJxif642wZPOIwEnvhZPtAs/UYD1QfvZBASpCbBM3\nvon/UnpnsrstD9LBikW3rPgwqVyFzM4v0eF2SmKx1mDFnSpNboHu9Njpdf8krJIt\nyUA1GBilkhYtHLvW9Hs1HEfeN4/cPvmBR6CIbUQKZTwmmGF89SrMvEOyDXHYFhpa\nM6SRQijzFfq6eqQSU34mTNrJEV6VdqL0lY9bLtwDCb37GbUU9p7nAvkMuak3yAXQ\nnf6iMELLeMLBT3Le2NzDTxUWqG7fOKROdYzwwLNMQTSN7BUfTdinMQCGNN4OKl6J\nUbjAdWhHBu+EUu8h8t5tjIQieaBEEKZ/BmO9vnulFp8j7Cx0kOE+PNfJ3z77ojn7\nWSnG2IwDYFz1eQftDPMvCP1kPPR+5/XywA==\n-----END ENCRYPTED PRIVATE KEY-----\n","legacy":"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,F8F871D77A7D22321B9DCA075A3F5330\n\ntTp4S4yUnQdUoJ9lVOR6LEcfZZ/w8bipFg/aCWHZtocy+xqxnbwaRt43hbe33Txt\neWNiyNnjSDEeLjbDI7nv3nsSp3ipCNKo2aHefcs2N6oJjfYYDLFA+QFVkyWLXLiZ\njh/soUypBprgeLTgahwzKTwsDHBjCZ5fg5/OEpxN7bjuclOtydw5XaPr0mzNjsu4\nyyUJl96Bs+eYq/+tFrrk+GrImK9LD73FP2aAhNdd/il9U08/p3ai+K5NI17dkhqy\nFB3A0tqObbapY3siGCw7r0Biz+u36kAOj3gwEVZ+6+D0MAN/KHLpPACmwcM+TcTJ\nP+loZudnKADWNp7meJDZxP+LkNMMTaJHXkMR4UKxBaVz5yzeT+g7odsafY0Pi/Dr\nYTtWevWFDM6W7Y3OPdb2NRR2Qj8c1MfhCfoUJzHcf5JpVh8bUYcfMtp2/Fr7iuVK\n6GjaXC7aspJ+l1tRCMgBoy7hjP5zsI4GgPpeMH1UJ832ktkxMLtR0CtXFNEoytbe\nnnilrg9EUxjg/IF7H63/n+Io0HqsoXxbGeO2f178BuM1JuYAQ5ujAnSRuN1oVYfR\neOWYmIoFsjFvc+WnJsH3jPCW5E0AXF9UtCHJuC7VzQ66XdjHhlcvV6sZOD77aHs+\nNgpeQLqed7ybqtUpr5iAVIjQ1+NrEUs9OrBpwfVACti4d2ofYfRdFCSxteAGIS1T\nwwvE8vaY5xt3Bh2pdYg1Nr2JhMzWRy7wq7Je9KQ3X6Mi0cGgalxB/LVkpuXZkzS1\nrDf1wY+vxNE2BdOGaEy3SgiJNY5432Z2SnokbrhfL9iDWikFigE7CEsHBxLd35bQ\n-----END RSA PRIVATE KEY-----\n","legacy3des":"-----BEGIN EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,15B073035406F94B\n\nGaocuEkpdp8zF+7XlxYwdUsbkTAgo2swydZU8ufkP3FGEUsSLhrxGEIrqxdTyohz\npofpJYd/x6ihYvqjgUjfmi7lUWsPEwbiYU+cilCOmSLtYOjkHUzzyWPe2cPUcA4J\nB79fEl6sqzs+BueycSL7S0ntqS69DUsi+zbJdX5s/uc=\n-----END EC PRIVATE KEY-----\n","ecDer":"MIH0MF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBAlBHOH7V6Y1JGSIA0Jx3rRAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBAgQQLSOScH1JQYxaCClDVk3xaQSBkAh+AKgk221DvQR1K9N2BtUAbHlghfolju7KohIEHDVCKtcjewbMXYkrKbG3STBJkZ+xCwZsAAPuidY5BZBZze1fc8Y74gV/GCsaAGuSXczu0QXAdFCsgh6oVSm/IOiwmzFlqBk57hmL3cmShLZycAsgFhekuWuPV11xSkwWb9Z1OSgZLfCUiqFPT9fMRsyx8g==","edPkcs8":"-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIGjMF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBAeWbjwKkeSDRvVf2Xd\nG4TVAgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBFgQQaMWr2EIWC1Lqv77i\nvNtrRwRAyuNYsqjZlvlys12oPv5XimmlGUxgeY3Q/Ahzl4cBa5u+bqGVYbGDit8S\n3T2KeTt8KeusFRBjM/yjp5UiMXZvoA==\n-----END ENCRYPTED PRIVATE KEY-----\n","rsa512":"-----BEGIN PRIVATE KEY-----\nMIIBUwIBADANBgkqhkiG9w0BAQEFAASCAT0wggE5AgEAAkEAncU8VSm/hmf3XTng\nYb26pwC++B7wkLgFNU7qKHHQReZktSEJl63yybyTQ+DD5Fx3yO7PS57Wglo7ooU+\nqpWe+QIDAQABAkAdFUu+4zhEHYwy6kVbny72NCP/9ywfcVy8a/SsSfa7u6fCYeIR\naBraSO0J8DHTSgxdRZuDoH65Ner6qtXxUjEBAiEAyh9AyUqCE3209OHKMqttYhM9\nkIHnKXrYA+8WMu+de2ECIQDH03D+GMkJAy6k9HyqyfEa79w+sr87wJI2VRPJl5Qi\nmQIgZxqwOr5WQkkSwQRY16YZAzmbYxbQ65jtjnwsz8jphaECIGXksXdAGDLaRoyi\nhndoJeOAb6Qg7VaAqY2+8CoZetXxAiBU6FKCXRiAbsEbpCfQ2i9niPRMdLZlaFsC\nAZptUzabVQ==\n-----END PRIVATE KEY-----\n"};
+
+test('crypto as Node 24 has it where review found differences: IVs (null only for ECB, never empty for GCM), a secret KeyObject as a cipher key, constructible Cipheriv/Sign/Verify, digest aliases, encrypted private keys, EC JWK checks, strict ECDSA DER, PSS salt and scrypt maxmem', async () => {
+  const out = await h.run(
+    {
+      'enc.json': JSON.stringify(ENCRYPTED_KEYS),
+      'main.js': `const crypto = require('crypto');
+const ENC = JSON.parse(require('fs').readFileSync(__dirname + '/enc.json', 'utf8'));
+const failure = (fn) => { try { return fn(); } catch (e) { return [e.name, e.code, e.message]; } };
+const data = Buffer.from('payload');
+const k16 = Buffer.alloc(16, 1);
+const out = {};
+out.iv = [
+  failure(() => crypto.createCipheriv('aes-128-gcm', k16, null)),
+  failure(() => crypto.createCipheriv('aes-128-gcm', k16, Buffer.alloc(0))),
+  failure(() => crypto.createCipheriv('aes-128-cbc', k16, undefined)),
+  failure(() => crypto.createCipheriv('aes-128-ecb', k16, 'abc')),
+  failure(() => crypto.createDecipheriv('aes128', k16, null)),
+  crypto.createCipheriv('aes-128-ecb', k16, null).update('0123456789abcdef', 'utf8', 'hex'),
+  crypto.createCipheriv('des-ede3', Buffer.alloc(24, 3), null).update('01234567', 'utf8', 'hex'),
+  crypto.createCipheriv('aes-128-cbc', crypto.createSecretKey(k16), Buffer.alloc(16)).update('0123456789abcdef', 'utf8', 'hex'),
+  failure(() => crypto.createCipheriv('aes-128-cbc', crypto.createPublicKey(ENC.edPkcs8.length ? crypto.createPrivateKey({ key: ENC.edPkcs8, passphrase: 'pw' }) : null), Buffer.alloc(16))),
+];
+const ctor = (C, ...a) => typeof new C(...a).update;
+out.constructible = [ctor(crypto.Cipheriv, 'aes-128-cbc', k16, Buffer.alloc(16)), ctor(crypto.Decipheriv, 'aes-128-cbc', k16, Buffer.alloc(16)), ctor(crypto.Sign, 'sha256'), ctor(crypto.Verify, 'sha256'), crypto.Sign('sha256') instanceof crypto.Sign, crypto.createVerify('sha256') instanceof crypto.Verify];
+const HASHES = ['RSA-MD5', 'RSA-RIPEMD160', 'RSA-SHA1', 'RSA-SHA224', 'RSA-SHA256', 'RSA-SHA384', 'RSA-SHA512', 'md5', 'md5WithRSAEncryption', 'ripemd', 'ripemd-160', 'ripemd160', 'ripemd160WithRSA', 'rmd160', 'sha-1', 'sha-224', 'sha-256', 'sha-384', 'sha-512', 'sha1', 'sha1WithRSAEncryption', 'sha224', 'sha224WithRSAEncryption', 'sha256', 'sha256WithRSAEncryption', 'sha384', 'sha384WithRSAEncryption', 'sha512', 'sha512WithRSAEncryption'];
+out.hashes = [HASHES.every((h) => crypto.getHashes().includes(h)), HASHES.map((h) => crypto.createHash(h).update('x').digest('hex').slice(0, 8)).join(' '), crypto.createHmac('RSA-RIPEMD160', 'k').update('x').digest('hex')];
+const rsa = crypto.createPrivateKey({ key: ENC.pkcs8, passphrase: 'pw' });
+out.signAliases = ['ripemd160WithRSA', 'RSA-RIPEMD160', 'sha-256', 'sha1WithRSAEncryption'].map((a) => crypto.createSign(a).update(data).sign(rsa, 'hex').slice(0, 16));
+out.encrypted = [
+  rsa.export({ format: 'jwk' }).d.slice(0, 12),
+  crypto.createPrivateKey({ key: ENC.legacy, passphrase: 'pw' }).export({ format: 'jwk' }).d.slice(0, 12),
+  crypto.createPrivateKey({ key: ENC.legacy3des, passphrase: 'pw' }).export({ format: 'jwk' }).d,
+  crypto.createPrivateKey({ key: Buffer.from(ENC.ecDer, 'base64'), format: 'der', type: 'pkcs8', passphrase: 'pw' }).export({ format: 'jwk' }).d,
+  crypto.createPrivateKey({ key: ENC.edPkcs8, passphrase: Buffer.from('pw') }).export({ format: 'jwk' }).d,
+  crypto.createSign('RSA-SHA256').update(data).sign({ key: ENC.pkcs8, passphrase: 'pw' }, 'hex').slice(0, 16),
+  crypto.sign('sha256', data, { key: ENC.legacy, passphrase: 'pw' }).toString('hex').slice(0, 16),
+  crypto.createPublicKey({ key: ENC.pkcs8, passphrase: 'pw' }).asymmetricKeyType,
+  failure(() => crypto.createPrivateKey(ENC.pkcs8))[1],
+  failure(() => crypto.createPrivateKey({ key: ENC.pkcs8, passphrase: 'wrong' }))[1],
+  failure(() => crypto.createPrivateKey({ key: ENC.legacy, passphrase: 'wrong!' }))[1],
+];
+const ecJwk = crypto.createPrivateKey({ key: ENC.legacy3des, passphrase: 'pw' }).export({ format: 'jwk' });
+const other = crypto.createPrivateKey({ key: Buffer.from(ENC.ecDer, 'base64'), format: 'der', type: 'pkcs8', passphrase: 'pw' }).export({ format: 'jwk' });
+out.jwk = [
+  failure(() => crypto.createPrivateKey({ key: { ...ecJwk, d: other.d === ecJwk.d ? 'AA' : (() => { const b = Buffer.from(ecJwk.d, 'base64url'); b[31] ^= 1; return b.toString('base64url'); })() }, format: 'jwk' })),
+  failure(() => crypto.createPrivateKey({ key: { ...ecJwk, d: Buffer.alloc(32).toString('base64url') }, format: 'jwk' })),
+  failure(() => crypto.createPrivateKey({ key: { ...ecJwk, d: Buffer.alloc(32, 0xff).toString('base64url') }, format: 'jwk' })),
+  crypto.createPrivateKey({ key: ecJwk, format: 'jwk' }).asymmetricKeyType,
+];
+const edDer = crypto.createPrivateKey({ key: ENC.edPkcs8, passphrase: 'pw' }).export({ format: 'der', type: 'pkcs8' });
+const edKey = crypto.createPrivateKey({ key: edDer, format: 'der', type: 'pkcs8' });
+const edPub = crypto.createPublicKey(edKey);
+edDer.fill(0);
+out.edSeed = crypto.verify(null, data, edPub, crypto.sign(null, data, edKey));
+const ec = crypto.createPrivateKey({ key: ENC.legacy3des, passphrase: 'pw' });
+const sig = crypto.sign('sha256', data, ec);
+const r = sig.subarray(4, 4 + sig[3]);
+const s = sig.subarray(4 + sig[3]);
+const padded = Buffer.concat([Buffer.from([0x02, r.length + 1, 0]), r]);
+out.der = [crypto.verify('sha256', data, ec, sig), crypto.verify('sha256', data, ec, Buffer.concat([Buffer.from([0x30, padded.length + s.length]), padded, s]))];
+out.pss = failure(() => crypto.sign('sha512', data, { key: ENC.rsa512, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }));
+out.oaep = [
+  crypto.privateDecrypt(rsa, crypto.publicEncrypt({ key: crypto.createPublicKey(rsa), oaepHash: 'sha1' }, data)).toString(),
+];
+out.scrypt = [failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 18, r: 1, p: 1 }))[1], failure(() => crypto.scryptSync('a', 'b', 8, { N: 16, r: 8, p: 65536 }))[1], failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 16, r: 1, p: 1, maxmem: 2 ** 30 }))[1], crypto.scryptSync('a', 'b', 8, { N: 2 ** 10, r: 8, p: 1, maxmem: 128 * 8 * (2 ** 10 + 3) }).length, failure(() => crypto.scryptSync('a', 'b', 8, { N: 2 ** 10, r: 8, p: 1, maxmem: 128 * 8 * (2 ** 10 + 3) - 1 }))[1]];
+console.log(JSON.stringify(out));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {"iv":[["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],["TypeError","ERR_INVALID_ARG_TYPE","The \"iv\" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received undefined"],["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],["TypeError","ERR_CRYPTO_INVALID_IV","Invalid initialization vector"],"b716c6f6914fe5848b4f913f2ba0c5ed","fbf110d38696c58b","b716c6f6914fe5848b4f913f2ba0c5ed",["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected secret."]],"constructible":["function","function","function","function",true,true],"hashes":[true,"9dd4e461 11ff33c6 11f6ad8e 54a2f7f9 2d711642 d752c2c5 a4abd444 9dd4e461 9dd4e461 11ff33c6 11ff33c6 11ff33c6 11ff33c6 11ff33c6 11f6ad8e 54a2f7f9 2d711642 d752c2c5 a4abd444 11f6ad8e 11f6ad8e 54a2f7f9 54a2f7f9 2d711642 2d711642 d752c2c5 d752c2c5 a4abd444 a4abd444","3123189442cbedfb0b8f9695da4f685e181111e4"],"signAliases":["3fccf70eeece6b38","3fccf70eeece6b38","0cdde6e698d15d22","84f8a1059ca5a20b"],"encrypted":["HrlPNXCCDCZd","HrlPNXCCDCZd","dDLKNRLCmNASsMepC4z6UXzuEeBVe-zBWGRVIac12hU","dDLKNRLCmNASsMepC4z6UXzuEeBVe-zBWGRVIac12hU","Ah418Ohdg8ehHs4syXRrWlHmf0UrZ6fWwLHCCKMAAbw","0cdde6e698d15d22","0cdde6e698d15d22","rsa","ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED","ERR_OSSL_BAD_DECRYPT","ERR_OSSL_BAD_DECRYPT"],"jwk":[["TypeError","ERR_CRYPTO_INVALID_JWK","Invalid JWK EC key"],["TypeError","ERR_CRYPTO_INVALID_JWK","Invalid JWK EC key"],["TypeError","ERR_CRYPTO_INVALID_JWK","Invalid JWK EC key"],"ec"],"edSeed":true,"der":[true,false],"pss":["Error","ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE","error:0200006E:rsa routines::data too large for key size"],"oaep":["payload"],"scrypt":["ERR_CRYPTO_INVALID_SCRYPT_PARAMS","ERR_CRYPTO_INVALID_SCRYPT_PARAMS","ERR_CRYPTO_INVALID_SCRYPT_PARAMS",8,"ERR_CRYPTO_INVALID_SCRYPT_PARAMS"]});
+});
+
+test('require("constants") and os.constants.signals as Node 24 has them (with crypto\'s constants, and defaultCipherList as node:crypto was loaded first); util.types.isKeyObject of a KeyObject', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const crypto = require('crypto');
+const util = require('util');
+const constants = require('constants');
+console.log(JSON.stringify({
+  constants: Object.keys(constants),
+  values: [constants.ENOENT, constants.SIGCHLD, constants.O_DIRECTORY, constants.RSA_PKCS1_PSS_PADDING, constants.POINT_CONVERSION_HYBRID, 'defaultCipherList' in constants],
+  signals: Object.keys(require('os').constants.signals),
+  isKeyObject: [util.types.isKeyObject(crypto.createSecretKey(Buffer.from('k'))), util.types.isKeyObject({})],
+}));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // Expected: what Node 24 prints for main.js.
+  assert.deepEqual(JSON.parse(out.stdout), {
+    constants: ["RTLD_LAZY","RTLD_NOW","RTLD_GLOBAL","RTLD_LOCAL","RTLD_DEEPBIND","E2BIG","EACCES","EADDRINUSE","EADDRNOTAVAIL","EAFNOSUPPORT","EAGAIN","EALREADY","EBADF","EBADMSG","EBUSY","ECANCELED","ECHILD","ECONNABORTED","ECONNREFUSED","ECONNRESET","EDEADLK","EDESTADDRREQ","EDOM","EDQUOT","EEXIST","EFAULT","EFBIG","EHOSTUNREACH","EIDRM","EILSEQ","EINPROGRESS","EINTR","EINVAL","EIO","EISCONN","EISDIR","ELOOP","EMFILE","EMLINK","EMSGSIZE","EMULTIHOP","ENAMETOOLONG","ENETDOWN","ENETRESET","ENETUNREACH","ENFILE","ENOBUFS","ENODATA","ENODEV","ENOENT","ENOEXEC","ENOLCK","ENOLINK","ENOMEM","ENOMSG","ENOPROTOOPT","ENOSPC","ENOSR","ENOSTR","ENOSYS","ENOTCONN","ENOTDIR","ENOTEMPTY","ENOTSOCK","ENOTSUP","ENOTTY","ENXIO","EOPNOTSUPP","EOVERFLOW","EPERM","EPIPE","EPROTO","EPROTONOSUPPORT","EPROTOTYPE","ERANGE","EROFS","ESPIPE","ESRCH","ESTALE","ETIME","ETIMEDOUT","ETXTBSY","EWOULDBLOCK","EXDEV","PRIORITY_LOW","PRIORITY_BELOW_NORMAL","PRIORITY_NORMAL","PRIORITY_ABOVE_NORMAL","PRIORITY_HIGH","PRIORITY_HIGHEST","SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGABRT","SIGIOT","SIGBUS","SIGFPE","SIGKILL","SIGUSR1","SIGSEGV","SIGUSR2","SIGPIPE","SIGALRM","SIGTERM","SIGCHLD","SIGSTKFLT","SIGCONT","SIGSTOP","SIGTSTP","SIGTTIN","SIGTTOU","SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH","SIGIO","SIGPOLL","SIGPWR","SIGSYS","UV_FS_SYMLINK_DIR","UV_FS_SYMLINK_JUNCTION","O_RDONLY","O_WRONLY","O_RDWR","UV_DIRENT_UNKNOWN","UV_DIRENT_FILE","UV_DIRENT_DIR","UV_DIRENT_LINK","UV_DIRENT_FIFO","UV_DIRENT_SOCKET","UV_DIRENT_CHAR","UV_DIRENT_BLOCK","S_IFMT","S_IFREG","S_IFDIR","S_IFCHR","S_IFBLK","S_IFIFO","S_IFLNK","S_IFSOCK","O_CREAT","O_EXCL","UV_FS_O_FILEMAP","UV_FS_O_TEMPORARY","UV_FS_O_SHORT_LIVED","UV_FS_O_SEQUENTIAL","UV_FS_O_RANDOM","O_NOCTTY","O_TRUNC","O_APPEND","O_DIRECTORY","O_NOATIME","O_NOFOLLOW","O_SYNC","O_DSYNC","O_DIRECT","O_NONBLOCK","S_IRWXU","S_IRUSR","S_IWUSR","S_IXUSR","S_IRWXG","S_IRGRP","S_IWGRP","S_IXGRP","S_IRWXO","S_IROTH","S_IWOTH","S_IXOTH","F_OK","R_OK","W_OK","X_OK","UV_FS_COPYFILE_EXCL","COPYFILE_EXCL","UV_FS_COPYFILE_FICLONE","COPYFILE_FICLONE","UV_FS_COPYFILE_FICLONE_FORCE","COPYFILE_FICLONE_FORCE","OPENSSL_VERSION_NUMBER","SSL_OP_ALL","SSL_OP_ALLOW_NO_DHE_KEX","SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION","SSL_OP_CIPHER_SERVER_PREFERENCE","SSL_OP_CISCO_ANYCONNECT","SSL_OP_COOKIE_EXCHANGE","SSL_OP_CRYPTOPRO_TLSEXT_BUG","SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS","SSL_OP_LEGACY_SERVER_CONNECT","SSL_OP_NO_COMPRESSION","SSL_OP_NO_ENCRYPT_THEN_MAC","SSL_OP_NO_QUERY_MTU","SSL_OP_NO_RENEGOTIATION","SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION","SSL_OP_NO_SSLv2","SSL_OP_NO_SSLv3","SSL_OP_NO_TICKET","SSL_OP_NO_TLSv1","SSL_OP_NO_TLSv1_1","SSL_OP_NO_TLSv1_2","SSL_OP_NO_TLSv1_3","SSL_OP_PRIORITIZE_CHACHA","SSL_OP_TLS_ROLLBACK_BUG","ENGINE_METHOD_RSA","ENGINE_METHOD_DSA","ENGINE_METHOD_DH","ENGINE_METHOD_RAND","ENGINE_METHOD_EC","ENGINE_METHOD_CIPHERS","ENGINE_METHOD_DIGESTS","ENGINE_METHOD_PKEY_METHS","ENGINE_METHOD_PKEY_ASN1_METHS","ENGINE_METHOD_ALL","ENGINE_METHOD_NONE","DH_CHECK_P_NOT_SAFE_PRIME","DH_CHECK_P_NOT_PRIME","DH_UNABLE_TO_CHECK_GENERATOR","DH_NOT_SUITABLE_GENERATOR","RSA_PKCS1_PADDING","RSA_SSLV23_PADDING","RSA_NO_PADDING","RSA_PKCS1_OAEP_PADDING","RSA_X931_PADDING","RSA_PKCS1_PSS_PADDING","RSA_PSS_SALTLEN_DIGEST","RSA_PSS_SALTLEN_MAX_SIGN","RSA_PSS_SALTLEN_AUTO","defaultCoreCipherList","TLS1_VERSION","TLS1_1_VERSION","TLS1_2_VERSION","TLS1_3_VERSION","POINT_CONVERSION_COMPRESSED","POINT_CONVERSION_UNCOMPRESSED","POINT_CONVERSION_HYBRID","defaultCipherList"],
+    values: [2,17,65536,6,6,true],
+    signals: ["SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGABRT","SIGIOT","SIGBUS","SIGFPE","SIGKILL","SIGUSR1","SIGSEGV","SIGUSR2","SIGPIPE","SIGALRM","SIGTERM","SIGCHLD","SIGSTKFLT","SIGCONT","SIGSTOP","SIGTSTP","SIGTTIN","SIGTTOU","SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH","SIGIO","SIGPOLL","SIGPWR","SIGSYS"],
+    isKeyObject: [true,false],
+  });
+});

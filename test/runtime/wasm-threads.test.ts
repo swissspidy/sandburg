@@ -3,9 +3,10 @@
  * WebAssembly threads specification gives, and what Node 24 gives for a plain store (op 3): an
  * access to memory another thread grew, ordered after the growth through an atomic, is in bounds.
  * Node 24 itself (V8 13.6) traps in ops 0-2 ("RuntimeError: memory access out of bounds"), as
- * Chromium does without the runtime's guard (wasm-grow-guard.ts): V8 tells other threads' instances
- * of the new size only at their next interrupt check, and bulk memory and atomic operations check
- * bounds against the size the instance knows. Rolldown's WebAssembly build trapped there.
+ * Chromium did before 157: V8 told other threads' instances of the new size only at their next
+ * interrupt check, and bulk memory and atomic operations checked bounds against the size the instance
+ * knew. Rolldown's WebAssembly build trapped there. The runtime guarded such modules until
+ * Playwright's Chromium had the fix; this test is what shows a Chromium without it.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,8 +19,8 @@ after(() => h.close());
 /**
  * A thread grows a shared memory a page at a time (`writer`) and publishes each new page's address;
  * `reader` waits for it and fills it (op 0), copies to it (1), adds to it atomically (2) or stores
- * to it (3). WAT and the same module: test/unit/wasm-grow-guard.test.ts (PING_PONG). Every round
- * grows the memory. Without the guard, the runtime trapped in the second round of ops 0-2 in each of
+ * to it (3). WAT: docs/research/v8-shared-memory-grow-race.md. Every round grows the memory. In
+ * Chromium before 157, without the guard, the runtime trapped in the second round of ops 0-2 in each of
  * 15 tries; 200 rounds keep a wide margin and take well under a second (with 20,000, CI's Windows
  * runner had done one op of four when the run's 30 s were up).
  */
