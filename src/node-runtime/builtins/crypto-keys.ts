@@ -778,7 +778,7 @@ export function makeSigning(deps: KeyDeps) {
       let sLen = saltLengthOf(opts, -2);
       if (sLen === -1) sLen = hLen;
       else if (sLen === -2) sLen = emLen - hLen - 2;
-      if (sLen < 0 || emLen < hLen + sLen + 2) throw err(new Error('error:1C8000A3:Provider routines::data too large for key size'), 'ERR_OSSL_DATA_TOO_LARGE_FOR_KEY_SIZE');
+      if (sLen < 0 || emLen < hLen + sLen + 2) throw err(new Error('error:0200006E:rsa routines::data too large for key size'), 'ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE');
       const salt = deps.randomBytes(sLen);
       const h = hash(name, new Uint8Array(8), digest, salt);
       const db = new Uint8Array(emLen - hLen - 1);
