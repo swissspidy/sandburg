@@ -172,7 +172,9 @@ const FRAME_ANCESTORS = /(^|[;,])(\s*)frame-ancestors(?=[\s;,]|$)[^;,]*/gi;
 function framedBySelf(policy) {
   return policy.replace(FRAME_ANCESTORS, "$1$2frame-ancestors 'self'");
 }
-const HAS_FRAME_ANCESTORS = /(^|[;,])\s*frame-ancestors(?=[\s;,]|$)/i;
+// Only ASCII whitespace separates a directive, as CSP parses it: a frame-ancestors after another space
+// (a non-breaking one) is ignored by the browser, so it does not stand in for X-Frame-Options.
+const HAS_FRAME_ANCESTORS = /(^|[;,])[\t\n\f\r ]*frame-ancestors(?=[\t\n\f\r ;,]|$)/i;
 
 const SHIM = (hooks.shim ?? '') + `<script src="${WS_SHIM}"></script>`;
 
