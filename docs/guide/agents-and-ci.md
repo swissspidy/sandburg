@@ -174,7 +174,7 @@ The same steps, in a workflow of your own:
 - uses: actions/setup-node@v7
   with:
     node-version: 24
-- run: npm install --save-dev sandburg
+- run: npm install --save-dev sandburg @playwright/test@1.65.1 playwright-core@1.65.1
 - run: npx playwright install --with-deps chromium
 - run: npx sandburg run ./my-app --checks ./my-app/checks.spec.ts --json > sandburg.json
 - uses: actions/upload-artifact@v7

@@ -22,8 +22,8 @@ import { firstMessage, fixMessage, SYSTEM } from './prompt.ts';
 import { tabForKey } from './tabs.ts';
 import { template, TEMPLATES } from './templates.ts';
 import { zip } from './zip.ts';
-import { guardAppFrame } from '../frame-guard.js';
-import { isolationFailure } from '../isolation.js';
+import { guardAppFrame } from '../../src/browser-runtime/frame-guard.js';
+import { isolationFailure } from '../../src/browser-runtime/isolation.js';
 
 const scope = new URL('./', location.href);
 const site = new URL('../', location.href);

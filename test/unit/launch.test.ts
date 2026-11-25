@@ -83,3 +83,15 @@ test('a browser older than Chromium 157 is warned of: its WebAssembly threads se
   const browsers = require(require.resolve('playwright-core/package.json').replace(/package\.json$/, 'browsers.json')) as { browsers: { name: string; browserVersion: string }[] };
   for (const b of browsers.browsers.filter((b) => b.name.startsWith('chromium'))) assert.ok(Number.parseInt(b.browserVersion, 10) >= MIN_CHROMIUM, `${b.name} ${b.browserVersion}`);
 });
+
+test("Playwright is an optional peer dependency at the exact version Sandburg drives, the one it develops with (ADR 0074)", async () => {
+  const { readFile } = await import('node:fs/promises');
+  const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as Record<string, Record<string, unknown>>;
+  for (const name of ['playwright-core', '@playwright/test']) {
+    assert.equal(pkg.dependencies[name], undefined, `${name} is not a dependency: the browser runtime's embedders do without it`);
+    assert.match(String(pkg.peerDependencies[name]), /^\d+\.\d+\.\d+$/, `${name}: an exact version (its Chromium build is that version's)`);
+    // An update of the development copy (Dependabot) that leaves the peer behind fails here.
+    assert.equal(pkg.peerDependencies[name], pkg.devDependencies[name], name);
+    assert.deepEqual(pkg.peerDependenciesMeta[name], { optional: true }, name);
+  }
+});

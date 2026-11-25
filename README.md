@@ -59,12 +59,17 @@ second run of the project. Each ADR records its own before-and-after measurement
 Requires Node.js 24 (LTS) or later.
 
 ```sh
-npm install --save-dev sandburg
+npm install --save-dev sandburg @playwright/test@1.65.1 playwright-core@1.65.1
 npx sandburg run ./my-app --checks checks.spec.ts
 ```
 
-Sandburg drives Chromium with the Playwright it installs. If that Chromium is missing, the run stops and
-prints the command that installs it ([Troubleshooting](docs/guide/troubleshooting.md#chromium-is-not-installed)).
+Sandburg drives Chromium with Playwright, an optional peer dependency at the exact version Sandburg
+names (`sandburg` without it prints the command above). If that Playwright's Chromium is missing, the
+run stops and prints the command that installs it
+([Troubleshooting](docs/guide/troubleshooting.md#chromium-is-not-installed)).
+
+To run projects in a page of your own, without the CLI or Playwright, serve the package's prebuilt
+browser runtime ([Embedding the browser runtime](docs/guide/browser-runtime.md)).
 
 From a checkout, Sandburg runs its TypeScript sources directly:
 
@@ -96,6 +101,8 @@ error.
 - [CLI](docs/guide/cli.md): every command and option, project inputs, snapshots, `--offline`,
   `--install-in browser`, `--save-files`, exit codes.
 - [Library](docs/guide/library.md): `Session`, `RunOptions`, `result.json` and the failure classes.
+- [Embedding the browser runtime](docs/guide/browser-runtime.md): `sandburg/browser-runtime`, the
+  runtime as static files for a page of your own.
 - [Agents and CI](docs/guide/agents-and-ci.md): calling Sandburg from a coding agent, the GitHub Action,
   reading results.
 - [Troubleshooting](docs/guide/troubleshooting.md): installing Chromium, the browser sandbox, what is

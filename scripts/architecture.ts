@@ -104,7 +104,7 @@ export function importGraph(dir = join(ROOT, 'src')): Graph {
   return { modules: files.map(repoPath), imports };
 }
 
-export type Environment = 'host' | 'page' | 'runtime' | 'compile-worker' | 'install-worker' | 'service-worker' | 'app-frame';
+export type Environment = 'host' | 'page' | 'runtime' | 'compile-worker' | 'install-worker' | 'service-worker' | 'app-frame' | 'embedder' | 'embedded-service-worker';
 
 /**
  * Where code runs, and the entry points of what runs there. The browser bundles are built by
@@ -123,6 +123,12 @@ export const ENVIRONMENTS: Record<Environment, { what: string; entries: string[]
   'compile-worker': { what: "the page's compiler on esbuild-wasm", entries: ['src/adapters/node/compile-worker.ts'], stubs: ['node:crypto', 'esbuild'] },
   'install-worker': { what: "the page's npm install (resolution, untarring, packing node_modules)", entries: ['src/adapters/node/install-worker.ts'] },
   'service-worker': { what: "the sandbox origin's service worker", entries: ['src/adapters/node/sw.js'] },
+  embedder: { what: 'a page that embeds the browser runtime (sandburg/browser-runtime): its API', entries: ['src/browser-runtime/index.ts'] },
+  'embedded-service-worker': {
+    what: "an embedded browser runtime's service worker, with its compiler on esbuild-wasm",
+    entries: ['src/browser-runtime/sw.js', 'src/browser-runtime/compile.ts'],
+    stubs: ['node:crypto', 'esbuild'],
+  },
   'app-frame': { what: "the app's frame: the page checks' runtime and the WebSocket shim", entries: ['src/page-checks/runtime.ts', 'src/page-checks/dom-shim.ts', 'src/adapters/node/ws-shim.js'] },
 };
 
@@ -142,6 +148,7 @@ export const LAYERS: { name: string; paths: string[]; what: string; imports: str
   { name: 'adapters', paths: ['src/adapters/'], what: "an adapter's host and browser halves (the node adapter)", imports: ['host', 'node-runtime', 'core'] },
   { name: 'page-checks', paths: ['src/page-checks/'], what: 'the checks API, its compiler and its in-frame runtime', imports: ['core'] },
   { name: 'host', paths: ['src/host/'], what: 'the host page (RPC from the orchestrator, the adapter\'s browser half)', imports: ['core'] },
+  { name: 'browser-runtime', paths: ['src/browser-runtime/'], what: 'the browser runtime for embedders: its API, service worker and compiler', imports: ['adapters', 'host', 'core'] },
   { name: 'node-runtime', paths: ['src/node-runtime/'], what: 'the runtime, and the host-side code that bundles it', imports: ['core'] },
   { name: 'core', paths: ['src/'], what: 'types and helpers every layer shares', imports: [] },
 ];

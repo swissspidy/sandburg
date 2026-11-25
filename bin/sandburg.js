@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // In a checkout, Sandburg runs its TypeScript sources directly (Node >= 24 strips types).
 // Node does not strip types under node_modules, so an installed copy runs its build (dist/).
+import { readFileSync } from 'node:fs';
 import { enableCompileCache } from 'node:module';
 import { resolve, sep } from 'node:path';
 
@@ -14,5 +15,16 @@ process.on('warning', (w) => {
   if (w.name !== 'ExperimentalWarning' && w.code !== 'MODULE_TYPELESS_PACKAGE_JSON') console.warn(w);
 });
 const installed = import.meta.dirname.split(sep).includes('node_modules');
-const { main } = await import(installed ? '../dist/cli.js' : '../src/cli.ts');
-process.exitCode = await main(process.argv.slice(2));
+let cli;
+try {
+  cli = await import(installed ? '../dist/cli.js' : '../src/cli.ts');
+} catch (err) {
+  // Playwright is an optional peer dependency (ADR 0074): the browser runtime's embedders do without it.
+  const missing = err?.code === 'ERR_MODULE_NOT_FOUND' && /'(playwright-core|@playwright\/test)'/.exec(err.message)?.[1];
+  if (!missing) throw err;
+  const { peerDependencies: peers } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const packages = Object.entries(peers).map(([name, version]) => `${name}@${version}`).join(' ');
+  console.error(`error: Sandburg's CLI needs Playwright, which is not installed (${missing}). Run: npm install --save-dev ${packages}`);
+  process.exit(2);
+}
+process.exitCode = await cli.main(process.argv.slice(2));

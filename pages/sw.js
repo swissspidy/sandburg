@@ -105,7 +105,7 @@ async function host(request, url) {
 async function compile(body, url) {
   const q = new URLSearchParams(url.search);
   try {
-    const code = await self.sandburgCompile(new TextDecoder().decode(body), q.get('path') ?? '/unknown.js', q.get('kind') ?? 'cjs', q.get('async') === '1', new URL('esbuild.wasm', site).href);
+    const code = await self.sandburgCompile(new TextDecoder().decode(body), q.get('path') ?? '/unknown.js', q.get('kind') ?? 'cjs', q.get('async') === '1', new URL('runtime/esbuild.wasm', site).href);
     tell(`compiled in the browser: ${q.get('path')}`);
     return new Response(code, { headers: { 'content-type': 'text/javascript; charset=utf-8' } });
   } catch (e) {

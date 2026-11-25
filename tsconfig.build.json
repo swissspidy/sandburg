@@ -10,7 +10,8 @@
   "files": [
     "src/globals.d.ts",
     "src/index.ts",
-    "src/cli.ts"
+    "src/cli.ts",
+    "src/browser-runtime/index.ts"
   ],
   "include": []
 }

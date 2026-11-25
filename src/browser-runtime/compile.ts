@@ -1,10 +1,10 @@
 /**
- * The runtime's compiler (src/adapters/node/compile.ts) on esbuild's WebAssembly build, for the demo
+ * The runtime's compiler (src/adapters/node/compile.ts) on esbuild's WebAssembly build, for the demo and embedders'
  * service worker: it compiles what the recording did not see (code whose content changes from run
- * to run). Bundled by scripts/pages/build.ts into compile.js; the WebAssembly loads on first use.
+ * to run). Bundled into compile.js (scripts/browser-runtime.ts); the WebAssembly loads on first use.
  */
 import * as esbuild from 'esbuild-wasm';
-import { compileForRuntimeAsync, type CompileKind } from '../src/adapters/node/compile.ts';
+import { compileForRuntimeAsync, type CompileKind } from '../adapters/node/compile.ts';
 
 let ready: Promise<void> | null = null;
 

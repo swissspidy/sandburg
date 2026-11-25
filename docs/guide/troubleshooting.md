@@ -1,5 +1,20 @@
 # Troubleshooting
 
+## Playwright is not installed
+
+Playwright is an optional peer dependency of Sandburg
+([ADR 0074](../adr/0074-browser-runtime-export.md)): the CLI and the library need it, and the browser
+runtime ([Embedding the browser runtime](browser-runtime.md)) does not. Without it, `sandburg` stops
+(exit code `2`) and prints the command that installs the version it drives:
+
+```text
+error: Sandburg's CLI needs Playwright, which is not installed (playwright-core). Run: npm install --save-dev @playwright/test@1.65.1 playwright-core@1.65.1
+```
+
+The library fails to import with Node's `ERR_MODULE_NOT_FOUND` for `playwright-core`. Another
+Playwright version than the one Sandburg names is an npm resolution error (`ERESOLVE`): install the
+named one.
+
 ## Chromium is not installed
 
 Sandburg drives Chromium with the Playwright it installs. If that Playwright's Chromium is missing,

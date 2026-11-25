@@ -100,7 +100,7 @@ Nothing else is recorded. `?scaffold=<framework>` runs a scaffold without a mode
 - **Full reloads.** A dev server's full reload (Vite does one when `index.html` changes) reloads
   the address the app sees, `/`. That address is outside the service worker's scope, and the
   response there has no COEP header, so the cross-origin isolated page turns it into an error page.
-  [`frame-guard.js`](../../pages/frame-guard.js) remembers the app's address, and when the frame
+  [`frame-guard.js`](../../src/browser-runtime/frame-guard.js) remembers the app's address, and when the frame
   loads a document that no service worker controls, or one it cannot read, it loads the app at that
   address again. The demos use it too.
 

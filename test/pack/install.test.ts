@@ -1,12 +1,15 @@
 /**
- * The npm package: packed (which builds dist/), installed into an empty project, its CLI runs
- * a project and passes its checks, and its library and types load from there. Installing needs
- * network access to the npm registry, and the run needs Chromium (npx playwright install chromium).
+ * The npm package: packed (which builds dist/), installed into an empty project with Playwright (an
+ * optional peer dependency), its CLI runs a project and passes its checks, and its library and types
+ * load from there. Installed without Playwright, its browser runtime is there for an embedder, and
+ * the CLI says what to install. Installing needs network access to the npm registry, and the run
+ * needs Chromium (npx playwright install chromium).
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +19,8 @@ const run = promisify(execFile);
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fixtureDir = join(root, 'fixtures/vite-react-counter');
 let dir: string;
+/** A consumer that installed the package alone, without Playwright: an embedder of the browser runtime. */
+let bare: string;
 let files: string[];
 
 before(async () => {
@@ -24,14 +29,38 @@ before(async () => {
   const [pack] = JSON.parse(stdout.slice(stdout.indexOf('['))) as { filename: string; files: { path: string }[] }[];
   files = pack.files.map((f) => f.path);
   await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'consumer', private: true, type: 'module' }));
-  await run('npm', ['install', '--no-audit', '--no-fund', join(dir, pack.filename)], { cwd: dir, maxBuffer: 64 << 20 });
+  const { peerDependencies } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { peerDependencies: Record<string, string> };
+  const peers = Object.entries(peerDependencies).map(([name, version]) => `${name}@${version}`);
+  // Not inside the first consumer: Node would find its Playwright there.
+  bare = await mkdtemp(join(tmpdir(), 'sandburg-pack-bare-'));
+  await writeFile(join(bare, 'package.json'), JSON.stringify({ name: 'embedder', private: true, type: 'module' }));
+  await Promise.all([
+    run('npm', ['install', '--no-audit', '--no-fund', join(dir, pack.filename), ...peers], { cwd: dir, maxBuffer: 64 << 20 }),
+    run('npm', ['install', '--no-audit', '--no-fund', join(dir, pack.filename)], { cwd: bare, maxBuffer: 64 << 20 }),
+  ]);
 });
-after(() => rm(dir, { recursive: true, force: true }));
+after(() => Promise.all([rm(dir, { recursive: true, force: true }), bare && rm(bare, { recursive: true, force: true })]));
 
 test('the package holds the CLI, its build and the sources the page is bundled from, and nothing else', () => {
   const outside = files.filter((f) => !/^(bin|dist|src)\//.test(f) && !['package.json', 'README.md', 'LICENSE'].includes(f));
   assert.deepEqual(outside, []);
-  for (const f of ['bin/sandburg.js', 'dist/cli.js', 'dist/index.js', 'dist/index.d.ts', 'src/host/host.ts', 'src/node-runtime/worker.ts', 'src/adapters/node/sw.js', 'src/page-checks/runtime.ts']) {
+  for (const f of [
+    'bin/sandburg.js',
+    'dist/cli.js',
+    'dist/index.js',
+    'dist/index.d.ts',
+    'src/host/host.ts',
+    'src/node-runtime/worker.ts',
+    'src/adapters/node/sw.js',
+    'src/page-checks/runtime.ts',
+    // The browser runtime, prebuilt (ADR 0074).
+    'dist/browser-runtime/index.js',
+    'dist/browser-runtime/index.d.ts',
+    'dist/browser-runtime/sw.js',
+    'dist/browser-runtime/host.js',
+    'dist/browser-runtime/runtime/node-worker.js',
+    'dist/browser-runtime/runtime/esbuild.wasm',
+  ]) {
     assert.ok(files.includes(f), f);
   }
 });
@@ -119,4 +148,20 @@ export async function first(dir: string): Promise<RunResult['status']> {
   );
   // The repository's TypeScript and Node types; the consumer's own would do the same.
   await run(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', dir, '--typeRoots', join(root, 'node_modules/@types')], { cwd: dir });
+});
+
+test('installed without Playwright, the browser runtime is there for an embedder, and the CLI says what to install', async () => {
+  assert.ok(!existsSync(join(bare, 'node_modules/playwright-core')), 'Playwright is not installed with the package');
+  assert.ok(!existsSync(join(bare, 'node_modules/@playwright/test')));
+  // An embedder finds the runtime's files through the package's exports, to serve them.
+  const { stdout } = await run(process.execPath, ['--input-type=module', '-e', "console.log(import.meta.resolve('sandburg/browser-runtime'), import.meta.resolve('sandburg/browser-runtime/sw.js'))"], { cwd: bare });
+  const [api, sw] = stdout.trim().split(' ').map((u) => new URL(u));
+  assert.ok(existsSync(api) && existsSync(sw), stdout);
+  assert.ok(existsSync(new URL('runtime/node-worker.js', sw)), 'runtime/ is beside sw.js');
+  const failed = await run(join(bare, 'node_modules/.bin/sandburg'), ['run', fixtureDir], { cwd: bare }).then(
+    () => assert.fail('the CLI should fail'),
+    (err: { code: number; stderr: string }) => err,
+  );
+  assert.equal(failed.code, 2);
+  assert.match(failed.stderr, /needs Playwright, which is not installed \((?:playwright-core|@playwright\/test)\)\. Run: npm install --save-dev @playwright\/test@\S+ playwright-core@\S+/);
 });

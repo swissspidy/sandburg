@@ -25,7 +25,7 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0019](0019-latest-versions.md) | Fixtures test the latest version of every framework | Accepted |
 | [0020](0020-compile-in-the-page.md) | With a browser install, the page compiles too | Accepted |
 | [0021](0021-generate-in-the-browser.md) | Generate an app in the browser, and run it there | Accepted |
-| [0022](0022-npm-package.md) | Publish Sandburg as an npm package | Accepted |
+| [0022](0022-npm-package.md) | Publish Sandburg as an npm package | Accepted; amended by 0074 |
 | [0023](0023-checks-in-the-page.md) | Checks that run in the page | Accepted |
 | [0024](0024-typescript-7.md) | TypeScript 7 in the browser runtime | Accepted |
 | [0025](0025-runtime-hot-path.md) | The runtime's hot path | Accepted |
@@ -77,3 +77,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0071](0071-warm-slower-than-cold.md) | Warm runs slower than cold in fidelity study v7: the method, not the runs | Accepted |
 | [0072](0072-pnpm-undeclared-imports.md) | Strict layouts (pnpm's isolated node_modules, Yarn's Plug'n'Play, Bun workspaces; not Nuxt): an import of a package the project does not declare fails, as there | Accepted |
 | [0073](0073-git-dependencies.md) | Git dependencies, fetched by the host and linked | Accepted |
+| [0074](0074-browser-runtime-export.md) | The browser runtime as a subpath export; Playwright an optional peer dependency | Accepted |

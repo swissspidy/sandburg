@@ -91,6 +91,13 @@ runs:
         echo '{"private":true}' > "$prefix/package.json"
         # After --, the spec is never taken as an npm option.
         npm install --prefix "$prefix" --no-audit --no-fund -- "$spec"
+        # Playwright is an optional peer dependency (ADR 0074) that the CLI needs: the versions the
+        # package names (none for a version from before it was one, which installed it itself).
+        peers="$(node -p "Object.entries(require(process.argv[1]).peerDependencies ?? {}).map(([n, v]) => n + '@' + v).join(' ')" "$prefix/node_modules/sandburg/package.json")"
+        if [ -n "$peers" ]; then
+          # shellcheck disable=SC2086 # one argument per package
+          npm install --prefix "$prefix" --no-audit --no-fund -- $peers
+        fi
         # The Chromium cache's key: without it, the package did not install with its dependencies.
         playwright="$(node -p 'require(process.argv[1]).version' "$prefix/node_modules/playwright-core/package.json" 2>/dev/null)" || true
         if [ -z "$playwright" ]; then
