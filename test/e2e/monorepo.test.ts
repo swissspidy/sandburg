@@ -110,6 +110,29 @@ test('a git fetch slower than the install may fails the install, never installin
   }
 });
 
+test('a run that ends before its git dependencies are fetched stops waiting for them: Session.close() returns', { timeout: 60_000 }, async () => {
+  const sources = node.sources!;
+  // A fetch that never finishes: only the run's signal ends the wait.
+  node.sources = (_project, options) => new Promise((_, reject) => options.signal?.addEventListener('abort', () => reject(options.signal!.reason), { once: true }));
+  const own = new Session();
+  try {
+    await own.open();
+    const project = projectFromFiles(
+      { 'package.json': JSON.stringify({ name: 'held-git', private: true, scripts: { dev: 'node server.js' }, dependencies: { 'escape-html': 'github:component/escape-html#v1.0.3' } }), 'server.js': "require('http').createServer((q, s) => s.end('ok')).listen(3000);" },
+      { name: 'held-git', path: 'held-git' },
+    );
+    // Its tab does not load in time: the run ends before mounting.
+    const result = await own.run(project, { outDir, timeouts: { load: 1 }, infraRetries: 0 });
+    assert.notEqual(result.status, 'passed', failures(result));
+    const closing = Date.now();
+    await own.close();
+    assert.ok(Date.now() - closing < 20_000, 'close does not wait for the fetch');
+  } finally {
+    node.sources = sources;
+    await own.close().catch(() => {});
+  }
+});
+
 const app = (dependencies: Record<string, string>) =>
   projectFromFiles(
     {

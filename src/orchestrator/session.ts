@@ -480,6 +480,8 @@ export class Session {
     let sampler: NodeJS.Timeout | undefined;
     let sampling = false;
     let stopped = false;
+    // The run's wait for the project's sources (git dependencies), given up on when the run gives up on them or ends.
+    const fetching = new AbortController();
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -495,8 +497,7 @@ export class Session {
       // What the project names but does not contain (git dependencies) is fetched first, meanwhile too:
       // a failure is the install phase's to report.
       const log = (line: string) => run.runtimeLogs.push(line);
-      // Aborted when mounting stops waiting for it: a fetch that is too slow stops, and so does what waits for it.
-      const fetching = new AbortController();
+      // Aborted when mounting stops waiting for it, or the run ends first: what waits for it stops too.
       const sourced = adapter?.sources?.(project, { offline: this.options.offline ?? false, log, signal: fetching.signal }) ?? null;
       const hostInstall = adapter?.hostInstall
         ? (sourced ?? Promise.resolve(project)).then((p) =>
@@ -676,6 +677,9 @@ export class Session {
       return await run.finish(outDir);
     } finally {
       stopped = true;
+      // A run that ended before its sources were in (its tab did not load, say) stops waiting for them,
+      // so that its host install and Session.close() do not either; a fetch other runs share goes on.
+      if (!fetching.signal.aborted) fetching.abort(new Error('the run ended before its git dependencies were fetched'));
       clearTimeout(sampler);
       memory?.stop();
       // A host page that did not load is held open too (a no-op once its window was closed).
