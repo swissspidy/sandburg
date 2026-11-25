@@ -32,7 +32,6 @@ const err = <E extends Error>(e: E, code: string) => Object.assign(e, { code });
 const argType = (name: string, expected: string, v: unknown) => err(new TypeError(`The "${name}" argument must be ${expected}. Received ${received(v)}`), 'ERR_INVALID_ARG_TYPE');
 const argValue = (name: string, v: unknown) => err(new TypeError(`The property '${name}' is invalid. Received ${quoted(v)}`), 'ERR_INVALID_ARG_VALUE');
 const quoted = (v: unknown) => (typeof v === 'string' ? `'${v}'` : String(v));
-const oneOf = (name: string, values: string[], v: unknown) => err(new TypeError(`The property '${name}' must be one of: ${values.map(quoted).join(', ')}. Received ${quoted(v)}`), 'ERR_INVALID_ARG_VALUE');
 const unsupported = () => err(new Error('error:1E08010C:DECODER routines::unsupported'), 'ERR_OSSL_UNSUPPORTED');
 const notEnoughData = () => err(new Error('error:0680008E:asn1 encoding routines::not enough data'), 'ERR_OSSL_ASN1_NOT_ENOUGH_DATA');
 const unavailable = (what: string) => err(new Error(`${what} is not available in Sandburg's node:crypto`), 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM');
@@ -326,7 +325,7 @@ function fromJwk(jwk: Record<string, unknown>, wantPrivate: boolean): Asym {
   }
   if (kty === 'EC') {
     const c = CURVES.find((x) => x.jwk === jwk.crv);
-    if (!c) throw oneOf('key.crv', ['P-256', 'secp256k1', 'P-384', 'P-521'], jwk.crv);
+    if (!c) throw err(new TypeError('Invalid EC curve name'), 'ERR_CRYPTO_INVALID_CURVE');
     const x = fromB64u(jwk.x, 'EC');
     const y = fromB64u(jwk.y, 'EC');
     if (x.length !== c.size || y.length !== c.size) throw invalidJwk('EC');
@@ -339,7 +338,7 @@ function fromJwk(jwk: Record<string, unknown>, wantPrivate: boolean): Asym {
   if (kty === 'OKP') {
     if (jwk.crv !== 'Ed25519') {
       if (['Ed448', 'X25519', 'X448'].includes(jwk.crv as string)) throw unavailable(`A ${String(jwk.crv)} key`);
-      throw oneOf('key.crv', ['Ed25519', 'Ed448', 'X25519', 'X448'], jwk.crv);
+      throw invalidJwk('OKP');
     }
     const x = fromB64u(jwk.x, 'OKP');
     if (x.length !== 32) throw invalidJwk('OKP');
@@ -348,7 +347,7 @@ function fromJwk(jwk: Record<string, unknown>, wantPrivate: boolean): Asym {
     if (Buffer.compare(k.pub, x) !== 0) throw invalidJwk('OKP');
     return k;
   }
-  throw oneOf('key.kty', ['RSA', 'EC', 'OKP'], kty);
+  throw err(new TypeError(`${String(kty)} is not a supported JWK key type`), 'ERR_CRYPTO_INVALID_JWK');
 }
 function toJwk(k: Asym, priv: boolean): Record<string, string> {
   if (k.kind === 'rsa') {
@@ -365,9 +364,9 @@ function toJwk(k: Asym, priv: boolean): Record<string, string> {
     if (priv) out.d = b64u(k.d!);
     return out;
   }
-  const out: Record<string, string> = { crv: 'Ed25519' };
+  const out: Record<string, string> = { kty: 'OKP', crv: 'Ed25519', x: b64u(k.pub) };
   if (priv) out.d = b64u(k.seed!);
-  return Object.assign(out, { x: b64u(k.pub), kty: 'OKP' });
+  return out;
 }
 
 const PEM = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/;
@@ -405,11 +404,11 @@ function fromDer(der: Uint8Array, type: unknown, want: 'public' | 'private'): As
     if (type === 'pkcs8') return fromPkcs8(der);
     if (type === 'pkcs1') return rsaPrivate(readOne(der));
     if (type === 'sec1') return ecPrivate(readOne(der));
-    throw argValue('options.type', type);
+    throw argValue('key.type', type);
   }
   if (type === 'spki') return fromSpki(der);
   if (type === 'pkcs1') return rsaPublic(readOne(der));
-  throw argValue('options.type', type);
+  throw argValue('key.type', type);
 }
 
 // --- KeyObject ---
@@ -513,6 +512,8 @@ const publicKey = (k: Asym) => make(PublicKeyObject, 'public', { asym: publicOf(
 const privateKey = (k: Asym) => make(PrivateKeyObject, 'private', { asym: k });
 
 const BYTES = 'of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView';
+/** What createPublicKey and createPrivateKey say they take (Node 24). */
+const KEY_INPUT = 'of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, or URL';
 function bytesOf(v: unknown, encoding?: unknown): Uint8Array | null {
   if (typeof v === 'string') return Buffer.from(v, (typeof encoding === 'string' && encoding !== 'buffer' ? encoding : 'utf8') as BufferEncoding);
   if (v instanceof Uint8Array) return v;
@@ -542,9 +543,9 @@ function parseKey(input: unknown, want: 'public' | 'private' | 'any', name = 'ke
     }
     name = 'key.key';
   }
-  if (key instanceof KeyObject) throw argType(name, BYTES, key);
+  if (key instanceof KeyObject) throw argType(name, KEY_INPUT, key);
   const b = bytesOf(key, encoding);
-  if (!b) throw argType(name, BYTES, key);
+  if (!b) throw argType(name, KEY_INPUT, key);
   if (format === 'pem') return fromPem(Buffer.from(b).toString('utf8'), want);
   if (format !== 'der') throw argValue('key.format', format);
   // createPublicKey takes a private key too (its public key), as a PEM private key.

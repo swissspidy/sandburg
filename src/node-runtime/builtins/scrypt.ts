@@ -97,13 +97,13 @@ function params(keylen: unknown, options: ScryptOptions | undefined) {
     throw Object.assign(new RangeError(`The value of "keylen" is out of range. It must be >= 0 && <= ${2 ** 31 - 1}. Received ${keylen}`), { code: 'ERR_OUT_OF_RANGE' });
   }
   const o = options ?? {};
-  const pick = (a: number | undefined, b: number | undefined, fallback: number) => {
-    if (a !== undefined && b !== undefined) throw Object.assign(new Error('Invalid scrypt parameter'), { code: 'ERR_CRYPTO_SCRYPT_INVALID_PARAMETER' });
+  const pick = (a: number | undefined, b: number | undefined, fallback: number, names: [string, string]) => {
+    if (a !== undefined && b !== undefined) throw Object.assign(new TypeError(`Option "${names[0]}" cannot be used in combination with option "${names[1]}"`), { code: 'ERR_INCOMPATIBLE_OPTION_PAIR' });
     return a ?? b ?? fallback;
   };
-  const N = pick(o.N, o.cost, 16384);
-  const r = pick(o.r, o.blockSize, 8);
-  const p = pick(o.p, o.parallelization, 1);
+  const N = pick(o.N, o.cost, 16384, ['N', 'cost']);
+  const r = pick(o.r, o.blockSize, 8, ['r', 'blockSize']);
+  const p = pick(o.p, o.parallelization, 1, ['p', 'parallelization']);
   const maxmem = o.maxmem ?? 32 << 20;
   for (const v of [N, r, p, maxmem]) if (!Number.isSafeInteger(v) || v < 0) throw invalidParams();
   if (N < 2 || (N & (N - 1)) !== 0 || r < 1 || p < 1 || p * r > 2 ** 30 - 1 || 128 * N * r > maxmem) throw invalidParams();
