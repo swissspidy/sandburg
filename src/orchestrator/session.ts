@@ -492,13 +492,21 @@ export class Session {
       // The sandbox the run's page is in, once its tab is taken: what the install issues to the run is bound to it.
       let bindSandbox: (id: string) => void = () => {};
       const sandbox = new Promise<string>((resolve) => (bindSandbox = resolve));
-      const hostInstall = adapter?.hostInstall?.(project, (line) => run.runtimeLogs.push(line), {
-        seed: options.seed,
-        sandbox,
-        installIn: options.installIn,
-        offline: this.options.offline ?? false,
-        runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
-      });
+      // What the project names but does not contain (git dependencies) is fetched first, meanwhile too:
+      // a failure is the install phase's to report.
+      const log = (line: string) => run.runtimeLogs.push(line);
+      const sourced = adapter?.sources?.(project, { offline: this.options.offline ?? false, log }) ?? null;
+      const hostInstall = adapter?.hostInstall
+        ? (sourced ?? Promise.resolve(project)).then((p) =>
+            adapter.hostInstall!(p, log, {
+              seed: options.seed,
+              sandbox,
+              installIn: options.installIn,
+              offline: this.options.offline ?? false,
+              runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
+            }),
+          )
+        : undefined;
       if (hostInstall) {
         this.installs.add(hostInstall);
         void hostInstall.catch(() => {}).finally(() => this.installs.delete(hostInstall)); // reported by the install phase
@@ -585,7 +593,9 @@ export class Session {
       if (ok) {
         const steps = async () => {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
-          await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
+          // The project's files with its git dependencies' (without them if they failed: the install reports it).
+          const files = sourced ? (await sourced.catch(() => project)).files : project.files;
+          await run.phase('mount', timeouts.mount, () => watch(host('mount', files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
             const hostData = hostInstall ? await hostInstall : undefined;
             return watch(host('install', hostData));

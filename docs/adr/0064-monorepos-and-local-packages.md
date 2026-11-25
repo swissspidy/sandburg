@@ -217,7 +217,7 @@ and packages inside the project can be installed`). The install's checks stay as
 
 ## Not done
 
-- **git and URL dependencies stay unsupported.** npm would clone or fetch them and prepare them on
+- **git and URL dependencies stay unsupported.** (Git dependencies: since [ADR 0073](0073-git-dependencies.md), fetched by the host and linked as local packages.) npm would clone or fetch them and prepare them on
   the host (ADR 0054); fetching a tarball URL without preparing it, or a git archive from a host's
   API, would mean another fetcher with its own integrity story. Not straightforward, so left.
 - Turborepo, Nx and Lerna as dev commands (`turbo run dev`) are native binaries or orchestrators,

@@ -1,0 +1,348 @@
+/**
+ * Git dependencies (ADR 0073): the host fetches a git dependency's files itself and hands them to
+ * the install plan as a local package, so that npm never sees it. npm would clone it and *prepare*
+ * it (install its dependencies and run its `prepare` script) on the host, whatever
+ * `--ignore-scripts` says (spec-guard.ts, ADR 0054); here nothing of it runs: its files are read,
+ * not executed, and it is linked into node_modules as a workspace is (local-packages.ts), its
+ * registry dependencies installed with the project's.
+ *
+ * Fast: a branch or tag is resolved to its commit with one ls-refs request (isomorphic-git, git's
+ * protocol v2, filtered by the server), none for a full commit id or one the project's
+ * package-lock.json records; the files of a commit on GitHub, GitLab or Bitbucket are one archive
+ * download, kept on disk by commit, so a second run fetches nothing but the ref (and not that within
+ * a few minutes). Another host's repository (SANDBURG_GIT_HOSTS) is fetched by isomorphic-git, a
+ * shallow fetch of the one commit.
+ *
+ * The host fetches from the repository's host only: no redirect leaves it (a project names the URL,
+ * and the host must not become its way into an internal address).
+ */
+import { mkdir, readFile, rename, rm, writeFile, mkdtemp } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { gunzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import git from 'isomorphic-git';
+import semver from 'semver';
+import { untar } from './browser-npm/tar.ts';
+import { FULL_SHA, extraGitHosts, parseGitSpec, type GitSpec } from './git-spec.ts';
+import { GIT_DIR, GIT_FILE, installPlan } from './local-packages.ts';
+import { UnsupportedDependencyError, unsupportedDependency } from './spec-guard.ts';
+import { isText } from '../../store.ts';
+import type { FileTree, Project } from '../../types.ts';
+
+/** At most this many git packages per project (each git package may name more). */
+const MAX_PACKAGES = 50;
+/** A repository's files: at most this many, and this many bytes unpacked. */
+const MAX_FILES = 20_000;
+const MAX_BYTES = 256 * 1024 * 1024;
+/** How long a branch or tag's commit is taken as known without asking again. */
+const REF_TTL_MS = 5 * 60_000;
+const TIMEOUT_MS = 60_000;
+
+/** A failure that is the project's: a repository, branch or tag that is not there (npm: an app bug). */
+function appError(message: string): Error {
+  return Object.assign(new Error(message), { code: 'APP' });
+}
+
+/** Where fetched repositories are kept, by commit (SANDBURG_GIT_DIR, else .sandburg/git). */
+const cacheRoot = () => resolve(process.env.SANDBURG_GIT_DIR ?? '.sandburg/git');
+
+/**
+ * fetch() that follows a redirect only within `origins` (and over HTTPS), and gives up after
+ * TIMEOUT_MS. What a project names is fetched from its own host, never from another it redirects to.
+ */
+async function hostFetch(url: string, origins: Set<string>, init: RequestInit = {}): Promise<Response> {
+  let at = url;
+  for (let hops = 0; hops < 5; hops++) {
+    const u = URL.parse(at);
+    if (!u || u.protocol !== 'https:' || !origins.has(u.origin)) throw new Error(`git: refused to fetch ${at} (not the repository's host)`);
+    const res = await fetch(at, { ...init, redirect: 'manual', signal: init.signal ?? AbortSignal.timeout(TIMEOUT_MS) });
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get('location');
+    await res.body?.cancel();
+    if (!location) return res;
+    at = new URL(location, at).href;
+  }
+  throw new Error(`git: too many redirects from ${url}`);
+}
+
+/** isomorphic-git's HTTP client, over hostFetch (so its requests stay on the repository's host). */
+function httpClient(origins: Set<string>): Parameters<typeof git.listServerRefs>[0]['http'] {
+  return {
+    async request({ url, method = 'GET', headers = {}, body }) {
+      let data: Uint8Array | undefined;
+      if (body) {
+        const parts: Uint8Array[] = [];
+        for await (const chunk of body) parts.push(chunk);
+        data = Buffer.concat(parts);
+      }
+      const res = await hostFetch(url, origins, { method, headers, body: data as BodyInit | undefined });
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      return {
+        url: res.url || url,
+        method,
+        statusCode: res.status,
+        statusMessage: res.statusText,
+        headers: Object.fromEntries(res.headers),
+        body: (async function* () {
+          yield bytes;
+        })(),
+      };
+    },
+  };
+}
+
+/** The origins a repository's fetches may reach: its host, and GitHub's archive host for GitHub's. */
+function originsOf(spec: GitSpec): Set<string> {
+  return new Set(spec.host === 'github' ? [spec.origin, 'https://codeload.github.com'] : [spec.origin]);
+}
+
+const refs = new Map<string, { sha: string; at: number }>();
+
+/** The commit a spec names: its full id, the lockfile's, or the server's answer for its ref. */
+async function resolveCommit(spec: GitSpec, label: string, offline: boolean): Promise<string> {
+  if (spec.committish && FULL_SHA.test(spec.committish)) return spec.committish;
+  const key = `${spec.url}#${spec.semver !== null ? `semver:${spec.semver}` : (spec.committish ?? '')}`;
+  const known = refs.get(key);
+  if (known && (offline || Date.now() - known.at < REF_TTL_MS)) return known.sha;
+  if (offline) throw new Error(`git: ${label}: offline, and which commit it names is not known (pin a full commit id)`);
+  const http = httpClient(originsOf(spec));
+  const list = async (prefix: string) => {
+    try {
+      return await git.listServerRefs({ http, url: spec.url, protocolVersion: 2, prefix, symrefs: true, peelTags: true });
+    } catch (e) {
+      const status = (e as { data?: { statusCode?: number } }).data?.statusCode;
+      // A private repository answers as one that is not there (401 on GitHub): neither can be fetched.
+      if (status === 401 || status === 403 || status === 404) throw appError(`git: ${label}: repository not found (HTTP ${status}) - ${spec.url}; only public repositories are fetched`);
+      throw e;
+    }
+  };
+  const commitOf = (r: { oid: string; peeled?: string }) => r.peeled ?? r.oid;
+  let sha: string | undefined;
+  if (spec.semver !== null) {
+    const tags = (await list('refs/tags/')).filter((r) => !r.ref.endsWith('^{}'));
+    const versions = new Map<string, (typeof tags)[number]>();
+    for (const t of tags) {
+      const v = semver.clean(t.ref.slice('refs/tags/'.length), { loose: true });
+      if (v) versions.set(v, t);
+    }
+    const best = semver.maxSatisfying([...versions.keys()], spec.semver, { loose: true });
+    if (!best) throw appError(`git: ${label}: no tag in semver:${spec.semver}`);
+    sha = commitOf(versions.get(best)!);
+  } else if (spec.committish === null) {
+    sha = (await list('HEAD')).find((r) => r.ref === 'HEAD')?.oid;
+    if (!sha) throw appError(`git: ${label}: the repository has no default branch`);
+  } else {
+    const c = spec.committish;
+    const [heads, tags] = await Promise.all([list(`refs/heads/${c}`), list(`refs/tags/${c}`)]);
+    const found = heads.find((r) => r.ref === `refs/heads/${c}`) ?? tags.find((r) => r.ref === `refs/tags/${c}`);
+    if (found) sha = commitOf(found);
+    else if (/^[0-9a-f]{7,39}$/.test(c)) throw appError(`git: ${label}: "${c}" is no branch or tag; give a commit by its full id (40 characters)`);
+    else throw appError(`git: ${label}: no branch or tag named "${c}"`);
+  }
+  refs.set(key, { sha, at: Date.now() });
+  return sha;
+}
+
+/** A file's content as a FileTree has it. */
+const content = (data: Uint8Array): FileTree[string] => {
+  const buf = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  return isText(buf) ? buf.toString('utf8') : { base64: buf.toString('base64') };
+};
+
+/** Counts what a repository unpacks to, and stops one that is too large. */
+function limiter(label: string) {
+  let files = 0;
+  let bytes = 0;
+  return (size: number) => {
+    files++;
+    bytes += size;
+    if (files > MAX_FILES || bytes > MAX_BYTES) throw new UnsupportedDependencyError(`git: ${label}: the repository is too large to fetch (over ${MAX_FILES} files or ${MAX_BYTES / 2 ** 20} MB)`);
+  };
+}
+
+/** Whether a path of the repository is part of the package: not its git metadata, nor installed packages. */
+const kept = (path: string) => !path.split('/').some((p) => p === '.git' || p === 'node_modules');
+
+/** A commit's files from its host's archive (GitHub, GitLab, Bitbucket), or null when the host has no such archive. */
+async function fromArchive(spec: GitSpec, sha: string, label: string): Promise<FileTree | null> {
+  const name = spec.path.split('/').pop()!;
+  const url =
+    spec.host === 'github'
+      ? `https://codeload.github.com/${spec.path}/tar.gz/${sha}`
+      : spec.host === 'gitlab'
+        ? `${spec.origin}/${spec.path}/-/archive/${sha}/${name}-${sha}.tar.gz`
+        : spec.host === 'bitbucket'
+          ? `${spec.origin}/${spec.path}/get/${sha}.tar.gz`
+          : null;
+  if (!url) return null;
+  const res = await hostFetch(url, originsOf(spec));
+  if (res.status === 404) throw appError(`git: ${label}: commit ${sha} not found - ${spec.url}`);
+  if (!res.ok) {
+    await res.body?.cancel();
+    return null; // the clone may still work
+  }
+  const count = limiter(label);
+  const gz = new Uint8Array(await res.arrayBuffer());
+  const files: FileTree = {};
+  for (const f of untar(gunzipSync(gz, { maxOutputLength: MAX_BYTES }))) {
+    if (!kept(f.path)) continue;
+    count(f.data.length);
+    files[f.path] = content(f.data);
+  }
+  return files;
+}
+
+/** A commit's files by a shallow fetch with isomorphic-git (a host without archives, or when its archive failed). */
+async function fromClone(spec: GitSpec, sha: string, label: string, ref: string | null): Promise<FileTree> {
+  const tmp = await mkdtemp(join(cacheRoot(), '.clone-'));
+  const http = httpClient(originsOf(spec));
+  try {
+    await git.init({ fs, dir: tmp });
+    await git.addRemote({ fs, dir: tmp, remote: 'origin', url: spec.url });
+    // The commit by its id (most hosts serve any reachable one), else the ref that names it.
+    const fetchOne = (remoteRef: string | undefined, depth: number | undefined = 1) => git.fetch({ fs, http, dir: tmp, remote: 'origin', remoteRef, singleBranch: true, depth, tags: false });
+    await fetchOne(sha).catch(async () => {
+      if (ref) return fetchOne(ref);
+      // A commit by its id: the branch or tag at it, else the default branch's history, which has it if anything does.
+      const at = (await git.listServerRefs({ http, url: spec.url, protocolVersion: 2, prefix: 'refs/', peelTags: true })).find((r) => (r.peeled ?? r.oid) === sha && !r.ref.endsWith('^{}'));
+      return at ? fetchOne(at.ref) : fetchOne(undefined, undefined);
+    });
+    const count = limiter(label);
+    const files: FileTree = {};
+    await git.walk({
+      fs,
+      dir: tmp,
+      trees: [git.TREE({ ref: sha })],
+      map: async (path, [entry]) => {
+        if (!entry || path === '.') return true;
+        if (!kept(path)) return null;
+        const type = await entry.type();
+        if (type !== 'blob') return type === 'tree' ? true : null; // submodules are left out
+        if ((await entry.mode()) === 0o120000) return null; // symlinks: npm packs none that matter
+        const data = (await entry.content())!;
+        count(data.length);
+        files[path] = content(data);
+        return true;
+      },
+    });
+    return files;
+  } catch (e) {
+    if ((e as { code?: string }).code === 'NotFoundError') throw appError(`git: ${label}: commit ${sha} not found - ${spec.url}`);
+    throw e;
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+/** Repositories' files by commit, in this process (a batch's projects often share one). */
+const trees = new Map<string, Promise<FileTree>>();
+
+/** A commit's files: from memory, the disk, the host's archive or a clone, in that order. */
+function commitFiles(spec: GitSpec, sha: string, label: string, offline: boolean): Promise<FileTree> {
+  const id = `${spec.origin}/${spec.path}#${sha}`;
+  let pending = trees.get(id);
+  if (!pending) {
+    pending = (async () => {
+      const file = join(cacheRoot(), `${createHash('sha256').update(id).digest('hex').slice(0, 32)}.json`);
+      const cached = await readFile(file, 'utf8').then((t) => JSON.parse(t) as FileTree, () => null);
+      if (cached) return cached;
+      if (offline) throw new Error(`git: ${label}: offline, and commit ${sha} has not been fetched before`);
+      await mkdir(cacheRoot(), { recursive: true });
+      const ref = spec.committish && !FULL_SHA.test(spec.committish) ? spec.committish : null;
+      const files = (await fromArchive(spec, sha, label)) ?? (await fromClone(spec, sha, label, ref));
+      const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}`;
+      await writeFile(tmp, JSON.stringify(files));
+      await rename(tmp, file);
+      return files;
+    })();
+    trees.set(id, pending);
+    pending.catch(() => trees.delete(id));
+    // Bounded: the oldest goes first.
+    if (trees.size > 64) trees.delete(trees.keys().next().value!);
+  }
+  return pending;
+}
+
+/** The commit a project's package-lock.json records for a dependency at its root, if it is this repository. */
+function lockedCommit(files: FileTree, name: string, spec: GitSpec, hosts: string[]): string | null {
+  const text = files['package-lock.json'];
+  if (typeof text !== 'string') return null;
+  try {
+    const lock = JSON.parse(text) as { packages?: Record<string, { resolved?: unknown; version?: unknown }>; dependencies?: Record<string, { version?: unknown }> };
+    const entry = lock.packages?.[`node_modules/${name}`] ?? lock.dependencies?.[name];
+    for (const value of [(entry as { resolved?: unknown })?.resolved, entry?.version]) {
+      if (typeof value !== 'string') continue;
+      const locked = parseGitSpec(value, hosts);
+      if (locked && 'url' in locked && locked.url === spec.url && locked.committish && FULL_SHA.test(locked.committish)) return locked.committish;
+    }
+  } catch {
+    // not JSON: npm reports it
+  }
+  return null;
+}
+
+/** A directory name for a package's files under .sandburg/git/. */
+const dirOf = (spec: GitSpec, sha: string) => `${GIT_DIR}/${`${spec.origin.slice('https://'.length)}-${spec.path}`.replace(/[^\w.-]+/g, '-')}-${sha.slice(0, 12)}${spec.subdir ? `/${spec.subdir}` : ''}`;
+
+/**
+ * The project with its git dependencies' files: each git dependency the root, a workspace, a local
+ * package or another git dependency names is fetched into `.sandburg/git/<repository>-<commit>/`
+ * (a directory no project has: projectFromFiles leaves `.sandburg/` out), and `.sandburg/git.json`
+ * maps its spec there, for the install plan to link (local-packages.ts). The project itself when it
+ * names none.
+ */
+export async function withGitPackages(project: Project, options: { offline?: boolean; log?: (line: string) => void } = {}): Promise<Project> {
+  if (project.framework === 'static') return project;
+  const hosts = extraGitHosts(process.env.SANDBURG_GIT_HOSTS);
+  let files = project.files;
+  const map: Record<string, string> = {};
+  let count = 0;
+  for (;;) {
+    const pending = installPlan(files, project.packageJson, hosts).git;
+    if (!pending.length) break;
+    const added: FileTree = {};
+    await Promise.all(
+      pending.map(async ({ dir, name, spec: raw }) => {
+        const spec = parseGitSpec(raw, hosts);
+        if (!spec || !('url' in spec)) throw unsupportedDependency(name, raw, spec?.unsupported ?? 'not a git repository');
+        if (++count > MAX_PACKAGES) throw unsupportedDependency(name, raw, `more than ${MAX_PACKAGES} git dependencies`);
+        const label = `${name}@${raw}`;
+        const started = Date.now();
+        const sha = (!dir && !spec.semver && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await resolveCommit(spec, label, options.offline === true));
+        const tree = await commitFiles(spec, sha, label, options.offline === true);
+        const at = dirOf(spec, sha);
+        const prefix = spec.subdir ? `${spec.subdir}/` : '';
+        let n = 0;
+        for (const [path, data] of Object.entries(tree)) {
+          if (!path.startsWith(prefix)) continue;
+          added[`${at}/${path.slice(prefix.length)}`] = data;
+          n++;
+        }
+        if (!n || typeof tree[`${prefix}package.json`] !== 'string') throw appError(`git: ${label}: no package.json at ${spec.subdir || 'the repository root'} (commit ${sha.slice(0, 12)})`);
+        map[raw.trim()] = at;
+        options.log?.(`git: ${label} → ${sha.slice(0, 12)} (${n} files, ${Date.now() - started} ms)${unprepared(tree, prefix)}`);
+      }),
+    );
+    files = { ...files, ...added, [GIT_FILE]: JSON.stringify(map) };
+  }
+  if (files === project.files) return project;
+  // The same project, with the fetched files (its package.json, framework and snapshot id as they were).
+  return { ...project, files };
+}
+
+/**
+ * A note for the log when a git package's entry point is not in the repository: npm would have run
+ * its `prepare` script to build it, which the host does not (ADR 0054).
+ */
+function unprepared(tree: FileTree, prefix: string): string {
+  try {
+    const pkg = JSON.parse(tree[`${prefix}package.json`] as string) as { main?: unknown; scripts?: Record<string, unknown> };
+    const main = typeof pkg.main === 'string' ? pkg.main.replace(/^\.\//, '') : null;
+    const has = (p: string) => [p, `${p}.js`, `${p}/index.js`].some((x) => Object.hasOwn(tree, `${prefix}${x}`));
+    if (main && !has(main) && pkg.scripts && (pkg.scripts.prepare || pkg.scripts.prepack || pkg.scripts.build)) return `; its main (${main}) is not in the repository, and its prepare script is not run`;
+  } catch {
+    // reported by the plan
+  }
+  return '';
+}

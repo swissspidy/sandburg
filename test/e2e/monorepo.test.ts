@@ -1,6 +1,6 @@
 /**
  * Monorepos and local packages (ADR 0064): npm and pnpm workspaces, file: and link: dependencies,
- * a run of a workspace package, the versions a pnpm-lock.yaml pins, with either install; and what
+ * a run of a workspace package, the versions a pnpm-lock.yaml pins, git dependencies (ADR 0073), with either install; and what
  * neither install can give a project, said before anything is installed. Needs the npm registry
  * (the first time).
  */
@@ -63,6 +63,29 @@ test('a Vite app in a workspace imports a workspace package, run from the root a
   }
 });
 
+// Git dependencies (ADR 0073): fetched by the host, linked as local packages, their registry
+// dependencies installed with the app's. Needs github.com (the first time).
+for (const installIn of ['host', 'browser'] as const) {
+  test(`git dependencies from GitHub: a tag, a semver: range with a registry dependency of its own (install: ${installIn})`, async () => {
+    const project = projectFromFiles(
+      {
+        'package.json': JSON.stringify({
+          name: 'git-deps',
+          private: true,
+          scripts: { dev: 'node server.js' },
+          dependencies: { 'escape-html': 'git+ssh://git@github.com/component/escape-html.git#v1.0.3', 'is-odd': 'github:jonschlinkert/is-odd#semver:^3.0.0' },
+        }),
+        'server.js':
+          "const escape = require('escape-html');\nconst isOdd = require('is-odd');\nconst path = require('path');\nrequire('http').createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(`<h1>${escape('<git>')} ${isOdd(3)} ${path.basename(path.dirname(require.resolve('is-number/package.json')))}</h1>`); }).listen(3000);\n",
+      },
+      { name: 'git-deps', path: 'git-deps' },
+    );
+    const checks: Checks = { 'uses the git packages': async ({ app, expect }) => expect(app.getByRole('heading')).toHaveText('<git> true is-number') };
+    const result = await session.run(project, { checks, outDir, installIn });
+    assert.equal(result.status, 'passed', failures(result));
+  });
+}
+
 const app = (dependencies: Record<string, string>) =>
   projectFromFiles(
     {
@@ -73,8 +96,8 @@ const app = (dependencies: Record<string, string>) =>
   );
 
 for (const [dep, spec, kind] of [
-  ['a', 'git+https://github.com/user/a.git', /a git repository dependency/],
-  ['b', 'user/b', /a GitHub repository \(user\/repo\) dependency/],
+  ['a', 'gist:abc123', /a git repository dependency; gists are not fetched/],
+  ['b', 'git+ssh://git@example.invalid/user/b.git', /a git repository dependency; example\.invalid is not a git host/],
   ['c', 'https://example.com/c.tgz', /a URL dependency/],
   ['d', 'file:../outside', /outside the project/],
 ] as const) {

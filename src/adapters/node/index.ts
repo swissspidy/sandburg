@@ -15,7 +15,8 @@ import { join, posix } from 'node:path';
 import { frontendProxy } from './scripts.ts';
 import { browserInstall, devScript, isSimple, packageDirs, nestedInstall, pinnedNote, rootInstall, startCommand, staticInstall, subProject, workspaceInfo } from './plan.ts';
 import { planOf } from './local-packages.ts';
-import { UnsupportedDependencyError } from './spec-guard.ts';
+import { UnsupportedDependencyError, unsupportedDependency } from './spec-guard.ts';
+import { withGitPackages } from './git-packages.ts';
 import { NODE_VERSION } from '../../node-runtime/version.ts';
 import type { AdapterDescriptor, HostInstallOptions, HostRequest, HostResponse, Project } from '../../types.ts';
 import { offlineInstall } from './npm-cli.ts';
@@ -280,6 +281,8 @@ async function hostInstall(project: Project, log: (line: string) => void, option
   // Workspaces and file:/link: packages are linked, their registry dependencies installed with the
   // root's; a pnpm-lock.yaml or yarn.lock pins versions (local-packages.ts, ADR 0064).
   const plan = planOf(project);
+  // Git dependencies are fetched before (sources, git-packages.ts): one still pending was never fetched.
+  if (plan.git.length) throw unsupportedDependency(plan.git[0].name, plan.git[0].spec, 'its files were not fetched (AdapterDescriptor.sources)');
   const pinned = pinnedNote(plan);
   if (pinned) log(pinned);
   if (options?.installIn === 'browser') return browserInstall(project);
@@ -405,7 +408,11 @@ export const node: AdapterDescriptor = {
     if (project.framework !== 'static') {
       try {
         const plan = planOf(project);
-        for (const dir of packageDirs(project, plan.local)) planOf(subProject(project, dir));
+        for (const dir of packageDirs(project, plan.local)) {
+          // A client/ or server/ package is installed on its own, as npm installs it: its git dependencies are not fetched.
+          const sub = planOf(subProject(project, dir)).git[0];
+          if (sub) throw unsupportedDependency(sub.name, sub.spec, `a dependency of ${dir}/, a package installed on its own; git dependencies are fetched for the project's root, its workspaces and its local packages`);
+        }
       } catch (e) {
         if (e instanceof UnsupportedDependencyError) return { verdict: 'unsupported', reason: e.message };
       }
@@ -414,6 +421,11 @@ export const node: AdapterDescriptor = {
     if (startCommand(project) || devScript(project)) return { verdict: 'supported' };
     const scripts = project.packageJson?.scripts ?? {};
     return { verdict: 'unsupported', reason: `no way to start this project in the node runtime (dev/start script: "${scripts.dev ?? scripts.start ?? ''}")` };
+  },
+  sources(project, options) {
+    // A project without git dependencies is itself (planOf only reads its files).
+    if (project.framework === 'static' || !planOf(project).git.length) return Promise.resolve(project);
+    return withGitPackages(project, options);
   },
   hostInstall(project, log, options): Promise<HostInstall> {
     return offlineInstall.run(options?.offline === true, () => hostInstall(project, log, options));

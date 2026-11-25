@@ -57,8 +57,8 @@ test('a package the registry does not have is an app bug, as with npm', async ()
   assert.equal(result.failure?.rule, 'unresolvable-dependency');
 });
 
-test('a git dependency is not supported in the browser install', async () => {
-  const result = await session.run(app({ x: 'github:user/x' }), { outDir, installIn: 'browser' });
+test('a git dependency the host does not fetch is not supported in the browser install either', async () => {
+  const result = await session.run(app({ x: 'gist:abc123' }), { outDir, installIn: 'browser' });
   assert.equal(result.status, 'error');
   assert.equal(result.failure?.class, 'runtime-unsupported', failures(result));
 });

@@ -10,6 +10,7 @@ import type { Project } from '../../types.ts';
 import type { HostInstall } from './browser.ts';
 import { planOf, type InstallPlan } from './local-packages.ts';
 import { workspacePatterns } from '../../workspaces.ts';
+import { unsupportedDependency } from './spec-guard.ts';
 
 /**
  * How the project's dev (or start) script starts it: `node <file>` (or tsx/nodemon …), or a
@@ -124,6 +125,8 @@ export function browserInstall(project: Project): HostInstall {
     extra: dir ? {} : extraDependencies(p),
   });
   const plan = planOf(project);
+  // Git dependencies are fetched by the host (git-packages.ts); the page cannot.
+  if (plan.git.length) throw unsupportedDependency(plan.git[0].name, plan.git[0].spec, 'git dependencies are fetched by the host, not in the page');
   const parts = [part('', rootInstall(project, plan))];
   for (const { dir, dependencies, lockfile } of plan.nested) parts.push(part(dir, nestedInstall(dependencies, lockfile)));
   for (const dir of packageDirs(project, plan.local)) {

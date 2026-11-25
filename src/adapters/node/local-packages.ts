@@ -12,10 +12,15 @@
  * links.ts). Anything that points outside the project is refused, as unsupported, before anything
  * is installed.
  *
+ * A git dependency is a local package too, once the host has fetched its files (git-packages.ts,
+ * ADR 0073) into `.sandburg/git/` and mapped its spec there (`.sandburg/git.json`): linked, its
+ * registry dependencies installed with the root's. Until then the plan lists it in `git`.
+ *
  * Pure (no Node.js imports): the host's install and the page's use the same plan.
  */
 import semver from 'semver';
 import { isPackageName, parseRegistrySpec, unsupportedDependency } from './spec-guard.ts';
+import { extraGitHosts, looksLikeGit, parseGitSpec } from './git-spec.ts';
 import { lockPins } from './lockfile-pins.ts';
 import { workspaceDirs } from '../../workspaces.ts';
 import type { FileTree, PackageJson } from '../../types.ts';
@@ -42,7 +47,30 @@ export interface InstallPlan {
   pinned: 'pnpm-lock.yaml' | 'yarn.lock' | 'bun.lock' | null;
   /** The directories of local packages: their dependencies are installed here, not as projects of their own. */
   local: string[];
+  /** Git dependencies whose files the host has not fetched (withGitPackages): left out of everything above. */
+  git: { dir: string; name: string; spec: string }[];
 }
+
+/** Where the host puts git dependencies' files (git-packages.ts), and its map of their specs to their directories. */
+export const GIT_DIR = '.sandburg/git';
+export const GIT_FILE = '.sandburg/git.json';
+
+/** The host's map of git specs to the directories it fetched them into (GIT_FILE), each inside GIT_DIR. */
+function gitDirs(files: FileTree): Record<string, string> {
+  const text = files[GIT_FILE];
+  if (typeof text !== 'string') return {};
+  try {
+    const map = JSON.parse(text) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [spec, dir] of Object.entries(map)) if (typeof dir === 'string' && dir.startsWith(`${GIT_DIR}/`) && inside('', dir) === dir) out[spec] = dir;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Returned by target() for a git dependency not fetched yet: neither installed nor linked. */
+const PENDING = Symbol('git dependency not fetched');
 
 /** A local package the project names but that is not there: the app's mistake, as npm would report it. */
 class LocalPackageError extends Error {
@@ -75,7 +103,7 @@ function inside(dir: string, path: string): string | null {
 const LOCAL_TARBALL = /\.(tgz|tar|tar\.gz)$/i;
 
 /** The install plan of a project (its files and root package.json). */
-export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPlan {
+export function installPlan(files: FileTree, pkg: PackageJson | null, extraHosts: readonly string[] = []): InstallPlan {
   const read = (dir: string): PackageJson | null => {
     const text = files[dir ? `${dir}/package.json` : 'package.json'];
     if (typeof text !== 'string') return null;
@@ -102,6 +130,8 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
     workspaces[manifest.name] = dir;
   }
   const pins = lockPins(files);
+  const fetched = gitDirs(files);
+  const git: InstallPlan['git'] = [];
   let pinnedAny = false;
   // Whether every registry dependency the packages declare is at its locked version: the lockfile
   // is as new as the package.json files, and what it resolved below them still holds.
@@ -117,9 +147,22 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   };
 
   /** The directory a dependency of the package at `dir` links to, or null for a registry dependency. */
-  const target = (dir: string, name: string, spec: string): string | null => {
+  const target = (dir: string, name: string, spec: string): string | null | typeof PENDING => {
     const s = spec.trim();
     const at = dir || '.';
+    // A git dependency: the directory the host fetched it into, or pending until it has (what it
+    // cannot fetch is refused here, for the probe to say).
+    const gitSpec = parseGitSpec(s, extraHosts);
+    if (gitSpec && 'unsupported' in gitSpec) throw unsupportedDependency(name, spec, `${gitSpec.unsupported}; only public repositories on GitHub, GitLab and Bitbucket (and hosts in SANDBURG_GIT_HOSTS) are fetched`);
+    if (gitSpec) {
+      const found = own(fetched, s);
+      if (found !== undefined) {
+        if (!read(found)) throw new LocalPackageError(`npm error code EJSONPARSE: ${name}@${spec}: its package.json is not a valid package.json`);
+        return found;
+      }
+      git.push({ dir, name, spec: s });
+      return PENDING;
+    }
     if (s.startsWith('workspace:')) {
       const rest = s.slice('workspace:'.length);
       // `workspace:*`, `workspace:^1.0.0`, `workspace:other@*` (an alias), `workspace:packages/x` (yarn: a path).
@@ -172,6 +215,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
         if (!isPackageName(name)) throw new LocalPackageError(`npm error code EINVALIDPACKAGENAME: ${dir || '.'}: dependency "${name}" is not a valid package name`);
         const spec = String(raw);
         const to = target(dir, name, spec);
+        if (to === PENDING) continue;
         if (to === null) {
           wants.push({ dir, name, spec: pin(dir, name, spec), field });
           continue;
@@ -197,8 +241,8 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
   // install's key, a digest of it, is the one it was).
   const lockText = files['package-lock.json'];
   const lock = typeof lockText === 'string' ? lockText : null;
-  if (!local.length && !pins) {
-    return { root: { dependencies: root.dependencies, devDependencies: root.devDependencies, overrides: root.overrides }, lockfile: lock, nested: [], links: {}, workspaces, pinned: null, local };
+  if (!local.length && !pins && !git.length) {
+    return { root: { dependencies: root.dependencies, devDependencies: root.devDependencies, overrides: root.overrides }, lockfile: lock, nested: [], links: {}, workspaces, pinned: null, local, git };
   }
   const tree = lock !== null && local.length ? lockTree(lock) : null;
 
@@ -273,6 +317,7 @@ export function installPlan(files: FileTree, pkg: PackageJson | null): InstallPl
     workspaces,
     pinned: pinnedAny ? pins!.source : null,
     local,
+    git,
   };
 }
 
@@ -352,17 +397,22 @@ function withoutLocal(lock: LockTree, local: string[], root: InstallManifest): s
   const dirs = new Set(local);
   const isLocal = (loc: string) => local.some((d) => loc === d || loc.startsWith(`${d}/`));
   const localEntry = (version: unknown) => typeof version === 'string' && /^(file|link):/.test(version) && dirs.has(inside('', version.slice(version.indexOf(':') + 1)) ?? '');
+  // A git dependency's entry (npm's clone of it), and what is nested in it: the host fetched it
+  // itself (git-packages.ts) and links it; the tree npm resolves is checked again for any other.
+  const gitEntry = (entry: { version?: unknown; resolved?: unknown } | null) => !!entry && [entry.version, entry.resolved].some((v) => typeof v === 'string' && looksLikeGit(v));
   if (!Object.keys(lock.packages).length) {
     // v1: the tree by name; a local package's entry (and what is nested in it) goes.
-    const dependencies = Object.fromEntries(Object.entries(lock.dependencies ?? {}).filter(([, e]) => !localEntry(e?.version)));
+    const dependencies = Object.fromEntries(Object.entries(lock.dependencies ?? {}).filter(([, e]) => !localEntry(e?.version) && !gitEntry(e)));
     const v1: Record<string, unknown> = { ...lock, dependencies };
     delete v1.packages;
     return JSON.stringify(v1, null, 2);
   }
   const packages: Record<string, unknown> = {};
+  const gitLocs = Object.entries(lock.packages).filter(([loc, e]) => loc !== '' && gitEntry(e)).map(([loc]) => loc);
   for (const [loc, entry] of Object.entries(lock.packages)) {
     if (loc === '') continue;
     if (isLocal(loc)) continue;
+    if (gitLocs.some((g) => loc === g || loc.startsWith(`${g}/`))) continue;
     if (entry && entry.link === true && typeof entry.resolved === 'string' && dirs.has(inside('', entry.resolved) ?? '')) continue;
     packages[loc] = entry;
   }
@@ -391,7 +441,7 @@ const plans = new WeakMap<FileTree, { pkg: PackageJson | null; plan: InstallPlan
 export function planOf(project: { files: FileTree; packageJson: PackageJson | null }): InstallPlan {
   const known = plans.get(project.files);
   if (known && known.pkg === project.packageJson) return known.plan;
-  const plan = installPlan(project.files, project.packageJson);
+  const plan = installPlan(project.files, project.packageJson, extraGitHosts(globalThis.process?.env?.SANDBURG_GIT_HOSTS));
   plans.set(project.files, { pkg: project.packageJson, plan });
   return plan;
 }
