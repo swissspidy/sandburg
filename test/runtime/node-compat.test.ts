@@ -2618,3 +2618,79 @@ crypto.hkdf('sha256', 'key', 'salt', 'info', 16, (err, key) => {
     async: [null,true,"9ca0d662557439e3b83365f2da4626d3"],
   });
 });
+
+// Keys as Node generated them; the expected values are what Node gives for main.js.
+const KEYS = {
+  rsa: "-----BEGIN RSA PRIVATE KEY-----\nMIICXAIBAAKBgQC1SVymOC40VGSsvlu9pKm8s9QTgoXLKJ/j4uosBwN37Gq1gU7C\nsXXUUjq5vtnqYNCtbuILjJu8p6bBZBli6/61m5ZUxV9AR208fkVeMtFqzEyr9VlF\nnAARw9sT6Disq90YoaLksQRyuc1U7qZqG7VghFRhSNtpSjXsfgLAn9A1UQIDAQAB\nAoGAHrlPNXCCDCZdZZVhcPOOPMfxYlkVmcfJyVJ0w39wzAtKTnaaxY5T3OcOwtog\njoNX+ny3XKO45TE4pr/zOXurkAy5Dg0hlPTCMUJPovvudKlst8zBKh/HBB28V23C\nCUChw31gHpgcNssPRvsbFNkxbkmraRwZrN/KH2eL+3t+uK0CQQDgMNJXwpBe6GFz\nu6Uobbn4b6vhXQLxLF4SoIEMV1RLAZ1yie8lHw1LcYGIFKnvifT+sQDtb7dkAJTB\nbY1RBT33AkEAzwInCVYcTDNPPYAshg7EKwYo6L9G3QvljU8DkFzQ4jp2HC8EbjbI\nZSkkIX3Qk6asJdUY3zGur06Np59u7F709wJAI4g5XkVtAk3MXD5qT70MU47HbCGE\nvNquUj90FJOmvXiVDrlD2NtSDRoBUKMNx/RSiydcoUUqiMP6z6lgU24EQwJAEloM\nf+VkaNT7p2YfjFruxSmsosWiUKJnXVmt5TR1SDkKk4EPkX3F0kINc/KldRGHnWsA\n43iSFfSO1ldqDAZ3DQJBAJEvH8aWPO+JGgj+X1sBxqvhPdAOIsGOMd06J9wz0DvB\nKLBmqpcc4G2GehhAdw//Q2bWSsZmfAeTkXXaZTRtzwM=\n-----END RSA PRIVATE KEY-----\n",
+  ec: "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIHQyyjUSwpjQErDHqQuM+lF87hHgVXvswVhkVSGnNdoVoAoGCCqGSM49\nAwEHoUQDQgAEwbvfoJ5OzoffN6mRR/N6EUxxDagdHjXPD0iRiVcvwUagl/gSaaTP\nXd/jCuSV8f9+yj+NuKjuw36mFePne7iajA==\n-----END EC PRIVATE KEY-----\n",
+  ed: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAIeNfDoXYPHoR7OLMl0a1pR5n9FK2en1sCxwgijAAG8\n-----END PRIVATE KEY-----\n",
+  nodeSigs: {"ec":"30450221009ece18495d0aade24391fda6a5de8433a70b6e0b3708e5175cef58ee687e7f350220083c7f12ce3efdf93acdea9d9c1cf2ff3a5ad50ea738c10b5d6d469d46f57990","ecP1363":"7cec7cc8f71ba32571fc9ae7279db57194daa36545c7b28059c566237dfab0d21c7bcba3e20c01fa292251c23f066f65dcc923f378d6c554c33a611000a46a71","pss":"3f38d9f0f77b79606d023f9a726a36ba36d381e9bc657b77a307d2599f0dd3f999e27527cf49f56ad216fd3e0a9d03c36d54c8607b34d525fd30f95e2ab46d92d3569a8c72d09743d6a3360cc2a0b10f8912cf0ce6b2725da3c5be00f427914b80b7022289d439d591cbf51e7801933112d37ee7c9bc9abb492181e17d3a9a01"},
+};
+
+test('crypto.KeyObject (createSecretKey, createPublicKey, createPrivateKey), sign and verify, createSign and createVerify, as Node has them: RSA, ECDSA and Ed25519 keys and signatures', async () => {
+  const out = await h.run(
+    {
+      'main.js': `const KEYS = ${JSON.stringify(KEYS)};
+const crypto = require('crypto');
+const { rsa, ec, ed, nodeSigs } = KEYS;
+const failure = (fn) => {
+  try {
+    return fn();
+  } catch (e) {
+    return [e.name, e.code, e.message];
+  }
+};
+const data = Buffer.from('payload');
+const out = {};
+const secret = crypto.createSecretKey(Buffer.from('s3cret'));
+out.secret = [secret.type, secret.symmetricKeySize, secret instanceof crypto.KeyObject, String(secret), secret.export().toString(), secret.export({ format: 'jwk' }), crypto.createHmac('sha256', secret).update(data).digest('hex')];
+const keys = { rsa: crypto.createPrivateKey(rsa), ec: crypto.createPrivateKey(ec), ed: crypto.createPrivateKey(ed) };
+out.keys = Object.entries(keys).map(([name, key]) => {
+  const pub = crypto.createPublicKey(key);
+  const details = key.asymmetricKeyDetails;
+  return [name, key.type, key.asymmetricKeyType, typeof details.publicExponent === 'bigint' ? { ...details, publicExponent: String(details.publicExponent) } : details, pub.type, pub.export({ format: 'pem', type: 'spki' }), key.export({ format: 'jwk' }), pub.equals(crypto.createPublicKey({ key: pub.export({ format: 'der', type: 'spki' }), format: 'der', type: 'spki' }))];
+});
+const pubs = Object.fromEntries(Object.entries(keys).map(([n, k]) => [n, crypto.createPublicKey(k)]));
+out.deterministic = [crypto.sign('sha256', data, keys.rsa).toString('hex'), crypto.sign(null, data, ed).toString('hex')];
+out.verify = [
+  crypto.verify('sha256', data, pubs.rsa, Buffer.from(out.deterministic[0], 'hex')),
+  crypto.verify(null, data, pubs.ed, Buffer.from(out.deterministic[1], 'hex')),
+  crypto.verify('sha256', data, pubs.ec, crypto.sign('sha256', data, keys.ec)),
+  crypto.verify('sha256', data, ec, Buffer.from(nodeSigs.ec, 'hex')),
+  crypto.verify('sha256', data, { key: pubs.ec, dsaEncoding: 'ieee-p1363' }, Buffer.from(nodeSigs.ecP1363, 'hex')),
+  crypto.verify('sha256', data, { key: rsa, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }, Buffer.from(nodeSigs.pss, 'hex')),
+  crypto.verify('sha256', data, { key: pubs.rsa, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }, crypto.sign('sha256', data, { key: keys.rsa, padding: crypto.constants.RSA_PKCS1_PSS_PADDING })),
+  crypto.verify('sha256', Buffer.from('tampered'), pubs.ec, Buffer.from(nodeSigs.ec, 'hex')),
+];
+const signer = crypto.createSign('RSA-SHA256');
+signer.write(data.subarray(0, 3));
+signer.update(data.subarray(3));
+const verifier = crypto.createVerify('sha256');
+verifier.update(data);
+const encrypted = crypto.publicEncrypt(pubs.rsa, Buffer.from('a secret'));
+out.streams = [signer.sign(keys.rsa, 'hex') === out.deterministic[0], verifier.verify(pubs.rsa, out.deterministic[0], 'hex'), crypto.privateDecrypt(keys.rsa, encrypted).toString()];
+out.errors = [
+  failure(() => crypto.sign('sha256', data, pubs.ec)),
+  failure(() => crypto.sign('sha256', data, keys.ed)),
+  failure(() => crypto.createPrivateKey('not a key')),
+  failure(() => crypto.createPublicKey(pubs.rsa)),
+  failure(() => new crypto.KeyObject('secret', {})),
+];
+crypto.sign(null, data, keys.ed, (err, sig) => {
+  out.async = [err, sig.toString('hex') === out.deterministic[1]];
+  console.log(JSON.stringify(out));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), {
+    secret: ["secret",6,true,"[object KeyObject]","s3cret",{"kty":"oct","k":"czNjcmV0"},"ca981e262c89fa9bf971f04e7ce6353515a2e00da34add385b8f0e1b86414e3e"],
+    keys: [["rsa","private","rsa",{"modulusLength":1024,"publicExponent":"65537"},"public","-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC1SVymOC40VGSsvlu9pKm8s9QT\ngoXLKJ/j4uosBwN37Gq1gU7CsXXUUjq5vtnqYNCtbuILjJu8p6bBZBli6/61m5ZU\nxV9AR208fkVeMtFqzEyr9VlFnAARw9sT6Disq90YoaLksQRyuc1U7qZqG7VghFRh\nSNtpSjXsfgLAn9A1UQIDAQAB\n-----END PUBLIC KEY-----\n",{"kty":"RSA","n":"tUlcpjguNFRkrL5bvaSpvLPUE4KFyyif4-LqLAcDd-xqtYFOwrF11FI6ub7Z6mDQrW7iC4ybvKemwWQZYuv-tZuWVMVfQEdtPH5FXjLRasxMq_VZRZwAEcPbE-g4rKvdGKGi5LEEcrnNVO6mahu1YIRUYUjbaUo17H4CwJ_QNVE","e":"AQAB","d":"HrlPNXCCDCZdZZVhcPOOPMfxYlkVmcfJyVJ0w39wzAtKTnaaxY5T3OcOwtogjoNX-ny3XKO45TE4pr_zOXurkAy5Dg0hlPTCMUJPovvudKlst8zBKh_HBB28V23CCUChw31gHpgcNssPRvsbFNkxbkmraRwZrN_KH2eL-3t-uK0","p":"4DDSV8KQXuhhc7ulKG25-G-r4V0C8SxeEqCBDFdUSwGdconvJR8NS3GBiBSp74n0_rEA7W-3ZACUwW2NUQU99w","q":"zwInCVYcTDNPPYAshg7EKwYo6L9G3QvljU8DkFzQ4jp2HC8EbjbIZSkkIX3Qk6asJdUY3zGur06Np59u7F709w","dp":"I4g5XkVtAk3MXD5qT70MU47HbCGEvNquUj90FJOmvXiVDrlD2NtSDRoBUKMNx_RSiydcoUUqiMP6z6lgU24EQw","dq":"EloMf-VkaNT7p2YfjFruxSmsosWiUKJnXVmt5TR1SDkKk4EPkX3F0kINc_KldRGHnWsA43iSFfSO1ldqDAZ3DQ","qi":"kS8fxpY874kaCP5fWwHGq-E90A4iwY4x3Ton3DPQO8EosGaqlxzgbYZ6GEB3D_9DZtZKxmZ8B5ORddplNG3PAw"},true],["ec","private","ec",{"namedCurve":"prime256v1"},"public","-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwbvfoJ5OzoffN6mRR/N6EUxxDagd\nHjXPD0iRiVcvwUagl/gSaaTPXd/jCuSV8f9+yj+NuKjuw36mFePne7iajA==\n-----END PUBLIC KEY-----\n",{"kty":"EC","x":"wbvfoJ5OzoffN6mRR_N6EUxxDagdHjXPD0iRiVcvwUY","y":"oJf4Emmkz13f4wrklfH_fso_jbio7sN-phXj53u4mow","crv":"P-256","d":"dDLKNRLCmNASsMepC4z6UXzuEeBVe-zBWGRVIac12hU"},true],["ed","private","ed25519",{},"public","-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAlsl/Zj5y00JqPSwyiXsWqih2+0E15UjsfLMXufvCPUI=\n-----END PUBLIC KEY-----\n",{"crv":"Ed25519","d":"Ah418Ohdg8ehHs4syXRrWlHmf0UrZ6fWwLHCCKMAAbw","x":"lsl_Zj5y00JqPSwyiXsWqih2-0E15UjsfLMXufvCPUI","kty":"OKP"},true]],
+    deterministic: ["0cdde6e698d15d226ab962478b0d0dfe7ac1d1e980d8dcc2b54920b6832b5ebbd15239691271c801d2eec9d4eed5e1e179fbe4e66aafe8fc96638691223141f492ab96623f7e82f709298e0d0fbc4a6cba7f6b258962d4cdca89a7fb6e06e1717cf9587b41a47b2a9376b7dd8f77340ac8f2c68123f0c1cd2a5285b8885d7bd2","56e64f735bee1f5e2e047e327f268dc3c40b65a88f35bba0c8c1ba86aa4671097a9181991990972253a5da7998e44b8ddc68b6f1eb35daa7aecaef6518768507"],
+    verify: [true,true,true,true,true,true,true,false],
+    streams: [true,true,"a secret"],
+    errors: [["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected private."],["Error","ERR_OSSL_INVALID_DIGEST","error:1C80007A:Provider routines::invalid digest"],["Error","ERR_OSSL_UNSUPPORTED","error:1E08010C:DECODER routines::unsupported"],["TypeError","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE","Invalid key object type public, expected private."],["TypeError","ERR_INVALID_ARG_TYPE","The \"handle\" argument must be of type object. Received an instance of Object"]],
+    async: [null,true],
+  });
+});

@@ -25,7 +25,8 @@ import { net } from './builtins/net.ts';
 import { Hash, Hmac, hashAlgorithm } from './builtins/hash.ts';
 import { scrypt, scryptSync } from './builtins/scrypt.ts';
 import { CONSTANTS, getCiphers, getCurves, getHashes, makeHkdf, timingSafeEqual } from './builtins/crypto-extra.ts';
-import { CRYPTO_LIB_KEYS, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
+import type * as CryptoKeys from './builtins/crypto-keys.ts';
+import { CRYPTO_LIB_KEYS, LIBS_KEY, ZLIB_CONSTANTS, ZLIB_LIB_KEYS } from './libs.ts';
 import { FsError } from './vfs.ts';
 import { stdinInput, vfs, proc, runtimeLib, lazyMember, childProcess, wasiChildThread, base, WARM_RUNTIMES, threads, thread, write, sqliteFiles } from './worker.ts';
 
@@ -177,6 +178,7 @@ export function buildBuiltins() {
 
   // node:crypto: hashes, HMACs and random bytes here (builtins/hash.ts); the rest is crypto-browserify,
   // a runtime library loaded the first time a program uses one of its members.
+  const CRYPTO_KEYS_MEMBERS = ['KeyObject', 'createSecretKey', 'createPublicKey', 'createPrivateKey', 'sign', 'verify', 'createSign', 'Sign', 'createVerify', 'Verify', 'publicEncrypt', 'privateDecrypt', 'privateEncrypt', 'publicDecrypt'];
   const makeCrypto = () => {
     const lib = () => runtimeLib<Record<string, unknown>>('crypto');
     // crypto-browserify predates the base64url encoding (digests are hashed ids in many tools).
@@ -257,10 +259,34 @@ export function buildBuiltins() {
       (lib()[name] as (a: string, k: unknown, i: unknown, o?: unknown) => unknown)(alg, key, iv ?? Buffer.alloc(0), options);
     const createCipheriv = withIv('createCipheriv');
     const createDecipheriv = withIv('createDecipheriv');
+    // KeyObject, sign and verify (builtins/crypto-keys.ts), from the same library when first used.
+    let signing: ReturnType<typeof CryptoKeys.makeSigning> | undefined;
+    const keysLib = () => {
+      lib();
+      return (globalThis as unknown as Record<symbol, { cryptoKeys: typeof CryptoKeys }>)[Symbol.for(LIBS_KEY)].cryptoKeys;
+    };
+    const keys = (): Record<string, unknown> => {
+      const k = keysLib();
+      signing ??= k.makeSigning({ createHash: createHash as never, randomBytes: randomBytes as never });
+      const withKeyObject = (name: 'publicEncrypt' | 'privateDecrypt' | 'privateEncrypt' | 'publicDecrypt') => (key: unknown, buffer: unknown) =>
+        (lib()[name] as (k: unknown, b: unknown) => Buffer)(k.pemForEncryption(key), buffer);
+      return {
+        ...signing,
+        KeyObject: k.KeyObject,
+        createSecretKey: k.createSecretKey,
+        createPublicKey: k.createPublicKey,
+        createPrivateKey: k.createPrivateKey,
+        publicEncrypt: withKeyObject('publicEncrypt'),
+        privateDecrypt: withKeyObject('privateDecrypt'),
+        privateEncrypt: withKeyObject('privateEncrypt'),
+        publicDecrypt: withKeyObject('publicDecrypt'),
+      };
+    };
     // crypto-browserify's other members, from the library when first used (its keys, in its order:
     // a test checks them against the library).
     const crypto = Object.create(null) as Record<string, unknown>;
     for (const key of CRYPTO_LIB_KEYS) lazyMember(crypto, key, lib);
+    for (const key of CRYPTO_KEYS_MEMBERS) lazyMember(crypto, key, keys);
     Object.assign(crypto, {
       createHash,
       createHmac,
