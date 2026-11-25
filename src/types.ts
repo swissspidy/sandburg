@@ -65,7 +65,7 @@ export interface AdapterDescriptor {
    * fetched on the host while the run's tab loads: what is mounted and installed. Must not execute
    * project code.
    */
-  sources?(project: Project, options: { offline?: boolean; log: (line: string) => void }): Promise<Project>;
+  sources?(project: Project, options: { offline?: boolean; log: (line: string) => void; /** Stops the fetch (the run gave up waiting). */ signal?: AbortSignal }): Promise<Project>;
   /**
    * Host-side part of the install phase (e.g. npm install --ignore-scripts for the
    * node runtime). Its result is passed to the browser adapter's install().

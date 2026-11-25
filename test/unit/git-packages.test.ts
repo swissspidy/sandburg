@@ -230,3 +230,28 @@ test('a dev script that runs a git package\'s binary starts it from the package\
   assert.equal(linkedBin(fetched, plan, 'other'), null);
   assert.deepEqual(browserInstall(fetched).start, { main: 'node_modules/tool/bin/tool.js', argv: ['--port', '3000'], command: 'tool --port 3000', tsRunner: false });
 });
+
+test('a fetch the run gave up on rejects at once with the run\'s reason, and the fetch itself is kept for others', async () => {
+  process.env.SANDBURG_GIT_DIR = tempDir('sandburg-git-');
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const sha = '1'.repeat(40);
+  fakeGitHub();
+  // The archive answers only once released: the run gives up first.
+  const fake = globalThis.fetch;
+  mock.method(globalThis, 'fetch', async (input: string | URL, init?: RequestInit) => {
+    if (String(input).includes(sha)) {
+      await held;
+      return new Response(tarball(lib('3.0.0'), `lib-${sha}`));
+    }
+    return fake(input, init);
+  });
+  const controller = new AbortController();
+  const pending = withGitPackages(project({ lib: `github:user/lib#${sha}` }), { signal: controller.signal });
+  controller.abort(new Error('the run gave up'));
+  await assert.rejects(pending, /the run gave up/);
+  release();
+  // Another run gets the same commit's files from the fetch that went on.
+  const again = await withGitPackages(project({ lib: `github:user/lib#${sha}` }));
+  assert.equal(again.files[`.sandburg/git/github.com-user-lib-${sha.slice(0, 12)}/index.js`], "module.exports = '3.0.0';");
+});

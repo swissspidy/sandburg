@@ -495,7 +495,9 @@ export class Session {
       // What the project names but does not contain (git dependencies) is fetched first, meanwhile too:
       // a failure is the install phase's to report.
       const log = (line: string) => run.runtimeLogs.push(line);
-      const sourced = adapter?.sources?.(project, { offline: this.options.offline ?? false, log }) ?? null;
+      // Aborted when mounting stops waiting for it: a fetch that is too slow stops, and so does what waits for it.
+      const fetching = new AbortController();
+      const sourced = adapter?.sources?.(project, { offline: this.options.offline ?? false, log, signal: fetching.signal }) ?? null;
       const hostInstall = adapter?.hostInstall
         ? (sourced ?? Promise.resolve(project)).then((p) =>
             adapter.hostInstall!(p, log, {
@@ -596,11 +598,16 @@ export class Session {
           // The project's files with its git dependencies' (without them if they failed, or take longer than
           // the install may: the install phase, which waits for them too, reports it).
           let giveUp: NodeJS.Timeout | undefined;
-          const files = sourced
-            ? (await Promise.race([sourced.catch(() => project), new Promise<Project>((resolve) => (giveUp = setTimeout(() => resolve(project), timeouts.install)))]).finally(() => clearTimeout(giveUp))).files
-            : project.files;
+          const late = Symbol('late');
+          const fetched = sourced
+            ? await Promise.race([sourced.catch(() => project), new Promise<typeof late>((resolve) => (giveUp = setTimeout(() => resolve(late), timeouts.install)))]).finally(() => clearTimeout(giveUp))
+            : project;
+          // Too late: the install fails, never against files the runtime was not given.
+          if (fetched === late) fetching.abort(new Error(`fetching the project's git dependencies took longer than the install may (${timeouts.install} ms)`));
+          const files = fetched === late ? project.files : fetched.files;
           await run.phase('mount', timeouts.mount, () => watch(host('mount', files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
+            if (fetched === late) throw fetching.signal.reason;
             const hostData = hostInstall ? await hostInstall : undefined;
             return watch(host('install', hostData));
           })) as InstallReport;

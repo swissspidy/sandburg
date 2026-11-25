@@ -351,7 +351,7 @@ const dirOf = (spec: GitSpec, sha: string) => `${GIT_DIR}/${`${spec.origin.slice
  * maps its spec there, for the install plan to link (local-packages.ts). The project itself when it
  * names none.
  */
-export async function withGitPackages(project: Project, options: { offline?: boolean; log?: (line: string) => void } = {}): Promise<Project> {
+export async function withGitPackages(project: Project, options: { offline?: boolean; log?: (line: string) => void; signal?: AbortSignal } = {}): Promise<Project> {
   if (project.framework === 'static') return project;
   const hosts = extraGitHosts(process.env.SANDBURG_GIT_HOSTS);
   let files = project.files;
@@ -359,9 +359,16 @@ export async function withGitPackages(project: Project, options: { offline?: boo
   let count = 0;
   // What this call fetches, as it unpacks: the parallel fetches stop once they are over the project's budget together.
   const fetching: Budget = { files: 0, bytes: 0 };
+  // Given up on (options.signal): this call rejects at once. A fetch it started that other runs may
+  // share goes on, bounded by its requests' timeouts, and is kept for them.
+  const { signal } = options;
+  const aborted = signal ? new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })) : null;
+  aborted?.catch(() => {});
+  const until = <T>(p: Promise<T>): Promise<T> => (aborted ? Promise.race([p, aborted]) : p);
   let totalFiles = 0;
   let totalBytes = 0;
   for (;;) {
+    signal?.throwIfAborted();
     // One fetch per spec, however many packages name it: the root's, if it names it (its lockfile's commit applies).
     const bySpec = new Map<string, InstallPlan['git'][number]>();
     for (const g of installPlan(files, project.packageJson, hosts).git) if (!bySpec.has(g.spec) || !g.dir) bySpec.set(g.spec, g);
@@ -375,8 +382,8 @@ export async function withGitPackages(project: Project, options: { offline?: boo
         if (++count > MAX_PACKAGES) throw unsupportedDependency(name, raw, `more than ${MAX_PACKAGES} git dependencies`);
         const label = `${name}@${raw}`;
         const started = Date.now();
-        const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await resolveCommit(spec, label, options.offline === true));
-        const tree = await commitFiles(spec, sha, label, options.offline === true, fetching);
+        const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await until(resolveCommit(spec, label, options.offline === true)));
+        const tree = await until(commitFiles(spec, sha, label, options.offline === true, fetching));
         const at = dirOf(spec, sha);
         const prefix = spec.subdir ? `${spec.subdir}/` : '';
         let n = 0;

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Session } from '../../src/orchestrator/session.ts';
 import { projectFromFiles } from '../../src/project.ts';
 import type { Checks } from '../../src/orchestrator/checks.ts';
+import { node } from '../../src/adapters/node/index.ts';
 
 const fixture = (name: string) => fileURLToPath(new URL(`../../fixtures/${name}`, import.meta.url));
 const outDir = fileURLToPath(new URL('../../.sandburg/test-runs', import.meta.url));
@@ -85,6 +86,29 @@ for (const installIn of ['host', 'browser'] as const) {
     assert.equal(result.status, 'passed', failures(result));
   });
 }
+
+test('a git fetch slower than the install may fails the install, never installing against files the runtime was not given', async () => {
+  const sources = node.sources!;
+  // Done only after mounting gave up waiting for it.
+  node.sources = async (project, options) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return sources(project, options);
+  };
+  try {
+    const project = projectFromFiles(
+      { 'package.json': JSON.stringify({ name: 'slow-git', private: true, scripts: { dev: 'node server.js' }, dependencies: { 'escape-html': 'github:component/escape-html#v1.0.3' } }), 'server.js': "require('http').createServer((q, s) => s.end('ok')).listen(3000);" },
+      { name: 'slow-git', path: 'slow-git' },
+    );
+    const started = Date.now();
+    const result = await session.run(project, { outDir, timeouts: { install: 500 } });
+    assert.equal(result.status, 'error', failures(result));
+    assert.equal(result.failure?.phase, 'install', failures(result));
+    assert.match(result.failure?.message ?? '', /took longer than the install may \(500 ms\)/);
+    assert.ok(Date.now() - started < 30_000, 'the run does not wait for the fetch');
+  } finally {
+    node.sources = sources;
+  }
+});
 
 const app = (dependencies: Record<string, string>) =>
   projectFromFiles(

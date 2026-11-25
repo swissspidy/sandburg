@@ -350,7 +350,8 @@ interface AdapterDescriptor {
     probe(project: Project): ProbeVerdict;
     sources?(project: Project, options: {
         offline?: boolean;
-        log: (line: string) => void;
+        log: (line: string) => void; 
+        signal?: AbortSignal;
     }): Promise<Project>;
     hostInstall?(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<unknown>;
     serve?(request: HostRequest): Promise<HostResponse | null>;
