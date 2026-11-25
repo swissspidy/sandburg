@@ -16,7 +16,7 @@ async function rendered(body: string, script = '', selector: string | null = nul
   await page?.close();
   page = await browser.newPage();
   await page.setContent(`<body>${body}<script>${script}</script></body>`);
-  return page.evaluate(`(${appRendered.toString()})(document, ${JSON.stringify(selector)})`) as Promise<boolean>;
+  return page.evaluate<boolean>(`(${appRendered.toString()})(document, ${JSON.stringify(selector)})`);
 }
 
 /** Defines <name> with an open shadow root holding `html`. */

@@ -64,6 +64,22 @@ export function sandboxUnavailable(err: unknown): BrowserSetupError | null {
 }
 
 /**
+ * The first Chromium whose WebAssembly sees another thread's growth of a shared memory at once
+ * (crbug.com/529880019, crbug.com/533026477). Before it, `memory.fill`, `memory.copy` and atomic
+ * operations on memory another thread had just grown trapped as out of bounds (rolldown's
+ * WebAssembly build did, in calloc; ADR 0070). Playwright's own build is newer: only a browser given
+ * with SANDBURG_CHROMIUM or `executablePath` can be older.
+ */
+export const MIN_CHROMIUM = 157;
+
+/** What to warn of a browser older than MIN_CHROMIUM (Browser.version(), e.g. "156.0.7999.1"), or null. */
+export function oldBrowser(version: string): string | null {
+  const major = Number.parseInt(version, 10);
+  if (!(major < MIN_CHROMIUM)) return null;
+  return `Chromium ${version} is older than ${MIN_CHROMIUM}: WebAssembly threads in it can trap with "memory access out of bounds" on memory another thread just grew (rolldown's WebAssembly build does). Use Playwright's Chromium (unset SANDBURG_CHROMIUM) or Chromium ${MIN_CHROMIUM} or later.`;
+}
+
+/**
  * Switches of Playwright's that Sandburg leaves out. --enable-unsafe-swiftshader lets web content
  * fall back to SwiftShader, a CPU implementation of the GPU, where Chromium otherwise refuses it: the
  * headless shell runs WebGL and WebGL 2 on SwiftShader (through ANGLE) without it (Chrome Headless

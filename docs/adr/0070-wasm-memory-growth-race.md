@@ -1,6 +1,6 @@
 # ADR 0070: The rolldown trap: V8 sees shared memory growth late; modules with shared memory are guarded
 
-- Status: Accepted
+- Status: Superseded in part (2026-11-25): Chromium 157 fixed the race and the guard is removed; see [Since Chromium 157](#since-chromium-157)
 - Date: 2026-10-28
 
 ## Context
@@ -153,3 +153,32 @@ Next.js and Vite + React with Tailwind 4) were all right: the 13 that should pas
 - Stack traces of a guarded module name other byte offsets (`wasm-function[i]:0x…`). Function
   indices are the same.
 - `signature:wasm-trap` (ADR 0066) stays, for other traps.
+
+## Since Chromium 157
+
+V8 fixed the race in Chromium 157 ([crbug.com/529880019](https://crbug.com/529880019),
+[crbug.com/533026477](https://crbug.com/533026477)): another thread's instances see the new size of a
+shared memory without waiting for their interrupt check. Playwright 1.65 ships Chromium 158, 1.65.1
+Chromium 159, so the runtime's browser has had the fix since Sandburg moved to 1.65, and the guard
+(`node-runtime/wasm-grow-guard.ts`, its unit tests and the module rewrite) is removed. The draft
+upstream report ([`docs/research/v8-shared-memory-grow-race.md`](../research/v8-shared-memory-grow-race.md))
+was not filed.
+
+- **Measured**: the ping-pong module (20,000 rounds of `memory.grow` in one dedicated worker, then
+  `memory.fill`, `memory.copy`, `i32.atomic.rmw.add` or `i32.store` on the new page in another;
+  three runs of each op, unguarded): Chrome for Testing 153.0.8010.12 trapped in 7 of the 9 runs of
+  ops 0-2, 158.0.8127.18 and 159.0.8154.6 in none. `test/runtime/wasm-threads.test.ts` runs the same
+  module in the runtime, now without the guard.
+- **Older browsers**: a Chromium given with `SANDBURG_CHROMIUM` or `executablePath` can be older than
+  157. A session warns once of one (`oldBrowser` in `orchestrator/launch.ts`) rather than keeping
+  the rewrite for it; a unit test fails if Playwright's own Chromium is ever older than 157.
+- **Node**: Node 24 (V8 13.6) still has the race. The runtime does not run on Node, so it only
+  matters to comparisons with Node, which ADR 0066 already covers.
+- **What remains upstream**: `WebAssembly.Memory.prototype.buffer` and `toFixedLengthBuffer()` refresh
+  a cached fixed-length SharedArrayBuffer only at the same interrupt, so JavaScript can briefly see an
+  old `byteLength` after WebAssembly's `memory.size` sees the new one. The guard never covered that
+  (it changed WebAssembly code only); it is fixed in V8 by [crrev.com/c/8853537](https://crrev.com/c/8853537)
+  (Chromium 160).
+- **Cost saved**: the rewrite, once per runtime that compiled a module with shared memory (110-150 ms
+  for rolldown's under Node, about 60 ms for oxc-parser's in each thread runtime that loads it), and
+  the wrappers around `WebAssembly.Module`, `compile` and `instantiate`.

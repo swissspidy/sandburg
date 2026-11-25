@@ -6,13 +6,15 @@ Sandburg drives Chromium with the Playwright it installs. If that Playwright's C
 the run stops (exit code `2`) and prints the command that installs it:
 
 ```text
-error: Chromium for Playwright 1.65.0 is not installed. Run: npx playwright@1.65.0 install chromium (on Linux, add --with-deps for its system libraries), or set SANDBURG_CHROMIUM to a Chromium binary.
+error: Chromium for Playwright 1.65.1 is not installed. Run: npx playwright@1.65.1 install chromium (on Linux, add --with-deps for its system libraries), or set SANDBURG_CHROMIUM to a Chromium binary.
 ```
 
 - `npx playwright@<version> install chromium` installs it; on Linux, add `--with-deps` for its system
   libraries (that runs apt, with `sudo`).
 - `SANDBURG_CHROMIUM=/path/to/chrome` uses another Chromium instead (`executablePath` in
-  `SessionOptions`).
+  `SessionOptions`). It should be Chromium 157 or later: in older ones, WebAssembly threads can trap
+  with `memory access out of bounds` on memory another thread just grew (rolldown's WebAssembly build
+  does), and Sandburg warns when it launches one.
 - From a checkout, `npx playwright install chromium` installs the Chromium of the Playwright version
   the checkout pins.
 
