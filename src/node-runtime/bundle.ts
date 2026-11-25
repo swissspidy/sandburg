@@ -58,6 +58,8 @@ const aliases: esbuild.Plugin = {
   name: 'process-alias',
   setup(build) {
     build.onResolve({ filter: /^process\/?$/ }, () => ({ path: here('process-alias.cjs') }));
+    // node:events for the runtime and its polyfills alike: the events package with what Node adds (events.cjs).
+    build.onResolve({ filter: /^events\/?$/ }, () => ({ path: here('events.cjs') }));
     // The url polyfill's query strings are node:querystring's, as in Node (url-querystring.cjs).
     build.onResolve({ filter: /^qs$/ }, (args) => (args.importer.includes(`${sep}node_modules${sep}url${sep}`) ? { path: here('url-querystring.cjs') } : undefined));
     // Polyfills require Node built-ins among themselves; map them to their polyfills.

@@ -23,7 +23,7 @@ import { trackPending } from './track-pending.ts';
 import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
 import { servers, serverConnections, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
-import { ExitError, WARNING_PRINTER, createProcess, pendingWork, stopTimers, timers, timersActive } from './builtins/process.ts';
+import { ExitError, WARNING_PRINTER, createProcess, pendingWork, received, stopTimers, timers, timersActive } from './builtins/process.ts';
 import { netEvents, netServers } from './builtins/net.ts';
 import { createModuleSystem } from './loader.ts';
 import { createUncaught } from './uncaught.ts';
@@ -388,6 +388,7 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     },
   });
   const table = buildBuiltins();
+  const PREFIX_ONLY = new Set(['test', 'sqlite', 'sea', 'test/reporters']);
   const cache = new Map<string, unknown>();
   const builtin = (name: string) => {
     if (name === 'module') return moduleSystem.Module;
@@ -475,12 +476,19 @@ function init(msg: Extract<ToWorker, { type: 'init' }>) {
     },
     compile: hostCompile,
     builtin,
-    builtinNames: [...Object.keys(table), 'module'],
-    prefixOnly: new Set(['test', 'sqlite', 'sea', 'test/reporters']),
+    // As Node's: these are built-ins only with node: (require('sqlite') is the npm package).
+    builtinNames: [...Object.keys(table).filter((n) => !PREFIX_ONLY.has(n)), 'module'],
+    prefixOnly: PREFIX_ONLY,
     process: proc as unknown as { dlopen(m: unknown, f: string): void },
     cwd: () => (proc.cwd as () => string)(),
     argv1: () => (proc.argv as string[])[1],
   });
+
+  // process.getBuiltinModule (Node 22.3): a built-in by its name, else undefined (no package is loaded).
+  proc.getBuiltinModule = (id: unknown) => {
+    if (typeof id !== 'string') throw Object.assign(new TypeError(`The "id" argument must be of type string. Received ${received(id)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    return moduleSystem.Module.isBuiltin(id) ? builtin(id.replace(/^node:/, '')) : undefined;
+  };
 
   // `new AsyncFunction(…params, body)` with the body lowered like all other code (see interop.ts).
   const RealAsyncFunction = new Function('return (async function () {}).constructor')() as FunctionConstructor;
