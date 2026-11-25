@@ -274,23 +274,29 @@ export function createChildProcess(host: ChildProcessHost) {
       this.connected = ipc;
       options.signal?.addEventListener('abort', () => this.kill('SIGTERM'), { once: true });
 
-      this.worker = startRuntime(
-        host,
-        init,
-        (m) => {
-          if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text);
-          else if (m.type === 'message') this.emit('message', m.data);
-          else if (m.type === 'exit') this.finish(Number(m.code ?? 0), null);
-          else if (m.type === 'fatal') {
-            write(2, `${m.stack ?? m.message}\n`);
+      try {
+        this.worker = startRuntime(
+          host,
+          init,
+          (m) => {
+            if (m.type === 'log') write(m.stream === 'stdout' ? 1 : 2, m.text);
+            else if (m.type === 'message') this.emit('message', m.data);
+            else if (m.type === 'exit') this.finish(Number(m.code ?? 0), null);
+            else if (m.type === 'fatal') {
+              write(2, `${m.stack ?? m.message}\n`);
+              this.finish(1, null);
+            }
+          },
+          (message) => {
+            write(2, `${message}\n`);
             this.finish(1, null);
-          }
-        },
-        (message) => {
-          write(2, `${message}\n`);
-          this.finish(1, null);
-        },
-      );
+          },
+        );
+      } catch (e) {
+        // The child never started: its program given as text goes too (finish() does not run).
+        dropEvalScript(host, init);
+        throw e;
+      }
       timers.setTimeout(() => this.emit('spawn'), 0);
     }
 

@@ -665,16 +665,22 @@ export function createWorkerThreads(host: ThreadHost) {
         ...(options.eval ? { evalAs: '[worker eval]', script: '[worker eval]' } : {}),
       };
       this.init = thread;
-      this.worker = startRuntime(
-        host,
-        thread,
-        (m) => this.onChild(m),
-        (message) => {
-          this.emit('error', new Error(message));
-          this.finish(1);
-        },
-        options.transferList ?? [],
-      );
+      try {
+        this.worker = startRuntime(
+          host,
+          thread,
+          (m) => this.onChild(m),
+          (message) => {
+            this.emit('error', new Error(message));
+            this.finish(1);
+          },
+          options.transferList ?? [],
+        );
+      } catch (e) {
+        // No Worker comes of it (workerData that cannot be cloned): its program given as text goes too.
+        dropEvalScript(host, thread);
+        throw e;
+      }
     }
 
     private onChild(m: ToParent) {
