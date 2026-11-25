@@ -313,6 +313,8 @@ test('a page whose markup loads its assets from http://localhost:<port> (URLs bu
         "  '/classic.js': ['text/javascript', \"document.querySelector('#classic').textContent = 'classic ran';\"],",
         "  '/module.js': ['text/javascript', \"document.querySelector('#module').textContent = 'module ran';\"],",
         "  '/pixel.svg': ['image/svg+xml', '<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"7\" height=\"5\"/>'],",
+        "  '/same.css': ['text/css', '#same { color: rgb(0, 0, 255); }'],",
+        "  '/real.css': ['text/css', '#redirected { color: rgb(128, 0, 128); }'],",
         "};",
         // A localhost port where nothing listens is still a refused connection to the program.
         "let refused = 'pending';",
@@ -322,12 +324,18 @@ test('a page whose markup loads its assets from http://localhost:<port> (URLs bu
         "  const asset = assets[q.url];",
         "  if (asset) return s.writeHead(200, { 'content-type': asset[0] }).end(asset[1]);",
         "  const base = 'http://' + q.headers.host;",
+        // A redirect to another path of the same server, by its absolute URL.
+        "  if (q.url === '/moved.css') return s.writeHead(302, { location: base + '/same.css' }).end();",
         "  s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><html><head>' +",
         "    '<link rel=\"stylesheet\" href=\"' + base + '/style.css\">' +",
+        "    '<link rel=\"stylesheet\" href=\"' + base + '/moved.css\">' +",
+        "    '<link rel=\"stylesheet\" href=\"http://localhost:3001/redirect.css\">' +",
         "    '<script src=\"' + base + '/classic.js\" defer></script>' +",
         "    '<script type=\"module\" src=\"' + base.replace('localhost', '127.0.0.1') + '/module.js\"></script>' +",
-        "    '</head><body><h1>' + base + '</h1><p id=\"classic\"></p><p id=\"module\"></p><img alt=\"pixel\" src=\"' + base + '/pixel.svg\"></body></html>');",
+        "    '</head><body><h1>' + base + '</h1><p id=\"classic\"></p><p id=\"module\"></p><p id=\"same\">same</p><p id=\"redirected\">redirected</p><img alt=\"pixel\" src=\"' + base + '/pixel.svg\"></body></html>');",
         "}).listen(3000);",
+        // Another server, whose stylesheet redirects to the page's server: the browser must get it from 3000.
+        "require('node:http').createServer((q, s) => s.writeHead(302, { location: 'http://localhost:3000/real.css' }).end()).listen(3001);",
       ].join('\n'),
     },
     { name: 'absolute-assets', path: 'absolute-assets' },
@@ -342,6 +350,9 @@ test('a page whose markup loads its assets from http://localhost:<port> (URLs bu
         await expect(app.locator('#classic')).toHaveText('classic ran');
         await expect(app.locator('#module')).toHaveText('module ran');
         await expect(app.getByAltText('pixel')).toHaveJSProperty('naturalWidth', 7);
+        // Redirects: to another path of the same server, and from another server's URL to the page's server.
+        await expect(app.locator('#same')).toHaveCSS('color', 'rgb(0, 0, 255)');
+        await expect(app.locator('#redirected')).toHaveCSS('color', 'rgb(128, 0, 128)');
         await expect.poll(() => app.evaluate(async () => (await fetch('/refused')).text())).toBe('ECONNREFUSED');
       },
     },
