@@ -334,13 +334,23 @@ export class NodeProcess {
    */
   private crossPort(headers: [string, string][], port: number, fromProgram: boolean): [string, string][] {
     const own = fromProgram || port === (this.appPort ?? port);
-    const lower = (name: string) => headers.find(([k]) => k.toLowerCase() === name)?.[1];
+    // A field sent more than once is its values joined, as the browser reads it (a doubled
+    // Access-Control-Allow-Origin then matches no origin).
+    const lower = (name: string) => {
+      const values = headers.filter(([k]) => k.toLowerCase() === name).map(([, v]) => v);
+      return values.length ? values.join(', ') : undefined;
+    };
     const keep = headers.filter(([k]) => !/^(access-control-allow-origin|access-control-allow-credentials|cross-origin-resource-policy)$/i.test(k));
     if (own) return [...keep, ['access-control-allow-origin', location.origin], ['access-control-allow-credentials', 'true'], ['cross-origin-resource-policy', 'cross-origin']];
     const allowOrigin = lower('access-control-allow-origin');
     const credentials = lower('access-control-allow-credentials');
     const out: [string, string][] = [...keep, ['cross-origin-resource-policy', lower('cross-origin-resource-policy')?.trim().toLowerCase() === 'same-origin' ? 'same-origin' : 'cross-origin']];
-    if (allowOrigin !== undefined) out.push(['access-control-allow-origin', allowOrigin.trim() === this.localOrigin(port) ? location.origin : allowOrigin]);
+    // Judged against the page's localhost origin (what the server saw): that is the page's real
+    // origin, * stays *, and any other value grants nothing, also one that happens to be the real one.
+    if (allowOrigin !== undefined) {
+      const allow = allowOrigin.trim();
+      out.push(['access-control-allow-origin', allow === this.localOrigin(port) ? location.origin : allow === '*' ? '*' : allow === location.origin ? 'null' : allowOrigin]);
+    }
     if (credentials !== undefined) out.push(['access-control-allow-credentials', credentials]);
     return out;
   }

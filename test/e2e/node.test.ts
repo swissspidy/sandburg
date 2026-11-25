@@ -415,24 +415,31 @@ test("a module script from another localhost port runs as its server's CORS head
         "  '/star.js': { star: true },",
         "  '/creds-missing.js': { origin: true },",
         "  '/creds.js': { origin: true, credentials: true },",
+        "  '/twice.js': { twice: true },",
         "};",
         "require('node:http').createServer(async (q, s) => {",
         "  if (q.url === '/probe') return s.end(await (await fetch('http://localhost:3001/denied.js')).text());",
         "  const m = (file, extra = '') => '<script type=\"module\"' + extra + ' src=\"http://localhost:3001/' + file + '.js\"></script>';",
-        "  const ids = ['denied', 'allowed', 'star', 'creds-missing', 'creds'];",
+        "  const ids = ['denied', 'allowed', 'star', 'creds-missing', 'creds', 'twice', 'deployment'];",
+        // The page's real (deployment) origin, which only the page knows: a server that names it grants nothing.
+        "  const deployment = '<script type=\"module\">const s = document.createElement(\"script\"); s.type = \"module\"; s.src = \"http://localhost:3001/deployment.js?o=\" + encodeURIComponent(location.origin); document.head.append(s);</script>';",
         "  s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><html><head>' +",
-        "    m('denied') + m('allowed') + m('star') + m('creds-missing', ' crossorigin=\"use-credentials\"') + m('creds', ' crossorigin=\"use-credentials\"') +",
+        "    m('denied') + m('allowed') + m('star') + m('creds-missing', ' crossorigin=\"use-credentials\"') + m('creds', ' crossorigin=\"use-credentials\"') + m('twice') + deployment +",
         "    '</head><body><h1>cors</h1>' + ids.map((id) => '<p id=\"' + id + '\"></p>').join('') + '</body></html>');",
         "}).listen(3000);",
         // Another server, started after the page's (the first to listen is the app's).
         "let seenOrigin = '';",
         "require('node:http').createServer((q, s) => {",
+        "  const url = new URL(q.url, 'http://localhost');",
+        "  if (url.pathname === '/deployment.js') return s.writeHead(200, { 'content-type': 'text/javascript', 'access-control-allow-origin': url.searchParams.get('o') }).end(run('deployment'));",
         "  const rule = cors[q.url] || {};",
         "  if (q.url === '/allowed.js') seenOrigin = q.headers.origin || '';",
         "  const headers = { 'content-type': 'text/javascript' };",
         "  if (rule.origin) headers['access-control-allow-origin'] = q.headers.origin;",
         "  if (rule.star) headers['access-control-allow-origin'] = '*';",
         "  if (rule.credentials) headers['access-control-allow-credentials'] = 'true';",
+        // The page's origin, twice: a browser reads the field as both values, which match no origin.
+        "  if (rule.twice) headers['access-control-allow-origin'] = [q.headers.origin, q.headers.origin];",
         "  if (q.url === '/origin') return s.writeHead(200, { 'access-control-allow-origin': '*' }).end(seenOrigin);",
         "  s.writeHead(200, headers).end(run(q.url.slice(1, -3)));",
         "}).listen(3001);",
@@ -451,6 +458,9 @@ test("a module script from another localhost port runs as its server's CORS head
         // Not allowed by their server's headers: not run (none at all; credentials without allow-credentials).
         await expect(app.locator('#denied')).toHaveText('');
         await expect(app.locator('#creds-missing')).toHaveText('');
+        // Allow-Origin sent twice, and one naming the page's real origin rather than the localhost one it was sent with.
+        await expect(app.locator('#twice')).toHaveText('');
+        await expect(app.locator('#deployment')).toHaveText('');
         // The server saw the page's localhost origin, as on the developer's machine.
         expect(await app.evaluate(async () => (await fetch('http://localhost:3001/origin')).text())).toBe('http://localhost:3000');
         // A server's own fetch() of a URL that sends no CORS headers gets its answer.

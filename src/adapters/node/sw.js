@@ -85,15 +85,17 @@ self.addEventListener('fetch', (event) => {
 });
 
 /**
- * Whether the program itself sent the request: a fetch() in one of its runtimes (workers whose script
- * is Sandburg's, under /__sandburg/), as a server's code calls fetch('http://localhost:3000/api').
- * Not the app's page, nor a worker of the app's own. On the developer's machine Node's fetch() sends
- * no browser cookies, and the cookies it is answered with stay out of the browser (process.ts).
+ * Whether the program itself sent the request: a fetch() in one of its runtimes, as a server's code
+ * calls fetch('http://localhost:3000/api'). A runtime is a worker whose script is the runtime's own,
+ * node-worker.js or a spare's node-spare.js, wherever the host serves them (__sandburgBase); not the
+ * app's page, nor a worker of the app's own. On the developer's machine Node's fetch() sends no
+ * browser cookies, and the cookies it is answered with stay out of the browser (process.ts).
  */
+const RUNTIME_WORKER = /\/node-(?:worker|spare)\.js$/;
 async function sentByProgram(event) {
   if (!event.clientId) return false;
   const client = await self.clients.get(event.clientId);
-  return client?.type === 'worker' && new URL(client.url).pathname.includes('/__sandburg/');
+  return client?.type === 'worker' && RUNTIME_WORKER.test(new URL(client.url).pathname);
 }
 
 /**
