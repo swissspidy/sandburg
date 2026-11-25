@@ -1,7 +1,8 @@
 /**
  * The runtime's compiler (compile.ts) on esbuild's WebAssembly build, as one script for a browser:
  * the page's compile worker (compile-worker.ts, served by the host) and the demo site's service
- * worker (pages/compile.ts). esbuild's WebAssembly binary goes next to it.
+ * worker (pages/compile.ts). esbuild's WebAssembly binary goes next to it. The page's install worker
+ * (install-worker.ts) is bundled the same way.
  */
 import { createRequire } from 'node:module';
 import * as esbuild from 'esbuild';
@@ -47,3 +48,4 @@ export function bundleBrowserCompiler(entry: string): Promise<string> {
 }
 
 export const COMPILE_WORKER = source('adapters/node/compile-worker.ts');
+export const INSTALL_WORKER = source('adapters/node/install-worker.ts');

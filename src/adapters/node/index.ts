@@ -8,7 +8,7 @@ import { source } from '../../sources.ts';
 import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SPARE_SCRIPT, SQLITE_WASM } from '../../node-runtime/bundle.ts';
 import { RUNTIME_LIBS, type RuntimeLib } from '../../node-runtime/libs.ts';
 import { RUNTIME_MODULE, runtimeBootstrap } from '../../node-runtime/runtime-module.ts';
-import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM } from './compile-wasm-bundle.ts';
+import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM, INSTALL_WORKER } from './compile-wasm-bundle.ts';
 import { createHash } from 'node:crypto';
 import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
@@ -170,6 +170,10 @@ export async function serve(req: HostRequest): Promise<HostResponse | null> {
   // The page's compiler, when the page installs the packages (compile-worker.ts).
   if (req.path === '/__sandburg/compile-worker.js') {
     return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleBrowserCompiler(COMPILE_WORKER) };
+  }
+  // The page's installer, when the page installs the packages (install-worker.ts).
+  if (req.path === '/__sandburg/install-worker.js') {
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: await bundleBrowserCompiler(INSTALL_WORKER) };
   }
   if (req.path === '/__sandburg/esbuild.wasm') {
     return { status: 200, headers: { 'content-type': 'application/wasm', 'cache-control': 'max-age=31536000, immutable' }, body: await readFile(ESBUILD_WASM) };

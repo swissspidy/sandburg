@@ -104,13 +104,13 @@ export function importGraph(dir = join(ROOT, 'src')): Graph {
   return { modules: files.map(repoPath), imports };
 }
 
-export type Environment = 'host' | 'page' | 'runtime' | 'compile-worker' | 'service-worker' | 'app-frame';
+export type Environment = 'host' | 'page' | 'runtime' | 'compile-worker' | 'install-worker' | 'service-worker' | 'app-frame';
 
 /**
  * Where code runs, and the entry points of what runs there. The browser bundles are built by
  * host-server.ts (the page: host.ts with the adapter's browserEntry), node-runtime/bundle.ts (the
  * runtime, with its injected shims and the polyfills' aliases), compile-wasm-bundle.ts (the compile
- * worker) and page-checks/index.ts (the checks' runtime); the service worker and the WebSocket shim
+ * and install workers) and page-checks/index.ts (the checks' runtime); the service worker and the WebSocket shim
  * are served as they are.
  */
 export const ENVIRONMENTS: Record<Environment, { what: string; entries: string[]; stubs?: string[] }> = {
@@ -121,6 +121,7 @@ export const ENVIRONMENTS: Record<Environment, { what: string; entries: string[]
     entries: ['src/node-runtime/worker.ts', 'src/node-runtime/globals-shim.ts', 'src/node-runtime/lib-globals.js', 'src/node-runtime/process-alias.cjs', 'src/node-runtime/url-querystring.cjs'],
   },
   'compile-worker': { what: "the page's compiler on esbuild-wasm", entries: ['src/adapters/node/compile-worker.ts'], stubs: ['node:crypto', 'esbuild'] },
+  'install-worker': { what: "the page's npm install (resolution, untarring, packing node_modules)", entries: ['src/adapters/node/install-worker.ts'] },
   'service-worker': { what: "the sandbox origin's service worker", entries: ['src/adapters/node/sw.js'] },
   'app-frame': { what: "the app's frame: the page checks' runtime and the WebSocket shim", entries: ['src/page-checks/runtime.ts', 'src/page-checks/dom-shim.ts', 'src/adapters/node/ws-shim.js'] },
 };
