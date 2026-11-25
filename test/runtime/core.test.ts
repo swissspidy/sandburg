@@ -406,6 +406,64 @@ test('child_process: servers in a child process are reachable', async () => {
   assert.deepEqual(out.responses[0], { status: 200, body: 'from the child: /hello', chunks: 1 });
 });
 
+test('child_process and worker_threads: a program given as text (node -e/-p/-v, stdin, eval) runs as [eval] of its cwd and leaves no file behind', async () => {
+  const out = await h.run(
+    {
+      'main.js': `
+        const cp = require('child_process');
+        const fs = require('fs');
+        const { once } = require('events');
+        const { Worker } = require('worker_threads');
+        const show = "console.log(JSON.stringify({ local: require('./lib/local'), resolved: require.resolve('./lib/local'), pkg: require('pkg'), filename: module.filename, argv: process.argv.slice(1) }))";
+        (async () => {
+          const out = {};
+          const e = cp.spawn(process.execPath, ['-e', show, 'one'], { stdio: ['ignore', 'pipe', 'inherit'] });
+          let text = '';
+          e.stdout.on('data', (d) => (text += d));
+          await once(e, 'exit');
+          out.e = JSON.parse(text);
+          out.stdin = JSON.parse(cp.execSync('node -', { input: show, encoding: 'utf8' }));
+          out.cwd = cp.execSync('node -e "console.log(require(\\'./local\\'))"', { cwd: 'lib', encoding: 'utf8' });
+          out.p = cp.execSync('node -p "require(\\'./lib/local\\')"', { encoding: 'utf8' });
+          out.v = cp.execSync('node -v', { encoding: 'utf8' }) === process.version + '\\n';
+          const thrown = cp.spawn(process.execPath, ['-e', 'throw new Error("boom")'], { stdio: 'ignore' });
+          [out.thrown] = await once(thrown, 'exit');
+          const killed = cp.spawn(process.execPath, ['-e', 'console.log("up"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'ignore'] });
+          await once(killed.stdout, 'data');
+          const exited = once(killed, 'exit');
+          killed.kill();
+          out.killed = (await exited)[1];
+          const w = new Worker("require('worker_threads').parentPort.postMessage([require('./lib/local'), module.filename, process.argv.slice(1)])", { eval: true });
+          [out.worker] = await once(w, 'message');
+          await w.terminate();
+          out.app = fs.readdirSync('/app');
+          out.lib = fs.readdirSync('/app/lib');
+          out.kept = fs.existsSync('/app/.sandburg') ? fs.readdirSync('/app/.sandburg') : [];
+          console.log(JSON.stringify(out));
+        })();`,
+      'lib/local.js': `module.exports = 'local';`,
+      'node_modules/pkg/index.js': `module.exports = 'pkg';`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const shown = (filename: string, argv: string[]) => ({ local: 'local', resolved: '/app/lib/local.js', pkg: 'pkg', filename, argv });
+  assert.deepEqual(JSON.parse(out.stdout), {
+    e: shown('/app/[eval]', ['one']),
+    stdin: shown('/app/[stdin]', ['-']),
+    cwd: 'local\n',
+    p: 'local\n',
+    v: true,
+    thrown: 1,
+    killed: 'SIGTERM',
+    worker: ['local', '/app/[worker eval]', ['[worker eval]']],
+    // Sandburg's own directory (hidden from the project's file tree), and nothing left in it.
+    app: ['.sandburg', 'lib', 'main.js', 'node_modules'],
+    lib: ['local.js'],
+    kept: [],
+  });
+});
+
 test('http: requests to localhost and local sockets reach virtual servers, also in threads', async () => {
   const out = await h.run(
     {
