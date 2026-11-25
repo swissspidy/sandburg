@@ -1,6 +1,6 @@
 /**
  * Monorepos and local packages (ADR 0064): npm and pnpm workspaces, file: and link: dependencies,
- * a run of a workspace package, the versions a pnpm-lock.yaml pins, with either install; and what
+ * a run of a workspace package, the versions a pnpm-lock.yaml pins, git dependencies (ADR 0073), with either install; and what
  * neither install can give a project, said before anything is installed. Needs the npm registry
  * (the first time).
  */
@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Session } from '../../src/orchestrator/session.ts';
 import { projectFromFiles } from '../../src/project.ts';
 import type { Checks } from '../../src/orchestrator/checks.ts';
+import { node } from '../../src/adapters/node/index.ts';
 
 const fixture = (name: string) => fileURLToPath(new URL(`../../fixtures/${name}`, import.meta.url));
 const outDir = fileURLToPath(new URL('../../.sandburg/test-runs', import.meta.url));
@@ -63,6 +64,75 @@ test('a Vite app in a workspace imports a workspace package, run from the root a
   }
 });
 
+// Git dependencies (ADR 0073): fetched by the host, linked as local packages, their registry
+// dependencies installed with the app's. Needs github.com (the first time).
+for (const installIn of ['host', 'browser'] as const) {
+  test(`git dependencies from GitHub: a tag, a semver: range with a registry dependency of its own (install: ${installIn})`, async () => {
+    const project = projectFromFiles(
+      {
+        'package.json': JSON.stringify({
+          name: 'git-deps',
+          private: true,
+          scripts: { dev: 'node server.js' },
+          dependencies: { 'escape-html': 'git+ssh://git@github.com/component/escape-html.git#v1.0.3', 'is-odd': 'github:jonschlinkert/is-odd#semver:^3.0.0' },
+        }),
+        'server.js':
+          "const escape = require('escape-html');\nconst isOdd = require('is-odd');\nconst path = require('path');\nrequire('http').createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(`<h1>${escape('<git>')} ${isOdd(3)} ${path.basename(path.dirname(require.resolve('is-number/package.json')))}</h1>`); }).listen(3000);\n",
+      },
+      { name: 'git-deps', path: 'git-deps' },
+    );
+    const checks: Checks = { 'uses the git packages': async ({ app, expect }) => expect(app.getByRole('heading')).toHaveText('<git> true is-number') };
+    const result = await session.run(project, { checks, outDir, installIn });
+    assert.equal(result.status, 'passed', failures(result));
+  });
+}
+
+test('a git fetch slower than the install may fails the install, never installing against files the runtime was not given', async () => {
+  const sources = node.sources!;
+  // Done only after mounting gave up waiting for it.
+  node.sources = async (project, options) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return sources(project, options);
+  };
+  try {
+    const project = projectFromFiles(
+      { 'package.json': JSON.stringify({ name: 'slow-git', private: true, scripts: { dev: 'node server.js' }, dependencies: { 'escape-html': 'github:component/escape-html#v1.0.3' } }), 'server.js': "require('http').createServer((q, s) => s.end('ok')).listen(3000);" },
+      { name: 'slow-git', path: 'slow-git' },
+    );
+    const started = Date.now();
+    const result = await session.run(project, { outDir, timeouts: { install: 500 } });
+    assert.equal(result.status, 'error', failures(result));
+    assert.equal(result.failure?.phase, 'install', failures(result));
+    assert.match(result.failure?.message ?? '', /took longer than the install may \(500 ms\)/);
+    assert.ok(Date.now() - started < 30_000, 'the run does not wait for the fetch');
+  } finally {
+    node.sources = sources;
+  }
+});
+
+test('a run that ends before its git dependencies are fetched stops waiting for them: Session.close() returns', { timeout: 60_000 }, async () => {
+  const sources = node.sources!;
+  // A fetch that never finishes: only the run's signal ends the wait.
+  node.sources = (_project, options) => new Promise((_, reject) => options.signal?.addEventListener('abort', () => reject(options.signal!.reason), { once: true }));
+  const own = new Session();
+  try {
+    await own.open();
+    const project = projectFromFiles(
+      { 'package.json': JSON.stringify({ name: 'held-git', private: true, scripts: { dev: 'node server.js' }, dependencies: { 'escape-html': 'github:component/escape-html#v1.0.3' } }), 'server.js': "require('http').createServer((q, s) => s.end('ok')).listen(3000);" },
+      { name: 'held-git', path: 'held-git' },
+    );
+    // Its tab does not load in time: the run ends before mounting.
+    const result = await own.run(project, { outDir, timeouts: { load: 1 }, infraRetries: 0 });
+    assert.notEqual(result.status, 'passed', failures(result));
+    const closing = Date.now();
+    await own.close();
+    assert.ok(Date.now() - closing < 20_000, 'close does not wait for the fetch');
+  } finally {
+    node.sources = sources;
+    await own.close().catch(() => {});
+  }
+});
+
 const app = (dependencies: Record<string, string>) =>
   projectFromFiles(
     {
@@ -73,8 +143,8 @@ const app = (dependencies: Record<string, string>) =>
   );
 
 for (const [dep, spec, kind] of [
-  ['a', 'git+https://github.com/user/a.git', /a git repository dependency/],
-  ['b', 'user/b', /a GitHub repository \(user\/repo\) dependency/],
+  ['a', 'gist:abc123', /a git repository dependency; gists are not fetched/],
+  ['b', 'git+ssh://git@example.invalid/user/b.git', /a git repository dependency; example\.invalid is not a git host/],
   ['c', 'https://example.com/c.tgz', /a URL dependency/],
   ['d', 'file:../outside', /outside the project/],
 ] as const) {

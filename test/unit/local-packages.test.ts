@@ -126,15 +126,14 @@ test('anything outside the project is refused as unsupported, naming the depende
   assert.match(message(() => plan({ '': { dependencies: { t: 'file:./t.tgz' } } })), /^t@file:\.\/t\.tgz: a local tarball dependency/);
 });
 
-test('git, URL and user/repo dependencies are refused as unsupported, early, with what they are', () => {
+test('URL dependencies, and git dependencies the host does not fetch, are refused as unsupported, early, with what they are', () => {
   const cases: [string, RegExp][] = [
-    ['git+https://github.com/a/b.git', /a git repository dependency/],
-    ['github:a/b', /a git repository dependency/],
-    ['git@github.com:a/b.git', /a git repository dependency/],
-    ['git@github.com:a/b', /a git repository dependency/],
+    ['gist:abc123', /a git repository dependency; gists are not fetched/],
+    ['git+ssh://git@example.invalid/a/b.git', /a git repository dependency; example\.invalid is not a git host/],
+    ['git+https://example.invalid:8443/a/b.git', /a git repository dependency; a repository on another port/],
+    ['git+file:///etc/repo.git', /a git repository dependency; only git over HTTPS, SSH or git:\/\/ is fetched/],
+    ['github:a/b/c', /not a repository path/],
     ['https://example.com/x.tgz', /a URL dependency/],
-    ['user/repo', /a GitHub repository \(user\/repo\) dependency/],
-    ['user/repo#main', /a GitHub repository \(user\/repo\) dependency/],
   ];
   for (const [spec, kind] of cases) {
     // In a workspace's dependencies too.
@@ -143,6 +142,54 @@ test('git, URL and user/repo dependencies are refused as unsupported, early, wit
     assert.match(message(() => plan(project)), new RegExp(`^dep@${spec.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}: `), spec);
     assert.match(message(() => plan(project)), kind, spec);
   }
+});
+
+test('a git dependency waits for the host to fetch it: neither installed by npm nor linked until then', () => {
+  for (const spec of ['git+https://github.com/a/b.git', 'github:a/b', 'git@github.com:a/b.git', 'git+ssh://git@gitlab.com/g/sub/r.git#v1', 'bitbucket:a/b#semver:^1', 'user/repo', 'user/repo#main']) {
+    const p = plan({ '': { name: 'app', dependencies: { dep: spec, ms: '^2.0.0' } }, w: { name: 'w' } });
+    assert.deepEqual(p.git, [{ dir: '', name: 'dep', spec }], spec);
+    assert.deepEqual(p.root.dependencies, { ms: '^2.0.0' }, spec);
+    assert.deepEqual(p.links, {}, spec);
+  }
+  // Another host, when the deployment allows it (SANDBURG_GIT_HOSTS), over HTTPS only.
+  const other = files({ '': { dependencies: { dep: 'git+https://git.example.com/a/b.git' } } });
+  assert.equal(installPlan(other.files, other.pkg, ['git.example.com']).git.length, 1);
+  assert.equal(code(() => installPlan(other.files, other.pkg)), 'UNSUPPORTED');
+  const ssh = files({ '': { dependencies: { dep: 'git+ssh://git@git.example.com/a/b.git' } } });
+  assert.match(message(() => installPlan(ssh.files, ssh.pkg, ['git.example.com'])), /fetched over HTTPS only/);
+});
+
+test('a fetched git dependency is a local package: linked, its registry dependencies installed with the root\'s, its lockfile entries dropped', () => {
+  const dir = '.sandburg/git/github.com-a-b-0123456789ab';
+  const lock = JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      '': { dependencies: { b: 'github:a/b', ms: '^2.0.0' } },
+      'node_modules/b': { version: '1.0.0', resolved: 'git+ssh://git@github.com/a/b.git#0123456789abcdef0123456789abcdef01234567' },
+      'node_modules/b/node_modules/kleur': { version: '3.0.0', resolved: 'https://registry.npmjs.org/kleur/-/kleur-3.0.0.tgz' },
+      'node_modules/ms': { version: '2.1.3', resolved: 'https://registry.npmjs.org/ms/-/ms-2.1.3.tgz' },
+    },
+  });
+  const p = plan(
+    { '': { name: 'app', dependencies: { b: 'github:a/b', ms: '^2.0.0' } }, [dir]: { name: 'b', version: '1.0.0', dependencies: { kleur: '^4.0.0', ms: '^2.1.0' }, devDependencies: { typescript: '*' } } },
+    { '.sandburg/git.json': JSON.stringify({ 'github:a/b': dir }), 'package-lock.json': lock },
+  );
+  assert.deepEqual(p.git, []);
+  assert.deepEqual(p.links, { 'node_modules/b': dir });
+  assert.deepEqual(p.local, [dir]);
+  // Its dependencies, not its devDependencies (as npm installs a git dependency's).
+  assert.deepEqual(p.root.dependencies, { ms: '^2.0.0', kleur: '^4.0.0' });
+  const locked = JSON.parse(p.lockfile!) as { packages: Record<string, unknown> };
+  assert.deepEqual(Object.keys(locked.packages), ['', 'node_modules/ms']);
+  assert.doesNotThrow(() => assertRegistryLockfile(p.lockfile!));
+  // A workspace glob that reaches .sandburg/ never makes a fetched package a workspace.
+  const globbed = plan({ '': { name: 'app', workspaces: ['**'], dependencies: { b: 'github:a/b' } }, [dir]: { name: 'b', version: '1.0.0' } }, { '.sandburg/git.json': JSON.stringify({ 'github:a/b': dir }) });
+  assert.deepEqual(globbed.workspaces, {});
+  assert.deepEqual(globbed.links, { 'node_modules/b': dir });
+  // A map entry outside .sandburg/git/ is not the host's: ignored, so the dependency stays pending.
+  const forged = plan({ '': { dependencies: { b: 'github:a/b' } }, lib: { name: 'b' } }, { '.sandburg/git.json': JSON.stringify({ 'github:a/b': 'lib' }) });
+  assert.deepEqual(forged.links, {});
+  assert.equal(forged.git.length, 1);
 });
 
 test('a local package that is not there is the app\'s mistake', () => {
@@ -223,9 +270,11 @@ test('the browser install: the plan\'s root, nested installs and links; local pa
 
 test('the probe refuses what cannot be installed before anything is; a missing local package is left to the install', () => {
   const app = (dependencies: Record<string, string>) => projectFromFiles({ 'package.json': JSON.stringify({ scripts: { dev: 'node s.js' }, dependencies }) }, { name: 'a', path: 'a' });
-  const probe = node.probe(app({ x: 'github:a/b' }));
+  const probe = node.probe(app({ x: 'gist:abc' }));
   assert.equal(probe.verdict, 'unsupported');
-  assert.match((probe as { reason: string }).reason, /^x@github:a\/b: a git repository dependency/);
+  assert.match((probe as { reason: string }).reason, /^x@gist:abc: a git repository dependency/);
+  // A git dependency the host fetches is the install's.
+  assert.equal(node.probe(app({ x: 'github:a/b' })).verdict, 'supported');
   assert.equal(node.probe(app({ x: 'file:../out' })).verdict, 'unsupported');
   assert.equal(node.probe(app({ x: 'file:./missing' })).verdict, 'supported');
   assert.equal(node.probe(app({ x: '^1.0.0' })).verdict, 'supported');

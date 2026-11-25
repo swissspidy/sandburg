@@ -348,6 +348,11 @@ interface AdapterDescriptor {
     crossOriginIsolation: false | 'credentialless';
     timeouts?: Partial<Record<PhaseName | 'check' | 'expect', number>>;
     probe(project: Project): ProbeVerdict;
+    sources?(project: Project, options: {
+        offline?: boolean;
+        log: (line: string) => void; 
+        signal?: AbortSignal;
+    }): Promise<Project>;
     hostInstall?(project: Project, log: (line: string) => void, options?: HostInstallOptions): Promise<unknown>;
     serve?(request: HostRequest): Promise<HostResponse | null>;
     warmups?(): Project[];

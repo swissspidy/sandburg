@@ -10,6 +10,7 @@ import type { Project } from '../../types.ts';
 import type { HostInstall } from './browser.ts';
 import { planOf, type InstallPlan } from './local-packages.ts';
 import { workspacePatterns } from '../../workspaces.ts';
+import { unsupportedDependency } from './spec-guard.ts';
 
 /**
  * How the project's dev (or start) script starts it: `node <file>` (or tsx/nodemon …), or a
@@ -102,6 +103,31 @@ export function nestedInstall(dependencies: Record<string, string>, lockfile: st
   return { files: lockfile === null ? {} : { 'package-lock.json': lockfile }, packageJson: { dependencies } };
 }
 
+/**
+ * The file a binary of a package the project links (a workspace, a `file:` or git package) runs:
+ * `node_modules/<name>/<bin>`, where the runtime puts the package's files; null if none provides it.
+ * Linked packages are the project's own dependencies, so theirs come before an installed package's.
+ */
+export function linkedBin(project: Project, plan: InstallPlan, bin: string): string | null {
+  for (const [link, dir] of Object.entries(plan.links)) {
+    if (!/^node_modules\/(?:@[^/]+\/)?[^/]+$/.test(link)) continue;
+    const text = project.files[`${dir}/package.json`];
+    if (typeof text !== 'string') continue;
+    try {
+      const pkg = JSON.parse(text) as { name?: unknown; bin?: unknown };
+      const name = link.slice('node_modules/'.length);
+      const file = typeof pkg.bin === 'string' ? (name.split('/').pop() === bin ? pkg.bin : null) : pkg.bin && typeof pkg.bin === 'object' ? (pkg.bin as Record<string, unknown>)[bin] : null;
+      if (typeof file !== 'string') continue;
+      const rel = file.replace(/^\.\//, '');
+      if (rel.split('/').some((s) => s === '..' || s === '') || rel.startsWith('/')) continue;
+      return `${link}/${rel}`;
+    } catch {
+      // not a package.json: the install reports it
+    }
+  }
+  return null;
+}
+
 /** What the runtime needs to know of a project's local packages (links.ts' WORKSPACE_FILE), or nothing when it has none. */
 export function workspaceInfo(plan: InstallPlan): Pick<HostInstall, 'links' | 'workspaces'> {
   return Object.keys(plan.links).length || Object.keys(plan.workspaces).length ? { links: plan.links, workspaces: plan.workspaces } : {};
@@ -124,6 +150,8 @@ export function browserInstall(project: Project): HostInstall {
     extra: dir ? {} : extraDependencies(p),
   });
   const plan = planOf(project);
+  // Git dependencies are fetched by the host (git-packages.ts); the page cannot.
+  if (plan.git.length) throw unsupportedDependency(plan.git[0].name, plan.git[0].spec, 'git dependencies are fetched by the host, not in the page');
   const parts = [part('', rootInstall(project, plan))];
   for (const { dir, dependencies, lockfile } of plan.nested) parts.push(part(dir, nestedInstall(dependencies, lockfile)));
   for (const dir of packageDirs(project, plan.local)) {
@@ -134,7 +162,10 @@ export function browserInstall(project: Project): HostInstall {
   if (project.framework !== 'next') {
     const cmd = startCommand(project);
     const script = devScript(project);
-    if (cmd && (!script || isSimple(project, script))) start = cmd.bin ? { bin: cmd.bin, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner } : { main: cmd.file!, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
+    if (cmd && (!script || isSimple(project, script))) {
+      const linked = cmd.bin ? linkedBin(project, plan, cmd.bin) : null;
+      start = cmd.bin && !linked ? { bin: cmd.bin, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner } : { main: linked ?? cmd.file!, argv: cmd.argv, command: cmd.command, tsRunner: cmd.tsRunner };
+    }
     else if (script) start = { shell: script, command: script, tsRunner: false };
   }
   const proxy = project.framework === 'next' ? [] : frontendProxy(project.files);

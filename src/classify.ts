@@ -30,10 +30,11 @@ const RUNTIME_SIGNATURES: { rule: string; pattern: RegExp }[] = [
 const INFRA_SIGNATURE = /^npm registry: |runtime asset failed to load|404 Not Found - GET https:\/\/registry\.npmjs\.org\/\S+\/-\/\S+\.tgz|Could not unzip file\. Error code: \d+\. File size: \d+ bytes|ERR_TUNNEL_CONNECTION_FAILED|ECONNRESET|socket hang up|upstream proxy refused/i;
 
 /**
- * npm cannot find a package or version (ETARGET, or E404 for a package document). A 404 for a tarball
+ * npm cannot find a package or version (ETARGET, or E404 for a package document), or the host a git
+ * dependency's repository, branch, tag or commit (git-packages.ts). A 404 for a tarball
  * (`/-/name-1.2.3.tgz`) of a version the registry lists is the registry catching up, not the app.
  */
-const UNRESOLVABLE_DEPENDENCY = /No matching version found for|404 Not Found - GET https:\/\/registry\.npmjs\.org\/(?:@[^/\s]+%2[fF]|@[^/\s]+\/)?[^/\s-][^/\s]* - Not found/;
+const UNRESOLVABLE_DEPENDENCY = /No matching version found for|404 Not Found - GET https:\/\/registry\.npmjs\.org\/(?:@[^/\s]+%2[fF]|@[^/\s]+\/)?[^/\s-][^/\s]* - Not found|^git: \S+: (?:repository not found|no tag in semver:|no branch or tag named|"[^"]*" is no branch or tag|commit [0-9a-f]{40} not found)/m;
 
 /**
  * A package's WebAssembly build trapped on the dev server (rolldown's binding in Vite: "memory access

@@ -480,6 +480,8 @@ export class Session {
     let sampler: NodeJS.Timeout | undefined;
     let sampling = false;
     let stopped = false;
+    // The run's wait for the project's sources (git dependencies), given up on when the run gives up on them or ends.
+    const fetching = new AbortController();
     try {
       run.probe = await run.phase('probe', timeouts.probe, async () => runtimeInfo.probe(project));
       if (run.probe.verdict === 'unsupported') {
@@ -492,13 +494,22 @@ export class Session {
       // The sandbox the run's page is in, once its tab is taken: what the install issues to the run is bound to it.
       let bindSandbox: (id: string) => void = () => {};
       const sandbox = new Promise<string>((resolve) => (bindSandbox = resolve));
-      const hostInstall = adapter?.hostInstall?.(project, (line) => run.runtimeLogs.push(line), {
-        seed: options.seed,
-        sandbox,
-        installIn: options.installIn,
-        offline: this.options.offline ?? false,
-        runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
-      });
+      // What the project names but does not contain (git dependencies) is fetched first, meanwhile too:
+      // a failure is the install phase's to report.
+      const log = (line: string) => run.runtimeLogs.push(line);
+      // Aborted when mounting stops waiting for it, or the run ends first: what waits for it stops too.
+      const sourced = adapter?.sources?.(project, { offline: this.options.offline ?? false, log, signal: fetching.signal }) ?? null;
+      const hostInstall = adapter?.hostInstall
+        ? (sourced ?? Promise.resolve(project)).then((p) =>
+            adapter.hostInstall!(p, log, {
+              seed: options.seed,
+              sandbox,
+              installIn: options.installIn,
+              offline: this.options.offline ?? false,
+              runSeed: options.seed ? undefined : (seed, checks) => this.runSeed(seed, checks as Checks, options),
+            }),
+          )
+        : undefined;
       if (hostInstall) {
         this.installs.add(hostInstall);
         void hostInstall.catch(() => {}).finally(() => this.installs.delete(hostInstall)); // reported by the install phase
@@ -585,8 +596,19 @@ export class Session {
       if (ok) {
         const steps = async () => {
           const watch = <T>(p: Promise<T>) => failFastOnRuntimeFetch(p, run, runtimeAllow);
-          await run.phase('mount', timeouts.mount, () => watch(host('mount', project.files, project.packageJson, project.framework)));
+          // The project's files with its git dependencies' (without them if they failed, or take longer than
+          // the install may: the install phase, which waits for them too, reports it).
+          let giveUp: NodeJS.Timeout | undefined;
+          const late = Symbol('late');
+          const fetched = sourced
+            ? await Promise.race([sourced.catch(() => project), new Promise<typeof late>((resolve) => (giveUp = setTimeout(() => resolve(late), timeouts.install)))]).finally(() => clearTimeout(giveUp))
+            : project;
+          // Too late: the install fails, never against files the runtime was not given.
+          if (fetched === late) fetching.abort(new Error(`fetching the project's git dependencies took longer than the install may (${timeouts.install} ms)`));
+          const files = fetched === late ? project.files : fetched.files;
+          await run.phase('mount', timeouts.mount, () => watch(host('mount', files, project.packageJson, project.framework)));
           run.install = (await run.phase('install', timeouts.install, async () => {
+            if (fetched === late) throw fetching.signal.reason;
             const hostData = hostInstall ? await hostInstall : undefined;
             return watch(host('install', hostData));
           })) as InstallReport;
@@ -655,6 +677,9 @@ export class Session {
       return await run.finish(outDir);
     } finally {
       stopped = true;
+      // A run that ended before its sources were in (its tab did not load, say) stops waiting for them,
+      // so that its host install and Session.close() do not either; a fetch other runs share goes on.
+      if (!fetching.signal.aborted) fetching.abort(new Error('the run ended before its git dependencies were fetched'));
       clearTimeout(sampler);
       memory?.stop();
       // A host page that did not load is held open too (a no-op once its window was closed).
