@@ -73,7 +73,8 @@ async function transport<T>(what: string, fn: () => Promise<T>, hint = ''): Prom
   try {
     return await fn();
   } catch (e) {
-    const failed = typeof document !== 'undefined' && e instanceof TypeError ? hint : '';
+    // In a browser: the page, or its install worker (install-worker.ts).
+    const failed = (typeof document !== 'undefined' || 'WorkerGlobalScope' in globalThis) && e instanceof TypeError ? hint : '';
     throw new Error(`npm registry: ${what}: ${(e as Error).message}${failed}`, { cause: e });
   }
 }

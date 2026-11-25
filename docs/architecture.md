@@ -42,7 +42,7 @@ are erased and allowed. A module may be in several (`node-runtime/names.ts` is i
 runtime and the compile worker): it is then written for all of them.
 
 Directories are close to environments, not the same: `adapters/node/` holds the adapter's host half
-and its browser half (browser.ts, process.ts, browser-npm/, compile-worker.ts, sw.js, ws-shim.js);
+and its browser half (browser.ts, process.ts, browser-npm/, compile-worker.ts, install-worker.ts, sw.js, ws-shim.js);
 `node-runtime/` holds the runtime and the host-side code that bundles it (bundle.ts,
 bundle-cache.ts, bundle-dedupe.ts, runtime-module.ts). `node scripts/architecture.ts` says which
 is which.
@@ -125,6 +125,7 @@ where it is read.
 | page | `host/host.ts`, `adapters/node/browser.ts` | the host page in a sandbox tab (one per run): the adapter's browser half |
 | runtime | `node-runtime/worker.ts`, `node-runtime/globals-shim.ts`, `node-runtime/lib-globals.js`, `node-runtime/process-alias.cjs`, `node-runtime/url-querystring.cjs` | a Node.js runtime's Web Worker (and its threads and child processes) |
 | compile-worker | `adapters/node/compile-worker.ts` | the page's compiler on esbuild-wasm (stubs `node:crypto`, `esbuild`) |
+| install-worker | `adapters/node/install-worker.ts` | the page's npm install (resolution, untarring, packing node_modules) |
 | service-worker | `adapters/node/sw.js` | the sandbox origin's service worker |
 | app-frame | `page-checks/runtime.ts`, `page-checks/dom-shim.ts`, `adapters/node/ws-shim.js` | the app's frame: the page checks' runtime and the WebSocket shim |
 

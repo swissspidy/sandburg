@@ -16,6 +16,7 @@
     "src/host/host.ts",
     "src/adapters/node/browser.ts",
     "src/adapters/node/compile-worker.ts",
+    "src/adapters/node/install-worker.ts",
     "src/adapters/node/sw.js",
     "src/adapters/node/ws-shim.js",
     "src/page-checks/runtime.ts",

@@ -10,9 +10,8 @@ import { connectServiceWorker, registerServiceWorker } from '../sw-bridge.ts';
 import { NodeProcess, exposeWebSockets, hostBase, webSocketPort, type CacheSnapshot } from './process.ts';
 import { WORKSPACE_FILE, type WorkspaceInfo } from '../../node-runtime/links.ts';
 import { DEV_ENV, matchProxy, type ProxyRule } from './scripts.ts';
-import { installInBrowser, packFiles, type BrowserInstallPart } from './browser-npm/install.ts';
-import { Registry } from './browser-npm/registry.ts';
-import { UnsupportedSpecError } from './browser-npm/resolve.ts';
+import type { BrowserInstallPart } from './browser-npm/install.ts';
+import type { InstallWorkerMessage, InstallWorkerRequest } from './install-worker.ts';
 import { bundleHeader } from '../../bundle-format.ts';
 import { firstLine, sendTimeoutMs, settledCache } from './cache-settle.ts';
 
@@ -204,6 +203,32 @@ function preparedWorker(): Worker | undefined {
   return p && !p.failed ? p.worker : undefined;
 }
 
+type Installed = Extract<InstallWorkerMessage, { type: 'done' }>;
+
+/**
+ * The install in the page (browser-npm/install.ts), in a worker of its own (install-worker.ts): the
+ * resolution, the untarring and packing node_modules into shared memory would block the page's
+ * main thread for seconds on a large tree. The worker ends with the install.
+ */
+function installInWorker(parts: BrowserInstallPart[], log: (line: string) => void): Promise<Installed> {
+  const worker = new Worker(`${hostBase()}/install-worker.js`);
+  return new Promise<Installed>((resolve, reject) => {
+    worker.onmessage = (e: MessageEvent<InstallWorkerMessage>) => {
+      const m = e.data;
+      if (m.type === 'log') return log(m.line);
+      if (m.type === 'done') resolve(m);
+      // A package or version the registry does not have is the app's (worded as npm words it, so
+      // classify.ts finds it); the registry failing to answer, or a broken download, is not.
+      else reject(new AdapterError(m.unsupported ? 'UNSUPPORTED' : /^npm error (?:404|notarget) /.test(m.message) ? 'APP' : 'INTERNAL', m.message));
+    };
+    worker.onerror = (e) => {
+      e.preventDefault();
+      reject(new AdapterError('INTERNAL', `the page's installer failed: ${e.message || 'worker error'}`));
+    };
+    worker.postMessage({ parts } satisfies InstallWorkerRequest);
+  }).finally(() => worker.terminate());
+}
+
 /** A port to the page's compiler for a runtime (each runtime blocks on its own; see compile-worker.ts). */
 function connectCompiler(compiler: Worker): MessagePort {
   const channel = new MessageChannel();
@@ -257,11 +282,11 @@ export function createAdapter(): RuntimeAdapter {
       if (host.links || host.workspaces) files[WORKSPACE_FILE] = JSON.stringify({ links: host.links ?? {}, packages: host.workspaces ?? {} } satisfies WorkspaceInfo);
       else delete files[WORKSPACE_FILE];
       let nodeModules = host.index;
-      let pack: ReturnType<typeof packFiles> | null = null;
+      let pack: Pick<Installed, 'sab' | 'index'> | null = null;
       let resolved = host.resolved;
       let bins: Record<string, string> = {};
       if (host.browserInstall) {
-        // Opt-in: the install happens here, from the npm registry (see npm/install.ts), and the runtime
+        // Opt-in: the install happens here (in a worker), from the npm registry (see npm/install.ts), and the runtime
         // compiles in the page (compile-worker.ts), not on the host. Its esbuild loads meanwhile.
         if (!compiler) {
           compiler = new Worker(`${hostBase()}/compile-worker.js`);
@@ -272,22 +297,13 @@ export function createAdapter(): RuntimeAdapter {
             proc?.fail(compilerError);
           };
         }
-        let result;
-        try {
-          result = await installInBrowser(host.browserInstall, new Registry(), (line) => ctx.log('stdout', line));
-        } catch (e) {
-          if (e instanceof UnsupportedSpecError) throw new AdapterError('UNSUPPORTED', e.message);
-          // A package or version the registry does not have is the app's (worded as npm words it, so
-          // classify.ts finds it); the registry failing to answer, or a broken download, is not.
-          throw new AdapterError(/^npm error (?:404|notarget) /.test((e as Error).message) ? 'APP' : 'INTERNAL', (e as Error).message);
-        }
-        pack = packFiles(result.files);
+        const result = await installInWorker(host.browserInstall, (line) => ctx.log('stdout', line));
+        pack = { sab: result.sab, index: result.index };
         nodeModules = Object.fromEntries(Object.entries(pack.index).map(([path, [, length]]) => [path, length]));
         resolved = result.resolved;
         // Whether the lockfile decided the tree, or a pnpm-lock.yaml or yarn.lock pinned its versions (plan.ts).
         host.lockfile = result.lockfile || host.lockfile;
-        const index = result.files.get('node_modules/.sandburg-bins.json');
-        if (index) bins = JSON.parse(new TextDecoder().decode(index)) as Record<string, string>;
+        bins = result.bins;
       }
       if (ctx.framework !== 'next') {
         if (!host.start) throw new AdapterError('UNSUPPORTED', 'no way to start this project in the node runtime');
