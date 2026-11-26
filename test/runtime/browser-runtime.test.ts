@@ -26,23 +26,36 @@ const PROJECT = {
   ].join('\n'),
 };
 
-/** The embedder's page, at /play/: the runtime is served from /sandburg/, its own files from /play/own/. */
-const PAGE = `<!doctype html><title>embedder</title><p id="status">booting</p><iframe id="app"></iframe>
+/**
+ * An embedder's page: it imports the runtime's API from `base` and runs PROJECT with `options`, then
+ * reads a file of its own (`own`, under `options.pass`).
+ */
+const page = (base: string, options: object, own: string) => `<!doctype html><title>embedder</title><p id="status">booting</p><iframe id="app"></iframe>
 <script type="module">
-import { isolate, loadHost, startProject, appPath, guardAppFrame } from '/sandburg/index.js';
-const options = { base: '/sandburg/', scope: '/play/', pass: ['/play/own/'] };
+import { isolate, loadHost, startProject, appPath, guardAppFrame } from '${base}index.js';
+const options = ${JSON.stringify(options)};
 const status = (s) => (document.getElementById('status').textContent = s);
 try {
   if (await isolate(options)) {
     const host = await loadHost(options);
     guardAppFrame(document.getElementById('app'), appPath(options));
     const { url } = await startProject(host, ${JSON.stringify(PROJECT)}, options);
-    status('started ' + url + ' isolated=' + crossOriginIsolated + ' own=' + (await (await fetch('/play/own/file.txt')).text()));
+    status('started ' + url + ' isolated=' + crossOriginIsolated + ' own=' + (await (await fetch('${own}')).text()));
   }
 } catch (e) {
   status('error: ' + e.message);
 }
 </script>`;
+
+/** The runtime's files at the site's root (a runtime served at /), by path. */
+const AT_ROOT = /^\/(index\.js|sw\.js|sw-core\.js|compile\.js|host\.js|frame-guard\.js|isolation\.js|runtime\/.+)$/;
+
+const PAGES: Record<string, string> = {
+  // The runtime at /sandburg/, the page at /play/, its own files under /play/own/.
+  '/play/': page('/sandburg/', { base: '/sandburg/', scope: '/play/', pass: ['/play/own/'] }, '/play/own/file.txt'),
+  // The runtime at the site's root; the scope given without its trailing slash.
+  '/root/': page('/', { base: '/', scope: '/root', pass: ['/root/own/'] }, '/root/own/file.txt'),
+};
 
 let dir: string;
 let server: Server;
@@ -55,17 +68,18 @@ before(async () => {
   server = createServer((req, res) => void serve(req, res));
   async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
-    if (path.startsWith('/sandburg/')) {
-      const file = normalize(join(dir, path.slice('/sandburg/'.length)));
+    const runtimeFile = path.startsWith('/sandburg/') ? path.slice('/sandburg/'.length) : AT_ROOT.test(path) ? path.slice(1) : null;
+    if (runtimeFile !== null) {
+      const file = normalize(join(dir, runtimeFile));
       if (!file.startsWith(dir + sep)) return void res.writeHead(404).end();
       const body = await readFile(file).catch(() => null);
       if (!body) return void res.writeHead(404).end();
-      // The page is outside the runtime's directory: the service worker's scope may reach it only with this header.
+      // A page outside the runtime's directory: the service worker's scope may reach it only with this header.
       res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', ...(path === '/sandburg/sw.js' && { 'service-worker-allowed': '/play/' }) });
       return void res.end(body);
     }
-    if (path === '/play/') return void res.writeHead(200, { 'content-type': 'text/html' }).end(PAGE);
-    if (path === '/play/own/file.txt') return void res.writeHead(200, { 'content-type': 'text/plain' }).end('the embedder');
+    if (Object.hasOwn(PAGES, path)) return void res.writeHead(200, { 'content-type': 'text/html' }).end(PAGES[path]);
+    if (/^\/(play|root)\/own\/file\.txt$/.test(path)) return void res.writeHead(200, { 'content-type': 'text/plain' }).end('the embedder');
     res.writeHead(404).end();
   }
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -80,18 +94,23 @@ after(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("an embedding page runs a project's Node server in the browser, from the runtime's static files, cross-origin isolated by its service worker", async () => {
-  const page = await browser.newPage();
+/** Loads an embedder's page and checks that the project runs in it as it would on the developer's machine. */
+async function runsInPage(path: string): Promise<void> {
+  const tab = await browser.newPage();
   try {
-    await page.goto(`${origin}/play/`);
+    await tab.goto(origin + path);
     // isolate() registers the service worker and reloads the page once; then the project runs.
-    await page.waitForFunction(() => /^(started|error)/.test(document.getElementById('status')?.textContent ?? ''), null, { timeout: 120_000 });
-    assert.equal(await page.textContent('#status'), 'started / isolated=true own=the embedder');
-    const app = page.frameLocator('#app');
+    await tab.waitForFunction(() => /^(started|error)/.test(document.getElementById('status')?.textContent ?? ''), null, { timeout: 120_000 });
+    assert.equal(await tab.textContent('#status'), 'started / isolated=true own=the embedder');
+    const app = tab.frameLocator('#app');
     assert.match((await app.locator('h1').textContent()) ?? '', /^node v24\./);
     // The app's own absolute paths go to its server; it sees itself at /.
     assert.equal(await app.locator('h1').evaluate(async () => [location.pathname, await (await fetch('/data.txt')).text()].join(' ')), '/ from the app');
   } finally {
-    await page.close();
+    await tab.close();
   }
-});
+}
+
+test("an embedding page runs a project's Node server in the browser, from the runtime's static files, cross-origin isolated by its service worker", () => runsInPage('/play/'));
+
+test("a runtime served at the site's root leaves the app's absolute paths to the app, and a scope may be given without its trailing slash", () => runsInPage('/root/'));

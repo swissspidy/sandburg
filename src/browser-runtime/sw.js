@@ -14,14 +14,19 @@
  * Its query string configures it:
  *   app   the path the app lives at (default: <scope>app). The app sees itself at /.
  *   pass  comma-separated path prefixes that are the embedder's own files, fetched from the network
- *         (default: this directory). Other paths outside the app are the app's (absolute paths such
- *         as /_next/… or /src/main.tsx), as are all paths under it.
+ *         (besides this directory's files). Other paths outside the app are the app's (absolute
+ *         paths such as /_next/… or /src/main.tsx), as are all paths under it.
  */
 const scope = new URL(self.registration.scope);
 const site = new URL('./', self.location);
 const config = new URL(self.location).searchParams;
 const appPrefix = (config.get('app') ?? scope.pathname + 'app').replace(/\/+$/, '');
-const pass = [site.pathname, ...(config.get('pass') ?? '').split(',').filter(Boolean)];
+/**
+ * This directory's own files: by name, not the directory as a prefix, which is / for a runtime
+ * served at the site's root and would take every path of the app's for the embedder's.
+ */
+const OWN = ['index.js', 'sw.js', 'sw-core.js', 'compile.js', 'host.js', 'frame-guard.js', 'isolation.js', 'runtime/'].map((f) => site.pathname + f);
+const pass = [...OWN, ...(config.get('pass') ?? '').split(',').filter(Boolean)];
 
 const inApp = (url) => url.pathname === appPrefix || url.pathname.startsWith(appPrefix + '/');
 

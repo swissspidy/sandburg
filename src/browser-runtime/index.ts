@@ -36,7 +36,7 @@ export interface EmbedOptions {
   app?: string;
   /**
    * Path prefixes of the embedder's own files (its scripts, styles) under the scope, which the
-   * service worker leaves to the network. This directory always is. Other paths outside the app
+   * service worker leaves to the network. This directory's files always are. Other paths outside the app
    * are taken to be the app's own absolute paths (/_next/…, /src/main.tsx).
    */
   pass?: string[];
@@ -52,7 +52,8 @@ interface Resolved {
 function resolveOptions(options: EmbedOptions): Resolved {
   const base = new URL(options.base ?? './', options.base ? location.href : import.meta.url);
   if (!base.pathname.endsWith('/')) base.pathname += '/';
-  const scope = new URL(options.scope ?? './', location.href).pathname;
+  // A directory: the host's base (<scope>__sandburg) and the app's default path are under it.
+  const scope = new URL(options.scope ?? './', location.href).pathname.replace(/\/?$/, '/');
   const app = (options.app ?? scope + 'app').replace(/\/+$/, '');
   const query = new URLSearchParams({ app });
   if (options.pass?.length) query.set('pass', options.pass.join(','));

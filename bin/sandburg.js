@@ -22,8 +22,9 @@ try {
   // Playwright is an optional peer dependency (ADR 0074): the browser runtime's embedders do without it.
   const missing = err?.code === 'ERR_MODULE_NOT_FOUND' && /'(playwright-core|@playwright\/test)'/.exec(err.message)?.[1];
   if (!missing) throw err;
-  const { peerDependencies: peers } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  const packages = Object.entries(peers).map(([name, version]) => `${name}@${version}`).join(' ');
+  const { version, peerDependencies: peers } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  // Sandburg too: run by npx from its cache, it would not find peers installed in the project.
+  const packages = [`sandburg@${version}`, ...Object.entries(peers).map(([name, v]) => `${name}@${v}`)].join(' ');
   console.error(`error: Sandburg's CLI needs Playwright, which is not installed (${missing}). Run: npm install --save-dev ${packages}`);
   process.exit(2);
 }

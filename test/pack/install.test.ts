@@ -163,5 +163,5 @@ test('installed without Playwright, the browser runtime is there for an embedder
     (err: { code: number; stderr: string }) => err,
   );
   assert.equal(failed.code, 2);
-  assert.match(failed.stderr, /needs Playwright, which is not installed \((?:playwright-core|@playwright\/test)\)\. Run: npm install --save-dev @playwright\/test@\S+ playwright-core@\S+/);
+  assert.match(failed.stderr, /needs Playwright, which is not installed \((?:playwright-core|@playwright\/test)\)\. Run: npm install --save-dev sandburg@\S+ @playwright\/test@\S+ playwright-core@\S+/);
 });

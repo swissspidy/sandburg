@@ -65,7 +65,7 @@ The page needs an `<iframe id="app">`: the runtime loads the app into it.
 |---|---|---|
 | `base` | where `index.js` was loaded from | Where the runtime's directory is served. |
 | `scope` | the page's directory | The service worker's scope: a path that holds the embedding page. |
-| `app` | `<scope>app` | The path the app lives at. The app sees itself at `/`. |
+| `app` | `<scope>app` | The path the app lives at. The app sees itself at `/`: a link or redirect to a path that starts with this one is taken to be under it already (an app that writes deployment paths), so pick a path the app's own routes do not start with. |
 | `pass` | — | Path prefixes under the scope that are the embedder's own files (scripts, styles), left to the network. The runtime's directory always is. Other paths outside the app are taken to be the app's own absolute paths (`/_next/…`, `/src/main.tsx`). |
 
 ## What it does not do

@@ -6,9 +6,12 @@ result: an exit code, and a `result.json` that says what failed and why.
 
 ## From a coding agent
 
-Give the agent one command, and let it read the result:
+Install Sandburg with the Playwright it drives, an optional peer dependency
+([Troubleshooting](troubleshooting.md#playwright-is-not-installed)), then give the agent one command,
+and let it read the result:
 
 ```sh
+npm install --save-dev sandburg @playwright/test@1.65.1 playwright-core@1.65.1
 npx sandburg run . --checks checks.spec.ts --checks-in page --json
 ```
 

@@ -64,7 +64,7 @@ npx sandburg run ./my-app --checks checks.spec.ts
 ```
 
 Sandburg drives Chromium with Playwright, an optional peer dependency at the exact version Sandburg
-names (`sandburg` without it prints the command above). If that Playwright's Chromium is missing, the
+names (`sandburg` without it prints the command that installs it). If that Playwright's Chromium is missing, the
 run stops and prints the command that installs it
 ([Troubleshooting](docs/guide/troubleshooting.md#chromium-is-not-installed)).
 
