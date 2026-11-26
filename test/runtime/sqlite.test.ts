@@ -238,3 +238,29 @@ test('a WAL-mode database opens: checkpointed, or with its -wal\'s transactions;
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a WAL-mode database written right before process.exit() is written back in WAL mode, its -wal emptied (#174)', async () => {
+  const files = walDatabases();
+  const out = await h.run(
+    {
+      ...fakePackage('better-sqlite3'),
+      'seed.js': `
+        const fs = require('fs');
+        const files = ${JSON.stringify(files)};
+        fs.writeFileSync('live.sqlite', Buffer.from(files.live, 'base64'));
+        fs.writeFileSync('live.sqlite-wal', Buffer.from(files.liveWal, 'base64'));
+        new (require('better-sqlite3'))('live.sqlite').prepare("INSERT INTO items (name) VALUES ('three')").run();
+        process.exit(0);`,
+      'main.js': `
+        const fs = require('fs');
+        require('child_process').execFile('node', ['seed.js'], (err) => {
+          const file = fs.readFileSync('live.sqlite');
+          const names = new (require('better-sqlite3'))('live.sqlite').prepare('SELECT name FROM items ORDER BY id').pluck().all();
+          console.log(JSON.stringify({ err, names, header: [file[18], file[19]], wal: fs.statSync('live.sqlite-wal').size }));
+        });`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout.trim().split('\n').pop()!), { err: null, names: ['ONE', 'two', 'three'], header: [2, 2], wal: 0 });
+});

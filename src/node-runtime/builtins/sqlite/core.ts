@@ -122,6 +122,20 @@ interface Shared {
 const shared = new Map<string, Shared>();
 
 /**
+ * Writes a database back to its file: the whole image first, then, for a WAL-mode file, its emptied
+ * -wal and -shm (else SQLite on the developer's machine would replay their frames over it), as after
+ * SQLite's own checkpoint; back in WAL mode, as it was. Clean only once all of it is written: a write
+ * that fails leaves it dirty, for the next flush.
+ */
+function writeBack(s: Shared, path: string): void {
+  const bytes = sqlite().capi.sqlite3_js_db_export(s.db.pointer);
+  if (s.wal) bytes[18] = bytes[19] = 2;
+  s.files.write(path, bytes);
+  if (s.wal) for (const sidecar of [`${path}-wal`, `${path}-shm`]) if (s.files.exists(sidecar)) s.files.write(sidecar, new Uint8Array());
+  s.dirty = false;
+}
+
+/**
  * Writes every changed database back to its file now: the process exits (process.exit() right after
  * a write, as a seed script ends), and the timer that would have written it never fires. A transaction
  * still open is rolled back first, as a database file would not have it, and what was committed before
@@ -133,8 +147,7 @@ export function flushDatabases(): void {
     if (!s.dirty || !s.path) continue;
     try {
       if (sqlite().capi.sqlite3_get_autocommit(s.db.pointer) === 0) s.db.exec('ROLLBACK');
-      s.files.write(s.path, sqlite().capi.sqlite3_js_db_export(s.db.pointer));
-      s.dirty = false;
+      writeBack(s, s.path);
     } catch (error) {
       failure ??= { error };
     }
@@ -264,15 +277,7 @@ export class Handle {
       s.timer = setTimeout(() => this.flush(), 20);
       return;
     }
-    s.dirty = false;
-    const bytes = sqlite().capi.sqlite3_js_db_export(s.db.pointer);
-    if (s.wal) {
-      // Back in WAL mode, as it was; its sidecars are what this file now holds, as after SQLite's own
-      // checkpoint (else SQLite on the developer's machine would replay their frames over it).
-      bytes[18] = bytes[19] = 2;
-      for (const sidecar of [`${s.path}-wal`, `${s.path}-shm`]) if (this.files.exists(sidecar)) this.files.write(sidecar, new Uint8Array());
-    }
-    this.files.write(s.path, bytes);
+    writeBack(s, s.path);
   }
 
   close(): void {
