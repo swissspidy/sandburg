@@ -32,18 +32,20 @@ process.exitCode = await cli.main(process.argv.slice(2));
 /**
  * What installs Playwright beside this copy of Sandburg. A copy npx runs from its cache does not see
  * packages installed in the project: Sandburg goes into the project with them. A copy installed in a
- * project gets the peers in the same group as Sandburg (a production dependency stays one).
+ * project gets the peers in the same group as Sandburg (a production dependency stays one). A global
+ * copy (npm install -g: no package.json beside its node_modules) gets them installed globally too.
  */
 function installCommand(version, playwright) {
   const dir = import.meta.dirname;
   if (dir.includes(`${sep}_npx${sep}`)) return `npm install --save-dev sandburg@${version} ${playwright}, then run npx sandburg again`;
   const at = dir.lastIndexOf(`${sep}node_modules${sep}`);
   if (at === -1) return 'npm install'; // a checkout: they are development dependencies
-  let production = false;
+  let pkg;
   try {
-    production = !!JSON.parse(readFileSync(resolve(dir.slice(0, at), 'package.json'), 'utf8')).dependencies?.sandburg;
+    pkg = JSON.parse(readFileSync(resolve(dir.slice(0, at), 'package.json'), 'utf8'));
   } catch {
-    // no package.json there: a development install is the likelier one
+    // No project there: a global install (<prefix>/lib/node_modules, or <prefix>/node_modules on Windows).
+    return `npm install --global ${playwright}`;
   }
-  return `npm install ${production ? '' : '--save-dev '}${playwright}`;
+  return `npm install ${pkg?.dependencies?.sandburg ? '' : '--save-dev '}${playwright}`;
 }

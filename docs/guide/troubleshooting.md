@@ -14,6 +14,8 @@ error: Sandburg's CLI needs Playwright, which is not installed (playwright-core)
 - **Sandburg installed in the project**: the command installs Playwright in the same group as Sandburg
   (`dependencies` when Sandburg is a production dependency, so it stays one; `devDependencies`
   otherwise).
+- **Sandburg installed globally** (`npm install -g sandburg`): the command installs Playwright globally
+  too (`npm install --global @playwright/test@… playwright-core@…`), where the global copy finds it.
 - **`npx sandburg` in a project without it**: npx runs a copy from its cache, which does not see packages
   installed in the project, so the command installs Sandburg too
   (`npm install --save-dev sandburg@<version> @playwright/test@… playwright-core@…`). Then run
