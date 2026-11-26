@@ -503,6 +503,31 @@ test('a server that runs synchronous commands as it starts (node -p, a git revis
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+// Vite in middleware mode listens first, its HMR WebSocket server on 24678: the Express server that
+// embeds it, listening after, is the app (#181).
+test('an Express server that embeds Vite in middleware mode is the app, not Vite\'s HMR server that listened first', async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'vite-middleware', private: true, type: 'module', scripts: { dev: 'node server.js' }, dependencies: { express: '^5.0.0', vite: '^6.0.0' } }),
+      'server.js': [
+        "import express from 'express';",
+        "import { createServer as createViteServer } from 'vite';",
+        'const app = express();',
+        "const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'custom' });",
+        'app.use(vite.middlewares);',
+        "app.get('/', (_req, res) => res.status(200).set({ 'Content-Type': 'text/html' }).end('<h1>Hello from Express</h1>'));",
+        'app.listen(process.env.PORT || 3000);',
+      ].join('\n'),
+    },
+    { name: 'vite-middleware', path: 'vite-middleware' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: { renders: async ({ app, expect }) => expect(app.getByRole('heading', { level: 1 })).toHaveText('Hello from Express') },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 // TypeScript 7's tsc is native code: in the runtime it runs tsrs (@tsrs/wasm) instead (install-rules.ts).
 const typescript7 = (name: string, source: string) =>
   projectFromFiles(

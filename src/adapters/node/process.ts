@@ -110,12 +110,20 @@ const EPHEMERAL_PATIENCE_MS = 5_000;
 /** How long every process of the program serves a port, with no new port, before pagePort takes a port that sent no HTML. */
 const SETTLED_MS = 1000;
 
+/** What a WebSocket-only server (ws) answers a plain GET with: not the app's server, whatever listened first. */
+const UPGRADE_REQUIRED = 426;
+
+/** How long serverPort waits for a server's answer before taking it for the app's (a server may answer GET / only later, or never). */
+const SERVER_PROBE_MS = 2000;
+
 /**
  * What the head of an answer to pagePort's probe (GET /) tells: whether it is the page (null: no
  * Content-Type, the body tells), and whether it said it serves something else (notPage: a status
  * of 400 or more, or a Content-Type other than HTML or plain text, as an API's JSON).
  */
 export function probeAnswer(status: number, contentType: string | undefined): { page: boolean | null; notPage: boolean } {
+  // A WebSocket-only server (Vite's HMR server in middleware mode, on 24678): neither the page nor an API.
+  if (status === UPGRADE_REQUIRED) return { page: false, notPage: false };
   if (status >= 400) return { page: false, notPage: true };
   if (contentType === undefined) return { page: null, notPage: false };
   const html = /html/i.test(contentType);
@@ -235,6 +243,40 @@ export class NodeProcess {
   }
 
   /**
+   * The port of the program's server: the first to listen, but for a WebSocket-only server's (it answers
+   * GET / with 426 Upgrade Required). An Express app that embeds Vite in middleware mode listens after
+   * Vite's HMR server has, on 24678 (#181).
+   */
+  async serverPort(): Promise<number> {
+    const skipped = new Set<number>();
+    for (;;) {
+      await this.until(() => this.ports.some((port) => !skipped.has(port)));
+      const port = this.ports.find((p) => !skipped.has(p))!;
+      if ((await this.probeStatus(port)) !== UPGRADE_REQUIRED) return port;
+      skipped.add(port);
+    }
+  }
+
+  /** The status a server answers GET / with: null when it fails, or has not answered within SERVER_PROBE_MS. */
+  private probeStatus(port: number): Promise<number | null> {
+    return new Promise((resolve) => {
+      const channel = new MessageChannel();
+      const done = (status: number | null) => {
+        clearTimeout(timer);
+        channel.port1.close();
+        resolve(status);
+      };
+      const timer = setTimeout(() => done(null), SERVER_PROBE_MS);
+      channel.port1.onmessage = (e) => {
+        const m = e.data as { type: string; status?: number };
+        if (m.type === 'start' || m.type === 'full') done(m.status ?? null);
+        else if (m.type === 'error') done(null);
+      };
+      this.request(port, { method: 'GET', url: '/', headers: [['accept', 'text/html']], body: null }, channel.port2);
+    });
+  }
+
+  /**
    * The port whose server serves the app's page: of the ports the program listens on, the first to
    * answer GET / with HTML (a dev script may start an API server before or beside the page's). If
    * none has, the first port: once no other server is coming (see pagePortSettled); else after
@@ -250,6 +292,8 @@ export class NodeProcess {
     let lastPort = Date.now();
     /** Whether a port said it serves something else (see pagePortSettled). */
     let notPage = false;
+    /** Ports of WebSocket-only servers (see UPGRADE_REQUIRED): never the app's, nor taken for it. */
+    const webSocketOnly = new Set<number>();
     const probe = (port: number) => {
       probed.add(port);
       lastPort = Date.now();
@@ -277,6 +321,7 @@ export class NodeProcess {
         if (m.type === 'start' || m.type === 'full' || m.type === 'error') {
           const type = m.headers?.find(([k]) => k.toLowerCase() === 'content-type')?.[1];
           if (m.type === 'error') return done(false);
+          if (m.status === UPGRADE_REQUIRED) webSocketOnly.add(port);
           const answer = probeAnswer(m.status!, type);
           if (answer.notPage) notPage = true;
           if (answer.page !== null) return done(answer.page);
@@ -293,12 +338,14 @@ export class NodeProcess {
       await this.until(() => {
         for (const port of this.ports) if (!probed.has(port)) probe(port);
         if (found !== null || settled !== probed.size) return found !== null;
-        return pagePortSettled({ now: Date.now(), lastPort, patience, starting: this.starting, startingSince: this.startingSince, notPage });
+        // Only WebSocket-only servers so far: the app's server is still to come.
+        const onlyWebSockets = this.ports.every((port) => webSocketOnly.has(port));
+        return pagePortSettled({ now: Date.now(), lastPort, patience, starting: this.starting, startingSince: this.startingSince, notPage: notPage || onlyWebSockets });
       });
     } finally {
       clearInterval(tick);
     }
-    return found ?? this.ports[0];
+    return found ?? this.ports.find((port) => !webSocketOnly.has(port)) ?? this.ports[0];
   }
 
   /** The port of the app's page (its dev server), once known: the origin its requests come from (localOrigin). */
