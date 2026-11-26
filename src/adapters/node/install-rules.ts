@@ -34,13 +34,16 @@ export function wasiBindings(optionalDependencies: Record<string, string> | unde
  * Where the WebAssembly bindings packages list (wasiBindings' `listed`) go, so that each package
  * resolves the version it lists, as npm places optional dependencies: at the top when no copy is
  * there; else inside the package (its node_modules) when the copy it would resolve, in its own
- * node_modules or one above it, is another version. Two copies of a package (a project's rolldown
- * 1.2 and Vite's own 1.3, nested in vite) each get theirs. `present`: the packages already installed
+ * node_modules or one above it, is another version, or when a top-level package may have that binding
+ * unlisted (its candidate goes at the top). Two copies of a package (a project's rolldown 1.2 and
+ * Vite's own 1.3, nested in vite) each get theirs. `present`: the packages already installed
  * (a binding there is taken as it is). Returns location -> range.
  */
 export function wasiPlacements(packages: { location: string; optionalDependencies?: Record<string, string> }[], present: Set<string> = new Set()): Map<string, string> {
   const depth = (location: string) => location.split('node_modules/').length;
   const placed = new Map<string, string>();
+  // A binding a top-level package may have unlisted (wasiBindings' candidates): the top is kept for it.
+  const topCandidates = new Set(packages.filter((p) => depth(p.location) === 2).flatMap((p) => Object.keys(wasiBindings(p.optionalDependencies).candidates)));
   for (const p of [...packages].sort((a, b) => depth(a.location) - depth(b.location) || (a.location < b.location ? -1 : 1))) {
     const listed = Object.entries(wasiBindings(p.optionalDependencies).listed);
     if (!listed.length) continue;
@@ -50,7 +53,7 @@ export function wasiPlacements(packages: { location: string; optionalDependencie
     for (const [name, range] of listed) {
       const found = dirs.map((d) => d + name).find((location) => placed.has(location) || present.has(location));
       if (found && (present.has(found) || placed.get(found) === range)) continue;
-      const target = found ? `${p.location}/node_modules/${name}` : `node_modules/${name}`;
+      const target = found || (depth(p.location) > 2 && topCandidates.has(name)) ? `${p.location}/node_modules/${name}` : `node_modules/${name}`;
       if (!placed.has(target)) placed.set(target, range);
     }
   }
