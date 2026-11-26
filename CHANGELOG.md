@@ -1,5 +1,21 @@
 # sandburg
 
+## 0.5.0
+
+### Minor Changes
+
+- [#180](https://github.com/swissspidy/sandburg/pull/180) [`dc86af5`](https://github.com/swissspidy/sandburg/commit/dc86af54a9ab3d5ff0ff28e1853f3e51f3b6543a) Thanks [@swissspidy](https://github.com/swissspidy)! - `sandburg/browser-runtime` runs projects with git dependencies (`github:user/repo#v1`): `startProject` takes a fetcher, `EmbedOptions.git`, that resolves each one to a commit and returns its files, through a server of the embedder's (the git hosts send no CORS headers, so the page cannot fetch them itself). The files go where a Sandburg host puts them (`.sandburg/git/`, `.sandburg/git.json`), and the install links them as a host's. `withGitDependencies`, `GIT_DIR` and `GIT_FILE` are exported for pages that drive the host themselves. Without a fetcher, the install's error says how to give one.
+
+### Patch Changes
+
+- [#176](https://github.com/swissspidy/sandburg/pull/176) [`eea9d6d`](https://github.com/swissspidy/sandburg/commit/eea9d6dfa437226b23db8626684c0ffac5b9368b) Thanks [@swissspidy](https://github.com/swissspidy)! - A napi-rs package installed twice in different versions (a project's rolldown 1.2 and Vite 8.4's own rolldown 1.3, nested in `vite`) gets the WebAssembly binding of its own version, as npm places optional dependencies: the nested copy's goes inside it. It loaded the top copy's binding before, and Vite's dependency optimizer failed with `chunk.trackExternalMemory is not a function` (Nuxt 4, Astro 7 with Vite 8.4). Both the host's installer and the in-browser one.
+
+- [#175](https://github.com/swissspidy/sandburg/pull/175) [`d153952`](https://github.com/swissspidy/sandburg/commit/d1539520aab63d9f15e80e0db27ca5d2cf3c6492) Thanks [@swissspidy](https://github.com/swissspidy)! - A project's SQLite database in WAL mode opens with `better-sqlite3`, `sqlite3` and `node:sqlite` instead of failing with `SQLITE_CANTOPEN`, with the transactions still in its `-wal` file, as SQLite reads the pair. It is written back in WAL mode, its `-wal` and `-shm` emptied, as after SQLite's own checkpoint.
+  
+  `node:stream/web` has the readers, writers and controllers Node's has (`ReadableStreamBYOBReader`, `ReadableStreamDefaultReader`, `WritableStreamDefaultWriter` and the rest): Next.js's Edge Runtime primitives, which re-export them, load.
+
+- [#177](https://github.com/swissspidy/sandburg/pull/177) [`a76048b`](https://github.com/swissspidy/sandburg/commit/a76048b8e396cf9be66d3090dfd23c35ebda8283) Thanks [@swissspidy](https://github.com/swissspidy)! - In a project with top-level `await`, an ES module that awaits nothing itself is evaluated at once when nothing it imports is still evaluating, as in Node. A CommonJS package that `require()`s one synchronously gets it evaluated: Vite 8 loaded with `await import('vite')` no longer fails with rolldown's "Cannot find native binding" (its binding requires `@emnapi/core`, a pure ES module, that way).
+
 ## 0.4.0
 
 ### Minor Changes
