@@ -52,3 +52,23 @@ test("import.meta.resolve gives URLs as Node's does: a package's by its import c
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.deepEqual(JSON.parse(out.stdout.trim()), ['file:///app/node_modules/dual/index.js', 'file:///app/later.js', 'file:///up.js', 'node:fs', 'node:path', 'data:text/javascript,1']);
 });
+
+test("a CommonJS package's synchronous require() of an ES module gets it evaluated in a project with top-level await (rolldown's of @emnapi/core, #172)", async () => {
+  // The project awaits at the top level, so the host compiles every ES module as an async module.
+  const esm = (path: string, source: string) => compileForRuntime(source, path, 'esm', { asyncModules: true });
+  const install = {
+    files: {
+      'node_modules/core/package.json': JSON.stringify({ name: 'core', type: 'module', exports: { '.': './index.js' } }),
+      // As @emnapi/core: an exported function reading a top-level const, and an import of its own.
+      'node_modules/core/util.js': esm('/app/node_modules/core/util.js', `export const label = 'wasm';\n`),
+      'node_modules/core/index.js': esm('/app/node_modules/core/index.js', `import { label } from './util.js';\nconst _WebAssembly = typeof WebAssembly !== 'undefined' ? WebAssembly : undefined;\nexport function instantiateSync() { return label + ':' + typeof _WebAssembly.Module; }\n`),
+      // As rolldown's binding loader: CommonJS, requiring it synchronously and calling it at once.
+      'node_modules/binding/package.json': JSON.stringify({ name: 'binding', main: 'index.cjs' }),
+      'node_modules/binding/index.cjs': `module.exports = require('core').instantiateSync();\n`,
+    },
+    bundled: [],
+  };
+  const out = await h.runInstalled({ 'main.mjs': `const { default: binding } = await import('binding');\nconsole.log(binding);\n` }, install, '/app/main.mjs');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), 'wasm:function');
+});

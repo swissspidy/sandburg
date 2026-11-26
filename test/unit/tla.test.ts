@@ -26,7 +26,8 @@ console.log('ready');`);
   assert.match(out, /export function helper\(\) \{ return count; \}/);
   assert.match(out, /let a, c, count, Store, __sandburg_default;/);
   assert.match(out, /export \{ count, Store, __sandburg_default as default \};/);
-  assert.match(out, /await Promise\.all\(\[__sandburg_dep_0\.__sandburg_tla, __sandburg_dep_1\.__sandburg_tla, __sandburg_dep_2\.__sandburg_tla\]\);/);
+  assert.match(out, /const __sandburg_pending = \[__sandburg_dep_0\.__sandburg_tla, __sandburg_dep_1\.__sandburg_tla, __sandburg_dep_2\.__sandburg_tla\]\.filter\(\(p\) => p\);/);
+  assert.match(out, /export let __sandburg_tla = \(async \(\) => \{\nif \(__sandburg_pending\.length\) await Promise\.all\(__sandburg_pending\);/);
   assert.match(out, /\(\{ a, b: \[c\] \} = await open\(\)\);/);
   assert.match(out, /Store = class Store \{\};/);
   assert.match(out, /__sandburg_default = \(await fs\.promises\.readFile\('x'\)\);/);
@@ -44,4 +45,43 @@ test('compileForRuntime turns top-level await into CommonJS that exports the eva
   assert.match(ts, /__sandburg_tla/);
   // Without top-level await nothing changes.
   assert.doesNotMatch(compileForRuntime(`export const x = 1;`, '/app/c.mjs', 'esm'), /__sandburg_tla/);
+});
+
+/** Runs compiled CommonJS with the given modules to require, as the runtime's loader does. */
+function run(cjs: string, modules: Record<string, unknown> = {}) {
+  const module = { exports: {} as Record<string, unknown> };
+  new Function('module', 'exports', 'require', cjs)(module, module.exports, (id: string) => modules[id]);
+  return module.exports;
+}
+
+test('an async module without an await of its own runs its body at once when nothing it imports is still evaluating (#172)', () => {
+  // As @emnapi/core: an exported function that reads a top-level const, called by a synchronous require().
+  const code = `import { helper } from './dep.js';\nconst _WebAssembly = typeof WebAssembly !== 'undefined' ? WebAssembly : undefined;\nexport function instantiate() { return _WebAssembly === WebAssembly && helper(); }`;
+  const settled = run(compileForRuntime(code, '/app/core.mjs', 'esm', { asyncModules: true }), { './dep.js': { helper: () => 'ok', __sandburg_tla: undefined } });
+  assert.equal(settled.__sandburg_tla, undefined);
+  assert.equal((settled.instantiate as () => unknown)(), 'ok');
+  // A CommonJS import (no __sandburg_tla at all) is not waited for either.
+  const cjsDep = run(compileForRuntime(code, '/app/core.mjs', 'esm', { asyncModules: true }), { './dep.js': { helper: () => 'ok' } });
+  assert.equal((cjsDep.instantiate as () => unknown)(), 'ok');
+});
+
+test('an async module waits for an import still evaluating, then nothing is left to wait for (#172)', async () => {
+  let finish!: () => void;
+  const dep = { value: 0, __sandburg_tla: new Promise<void>((resolve) => (finish = resolve)) as Promise<void> | undefined };
+  const exports = run(compileForRuntime(`import { value } from './dep.js';\nexport const seen = value;`, '/app/a.mjs', 'esm', { asyncModules: true }), { './dep.js': dep });
+  assert.equal(exports.seen, undefined);
+  dep.value = 7;
+  finish();
+  await exports.__sandburg_tla;
+  assert.equal(exports.seen, 7);
+  await Promise.resolve();
+  assert.equal(exports.__sandburg_tla, undefined);
+  // One with an await of its own: evaluated, its __sandburg_tla is undefined too; a rejection stays for its importers.
+  const own = run(compileForRuntime(`export const v = await Promise.resolve(1);`, '/app/b.mjs', 'esm'));
+  await own.__sandburg_tla;
+  await Promise.resolve();
+  assert.deepEqual([own.v, own.__sandburg_tla], [1, undefined]);
+  const failing = run(compileForRuntime(`await Promise.reject(new Error('boom'));`, '/app/c.mjs', 'esm'));
+  await assert.rejects(failing.__sandburg_tla as Promise<unknown>, /boom/);
+  assert.notEqual(failing.__sandburg_tla, undefined);
 });
