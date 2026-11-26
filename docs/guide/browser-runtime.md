@@ -86,15 +86,17 @@ const { url } = await startProject(host, files, {
   ...options,
   // dependency: { name, spec, host, url, path, committish, semver, subdir }
   git: async (dependency) => {
-    const res = await fetch(`/my-git-proxy?url=${encodeURIComponent(dependency.url)}&ref=${encodeURIComponent(dependency.committish ?? '')}`);
+    const query = new URLSearchParams({ url: dependency.url, ref: dependency.committish ?? '', semver: dependency.semver ?? '' });
+    const res = await fetch(`/my-git-proxy?${query}`);
     return res.json(); // { commit: '<40-character commit id>', files: { 'package.json': '…', 'index.js': '…' } }
   },
 });
 ```
 
-It resolves the dependency's branch, tag or `semver:` range to a commit and returns the commit's files,
-by path from the repository's root (a string for a text file, `{ base64 }` for a binary one). Sandburg
-takes the `path:` subdirectory itself, leaves `.git/` and `node_modules/` out, and refuses an answer
+It resolves the dependency to a commit and returns the commit's files: `committish` is a branch, tag or
+commit; `semver` (`#semver:^1.0.0`, `committish` then `null`) a range, for the highest tag that
+satisfies it; neither, the default branch. The files are by path from the repository's root (a string
+for a text file, `{ base64 }` for a binary one). Sandburg takes the `path:` subdirectory itself, leaves `.git/` and `node_modules/` out, and refuses an answer
 without a full commit id, without a `package.json`, or with a path outside the repository. Git
 dependencies a fetched package names are fetched in turn. Nothing of the repository runs, as on a host:
 its `prepare` script is not run.

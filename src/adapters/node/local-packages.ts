@@ -57,7 +57,7 @@ export const GIT_DIR = '.sandburg/git';
 export const GIT_FILE = '.sandburg/git.json';
 
 /** The host's map of git specs to the directories it fetched them into (GIT_FILE), each inside GIT_DIR. */
-function gitDirs(files: FileTree): Record<string, string> {
+export function gitDirs(files: FileTree): Record<string, string> {
   const text = files[GIT_FILE];
   if (typeof text !== 'string') return {};
   try {

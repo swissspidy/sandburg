@@ -67,3 +67,17 @@ test('a project without git dependencies is left as it is, and the fetcher is no
   const out = await withGitDependencies(files, packageJson, async () => assert.fail('called'));
   assert.equal(out, files);
 });
+
+test('git dependencies the project already has (its git.json and their directories) are kept, not fetched again', async () => {
+  const { files, packageJson } = project({ 'hermite-resize': 'github:viliusle/Hermite-resize#master', helper: 'gitlab:acme/helper' });
+  const dir = '.sandburg/git/github.com-viliusle-Hermite-resize-aaaaaaaaaaaa';
+  const had: FileTree = { ...files, [`${dir}/package.json`]: JSON.stringify({ name: 'hermite-resize' }), [GIT_FILE]: JSON.stringify({ 'github:viliusle/Hermite-resize#master': dir }) };
+  const asked: string[] = [];
+  const out = await withGitDependencies(had, packageJson, async (dependency) => {
+    asked.push(dependency.name);
+    return { commit: OTHER, files: { 'package.json': JSON.stringify({ name: 'helper' }) } };
+  });
+  assert.deepEqual(asked, ['helper']);
+  assert.deepEqual(JSON.parse(out[GIT_FILE] as string), { 'github:viliusle/Hermite-resize#master': dir, 'gitlab:acme/helper': '.sandburg/git/gitlab.com-acme-helper-bbbbbbbbbbbb' });
+  assert.deepEqual(installPlan(out, packageJson).git, []);
+});

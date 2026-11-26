@@ -13,7 +13,7 @@
  * Pure (no Node.js imports).
  */
 import { FULL_SHA, parseGitSpec, type GitSpec } from './git-spec.ts';
-import { GIT_DIR, GIT_FILE, installPlan } from './local-packages.ts';
+import { GIT_DIR, GIT_FILE, gitDirs, installPlan } from './local-packages.ts';
 import { unsupportedDependency } from './spec-guard.ts';
 import type { FileTree, PackageJson } from '../../types.ts';
 
@@ -65,7 +65,8 @@ const plainPath = (path: string) => !path.startsWith('/') && !path.split('/').so
  * are fetched in turn, as the host does). The files as they were when it names none.
  */
 export async function withGitDependencies(files: FileTree, packageJson: PackageJson | null, fetchGit: GitFetcher, options: { log?: (line: string) => void } = {}): Promise<FileTree> {
-  const map: Record<string, string> = {};
+  // What the project's files already have (fetched before): kept, and not fetched again.
+  const map: Record<string, string> = gitDirs(files);
   let count = 0;
   let total = 0;
   for (;;) {
