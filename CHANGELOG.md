@@ -1,5 +1,11 @@
 # sandburg
 
+## 0.5.1
+
+### Patch Changes
+
+- [#182](https://github.com/swissspidy/sandburg/pull/182) [`b6a0305`](https://github.com/swissspidy/sandburg/commit/b6a0305c810196f6f45077fdbe92cb6848b901f7) Thanks [@swissspidy](https://github.com/swissspidy)! - An Express server that embeds Vite in middleware mode (`createServer({ server: { middlewareMode: true } })`, run as `node server.js`) is the app: Vite's HMR WebSocket server, which listens first on 24678, is no longer taken for it, as a server that answers a plain request with 426 Upgrade Required. `http.STATUS_CODES` has all of Node's codes (426 among them, which `ws` needs).
+
 ## 0.5.0
 
 ### Minor Changes
