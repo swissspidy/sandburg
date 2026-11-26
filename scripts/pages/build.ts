@@ -27,20 +27,17 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
-import { bundleBrowserCompiler, COMPILE_WORKER, ESBUILD_WASM, INSTALL_WORKER } from '../../src/adapters/node/compile-wasm-bundle.ts';
-import { bundleNodeRuntime, bundleRuntimeLib, bundleSqlite, SPARE_SCRIPT, SQLITE_WASM } from '../../src/node-runtime/bundle.ts';
-import { RUNTIME_LIBS, type RuntimeLib } from '../../src/node-runtime/libs.ts';
 import { TEMPLATES } from '../../pages/generate/templates.ts';
 import { chromium } from 'playwright-core';
 import { Session } from '../../src/index.ts';
 import { node } from '../../src/adapters/node/index.ts';
-import { bundleHost } from '../../src/orchestrator/host-server.ts';
 import { loadChecks } from '../../src/orchestrator/checks.ts';
 import { expect } from '@playwright/test';
 import type { HostInstall } from '../../src/adapters/node/browser.ts';
 import type { Project } from '../../src/types.ts';
 import { launchOptions } from '../../src/orchestrator/launch.ts';
 import { recordingServe } from './record.ts';
+import { buildBrowserRuntime } from '../browser-runtime.ts';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -118,13 +115,10 @@ async function build(): Promise<void> {
     await session.close();
   }
 
-  // The host page and the service worker (the node runtime's, behind pages/sw.js).
-  await writeFile(join(out, 'host.js'), await bundleHost(node));
-  await cp(join(ROOT, 'src/adapters/node/sw.js'), join(out, 'sw-core.js'));
-  // The compiler for what was not recorded (pages/compile.ts), with esbuild's WebAssembly build.
-  await writeFile(join(out, 'compile.js'), await bundleBrowserCompiler(join(ROOT, 'pages/compile.ts')));
-  await cp(ESBUILD_WASM, join(out, 'esbuild.wasm'));
-  for (const file of ['sw.js', 'demo.js', 'frame-guard.js', 'isolation.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
+  // The browser runtime (host.js, sw-core.js behind pages/sw.js, compile.js, runtime/: scripts/browser-runtime.ts),
+  // without its embedder's service worker and API: the site has its own.
+  await buildBrowserRuntime(out, { serviceWorker: false, api: false });
+  for (const file of ['sw.js', 'demo.js', 'index.html', 'style.css']) await cp(join(ROOT, 'pages', file), join(out, file));
   await buildGenerator();
   await writeFile(join(out, '.nojekyll'), '');
   await writeFile(manifestFile, JSON.stringify(manifest));
@@ -134,19 +128,8 @@ async function build(): Promise<void> {
   console.log(`site: ${out} (${Object.keys(manifest).length} recorded answers)`);
 }
 
-/** The generator page, and the runtime's files that a run installing in the page needs from the site (see pages/sw.js). */
+/** The generator page (the runtime's files it needs from the site are in runtime/, see pages/sw.js). */
 async function buildGenerator(): Promise<void> {
-  const runtime = join(out, 'runtime');
-  await mkdir(runtime, { recursive: true });
-  await writeFile(join(runtime, 'node-worker.js'), await bundleNodeRuntime());
-  await writeFile(join(runtime, 'node-spare.js'), SPARE_SCRIPT);
-  for (const name of Object.keys(RUNTIME_LIBS) as RuntimeLib[]) await writeFile(join(runtime, `node-${name}.js`), await bundleRuntimeLib(name));
-  await writeFile(join(runtime, 'compile-worker.js'), await bundleBrowserCompiler(COMPILE_WORKER));
-  await writeFile(join(runtime, 'install-worker.js'), await bundleBrowserCompiler(INSTALL_WORKER));
-  await writeFile(join(runtime, 'sqlite3.js'), await bundleSqlite());
-  await cp(ESBUILD_WASM, join(runtime, 'esbuild.wasm'));
-  await cp(SQLITE_WASM, join(runtime, 'sqlite3.wasm'));
-  await cp(join(ROOT, 'src/adapters/node/ws-shim.js'), join(runtime, 'ws-shim.js'));
   const dir = join(out, 'generate');
   await mkdir(dir, { recursive: true });
   await cp(join(ROOT, 'pages/generate/index.html'), join(dir, 'index.html'));

@@ -116,6 +116,7 @@ where it is read.
 | adapters | `src/adapters/` | an adapter's host and browser halves (the node adapter) | host, node-runtime, core |
 | page-checks | `src/page-checks/` | the checks API, its compiler and its in-frame runtime | core |
 | host | `src/host/` | the host page (RPC from the orchestrator, the adapter's browser half) | core |
+| browser-runtime | `src/browser-runtime/` | the browser runtime for embedders: its API, service worker and compiler | adapters, host, core |
 | node-runtime | `src/node-runtime/` | the runtime, and the host-side code that bundles it | core |
 | core | `src/` | types and helpers every layer shares | — |
 
@@ -127,6 +128,8 @@ where it is read.
 | compile-worker | `adapters/node/compile-worker.ts` | the page's compiler on esbuild-wasm (stubs `node:crypto`, `esbuild`) |
 | install-worker | `adapters/node/install-worker.ts` | the page's npm install (resolution, untarring, packing node_modules) |
 | service-worker | `adapters/node/sw.js` | the sandbox origin's service worker |
+| embedder | `browser-runtime/index.ts` | a page that embeds the browser runtime (sandburg/browser-runtime): its API |
+| embedded-service-worker | `browser-runtime/sw.js`, `browser-runtime/compile.ts` | an embedded browser runtime's service worker, with its compiler on esbuild-wasm (stubs `node:crypto`, `esbuild`) |
 | app-frame | `page-checks/runtime.ts`, `page-checks/dom-shim.ts`, `adapters/node/ws-shim.js` | the app's frame: the page checks' runtime and the WebSocket shim |
 
 <!-- architecture:end -->

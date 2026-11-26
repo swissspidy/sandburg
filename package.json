@@ -11,7 +11,12 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./browser-runtime": {
+      "types": "./dist/browser-runtime/index.d.ts",
+      "default": "./dist/browser-runtime/index.js"
+    },
+    "./browser-runtime/*": "./dist/browser-runtime/*"
   },
   "files": [
     "bin",
@@ -22,7 +27,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node scripts/browser-runtime.ts",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "oxlint --type-aware && knip --no-progress",
@@ -37,7 +42,6 @@
   "dependencies": {
     "@napi-rs/wasm-runtime": "^1.2.4",
     "@pkgjs/parseargs": "^0.11.0",
-    "@playwright/test": "1.65.1",
     "@sqlite.org/sqlite-wasm": "3.54.1-build1",
     "@testing-library/user-event": "^14.6.13",
     "acorn": "^8.18.0",
@@ -53,7 +57,6 @@
     "isomorphic-git": "1.44.19",
     "ivya": "^1.8.2",
     "path-browserify": "^1.0.1",
-    "playwright-core": "1.65.1",
     "process": "^0.11.10",
     "querystring-es3": "^0.2.1",
     "readable-stream": "^4.7.0",
@@ -66,13 +69,27 @@
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
+    "@playwright/test": "1.65.1",
     "@types/node": "^26.6.10",
     "@types/semver": "7.8.0",
     "knip": "^6.48.0",
     "oxc-parser": "^0.160.0",
     "oxlint": "^1.95.0",
     "oxlint-tsgolint": "^7.0.2008",
+    "playwright-core": "1.65.1",
     "typescript": "^7.0.2"
+  },
+  "peerDependencies": {
+    "@playwright/test": "1.65.1",
+    "playwright-core": "1.65.1"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    },
+    "playwright-core": {
+      "optional": true
+    }
   },
   "repository": {
     "type": "git",

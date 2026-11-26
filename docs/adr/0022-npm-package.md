@@ -1,6 +1,6 @@
 # ADR 0022: Publish Sandburg as an npm package
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0074](0074-browser-runtime-export.md) (the browser runtime prebuilt in `dist/`, Playwright an optional peer dependency)
 - Date: 2026-10-07
 
 ## Context

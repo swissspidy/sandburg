@@ -21,6 +21,9 @@
     "src/adapters/node/install-worker.ts",
     "src/adapters/node/sw.js",
     "src/adapters/node/ws-shim.js",
+    "src/browser-runtime/index.ts",
+    "src/browser-runtime/sw.js",
+    "src/browser-runtime/compile.ts",
     "src/page-checks/runtime.ts",
     "src/page-checks/dom-shim.ts",
     "lint/*.ts"
@@ -52,7 +55,9 @@
     "openssl"
   ],
   "ignoreUnresolved": [
-    "./lib/npm.js"
+    "./lib/npm.js",
+    "./frame-guard.js",
+    "./isolation.js"
   ],
   "ignore": [
     "fixtures/**"

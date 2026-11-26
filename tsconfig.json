@@ -23,7 +23,6 @@
     "src",
     "test",
     "lint",
-    "pages/compile.ts",
     "pages/generate",
     "evals",
     "integrations/harbor/build-tasks.ts",
