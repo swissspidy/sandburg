@@ -52,6 +52,8 @@ test("the head of an answer to pagePort's probe: the page, an API's, or the body
     [404, undefined, other],
     [500, 'text/html', other],
     [302, undefined, sniff],
+    // A WebSocket-only server (ws, Vite's HMR server in middleware mode): neither the page nor an API.
+    [426, 'text/plain', { page: false, notPage: false }],
   ] as const) assert.deepEqual(probeAnswer(status, type), expected, `${status} ${type}`);
 });
 

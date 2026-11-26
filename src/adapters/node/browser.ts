@@ -387,7 +387,8 @@ export function createAdapter(): RuntimeAdapter {
       // A cache restored from an earlier run is stored again only if the run changed it (see dispose).
       p.run(main, argv, devCache?.digests && !devCache.waitFor ? devCache.dirs : undefined);
       // A dev script may start several servers (an API and the page's dev server): the page's is the app.
-      port = shell ? await p.pagePort() : await p.listening();
+      // One program's server is the app, but for a WebSocket-only one (Vite's HMR server in middleware mode).
+      port = shell ? await p.pagePort() : await p.serverPort();
       p.appPort = port;
       // One of the dev script's servers crashed while the others came up (concurrently keeps going): the app is broken.
       const crashed = p.failedCommands[0];

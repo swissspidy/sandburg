@@ -3051,3 +3051,10 @@ reader.read(new Uint8Array(8)).then(({ value }) => {
     read: [1, 2, 3],
   });
 });
+
+test("http.STATUS_CODES is Node's: ws answers a plain request with 426 Upgrade Required (#181)", async () => {
+  const out = await h.run({ 'main.js': "console.log(JSON.stringify(require('http').STATUS_CODES));" }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const { STATUS_CODES } = await import('node:http');
+  assert.deepEqual(JSON.parse(out.stdout.trim()), STATUS_CODES);
+});
