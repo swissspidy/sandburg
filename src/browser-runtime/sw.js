@@ -22,11 +22,12 @@ const site = new URL('./', self.location);
 const config = new URL(self.location).searchParams;
 const appPrefix = (config.get('app') ?? scope.pathname + 'app').replace(/\/+$/, '');
 /**
- * This directory's own files: by name, not the directory as a prefix, which is / for a runtime
- * served at the site's root and would take every path of the app's for the embedder's.
+ * This directory's own files, by exact path, and its runtime/ directory: not the directory as a
+ * prefix, which is / for a runtime served at the site's root and would take every path of the app's
+ * for the embedder's (nor a file name as a prefix: the app's /index.json is not /index.js).
  */
-const OWN = ['index.js', 'sw.js', 'sw-core.js', 'compile.js', 'host.js', 'frame-guard.js', 'isolation.js', 'runtime/'].map((f) => site.pathname + f);
-const pass = [...OWN, ...(config.get('pass') ?? '').split(',').filter(Boolean)];
+const OWN = new Set(['index.js', 'sw.js', 'sw-core.js', 'compile.js', 'host.js', 'frame-guard.js', 'isolation.js'].map((f) => site.pathname + f));
+const pass = [site.pathname + 'runtime/', ...(config.get('pass') ?? '').split(',').filter(Boolean)];
 
 const inApp = (url) => url.pathname === appPrefix || url.pathname.startsWith(appPrefix + '/');
 
@@ -124,7 +125,7 @@ self.sandburgHooks = {
       return true;
     }
     // The embedder's own files (its scripts, this runtime's files).
-    if (pass.some((p) => url.pathname.startsWith(p))) return true;
+    if (OWN.has(url.pathname) || pass.some((p) => url.pathname.startsWith(p))) return true;
     // Everything else belongs to the app.
     return false;
   },

@@ -8,11 +8,16 @@ runtime ([Embedding the browser runtime](browser-runtime.md)) does not. Without 
 (exit code `2`) and prints the command that installs the version it drives:
 
 ```text
-error: Sandburg's CLI needs Playwright, which is not installed (playwright-core). Run: npm install --save-dev sandburg@0.3.1 @playwright/test@1.65.1 playwright-core@1.65.1
+error: Sandburg's CLI needs Playwright, which is not installed (playwright-core). Run: npm install --save-dev @playwright/test@1.65.1 playwright-core@1.65.1
 ```
 
-The command installs Sandburg too: `npx sandburg` in a project without it runs a copy from npx's cache,
-which does not see packages installed in the project. Then run `npx sandburg` again.
+- **Sandburg installed in the project**: the command installs Playwright in the same group as Sandburg
+  (`dependencies` when Sandburg is a production dependency, so it stays one; `devDependencies`
+  otherwise).
+- **`npx sandburg` in a project without it**: npx runs a copy from its cache, which does not see packages
+  installed in the project, so the command installs Sandburg too
+  (`npm install --save-dev sandburg@<version> @playwright/test@… playwright-core@…`). Then run
+  `npx sandburg` again.
 
 The library fails to import with Node's `ERR_MODULE_NOT_FOUND` for `playwright-core`. Another
 Playwright version than the one Sandburg names is an npm resolution error (`ERESOLVE`): install the

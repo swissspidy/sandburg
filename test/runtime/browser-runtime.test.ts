@@ -15,12 +15,14 @@ import { buildBrowserRuntime } from '../../scripts/browser-runtime.ts';
 
 const TYPES: Record<string, string> = { '.js': 'text/javascript', '.wasm': 'application/wasm' };
 
-/** A project the embedding page runs: a Node server with no packages, which answers / and /data.txt. */
+/** A project the embedding page runs: a Node server with no packages, which answers /, /data.txt and /index.json. */
 const PROJECT = {
   'package.json': JSON.stringify({ name: 'embedded', private: true, scripts: { dev: 'node server.js' } }),
   'server.js': [
     "require('node:http').createServer((q, s) => {",
     "  if (q.url === '/data.txt') return s.end('from the app');",
+    // A name that starts with one of the runtime's own files (index.js), for a runtime served at /.
+    "  if (q.url === '/index.json') return s.end('{\"app\":true}');",
     "  s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>node ' + process.version + '</h1>');",
     '}).listen(3000);',
   ].join('\n'),
@@ -105,7 +107,8 @@ async function runsInPage(path: string): Promise<void> {
     const app = tab.frameLocator('#app');
     assert.match((await app.locator('h1').textContent()) ?? '', /^node v24\./);
     // The app's own absolute paths go to its server; it sees itself at /.
-    assert.equal(await app.locator('h1').evaluate(async () => [location.pathname, await (await fetch('/data.txt')).text()].join(' ')), '/ from the app');
+    const seen = await app.locator('h1').evaluate(async () => [location.pathname, await (await fetch('/data.txt')).text(), await (await fetch('/index.json')).text()].join(' '));
+    assert.equal(seen, '/ from the app {"app":true}');
   } finally {
     await tab.close();
   }

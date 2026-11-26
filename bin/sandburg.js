@@ -23,9 +23,27 @@ try {
   const missing = err?.code === 'ERR_MODULE_NOT_FOUND' && /'(playwright-core|@playwright\/test)'/.exec(err.message)?.[1];
   if (!missing) throw err;
   const { version, peerDependencies: peers } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  // Sandburg too: run by npx from its cache, it would not find peers installed in the project.
-  const packages = [`sandburg@${version}`, ...Object.entries(peers).map(([name, v]) => `${name}@${v}`)].join(' ');
-  console.error(`error: Sandburg's CLI needs Playwright, which is not installed (${missing}). Run: npm install --save-dev ${packages}`);
+  const playwright = Object.entries(peers).map(([name, v]) => `${name}@${v}`).join(' ');
+  console.error(`error: Sandburg's CLI needs Playwright, which is not installed (${missing}). Run: ${installCommand(version, playwright)}`);
   process.exit(2);
 }
 process.exitCode = await cli.main(process.argv.slice(2));
+
+/**
+ * What installs Playwright beside this copy of Sandburg. A copy npx runs from its cache does not see
+ * packages installed in the project: Sandburg goes into the project with them. A copy installed in a
+ * project gets the peers in the same group as Sandburg (a production dependency stays one).
+ */
+function installCommand(version, playwright) {
+  const dir = import.meta.dirname;
+  if (dir.includes(`${sep}_npx${sep}`)) return `npm install --save-dev sandburg@${version} ${playwright}, then run npx sandburg again`;
+  const at = dir.lastIndexOf(`${sep}node_modules${sep}`);
+  if (at === -1) return 'npm install'; // a checkout: they are development dependencies
+  let production = false;
+  try {
+    production = !!JSON.parse(readFileSync(resolve(dir.slice(0, at), 'package.json'), 'utf8')).dependencies?.sandburg;
+  } catch {
+    // no package.json there: a development install is the likelier one
+  }
+  return `npm install ${production ? '' : '--save-dev '}${playwright}`;
+}
