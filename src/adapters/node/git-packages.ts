@@ -25,7 +25,8 @@ import git from 'isomorphic-git';
 import semver from 'semver';
 import { untar } from './browser-npm/tar.ts';
 import { FULL_SHA, extraGitHosts, parseGitSpec, type GitSpec } from './git-spec.ts';
-import { GIT_DIR, GIT_FILE, installPlan, type InstallPlan } from './local-packages.ts';
+import { GIT_FILE, installPlan, type InstallPlan } from './local-packages.ts';
+import { gitDir } from './git-tree.ts';
 import { UnsupportedDependencyError, unsupportedDependency } from './spec-guard.ts';
 import { isText } from '../../store.ts';
 import type { FileTree, Project } from '../../types.ts';
@@ -380,8 +381,6 @@ function lockedCommit(files: FileTree, name: string, spec: GitSpec, hosts: strin
   return null;
 }
 
-/** A directory name for a package's files under .sandburg/git/. */
-const dirOf = (spec: GitSpec, sha: string) => `${GIT_DIR}/${`${spec.origin.slice('https://'.length)}-${spec.path}`.replace(/[^\w.-]+/g, '-')}-${sha.slice(0, 12)}${spec.subdir ? `/${spec.subdir}` : ''}`;
 
 /**
  * The project with its git dependencies' files: each git dependency the root, a workspace, a local
@@ -423,7 +422,7 @@ export async function withGitPackages(project: Project, options: { offline?: boo
         const started = Date.now();
         const sha = (!dir && !(spec.committish && FULL_SHA.test(spec.committish)) ? lockedCommit(files, name, spec, hosts) : null) ?? (await until(resolveCommit(spec, label, options.offline === true, fetching)));
         const tree = await until(commitFiles(spec, sha, label, options.offline === true, fetching));
-        const at = dirOf(spec, sha);
+        const at = gitDir(spec, sha);
         const prefix = spec.subdir ? `${spec.subdir}/` : '';
         let n = 0;
         for (const [path, data] of Object.entries(tree)) {

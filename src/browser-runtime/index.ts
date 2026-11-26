@@ -20,11 +20,13 @@ import type { HostApi, RpcResult } from '../host/types.ts';
 import type { FileTree, InstallReport, PackageJson } from '../types.ts';
 import { detectFramework } from '../framework.ts';
 import { pageInstall } from '../adapters/node/plan.ts';
+import { GIT_DIR, GIT_FILE, withGitDependencies, type GitFetcher } from '../adapters/node/git-tree.ts';
 import { isolationFailure } from './isolation.js';
 
 export { guardAppFrame } from './frame-guard.js';
-export { isolationFailure, detectFramework, pageInstall };
+export { isolationFailure, detectFramework, pageInstall, withGitDependencies, GIT_DIR, GIT_FILE };
 export type { HostApi, RpcResult };
+export type { FetchedGitDependency, GitDependencyRequest, GitFetcher } from '../adapters/node/git-tree.ts';
 export type { FileTree, Framework, InstallReport, PackageJson } from '../types.ts';
 
 /** Where the embedded runtime is served and where it runs its app (every option has a default). */
@@ -41,6 +43,14 @@ export interface EmbedOptions {
    * are taken to be the app's own absolute paths (/_next/…, /src/main.tsx).
    */
   pass?: string[];
+  /**
+   * Fetches a git dependency (`github:user/repo#v1` and npm's other git shapes) for startProject: the
+   * page cannot, as the git hosts' archive and git endpoints send no CORS headers. Given each
+   * dependency (its repository, committish), it resolves the commit and returns its files, through
+   * a server of the embedder's for instance. Without one, a project with a git dependency fails to
+   * install.
+   */
+  git?: GitFetcher;
 }
 
 interface Resolved {
@@ -131,6 +141,8 @@ export async function startProject(host: HostApi, files: FileTree, options: Embe
   const { app } = resolveOptions(options);
   const packageJson: PackageJson | null = typeof files['package.json'] === 'string' ? (JSON.parse(files['package.json']) as PackageJson) : null;
   const framework = detectFramework(files, packageJson);
+  // Its git dependencies' files, from the embedder's fetcher, where the install plan looks for them.
+  if (options.git) files = await withGitDependencies(files, packageJson, options.git);
   await host.dispose();
   await unwrap(host.mount(files, packageJson, framework));
   const install = await unwrap(host.install(pageInstall({ name: 'app', path: 'embedded', files, packageJson, framework, snapshotId: '' })));

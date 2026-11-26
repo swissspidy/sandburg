@@ -150,8 +150,9 @@ export function browserInstall(project: Project): HostInstall {
     extra: dir ? {} : extraDependencies(p),
   });
   const plan = planOf(project);
-  // Git dependencies are fetched by the host (git-packages.ts); the page cannot.
-  if (plan.git.length) throw unsupportedDependency(plan.git[0].name, plan.git[0].spec, 'git dependencies are fetched by the host, not in the page');
+  // Git dependencies are fetched by the host (git-packages.ts), or by the embedder's fetcher in a page
+  // that embeds the browser runtime (git-tree.ts, EmbedOptions.git); the page cannot fetch them itself.
+  if (plan.git.length) throw unsupportedDependency(plan.git[0].name, plan.git[0].spec, 'git dependencies are fetched by the host, not in the page (sandburg/browser-runtime: give startProject a fetcher, EmbedOptions.git)');
   const parts = [part('', rootInstall(project, plan))];
   for (const { dir, dependencies, lockfile } of plan.nested) parts.push(part(dir, nestedInstall(dependencies, lockfile)));
   for (const dir of packageDirs(project, plan.local)) {
