@@ -13,20 +13,29 @@
  *   export function q() { … }                 export function q() { … }
  *                                             let db;
  *                                             export { db };
- *                                             export const __sandburg_tla = (async () => {
- *                                               await __sandburg_dep_0.__sandburg_tla;
+ *                                             const pending = [__sandburg_dep_0.__sandburg_tla].filter(…);
+ *                                             export let __sandburg_tla = (async () => {
+ *                                               await Promise.all(pending);
  *                                               db = await open();
  *                                             })();
  *
  * Top-level declarations become module-scope `let` bindings assigned in the
  * body (function declarations stay where they are, so hoisting still works);
  * exports of them stay live bindings.
+ *
+ * Only what is still evaluating is waited for, as in Node: a module without an
+ * await of its own whose imports have all finished runs its body at once (its
+ * __sandburg_tla is undefined), so a CommonJS package's synchronous require()
+ * of it gets it evaluated. An async module's __sandburg_tla becomes undefined
+ * once it has finished.
  */
 import * as acorn from 'acorn';
 
 type Node = acorn.Node & Record<string, unknown>;
 
 const TLA_EXPORT = '__sandburg_tla';
+const PENDING = '__sandburg_pending';
+const BODY = '__sandburg_body';
 
 /** Whether an ES module has await (or for await) at its top level. */
 export function hasTopLevelAwait(code: string): boolean {
@@ -110,13 +119,24 @@ export function toAsyncModule(code: string): string {
 
   const unique = [...new Set(sources)];
   const deps = unique.map((s, i) => `import * as __sandburg_dep_${i} from ${JSON.stringify(s)};`);
-  const awaitDeps = unique.length ? `await Promise.all([${unique.map((_, i) => `__sandburg_dep_${i}.${TLA_EXPORT}`).join(', ')}]);\n` : '';
+  // The imports still evaluating: an import that finished (or never was an async module) has none.
+  const pending = `const ${PENDING} = [${unique.map((_, i) => `__sandburg_dep_${i}.${TLA_EXPORT}`).join(', ')}].filter((p) => p);`;
+  const ownAwait = (ast.body as Node[]).some((stmt) => containsTopLevelAwait(stmt));
+  const evaluation = ownAwait
+    ? `export let ${TLA_EXPORT} = (async () => {\nif (${PENDING}.length) await Promise.all(${PENDING});\n${body.join('\n')}\n})();`
+    : // No await of its own: its body runs at once when nothing it imports is still evaluating, as an ES
+      // module's does, so a synchronous require() of it (a CommonJS package's) gets it evaluated.
+      `function ${BODY}() {\n${body.join('\n')}\n}\nexport let ${TLA_EXPORT} = ${PENDING}.length ? Promise.all(${PENDING}).then(${BODY}) : ${BODY}();`;
   return [
     ...head,
     ...deps,
     locals.length ? `let ${[...new Set(locals)].join(', ')};` : '',
     exported.length ? `export { ${exported.join(', ')} };` : '',
-    `export const ${TLA_EXPORT} = (async () => {\n${awaitDeps}${body.join('\n')}\n})();`,
+    pending,
+    evaluation,
+    // Once evaluated, nothing to wait for (a live binding): its importers that come later run at once.
+    // A rejection stays, for them to see (and is handled here only so as not to be reported twice).
+    `if (${TLA_EXPORT}) ${TLA_EXPORT}.then(() => { ${TLA_EXPORT} = undefined; }, () => {});`,
   ]
     .filter(Boolean)
     .join('\n');

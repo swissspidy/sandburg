@@ -122,6 +122,28 @@ test('an ESM backend with top-level await (setup before listen) runs', async () 
   assert.equal(result.status, 'passed', failures(result));
 });
 
+// #172: top-level await makes every ES module an async one; Vite 8's rolldown then requires @emnapi/core
+// (pure ESM) synchronously from CommonJS, and must get it evaluated, as in Node.
+test("a server that loads Vite 8 with top-level await (rolldown's binding requires @emnapi/core synchronously) runs", async () => {
+  const files = {
+    'package.json': JSON.stringify({ name: 'tla-vite-ssr', private: true, type: 'module', scripts: { dev: 'node server.js' }, dependencies: { vite: '^8.3.8' } }),
+    'server.js': [
+      "import http from 'node:http';",
+      "const { createServer } = await import('vite');",
+      "const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' });",
+      "http.createServer((req, res) => vite.middlewares(req, res, () => {",
+      "  res.setHeader('content-type', 'text/html');",
+      "  res.end('<!doctype html><html><body><h1>vite ' + typeof vite.transformRequest + '</h1></body></html>');",
+      "})).listen(3000);",
+    ].join('\n'),
+  };
+  const result = await session.run(projectFromFiles(files, { name: 'tla-vite-ssr', path: fixture('node-express') }), {
+    outDir,
+    checks: { 'the page renders': async ({ app, expect }) => void (await expect(app.getByRole('heading', { level: 1 })).toHaveText('vite function')) },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure, null, 2));
+});
+
 test('a compound dev script whose server sends HTML without a Content-Type is found at once, not after 60 s', async () => {
   const files = {
     'package.json': JSON.stringify({ name: 'no-content-type', private: true, scripts: { dev: 'node prep.js && node server.js' } }),
