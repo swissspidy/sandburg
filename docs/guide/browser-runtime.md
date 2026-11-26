@@ -28,6 +28,9 @@ const dir = new URL('./', import.meta.resolve('sandburg/browser-runtime/sw.js'))
   (`Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`), after one reload. A server that sets
   them itself saves the reload.
 
+The API's declarations, with every type, are in
+[`api/sandburg-browser-runtime.api.md`](../../api/sandburg-browser-runtime.api.md).
+
 ## Run a project
 
 The page needs an `<iframe id="app">`: the runtime loads the app into it.

@@ -63,6 +63,7 @@ export class AdapterError extends Error {
   }
 }
 
+/** What a host page call answers: its value, or its error serialized (an RPC across the page boundary throws nothing). */
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: SerializedError };
 
 /** What the host page (host.ts) exposes as `window.__sandburg`. */

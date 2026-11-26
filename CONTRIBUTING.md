@@ -55,7 +55,7 @@ commit them:
 
 ```sh
 node scripts/architecture.ts --update   # docs/architecture.md's tables (layers, environments)
-node scripts/api-report.ts --update     # api/sandburg.api.md, after a change to the public API
+node scripts/api-report.ts --update     # api/*.api.md, after a change to the public API (one per entry point)
 ```
 
 ### Wait for the thing, not a time
