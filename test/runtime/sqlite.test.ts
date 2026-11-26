@@ -6,6 +6,10 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { RuntimeHarness } from './harness.ts';
 
 const h = new RuntimeHarness();
@@ -170,4 +174,67 @@ test('node:sqlite: DatabaseSync, StatementSync, foreign keys on by default', asy
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   const r = JSON.parse(out.stdout.trim().split('\n').pop()!);
   assert.deepEqual(r, { res: { changes: 1, lastInsertRowid: 7 }, fk: ['ERR_SQLITE_ERROR', 'FOREIGN KEY constraint failed'], row: { id: 7 }, proto: true, all: 1 });
+});
+
+// A project's WAL-mode database (#174), as SQLite on the developer's machine leaves it: one checkpointed
+// (no -wal), and one whose last transactions are still in its -wal. Made here by the host's SQLite.
+function walDatabases() {
+  const dir = mkdtempSync(join(tmpdir(), 'sandburg-wal-'));
+  try {
+    const clean = new DatabaseSync(join(dir, 'clean.sqlite'));
+    clean.exec("PRAGMA journal_mode=WAL; CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO items (name) VALUES ('hello')");
+    clean.close();
+    const live = new DatabaseSync(join(dir, 'live.sqlite'));
+    live.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO items (name) VALUES ('one')");
+    live.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    live.exec("INSERT INTO items (name) VALUES ('two'); UPDATE items SET name = 'ONE' WHERE id = 1; CREATE TABLE more (x); INSERT INTO more VALUES (42)");
+    // Read while the connection is open: closing it checkpoints the -wal into the file and removes it.
+    const files = { clean: readFileSync(join(dir, 'clean.sqlite')), live: readFileSync(join(dir, 'live.sqlite')), liveWal: readFileSync(join(dir, 'live.sqlite-wal')) };
+    live.close();
+    return Object.fromEntries(Object.entries(files).map(([k, v]) => [k, v.toString('base64')]));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('a WAL-mode database opens: checkpointed, or with its -wal\'s transactions; written back in WAL mode, its -wal emptied (#174)', async () => {
+  const files = walDatabases();
+  const out = await h.run(
+    {
+      ...fakePackage('better-sqlite3'),
+      'main.js': `
+        const fs = require('fs');
+        const Database = require('better-sqlite3');
+        const files = ${JSON.stringify(files)};
+        fs.writeFileSync('clean.sqlite', Buffer.from(files.clean, 'base64'));
+        fs.writeFileSync('live.sqlite', Buffer.from(files.live, 'base64'));
+        fs.writeFileSync('live.sqlite-wal', Buffer.from(files.liveWal, 'base64'));
+        const clean = new Database('clean.sqlite').prepare('SELECT * FROM items').all();
+        const db = new Database('live.sqlite');
+        const live = [db.prepare('SELECT * FROM items ORDER BY id').all(), db.prepare('SELECT x FROM more').pluck().all()];
+        db.prepare("INSERT INTO items (name) VALUES ('three')").run();
+        db.close();
+        const file = fs.readFileSync('live.sqlite');
+        console.log(JSON.stringify({ clean, live, header: [file[18], file[19]], wal: fs.statSync('live.sqlite-wal').size, file: file.toString('base64') }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const r = JSON.parse(out.stdout.trim().split('\n').pop()!);
+  assert.deepEqual(r.clean, [{ id: 1, name: 'hello' }]);
+  // As the host's SQLite reads the pair: the -wal's update, insert and new table.
+  assert.deepEqual(r.live, [[{ id: 1, name: 'ONE' }, { id: 2, name: 'two' }], [42]]);
+  assert.deepEqual(r.header, [2, 2]);
+  assert.equal(r.wal, 0);
+  // The file written back is one the host's SQLite opens, with everything in it.
+  const dir = mkdtempSync(join(tmpdir(), 'sandburg-wal-'));
+  try {
+    writeFileSync(join(dir, 'back.sqlite'), Buffer.from(r.file, 'base64'));
+    const back = new DatabaseSync(join(dir, 'back.sqlite'));
+    assert.deepEqual(back.prepare('SELECT name FROM items ORDER BY id').all().map((row) => row.name), ['ONE', 'two', 'three']);
+    assert.equal(back.prepare('PRAGMA journal_mode').get()?.journal_mode, 'wal');
+    back.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

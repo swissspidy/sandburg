@@ -3020,3 +3020,34 @@ console.log(JSON.stringify({
     isKeyObject: [true,false],
   });
 });
+
+test("node:stream/web as Node's: the streams with their readers, writers and controllers (Next.js's edge primitives re-export them, #173)", async () => {
+  const out = await h.run(
+    {
+      'main.js': `const web = require('stream/web');
+const bytes = new web.ReadableStream({ type: 'bytes', start(c) { c.enqueue(new Uint8Array([1, 2, 3])); c.close(); } });
+const reader = bytes.getReader({ mode: 'byob' });
+reader.read(new Uint8Array(8)).then(({ value }) => {
+  console.log(JSON.stringify({
+    keys: Object.keys(web),
+    nullish: Object.keys(web).filter((k) => web[k] == null),
+    globals: Object.keys(web).every((k) => web[k] === globalThis[k]),
+    byob: reader instanceof web.ReadableStreamBYOBReader,
+    writer: new web.WritableStream().getWriter() instanceof web.WritableStreamDefaultWriter,
+    read: [...value],
+  }));
+});`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // Node 24's, but ReadableStreamTee (an internal function Node exports by accident, not a Web global).
+  assert.deepEqual(JSON.parse(out.stdout), {
+    keys: ['ReadableStream', 'ReadableStreamDefaultReader', 'ReadableStreamBYOBReader', 'ReadableStreamBYOBRequest', 'ReadableByteStreamController', 'ReadableStreamDefaultController', 'TransformStream', 'TransformStreamDefaultController', 'WritableStream', 'WritableStreamDefaultWriter', 'WritableStreamDefaultController', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'TextEncoderStream', 'TextDecoderStream', 'CompressionStream', 'DecompressionStream'],
+    nullish: [],
+    globals: true,
+    byob: true,
+    writer: true,
+    read: [1, 2, 3],
+  });
+});

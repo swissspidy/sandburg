@@ -110,6 +110,8 @@ export interface FileAccess {
 interface Shared {
   db: OoDb;
   path: string | null;
+  /** The file was in WAL mode: it is written back so, its -wal and -shm (replayed here) emptied. */
+  wal: boolean;
   refs: number;
   dirty: boolean;
   timer: ReturnType<typeof setTimeout> | null;
@@ -140,6 +142,56 @@ export function flushDatabases(): void {
   if (failure) throw failure.error;
 }
 
+/**
+ * A database file with its -wal's committed transactions applied, as SQLite reads the pair: the WAL's
+ * frames whose salts are its header's and whose running checksums hold, up to the last commit frame
+ * (one with the database's size in pages); a later, unfinished transaction is not the database's.
+ * Without a valid WAL, the file as it is (https://sqlite.org/fileformat2.html#walformat).
+ */
+function withWal(db: Uint8Array, wal: Uint8Array | null): Uint8Array {
+  const copy = () => Uint8Array.from(db);
+  if (!wal || wal.length < 32) return copy();
+  const view = new DataView(wal.buffer, wal.byteOffset, wal.byteLength);
+  const magic = view.getUint32(0);
+  if (magic !== 0x377f0682 && magic !== 0x377f0683) return copy();
+  const bigEndian = magic === 0x377f0683;
+  const pageSize = view.getUint32(8);
+  if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) !== 0) return copy();
+  const salts = [view.getUint32(16), view.getUint32(20)];
+  // SQLite's checksum: over 32-bit words, in pairs, with the byte order the magic number names.
+  let s0 = 0;
+  let s1 = 0;
+  const sum = (from: number, length: number) => {
+    for (let i = from; i < from + length; i += 8) {
+      s0 = (s0 + view.getUint32(i, !bigEndian) + s1) >>> 0;
+      s1 = (s1 + view.getUint32(i + 4, !bigEndian) + s0) >>> 0;
+    }
+  };
+  sum(0, 24);
+  if (s0 !== view.getUint32(24) || s1 !== view.getUint32(28)) return copy();
+  const committed = new Map<number, Uint8Array>();
+  const pending = new Map<number, Uint8Array>();
+  let pages = 0;
+  for (let at = 32; at + 24 + pageSize <= wal.length; at += 24 + pageSize) {
+    if (view.getUint32(at + 8) !== salts[0] || view.getUint32(at + 12) !== salts[1]) break;
+    sum(at, 8);
+    sum(at + 24, pageSize);
+    if (s0 !== view.getUint32(at + 16) || s1 !== view.getUint32(at + 20)) break;
+    pending.set(view.getUint32(at), wal.subarray(at + 24, at + 24 + pageSize));
+    const size = view.getUint32(at + 4);
+    if (size) {
+      for (const [page, data] of pending) committed.set(page, data);
+      pending.clear();
+      pages = size;
+    }
+  }
+  if (!pages) return copy();
+  const out = new Uint8Array(pages * pageSize);
+  out.set(db.subarray(0, Math.min(db.length, out.length)));
+  for (const [page, data] of committed) if (page <= pages) out.set(data, (page - 1) * pageSize);
+  return out;
+}
+
 /** A database handle shared by every connection to the same file (or a private one for :memory:). */
 export class Handle {
   private s: Shared;
@@ -154,16 +206,25 @@ export class Handle {
     if (!s) {
       if (path && !files.exists(path) && opts.create === false) throw Object.assign(new Error('unable to open database file'), { code: 'SQLITE_CANTOPEN' });
       const db = new (sqlite().oo1.DB)(':memory:', 'c');
+      let wal = false;
       if (path && files.exists(path)) {
-        const bytes = files.read(path);
+        let bytes = files.read(path);
         if (bytes.length) {
+          // A WAL-mode file (header bytes 18-19 = 2): its -wal's committed pages are the database's, and
+          // the in-memory database sqlite3_deserialize makes has no WAL (SQLITE_CANTOPEN): it reads it
+          // as a rollback-journal one.
+          if (bytes[18] === 2 || bytes[19] === 2) {
+            wal = true;
+            bytes = withWal(bytes, files.exists(`${path}-wal`) ? files.read(`${path}-wal`) : null);
+            bytes[18] = bytes[19] = 1;
+          }
           const { capi, wasm } = sqlite();
           const p = wasm.allocFromTypedArray(bytes);
           const rc = capi.sqlite3_deserialize(db.pointer, 'main', p, bytes.length, bytes.length, capi.SQLITE_DESERIALIZE_FREEONCLOSE | capi.SQLITE_DESERIALIZE_RESIZEABLE);
           if (rc !== 0) throw Object.assign(new Error('file is not a database'), { code: 'SQLITE_NOTADB' });
         }
       } else if (path) files.write(path, new Uint8Array());
-      s = { db, path, refs: 0, dirty: false, timer: null, files };
+      s = { db, path, wal, refs: 0, dirty: false, timer: null, files };
       if (path) shared.set(path, s);
     }
     s.refs++;
@@ -204,7 +265,14 @@ export class Handle {
       return;
     }
     s.dirty = false;
-    this.files.write(s.path, sqlite().capi.sqlite3_js_db_export(s.db.pointer));
+    const bytes = sqlite().capi.sqlite3_js_db_export(s.db.pointer);
+    if (s.wal) {
+      // Back in WAL mode, as it was; its sidecars are what this file now holds, as after SQLite's own
+      // checkpoint (else SQLite on the developer's machine would replay their frames over it).
+      bytes[18] = bytes[19] = 2;
+      for (const sidecar of [`${s.path}-wal`, `${s.path}-shm`]) if (this.files.exists(sidecar)) this.files.write(sidecar, new Uint8Array());
+    }
+    this.files.write(s.path, bytes);
   }
 
   close(): void {
