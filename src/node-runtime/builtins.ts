@@ -452,7 +452,13 @@ export function buildBuiltins() {
     events: () => Object.assign(events, { EventEmitter, EventEmitterAsyncResource, default: events, getEventListeners: (e: EventEmitter, n: string) => e.listeners(n), addAbortListener: (s: AbortSignal, fn: () => void) => { s.addEventListener('abort', fn); return { [Symbol.dispose]: () => s.removeEventListener('abort', fn) }; } }),
     stream: () => stream,
     'stream/promises': () => stream.promises,
-    'stream/web': () => ({ ReadableStream, WritableStream, TransformStream, TextEncoderStream, TextDecoderStream, ByteLengthQueuingStrategy, CountQueuingStrategy, CompressionStream, DecompressionStream }),
+    // As Node's: the streams, their readers, writers and controllers (the browser's, its globals), in Node's order.
+    'stream/web': () => {
+      const g = globalThis as unknown as Record<string, unknown>;
+      return Object.fromEntries(
+        ['ReadableStream', 'ReadableStreamDefaultReader', 'ReadableStreamBYOBReader', 'ReadableStreamBYOBRequest', 'ReadableByteStreamController', 'ReadableStreamDefaultController', 'TransformStream', 'TransformStreamDefaultController', 'WritableStream', 'WritableStreamDefaultWriter', 'WritableStreamDefaultController', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'TextEncoderStream', 'TextDecoderStream', 'CompressionStream', 'DecompressionStream'].map((name) => [name, g[name]]),
+      );
+    },
     'stream/consumers': () => {
       const chunks = async (s: AsyncIterable<Uint8Array | string>) => {
         const parts: Uint8Array[] = [];
