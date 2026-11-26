@@ -12,7 +12,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import type { AddressInfo } from 'node:net';
+import { isIP, type AddressInfo } from 'node:net';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -29,7 +29,17 @@ const PROJECT_JSON = `${OWN}project.json`;
 
 const TYPES: Record<string, string> = { '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.json': 'application/json', '.ts': 'text/plain; charset=utf-8' };
 
-const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+/**
+ * Whether a host name or address is loopback: localhost, the whole of 127.0.0.0/8 (not only
+ * 127.0.0.1), ::1 and its IPv4-mapped form, with or without an IPv6 literal's brackets.
+ */
+export function isLoopback(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  const v4 = h.replace(/^::ffff:/, '');
+  if (isIP(v4) === 4) return v4.startsWith('127.');
+  return isIP(h) === 6 && /^(0{0,4}:){7}0{0,3}1$|^::1$/.test(h);
+}
 
 export interface ServeOptions {
   project: Project;
@@ -55,12 +65,15 @@ export async function serve(options: ServeOptions): Promise<Served> {
   });
   const project = JSON.stringify(options.project);
   const listenHost = options.host ?? '127.0.0.1';
+  const onLoopback = isLoopback(listenHost);
   const server = createServer((req, res) => void answer(req, res).catch(() => !res.headersSent && res.writeHead(500).end()));
   async function answer(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Only for the names this server is reached by: a page on another site that resolves its own name to
     // this address (DNS rebinding) gets nothing, the project's source least of all.
     const name = hostName(req.headers.host);
-    if (!name || !(LOOPBACK.has(name) || name === listenHost || !LOOPBACK.has(listenHost))) return void res.writeHead(403, { 'content-type': 'text/plain' }).end('forbidden host');
+    // Listening on a loopback address (any of 127.0.0.0/8, ::1), only loopback names are answered; on
+    // another address, chosen with --host, any name is (a reverse proxy's, a LAN name).
+    if (!name || (onLoopback && !isLoopback(name))) return void res.writeHead(403, { 'content-type': 'text/plain' }).end('forbidden host');
     if (req.method !== 'GET' && req.method !== 'HEAD') return void res.writeHead(405).end();
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path === '/' || path === '/index.html') return void res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' }).end(PAGE);
@@ -85,7 +98,8 @@ export async function serve(options: ServeOptions): Promise<Served> {
     server.listen(options.port ?? 8787, listenHost, done);
   });
   const { port } = server.address() as AddressInfo;
-  const shown = LOOPBACK.has(listenHost) || listenHost === '0.0.0.0' || listenHost === '::' ? 'localhost' : listenHost.includes(':') ? `[${listenHost}]` : listenHost;
+  // localhost reaches 127.0.0.1 and ::1 (and every address, listening on all of them); another address is shown as it is.
+  const shown = ['127.0.0.1', '::1', 'localhost', '0.0.0.0', '::'].includes(listenHost) ? 'localhost' : listenHost.includes(':') ? `[${listenHost}]` : listenHost;
   return {
     url: `http://${shown}:${port}/`,
     close: () => new Promise<void>((done) => server.close(() => done())),
@@ -150,9 +164,9 @@ export async function serveMain(argv: string[]): Promise<number> {
   }
   console.log(`Serving ${project.name} (${project.framework}) at ${served.url}`);
   console.log("The app runs in your browser: its packages install from the npm registry, and its requests are your browser's, with no egress allowlist (unlike sandburg run). No checks run.");
-  if (!LOOPBACK.has(host)) {
+  if (!isLoopback(host)) {
     const at = new URL(served.url).port;
-    console.warn(`warning: listening on ${host}, not on 127.0.0.1: whoever reaches it gets the project's source and runs its app. Browsers need HTTPS or localhost for the runtime; forwarding the port over SSH instead (ssh -L ${at}:localhost:${at} <this machine>) keeps it on localhost.`);
+    console.warn(`warning: listening on ${host}, not on 127.0.0.1: whoever reaches it gets the project's source and runs its app. Browsers need HTTPS or localhost for the runtime; forwarding the port over SSH instead (ssh -N -L ${at}:localhost:${at} user@this-machine, from your own) keeps it on localhost.`);
   }
   console.log('Press Ctrl-C to stop.');
   await new Promise<void>((done) => {

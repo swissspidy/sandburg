@@ -153,7 +153,7 @@ and shows the app. It runs until Ctrl-C.
 ```sh
 sandburg serve ./my-app
 sandburg serve ./my-app --port 0          # a free port
-ssh -L 8787:localhost:8787 devbox         # on your machine, for a project served on devbox
+ssh -N -L 8787:localhost:8787 user@devbox   # on your machine, for a project served on devbox
 ```
 
 | Option | Default | What it is |
@@ -173,7 +173,8 @@ ssh -L 8787:localhost:8787 devbox         # on your machine, for a project serve
   app. Packages install in the page on each load; nothing is cached on the host.
 - It needs no Playwright, so it works with Sandburg installed alone. From a checkout, `npm run build`
   first (it serves `dist/browser-runtime`).
-- It answers only requests for `localhost` and the other loopback names while it listens on one, so a
+- It answers only requests for `localhost` and the other loopback names while it listens on a loopback
+  address (any of 127.0.0.0/8, or ::1), so a
   page elsewhere cannot read the project through DNS rebinding.
 
 ## Exit codes
@@ -189,8 +190,10 @@ ssh -L 8787:localhost:8787 devbox         # on your machine, for a project serve
 | `143` | Interrupted (SIGTERM), after closing the browser. | Interrupted (SIGTERM), after removing its containers. |
 | `149` | Interrupted (Ctrl-Break on Windows), after closing the browser. | Interrupted (Ctrl-Break on Windows), after removing its containers. |
 
-`serve` stops on Ctrl-C or SIGTERM, its way to end, with `0`; `2` when the project or the browser runtime
-did not load, or the port was taken; `64` for a usage error.
+`serve` stops on Ctrl-C or SIGTERM, its way to end, with `0`; `2` when it could not start serving (the
+project or the built browser runtime did not load, or the port was taken); `64` for a usage error. What
+goes wrong in the page once it serves (a package that does not install, the app's dev server failing)
+is shown in the page and does not change the exit code.
 
 ## Environment variables
 

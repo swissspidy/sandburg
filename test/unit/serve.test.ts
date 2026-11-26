@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { serve, serveMain } from '../../src/serve.ts';
+import { isLoopback, serve, serveMain } from '../../src/serve.ts';
 import { projectFromFiles } from '../../src/project.ts';
 import { tempDir } from './temp-dir.ts';
 
@@ -53,6 +53,14 @@ test('bound to loopback, it answers only requests for a loopback name (no DNS re
   const port = new URL(served.url).port;
   for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]) assert.equal((await get(served.url, '/sandburg-serve/project.json', host)).status, 200, host);
   for (const host of [`evil.example:${port}`, 'evil.example', `localhost.evil.example:${port}`]) assert.equal((await get(served.url, '/sandburg-serve/project.json', host)).status, 403, host);
+});
+
+// Which listening address keeps the Host check on, and which Host names it accepts there: all of
+// loopback, not only 127.0.0.1 (--host 127.0.0.2 is loopback too). Tested as a function: macOS does not
+// let a test bind 127.0.0.2.
+test('loopback is all of 127.0.0.0/8, ::1 (also IPv4-mapped and bracketed) and localhost; nothing else is', () => {
+  for (const host of ['127.0.0.1', '127.0.0.2', '127.255.255.254', 'localhost', 'LOCALHOST', 'app.localhost', '::1', '[::1]', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1']) assert.ok(isLoopback(host), host);
+  for (const host of ['0.0.0.0', '::', '192.168.1.2', '10.0.0.1', '128.0.0.1', '127.example', 'localhost.evil.example', 'evil.example', '::2', '::ffff:10.0.0.1', '']) assert.ok(!isLoopback(host), host);
 });
 
 test('without the browser runtime built, it says how to build it', async () => {

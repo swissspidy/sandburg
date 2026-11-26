@@ -35,8 +35,8 @@ installs packages from the npm registry and compiles in the page.
 - **127.0.0.1 by default.** `--host` listens elsewhere, with a warning: whoever reaches it gets the
   project's source and runs its app, and browsers need HTTPS or localhost for the service worker and
   shared memory. Forwarding the port over SSH keeps it on localhost and needs nothing else.
-- **No DNS rebinding.** While it listens on a loopback address, it answers only requests whose `Host` is a
-  loopback name (`localhost`, `127.0.0.1`, `[::1]`): a page on another site that points its own name at
+- **No DNS rebinding.** While it listens on a loopback address (any of 127.0.0.0/8, or ::1), it answers
+  only requests whose `Host` is a loopback name (`localhost`, an address in 127.0.0.0/8, `[::1]`): a page on another site that points its own name at
   127.0.0.1 gets 403, not the project. Listening on another address, it answers any name (a reverse proxy
   or a LAN name), which `--host` is the choice of.
 - `serve` creates an HTTP server of its own beside the host's one-server rule (`sandburg/one-host-server`,
@@ -44,8 +44,9 @@ installs packages from the npm registry and compiles in the page.
 
 ## Consequences
 
-- A remote or headless machine can show an app: `sandburg serve ./app` there, `ssh -L 8787:localhost:8787`
-  here, and `http://localhost:8787/` in a local browser.
+- A remote or headless machine can show an app: `sandburg serve ./app` there,
+  `ssh -N -L 8787:localhost:8787 user@remote-host` here (the machine that runs Sandburg for
+  `user@remote-host`), and `http://localhost:8787/` in a local browser.
 - The project's files are read once; changes made outside the app need a restart (a watch mode can come
   later). Packages install in the page on each load, from the npm registry: nothing is cached on the host,
   and an offline machine cannot serve a project with packages.
