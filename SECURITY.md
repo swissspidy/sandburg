@@ -75,6 +75,12 @@ Out of scope:
   install scripts and dev script with real npm in a container and is documented as **not a security
   boundary** ([ADR 0004](docs/adr/0004-docker-reference-and-fidelity-study.md)): use it only on
   projects you trust.
+- **`sandburg serve` and the embedded browser runtime** (`sandburg/browser-runtime`). They run an app
+  in your own browser, on the serving page's origin, with no egress gateway or allowlist
+  ([ADR 0074](docs/adr/0074-browser-runtime-export.md), [ADR 0075](docs/adr/0075-serve.md)): an app
+  reaching the network or reading that origin's storage there is not a vulnerability. `serve` reading
+  files other than the project it was given, or answering a request for a host name other than its own
+  while it listens on a loopback address, is in scope.
 - **Running without the browser sandbox** (`--no-browser-sandbox`, `SANDBURG_NO_BROWSER_SANDBOX=1`,
   `browserSandbox: false`). That turns off the boundary between the app and the machine; a renderer
   exploit that only works there is not a Sandburg vulnerability.

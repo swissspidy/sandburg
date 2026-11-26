@@ -243,6 +243,7 @@
       "files": [
         "src/orchestrator/host-server.ts",
         "src/orchestrator/egress-proxy.ts",
+        "src/serve.ts",
         "src/reference/docker.ts"
       ],
       "rules": {

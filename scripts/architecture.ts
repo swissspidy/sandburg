@@ -114,7 +114,7 @@ export type Environment = 'host' | 'page' | 'runtime' | 'compile-worker' | 'inst
  * are served as they are.
  */
 export const ENVIRONMENTS: Record<Environment, { what: string; entries: string[]; stubs?: string[] }> = {
-  host: { what: 'Node.js: the session, the host server, installs, compiles, caches', entries: ['src/index.ts', 'src/cli.ts'] },
+  host: { what: 'Node.js: the session, the host server, installs, compiles, caches; sandburg serve', entries: ['src/index.ts', 'src/cli.ts', 'src/serve.ts'] },
   page: { what: 'the host page in a sandbox tab (one per run): the adapter\'s browser half', entries: ['src/host/host.ts', 'src/adapters/node/browser.ts'] },
   runtime: {
     what: "a Node.js runtime's Web Worker (and its threads and child processes)",
@@ -140,7 +140,7 @@ const HOST_ONLY_PACKAGES = /^(esbuild|playwright-core|@playwright\/test|oxc-pars
  * its own modules; nothing imports `api`.
  */
 export const LAYERS: { name: string; paths: string[]; what: string; imports: string[] }[] = [
-  { name: 'api', paths: ['src/index.ts', 'src/cli.ts'], what: 'the package\'s exports and the CLI', imports: ['compare', 'reference', 'orchestrator', 'adapters-registry', 'page-checks', 'core'] },
+  { name: 'api', paths: ['src/index.ts', 'src/cli.ts', 'src/serve.ts'], what: 'the package\'s exports and the CLI', imports: ['compare', 'reference', 'orchestrator', 'adapters-registry', 'page-checks', 'core'] },
   { name: 'compare', paths: ['src/compare/'], what: 'comparisons with the Docker reference', imports: ['reference', 'orchestrator', 'core'] },
   { name: 'reference', paths: ['src/reference/'], what: 'the Docker reference runtime', imports: ['orchestrator', 'adapters', 'host', 'core'] },
   { name: 'orchestrator', paths: ['src/orchestrator/'], what: 'the session, Chromium, the host server, egress, checks', imports: ['adapters-registry', 'page-checks', 'host', 'core'] },

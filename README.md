@@ -87,6 +87,7 @@ sandburg batch <dir> [--parallel 8]                     # each subdirectory, .zi
 sandburg compare <dir> --reference docker [--report path]
 sandburg snapshot <project>                             # store it, print its snapshot id
 sandburg open <project>                                 # load it in a visible tab
+sandburg serve <project>                                # serve it for your own browser (no Playwright, no sandbox)
 ```
 
 `<project>` is a directory, a `.zip`, a JSON file tree or `snapshot:<id>`. Every run has built-in checks (a

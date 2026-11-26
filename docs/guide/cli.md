@@ -16,6 +16,7 @@ CLI from its TypeScript sources.
 | `sandburg open <project>` | Load a project in a visible browser tab and keep it open. |
 | `sandburg snapshot <project>` | Store a project in the snapshot store and print its id. |
 | `sandburg compare <dir>` | Run projects in the browser and in a Docker reference; report agreement. |
+| `sandburg serve <project>` | Serve a project for your own browser: no Playwright, no sandbox, no checks ([`serve`](#serve)). |
 
 ```sh
 sandburg run <project> [--checks checks.spec.ts]
@@ -23,6 +24,7 @@ sandburg batch <dir> [--parallel 8]                     # each subdirectory, .zi
 sandburg compare <dir> --reference docker [--report path]
 sandburg snapshot <project>                             # store it, print its snapshot id
 sandburg open <project>                                 # load it in a visible tab
+sandburg serve <project> [--host 127.0.0.1] [--port 8787]  # serve it for your own browser
 ```
 
 ## Project inputs
@@ -139,6 +141,42 @@ The study method and every report are in [`docs/fidelity`](../fidelity/README.md
 `sandburg open <project>` runs the project in a visible browser and keeps the tab open after the run,
 also when a phase before the checks failed: to look at an app, or at why it failed.
 
+## `serve`
+
+`sandburg serve <project>` serves the project for your own browser, where `open` drives Playwright's:
+for a machine where Playwright cannot run (a remote dev box, a container) or a person who wants to
+click through an app ([ADR 0075](../adr/0075-serve.md)). It prints an address
+(`http://localhost:8787/` by default); the page there installs the project's packages from the npm
+registry, starts its dev server in the browser runtime ([Embedding the browser runtime](browser-runtime.md))
+and shows the app. It runs until Ctrl-C.
+
+```sh
+sandburg serve ./my-app
+sandburg serve ./my-app --port 0          # a free port
+ssh -N -L 8787:localhost:8787 user@devbox   # on your machine, for a project served on devbox
+```
+
+| Option | Default | What it is |
+|---|---|---|
+| `--host <address>` | `127.0.0.1` | The address it listens on. Another one exposes the project's source and the app to whoever reaches it, and it warns so. |
+| `--port <n>` | `8787` | The port; `0` picks a free one. |
+| `--store <dir>` | `.sandburg/store` | The snapshot store, for `snapshot:<id>`. |
+
+- **Not a Sandburg run.** No checks run, no network check, no `result.json`. The app's requests are
+  your browser's: no egress allowlist applies ([Security](security.md)), and the app runs on the
+  page's origin. Use `sandburg run` to test an app; `serve` is to look at one.
+- **Your browser** must be a recent Chrome, Edge, Firefox or Safari, and the page a
+  [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts): `localhost`
+  is one over plain HTTP. For a remote machine, forward the port over SSH (above) rather than
+  listening on another address; behind a reverse proxy, serve it over HTTPS.
+- **The project's files** are read once, when it starts: restart `serve` for changes made outside the
+  app. Packages install in the page on each load; nothing is cached on the host.
+- It needs no Playwright, so it works with Sandburg installed alone. From a checkout, `npm run build`
+  first (it serves `dist/browser-runtime`).
+- It answers only requests for `localhost` and the other loopback names while it listens on a loopback
+  address (any of 127.0.0.0/8, or ::1), so a
+  page elsewhere cannot read the project through DNS rebinding.
+
 ## Exit codes
 
 | Code | `run`, `open`, `batch`, `snapshot` | `compare` |
@@ -151,6 +189,11 @@ also when a phase before the checks failed: to look at an app, or at why it fail
 | `130` | Interrupted (Ctrl-C), after closing the browser. | Interrupted (Ctrl-C), after removing its containers. |
 | `143` | Interrupted (SIGTERM), after closing the browser. | Interrupted (SIGTERM), after removing its containers. |
 | `149` | Interrupted (Ctrl-Break on Windows), after closing the browser. | Interrupted (Ctrl-Break on Windows), after removing its containers. |
+
+`serve` stops on Ctrl-C or SIGTERM, its way to end, with `0`; `2` when it could not start serving (the
+project or the built browser runtime did not load, or the port was taken); `64` for a usage error. What
+goes wrong in the page once it serves (a package that does not install, the app's dev server failing)
+is shown in the page and does not change the exit code.
 
 ## Environment variables
 
