@@ -22,7 +22,7 @@ import { ESM_MARKER } from '../../node-runtime/names.ts';
 import { contextAwaits, mayRewrite } from '../../node-runtime/await-context.ts';
 import type { Project } from '../../types.ts';
 import { deferImports } from './deferred-imports.ts';
-import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from './install-rules.ts';
+import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings, wasiPlacements } from './install-rules.ts';
 import { Resolver } from './resolver.ts';
 import { installFromLockfile, installedPackages, linkTree, npmConfig, sweepStore, unpackAhead, unpackHint, type InstalledPackage } from './package-store.ts';
 import { assertRegistryLockfile, assertRegistryManifest, registryOrigins } from './spec-guard.ts';
@@ -41,7 +41,7 @@ const INSTALL_FLAGS = ['--ignore-scripts', '--no-audit', '--no-fund', '--omit=op
 /** Bump when the transform changes, so cached transforms are rebuilt. */
 export const TRANSFORM_VERSION = 32;
 /** Bump when what an install contains changes (e.g. WebAssembly bindings added), so installs are redone. */
-export const LAYOUT_VERSION = 17;
+export const LAYOUT_VERSION = 18;
 
 export interface InstallInfo {
   key: string;
@@ -690,9 +690,15 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
     const name = p.location.slice('node_modules/'.length);
     if (!/^(@[^/]+\/)?[^/]+$/.test(name)) continue;
     top.add(name);
-    const found = wasiBindings(p.optionalDependencies);
-    Object.assign(wanted, found.listed);
-    Object.assign(candidates, found.candidates);
+    Object.assign(candidates, wasiBindings(p.optionalDependencies).candidates);
+  }
+  // The listed bindings: at the top, and inside a nested copy of a package that lists another version
+  // than the top's (wasiPlacements).
+  const nested: { location: string; name: string; range: string }[] = [];
+  for (const [location, range] of wasiPlacements(packages, new Set(packages.map((p) => p.location)))) {
+    const name = location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    if (location === `node_modules/${name}`) wanted[name] = range;
+    else nested.push({ location, name, range });
   }
   // --force: these packages declare cpu "wasm32"; nothing is run (--ignore-scripts).
   const flags = ['--force', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'];
@@ -710,6 +716,32 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
   const listed = Object.entries(wanted).filter(([name]) => !top.has(name));
   const early = listed.length ? install(listed) : null;
   early?.catch(() => {});
+  // A nested one, each version on its own (one tree cannot have two versions of a package at its top).
+  const nestedSides = new Map<string, Promise<string>>();
+  for (const { name, range } of nested) if (!nestedSides.has(`${name}@${range}`)) nestedSides.set(`${name}@${range}`, install([[name, range]]));
+  for (const side of nestedSides.values()) side.catch(() => {});
+  /** A side install's binding at `to`, with its dependencies (napi-rs's runtime, emnapi) inside it, except `skip`. */
+  const placeBinding = async (side: string, binding: string, to: string, skip: (dep: string) => boolean) => {
+    const sideNm = join(side, 'node_modules');
+    if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) return false;
+    await rm(to, { recursive: true, force: true });
+    await place(join(sideNm, binding), to);
+    for (const entry of await readdir(sideNm, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const deps = entry.name.startsWith('@') ? (await readdir(join(sideNm, entry.name))).map((sub) => `${entry.name}/${sub}`) : [entry.name];
+      for (const dep of deps) {
+        if (dep === binding || skip(dep)) continue;
+        const into = join(to, 'node_modules', dep);
+        if (!existsSyncSafe(join(into, 'package.json'))) await place(join(sideNm, dep), into);
+      }
+    }
+    return true;
+  };
+  const placeNested = async () => {
+    for (const { location, name, range } of nested) {
+      if (await placeBinding(await nestedSides.get(`${name}@${range}`)!, name, join(dir, location), () => false)) log(`added WebAssembly build ${name} ${range} for ${location.slice(0, -name.length - '/node_modules/'.length)}`);
+    }
+  };
   const checks = await Promise.all(
     Object.entries(candidates)
       .filter(([name]) => !(name in wanted))
@@ -718,31 +750,17 @@ async function wasiBindingsFor(dir: string, sides: Sides, packages: InstalledPac
   const hits = checks.filter((hit) => hit !== null);
   for (const hit of hits) wanted[hit[0]] = hit[1];
   const missing = Object.entries(wanted).filter(([name]) => !top.has(name));
-  if (!missing.length) return async () => {};
+  await Promise.all(nestedSides.values());
+  if (!missing.length) return placeNested;
   let side: string;
   if (early && !hits.length) side = await early;
   else side = await install(missing);
   return async () => {
     // Each binding goes to the top level with its dependencies (napi-rs's wasm runtime, emnapi) nested
     // inside it, so versions the project already has elsewhere cannot shadow the ones it was built with.
-    const sideNm = join(side, 'node_modules');
-    const sidePackages: string[] = [];
-    for (const entry of await readdir(sideNm, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-      if (entry.name.startsWith('@')) for (const sub of await readdir(join(sideNm, entry.name))) sidePackages.push(`${entry.name}/${sub}`);
-      else sidePackages.push(entry.name);
-    }
-    for (const [binding] of missing) {
-      if (!existsSyncSafe(join(sideNm, binding, 'package.json'))) continue;
-      await rm(join(nm, binding), { recursive: true, force: true });
-      await place(join(sideNm, binding), join(nm, binding));
-      for (const dep of sidePackages) {
-        if (dep in wanted) continue;
-        const to = join(nm, binding, 'node_modules', dep);
-        if (!existsSyncSafe(join(to, 'package.json'))) await place(join(sideNm, dep), to);
-      }
-    }
+    for (const [binding] of missing) await placeBinding(side, binding, join(nm, binding), (dep) => dep in wanted);
     log(`added WebAssembly builds: ${missing.map(([n]) => n).join(', ')}`);
+    await placeNested();
   };
 }
 
