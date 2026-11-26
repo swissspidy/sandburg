@@ -8,10 +8,10 @@
     "start": "vite preview"
   },
   "dependencies": {
-    "@solidjs/meta": "^2.0.0",
-    "@solidjs/router": "^2.0.0",
+    "@solidjs/meta": "^0.29.8",
+    "@solidjs/router": "^1.0.3",
     "@solidjs/start": "^2.2.3",
-    "solid-js": "^2.0.1",
+    "solid-js": "^1.9.20",
     "vite": "^8.3.8"
   },
   "engines": {

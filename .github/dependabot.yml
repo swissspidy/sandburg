@@ -45,6 +45,17 @@ updates:
       # those versions (#110). Only these fixtures depend directly on ms and escape-html.
       - dependency-name: ms
       - dependency-name: escape-html
+      # Solid 2: SolidStart (2.2.3, its latest) requires solid-js 1.9 and @solidjs/router < 2, and
+      # create-vite's Solid template, which solid-vite follows, is on solid-js 1.9 and vite-plugin-solid 2.
+      # The Solid 2 majors fail to install there (#169). Remove these once both are on Solid 2.
+      - dependency-name: solid-js
+        versions: [">= 2"]
+      - dependency-name: "@solidjs/router"
+        versions: [">= 2"]
+      - dependency-name: "@solidjs/meta"
+        versions: [">= 1"]
+      - dependency-name: vite-plugin-solid
+        versions: [">= 3"]
 
   - package-ecosystem: github-actions
     # / is the workflows and the repository's own action (action.yml); the local composite actions pin
