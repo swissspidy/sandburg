@@ -5,6 +5,34 @@ test/unit/api-report.test.ts: a change to this file is a change to the API. Expo
 package, then the declarations those refer to, by module.
 
 ```ts
+// adapters/node/git-tree.ts
+interface FetchedGitDependency {
+    commit: string;
+    files: FileTree;
+}
+
+interface GitDependencyRequest {
+    name: string;
+    spec: string;
+    host: GitSpec['host'];
+    url: string;
+    path: string;
+    committish: string | null;
+    semver: string | null;
+    subdir: string;
+}
+
+type GitFetcher = (dependency: GitDependencyRequest) => Promise<FetchedGitDependency>;
+
+function withGitDependencies(files: FileTree, packageJson: PackageJson | null, fetchGit: GitFetcher, options?: {
+    log?: (line: string) => void;
+}): Promise<FileTree>;
+
+// adapters/node/local-packages.ts
+const GIT_DIR = ".sandburg/git";
+
+const GIT_FILE = ".sandburg/git.json";
+
 // adapters/node/plan.ts
 function pageInstall(project: Project): HostInstall;
 
@@ -19,6 +47,7 @@ interface EmbedOptions {
     scope?: string;
     app?: string;
     pass?: string[];
+    git?: GitFetcher;
 }
 
 function isolate(options?: EmbedOptions): Promise<boolean>;
@@ -144,6 +173,17 @@ interface HostInstall {
     browserInstall?: BrowserInstallPart[];
     links?: Record<string, string>;
     workspaces?: Record<string, string>;
+}
+
+// adapters/node/git-spec.ts
+interface GitSpec {
+    host: 'github' | 'gitlab' | 'bitbucket' | 'other';
+    origin: string;
+    path: string;
+    url: string;
+    committish: string | null;
+    semver: string | null;
+    subdir: string;
 }
 
 // adapters/node/scripts.ts

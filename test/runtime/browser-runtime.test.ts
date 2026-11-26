@@ -49,6 +49,38 @@ try {
 }
 </script>`;
 
+/**
+ * An embedder's page whose project names a git dependency (#179): its fetcher (EmbedOptions.git)
+ * answers for the repository, as an embedder's server would, and the app requires the package.
+ */
+const GIT_PROJECT = {
+  'package.json': JSON.stringify({ name: 'embedded-git', private: true, scripts: { dev: 'node server.js' }, dependencies: { greet: 'github:acme/greet#v1' } }),
+  'server.js': "const greet = require('greet');\nrequire('node:http').createServer((q, s) => s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>' + greet() + '</h1>')).listen(3000);",
+};
+const gitPage = `<!doctype html><title>embedder</title><p id="status">booting</p><iframe id="app"></iframe>
+<script type="module">
+import { isolate, loadHost, startProject, appPath } from '/sandburg/index.js';
+const asked = [];
+const options = {
+  base: '/sandburg/',
+  scope: '/git/',
+  git: async (dependency) => {
+    asked.push(dependency.url + '#' + dependency.committish);
+    return { commit: '${'c'.repeat(40)}', files: { 'package.json': JSON.stringify({ name: 'greet', main: 'index.js' }), 'index.js': "module.exports = () => 'hello from git';" } };
+  },
+};
+const status = (s) => (document.getElementById('status').textContent = s);
+try {
+  if (await isolate(options)) {
+    const host = await loadHost(options);
+    const { url } = await startProject(host, ${JSON.stringify(GIT_PROJECT)}, options);
+    status('started ' + url + ' asked=' + asked.join(','));
+  }
+} catch (e) {
+  status('error: ' + e.message);
+}
+</script>`;
+
 /** The runtime's files at the site's root (a runtime served at /), by path. */
 const AT_ROOT = /^\/(index\.js|sw\.js|sw-core\.js|compile\.js|host\.js|frame-guard\.js|isolation\.js|runtime\/.+)$/;
 
@@ -57,6 +89,7 @@ const PAGES: Record<string, string> = {
   '/play/': page('/sandburg/', { base: '/sandburg/', scope: '/play/', pass: ['/play/own/'] }, '/play/own/file.txt'),
   // The runtime at the site's root; the scope given without its trailing slash.
   '/root/': page('/', { base: '/', scope: '/root', pass: ['/root/own/'] }, '/root/own/file.txt'),
+  '/git/': gitPage,
 };
 
 let dir: string;
@@ -77,7 +110,7 @@ before(async () => {
       const body = await readFile(file).catch(() => null);
       if (!body) return void res.writeHead(404).end();
       // A page outside the runtime's directory: the service worker's scope may reach it only with this header.
-      res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', ...(path === '/sandburg/sw.js' && { 'service-worker-allowed': '/play/' }) });
+      res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', ...(path === '/sandburg/sw.js' && { 'service-worker-allowed': '/' }) });
       return void res.end(body);
     }
     if (Object.hasOwn(PAGES, path)) return void res.writeHead(200, { 'content-type': 'text/html' }).end(PAGES[path]);
@@ -117,3 +150,15 @@ async function runsInPage(path: string): Promise<void> {
 test("an embedding page runs a project's Node server in the browser, from the runtime's static files, cross-origin isolated by its service worker", () => runsInPage('/play/'));
 
 test("a runtime served at the site's root leaves the app's absolute paths to the app, and a scope may be given without its trailing slash", () => runsInPage('/root/'));
+
+test("an embedder's fetcher (EmbedOptions.git) gives a project its git dependency, which the app requires as an installed package (#179)", async () => {
+  const tab = await browser.newPage();
+  try {
+    await tab.goto(origin + '/git/');
+    await tab.waitForFunction(() => /^(started|error)/.test(document.getElementById('status')?.textContent ?? ''), null, { timeout: 120_000 });
+    assert.equal(await tab.textContent('#status'), 'started / asked=https://github.com/acme/greet.git#v1');
+    assert.equal(await tab.frameLocator('#app').locator('h1').textContent(), 'hello from git');
+  } finally {
+    await tab.close();
+  }
+});

@@ -1,6 +1,6 @@
 # ADR 0073: Git dependencies, fetched by the host and linked
 
-- Status: Accepted
+- Status: Accepted (amended 2026-11-26: the browser runtime's fetcher, below)
 - Date: 2026-11-25
 
 ## Context
@@ -123,3 +123,16 @@ version is in it.
 - npm's `files`/`.npmignore` packing: the whole repository (minus `.git/` and `node_modules/`) is the
   package.
 - Private repositories (credentials), gists, and git dependencies of registry packages.
+
+## Amendment: a page that embeds the browser runtime (2026-11-26)
+
+`sandburg/browser-runtime` (ADR 0074) runs without a host, and a page cannot fetch a repository
+itself: the git hosts' archive and git endpoints send no CORS headers. So `startProject` takes a
+fetcher, `EmbedOptions.git`, that the embedder implements (through a server of its own): given each git
+dependency (its repository and committish, as `git-spec.ts` reads it), it returns the commit's full id
+and the repository's files. `git-tree.ts` (pure, used by both) puts them in the layout above,
+`.sandburg/git/<host>-<repository>-<commit>/` and `.sandburg/git.json`, so the install plan links them
+as it links the host's, and fetches the git dependencies a fetched package names in turn. It refuses an
+answer without a full commit id, without a `package.json` at the package's directory, or with a path
+outside the repository, and leaves `.git/` and `node_modules/` out, as the host does. The layout is
+public (`GIT_DIR`, `GIT_FILE`, `withGitDependencies`), for embedders that fill it in themselves.

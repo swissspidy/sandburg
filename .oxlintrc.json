@@ -173,6 +173,7 @@
         "src/adapters/node/interop.ts",
         "src/adapters/node/plan.ts",
         "src/adapters/node/git-spec.ts",
+        "src/adapters/node/git-tree.ts",
         "src/adapters/node/local-packages.ts",
         "src/adapters/node/lockfile-pins.ts",
         "src/adapters/node/process.ts",
