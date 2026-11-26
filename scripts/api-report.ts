@@ -1,14 +1,16 @@
 /**
- * The package's public API, as one file: every declaration a consumer's TypeScript can reach from
- * the package's entry (dist/index.d.ts), and the declarations those name, without comments. The
- * report is checked in (api/sandburg.api.md) and compared by test/unit/api-report.test.ts, so an
- * API change is a reviewed change to that file, not an accident.
+ * The package's public API, one file per entry point in package.json's exports (`sandburg`, and
+ * `sandburg/browser-runtime`): every declaration a consumer's TypeScript can reach from the entry's
+ * declarations, and the declarations those name, without comments. The reports are checked in
+ * (api/sandburg.api.md, api/sandburg-browser-runtime.api.md) and compared by
+ * test/unit/api-report.test.ts, so an API change is a reviewed change to those files, not an accident.
  *
- *   node scripts/api-report.ts            # print the report
- *   node scripts/api-report.ts --update   # write api/sandburg.api.md
+ *   node scripts/api-report.ts            # print the reports
+ *   node scripts/api-report.ts --update   # write them
  *
  * It emits the declarations (tsc -p tsconfig.build.json --emitDeclarationOnly) into a temporary
- * directory and walks them with oxc-parser from the entry's exports: a re-export to the module that
+ * directory (with the hand-written declarations of src/, which tsc does not copy) and walks them with
+ * oxc-parser from each entry's exports: a re-export to the module that
  * declares it, a declaration to the names its types refer to (in its module, or imported). A type
  * from another package is listed by name and package. Private members are left out (tsc emits
  * their names only; adding one is no API change), and so are comments (a doc edit is no API
@@ -16,7 +18,7 @@
  * shows.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +27,27 @@ import { parseSync } from 'oxc-parser';
 type Node = { type: string; start: number; end: number; [k: string]: unknown };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const REPORT = join(ROOT, 'api/sandburg.api.md');
+
+/** An entry point of the package (package.json exports) and its report. */
+export interface Entry {
+  /** What a consumer imports: `sandburg`, `sandburg/browser-runtime`. */
+  name: string;
+  /** Its declarations, relative to dist/. */
+  dts: string;
+  /** The checked-in report. */
+  report: string;
+}
+
+/** The entry points with declarations, from package.json's exports. */
+export const ENTRIES: Entry[] = Object.entries(
+  (JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { exports: Record<string, string | { types?: string }> }).exports,
+).flatMap(([subpath, target]) => {
+  if (typeof target !== 'object' || !target.types) return [];
+  const sub = subpath.replace(/^\.\/?/, '');
+  return [{ name: sub ? `sandburg/${sub}` : 'sandburg', dts: target.types.replace(/^\.\/dist\//, ''), report: join(ROOT, `api/sandburg${sub ? `-${sub.replaceAll('/', '-')}` : ''}.api.md`) }];
+});
+
+export const REPORT = ENTRIES.find((e) => e.name === 'sandburg')!.report;
 
 interface Module {
   code: string;
@@ -60,7 +82,8 @@ function load(file: string, cache: Map<string, Module>): Module {
   if (r.errors.length) throw new Error(`${file}: ${r.errors.map((e) => e.message).join('; ')}`);
   const body = r.program.body as unknown as Node[];
   const m: Module = { code, body, comments: r.comments as unknown as Node[], declared: new Map(), imported: new Map(), exported: new Map(), star: [] };
-  const target = (spec: string) => (spec.startsWith('.') ? join(dirname(file), spec).replace(/\.ts$/, '.d.ts') : spec);
+  // A relative import's declarations: tsc's for a .ts module, the hand-written ones beside a .js module.
+  const target = (spec: string) => (spec.startsWith('.') ? join(dirname(file), spec).replace(/\.[jt]s$/, '.d.ts') : spec);
   for (const st of body) {
     for (const name of declaredNames(st)) {
       m.declared.set(name, st);
@@ -123,9 +146,9 @@ function hasDoc(m: Module, st: Node): boolean {
   return m.comments.some((c) => c.end <= st.start && /^\s*$/.test(before.slice(c.end)) && c.type === 'Block' && m.code.startsWith('/**', c.start));
 }
 
-export function apiReport(dtsRoot: string): string {
+export function apiReport(dtsRoot: string, entryDts = 'index.d.ts', name = 'sandburg'): string {
   const cache = new Map<string, Module>();
-  const entry = join(dtsRoot, 'index.d.ts');
+  const entry = join(dtsRoot, entryDts);
   /** Declarations in the report: `file#name` → its text, under the name the package exports it by. */
   const decls = new Map<string, { name: string; file: string; text: string; documented: boolean; exported: boolean }>();
   const external = new Map<string, Set<string>>();
@@ -186,7 +209,7 @@ export function apiReport(dtsRoot: string): string {
 
   const sorted = [...decls.entries()].sort(([, a], [, b]) => Number(b.exported) - Number(a.exported) || a.file.localeCompare(b.file) || a.name.localeCompare(b.name));
   const lines = [
-    '# The public API of sandburg',
+    `# The public API of ${name}`,
     '',
     'Generated by `node scripts/api-report.ts --update` from the package\'s declarations, and compared by',
     'test/unit/api-report.test.ts: a change to this file is a change to the API. Exported by the',
@@ -219,19 +242,27 @@ export function apiReport(dtsRoot: string): string {
   return lines.join('\n');
 }
 
-/** Emits the declarations into a temporary directory and reports on them. */
-export function currentApiReport(): string {
+/** Emits the declarations into a temporary directory and reports on each entry point: report path → report. */
+export function currentApiReports(): Map<string, string> {
   const out = mkdtempSync(join(tmpdir(), 'sandburg-api-'));
   try {
     execFileSync(process.execPath, [join(ROOT, 'node_modules/typescript/bin/tsc'), '-p', join(ROOT, 'tsconfig.build.json'), '--emitDeclarationOnly', '--outDir', out], { cwd: ROOT, stdio: 'pipe' });
-    return apiReport(out);
+    // The declarations of src/'s JavaScript modules (browser-runtime/frame-guard.js): tsc does not copy them.
+    for (const file of globSync('**/*.d.ts', { cwd: join(ROOT, 'src') })) cpSync(join(ROOT, 'src', file), join(out, file));
+    return new Map(ENTRIES.map((e) => [e.report, apiReport(out, e.dts, e.name)]));
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
 }
 
+/** The report of the package's main entry (`sandburg`). */
+export function currentApiReport(): string {
+  return currentApiReports().get(REPORT)!;
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  const report = currentApiReport();
-  if (process.argv.includes('--update')) writeFileSync(REPORT, report);
-  else process.stdout.write(report);
+  for (const [file, report] of currentApiReports()) {
+    if (process.argv.includes('--update')) writeFileSync(file, report);
+    else process.stdout.write(report + '\n');
+  }
 }

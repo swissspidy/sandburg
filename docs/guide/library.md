@@ -2,7 +2,8 @@
 
 Everything the CLI does is in the package's library. The full public API, with every type, is in
 [`api/sandburg.api.md`](../../api/sandburg.api.md) (generated from the declarations, and compared by the
-unit tests).
+unit tests); that of `sandburg/browser-runtime` ([Embedding the browser runtime](browser-runtime.md)) is
+in [`api/sandburg-browser-runtime.api.md`](../../api/sandburg-browser-runtime.api.md).
 
 ```ts
 import { Session, dockerReference } from 'sandburg';

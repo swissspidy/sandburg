@@ -27,6 +27,7 @@ export { isolationFailure, detectFramework, pageInstall };
 export type { HostApi, RpcResult };
 export type { FileTree, Framework, InstallReport, PackageJson } from '../types.ts';
 
+/** Where the embedded runtime is served and where it runs its app (every option has a default). */
 export interface EmbedOptions {
   /** Where this directory is served (sw.js, host.js, runtime/). Default: where this module was loaded from. */
   base?: string | URL;
@@ -114,6 +115,7 @@ async function unwrap<T>(result: Promise<RpcResult<T>>): Promise<T> {
   throw Object.assign(new Error(r.error.message), { name: r.error.name });
 }
 
+/** A project that startProject started: the app's URL and how its packages were installed. */
 export interface StartedProject {
   /** The app's URL as it sees itself (/, or the path its dev server opens). */
   url: string;
