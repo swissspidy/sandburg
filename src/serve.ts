@@ -205,13 +205,14 @@ const PAGE = `<!doctype html>
 <iframe id="app" title="The app"></iframe>
 <pre id="log"></pre>
 <script type="module">
-import { isolate, loadHost, appPath, guardAppFrame, pageInstall } from '/sandburg/index.js';
 const options = { base: '/sandburg/', scope: '/', app: '/app', pass: ['${OWN}'] };
 const statusEl = document.getElementById('status');
 const status = (text, state = '') => { statusEl.textContent = text; statusEl.dataset.state = state; };
 const log = (line) => { document.getElementById('log').textContent += line + '\\n'; };
 const unwrap = async (call) => { const r = await call; if (!r.ok) throw Object.assign(new Error(r.error.message), { name: r.error.name }); return r.value; };
 try {
+  // Imported here, not as a static import: a runtime that does not load is an error the page shows too.
+  const { isolate, loadHost, appPath, guardAppFrame, pageInstall } = await import('/sandburg/index.js');
   if (await isolate(options)) {
     const project = await (await fetch('${PROJECT_JSON}')).json();
     document.title = project.name + ' · Sandburg serve';

@@ -37,7 +37,7 @@ test('it serves the page, the project as JSON and the runtime (its service worke
   assert.match(served.url, /^http:\/\/localhost:\d+\/$/);
   const page = await get(served.url, '/');
   assert.equal(page.status, 200);
-  assert.match(page.body, /from '\/sandburg\/index\.js'/);
+  assert.match(page.body, /import\('\/sandburg\/index\.js'\)/);
   const json = await get(served.url, '/sandburg-serve/project.json');
   assert.deepEqual(JSON.parse(json.body).files, project.files);
   const sw = await get(served.url, '/sandburg/sw.js');

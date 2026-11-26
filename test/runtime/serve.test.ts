@@ -4,7 +4,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, type Browser } from 'playwright-core';
@@ -56,5 +56,21 @@ test("the served page installs and starts the project in the browser and shows t
     assert.equal(await page.textContent('#address'), '/');
   } finally {
     await page.close();
+  }
+});
+
+test('a browser runtime that does not load is an error the page shows, not a page stuck at Starting', async () => {
+  const broken = await mkdtemp(join(tmpdir(), 'sandburg-serve-broken-'));
+  await writeFile(join(broken, 'index.js'), 'throw new Error("the runtime did not load");');
+  const server = await serve({ project, port: 0, runtimeDir: broken });
+  const page = await browser.newPage();
+  try {
+    await page.goto(server.url);
+    await page.waitForFunction(() => document.getElementById('status')?.textContent === 'Failed', null, { timeout: 30_000 });
+    assert.match((await page.textContent('#log')) ?? '', /the runtime did not load/);
+  } finally {
+    await page.close();
+    await server.close();
+    await rm(broken, { recursive: true, force: true });
   }
 });
