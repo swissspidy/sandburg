@@ -56,6 +56,10 @@ updates:
         versions: [">= 1"]
       - dependency-name: vite-plugin-solid
         versions: [">= 3"]
+      # vue-router 5.5.2 breaks Nuxt's server rendering (ReferenceError: __VUE_OPTIONS_API__ is not
+      # defined, also in Node with npm): nuxt-app stays on 5.5.1. Later versions come as usual.
+      - dependency-name: vue-router
+        versions: ["5.5.2"]
 
   - package-ecosystem: github-actions
     # / is the workflows and the repository's own action (action.yml); the local composite actions pin

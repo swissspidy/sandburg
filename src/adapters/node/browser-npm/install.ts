@@ -6,7 +6,7 @@
  * and the index of package binaries. The result is the files of node_modules, in memory.
  */
 import semver from 'semver';
-import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings } from '../install-rules.ts';
+import { emnapiOverrides, emnapiToAlign, NEXT_SWC_WASM, SOURCE_PATCHES, WASM_BUILDS, wasiBindings, wasiPlacements } from '../install-rules.ts';
 import type { Registry } from './registry.ts';
 import { resolveTree, type Placed, type RootPackage } from './resolve.ts';
 
@@ -80,13 +80,15 @@ export async function installInBrowser(parts: BrowserInstallPart[], registry: Re
     if (!part.dir) lockfile = used.lockfile;
     const placed = [...tree.values()];
 
-    // WebAssembly bindings of napi-rs packages (rolldown, Tailwind's oxide, …), at the top.
+    // WebAssembly bindings of napi-rs packages (rolldown, Tailwind's oxide, …): at the top, and inside
+    // a nested copy of a package that lists another version than the top's (wasiPlacements).
     const wanted: Record<string, string> = {};
     const candidates: Record<string, string> = {};
-    for (const p of placed) {
-      const found = wasiBindings(p.optionalDependencies);
-      Object.assign(wanted, found.listed);
-      Object.assign(candidates, found.candidates);
+    for (const p of placed) Object.assign(candidates, wasiBindings(p.optionalDependencies).candidates);
+    for (const [location, range] of wasiPlacements(placed.map((p) => ({ location: p.path, optionalDependencies: p.optionalDependencies })), new Set(tree.keys()))) {
+      const name = location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
+      if (location === `node_modules/${name}`) wanted[name] = range;
+      else placed.push(...(await isolated(registry, name, range, location)));
     }
     for (const [name, range] of Object.entries(candidates)) {
       if (name in wanted) continue;

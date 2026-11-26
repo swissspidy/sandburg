@@ -31,6 +31,33 @@ export function wasiBindings(optionalDependencies: Record<string, string> | unde
 }
 
 /**
+ * Where the WebAssembly bindings packages list (wasiBindings' `listed`) go, so that each package
+ * resolves the version it lists, as npm places optional dependencies: at the top when no copy is
+ * there; else inside the package (its node_modules) when the copy it would resolve, in its own
+ * node_modules or one above it, is another version. Two copies of a package (a project's rolldown
+ * 1.2 and Vite's own 1.3, nested in vite) each get theirs. `present`: the packages already installed
+ * (a binding there is taken as it is). Returns location -> range.
+ */
+export function wasiPlacements(packages: { location: string; optionalDependencies?: Record<string, string> }[], present: Set<string> = new Set()): Map<string, string> {
+  const depth = (location: string) => location.split('node_modules/').length;
+  const placed = new Map<string, string>();
+  for (const p of [...packages].sort((a, b) => depth(a.location) - depth(b.location) || (a.location < b.location ? -1 : 1))) {
+    const listed = Object.entries(wasiBindings(p.optionalDependencies).listed);
+    if (!listed.length) continue;
+    // The node_modules directories the package resolves from, nearest first: its own, then each above it.
+    const dirs = [`${p.location}/node_modules/`];
+    for (let at = p.location.lastIndexOf('node_modules/'); at >= 0; at = at ? p.location.lastIndexOf('node_modules/', at - 1) : -1) dirs.push(p.location.slice(0, at + 'node_modules/'.length));
+    for (const [name, range] of listed) {
+      const found = dirs.map((d) => d + name).find((location) => placed.has(location) || present.has(location));
+      if (found && (present.has(found) || placed.get(found) === range)) continue;
+      const target = found ? `${p.location}/node_modules/${name}` : `node_modules/${name}`;
+      if (!placed.has(target)) placed.set(target, range);
+    }
+  }
+  return placed;
+}
+
+/**
  * TypeScript 7's lib/tsc.js in the browser runtime (see WASM_BUILDS). `tsc --showConfig` prints the
  * project's configuration with `extends` applied: compilerOptions merged (a later config wins), path
  * options relative to the project's config, inherited files, include and exclude prefixed with their
