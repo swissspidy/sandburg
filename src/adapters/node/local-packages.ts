@@ -51,12 +51,13 @@ export interface InstallPlan {
   git: { dir: string; name: string; spec: string }[];
 }
 
-/** Where the host puts git dependencies' files (git-packages.ts), and its map of their specs to their directories. */
+/** Where the host puts git dependencies' files (git-packages.ts, git-tree.ts): `.sandburg/git/<repository>-<commit>/`. */
 export const GIT_DIR = '.sandburg/git';
+/** The map of git dependency specs, as package.json names them, to their directories in GIT_DIR (JSON). */
 export const GIT_FILE = '.sandburg/git.json';
 
 /** The host's map of git specs to the directories it fetched them into (GIT_FILE), each inside GIT_DIR. */
-function gitDirs(files: FileTree): Record<string, string> {
+export function gitDirs(files: FileTree): Record<string, string> {
   const text = files[GIT_FILE];
   if (typeof text !== 'string') return {};
   try {

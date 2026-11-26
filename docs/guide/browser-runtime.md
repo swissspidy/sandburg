@@ -63,7 +63,7 @@ The page needs an `<iframe id="app">`: the runtime loads the app into it.
 | `appPath(options?)` | The path the app lives at (`options.app`). |
 | `guardAppFrame(frame, appPath, onAddress?)` | Keeps the app frame under the app's path when the app reloads itself, and reports its address. |
 | `isolationFailure()` | Why the page is not cross-origin isolated, worded for a visitor. |
-| `detectFramework(files, packageJson)`, `pageInstall(project)` | What `startProject` uses, for pages that drive the host themselves. |
+| `detectFramework(files, packageJson)`, `pageInstall(project)`, `withGitDependencies(files, packageJson, fetcher)` | What `startProject` uses, for pages that drive the host themselves. |
 
 `options` (`EmbedOptions`):
 
@@ -73,6 +73,39 @@ The page needs an `<iframe id="app">`: the runtime loads the app into it.
 | `scope` | the page's directory | The service worker's scope: a path that holds the embedding page. |
 | `app` | `<scope>app` | The path the app lives at. The app sees itself at `/`: a link or redirect to a path that starts with this one is taken to be under it already (an app that writes deployment paths), so pick a path the app's own routes do not start with. |
 | `pass` | — | Path prefixes under the scope that are the embedder's own files (scripts, styles), left to the network. The runtime's directory always is. Other paths outside the app are taken to be the app's own absolute paths (`/_next/…`, `/src/main.tsx`). |
+| `git` | — | Fetches the project's git dependencies (`github:user/repo#v1` and npm's other git shapes): see [Git dependencies](#git-dependencies). Without it, a project with one fails to install. |
+
+### Git dependencies
+
+A Sandburg host fetches a project's git dependencies itself ([ADR 0073](../adr/0073-git-dependencies.md)).
+A page cannot: GitHub's, GitLab's and Bitbucket's archive and git endpoints send no CORS headers. Give
+`startProject` a fetcher, `options.git`, that does, through a server of yours for instance:
+
+```js
+const { url } = await startProject(host, files, {
+  ...options,
+  // dependency: { name, spec, host, url, path, committish, semver, subdir }
+  git: async (dependency) => {
+    const query = new URLSearchParams({ url: dependency.url, ref: dependency.committish ?? '', semver: dependency.semver ?? '' });
+    const res = await fetch(`/my-git-proxy?${query}`);
+    return res.json(); // { commit: '<40-character commit id>', files: { 'package.json': '…', 'index.js': '…' } }
+  },
+});
+```
+
+It resolves the dependency to a commit and returns the commit's files: `committish` is a branch, tag or
+commit; `semver` (`#semver:^1.0.0`, `committish` then `null`) a range, for the highest tag that
+satisfies it; neither, the default branch. The files are by path from the repository's root (a string
+for a text file, `{ base64 }` for a binary one). Sandburg takes the `path:` subdirectory itself, leaves `.git/` and `node_modules/` out, and refuses an answer
+without a full commit id, without a `package.json`, or with a path outside the repository. Git
+dependencies a fetched package names are fetched in turn. Nothing of the repository runs, as on a host:
+its `prepare` script is not run.
+
+The files go where a host puts them, and where the install looks for them: each dependency's in
+`.sandburg/git/<host>-<repository>-<commit>/`, and `.sandburg/git.json` maps each spec, as package.json
+names it, to that directory. A page that drives the host itself can fill them in with
+`withGitDependencies(files, packageJson, fetcher)`, or write them on its own, before `mount()` and
+`pageInstall()` (`GIT_DIR` and `GIT_FILE` are exported).
 
 ## What it does not do
 
