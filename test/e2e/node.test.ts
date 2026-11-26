@@ -360,6 +360,127 @@ test('a page whose markup loads its assets from http://localhost:<port> (URLs bu
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+// On the developer's machine, a server's own fetch() of its localhost URL is Node's: it sends no browser
+// cookies, and the cookies it is answered with do not reach the browser. The page's requests do both.
+test("a server's own fetch() of its localhost URL carries no page cookies, and its answer's cookies stay out of the page", async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'server-fetch-cookies', private: true, scripts: { dev: 'node server.js' } }),
+      'server.js': [
+        "require('node:http').createServer(async (q, s) => {",
+        "  if (q.url === '/echo') return s.writeHead(200, { 'set-cookie': 'from=' + (q.headers['x-from'] || 'page') + '; Path=/' }).end('cookie=' + (q.headers.cookie || ''));",
+        "  if (q.url === '/probe') return s.end(await (await fetch('http://localhost:3000/echo', { headers: { 'x-from': 'server' } })).text());",
+        // A worker of the app's own, named as the runtime's script is: its fetch() is the page's.
+        "  if (q.url === '/workers/__sandburg/node-worker.js') return s.writeHead(200, { 'content-type': 'text/javascript' }).end(\"onmessage = async () => postMessage(await (await fetch('http://localhost:3000/echo', { headers: { 'x-from': 'worker' } })).text());\");",
+        "  s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><title>cookies</title><h1>cookies</h1>');",
+        "}).listen(3000);",
+      ].join('\n'),
+    },
+    { name: 'server-fetch-cookies', path: 'server-fetch-cookies' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: {
+      cookies: async ({ app, expect }) => {
+        await expect(app.getByRole('heading', { level: 1 })).toHaveText('cookies');
+        const seen = await app.evaluate(async () => {
+          document.cookie = 'sess=browser; path=/';
+          const server = await (await fetch('/probe')).text();
+          const afterServer = document.cookie;
+          const page = await (await fetch('/echo')).text();
+          const afterPage = document.cookie;
+          const worker = new Worker('/workers/__sandburg/node-worker.js');
+          const fromWorker = await new Promise((resolve) => {
+            worker.onmessage = (e) => resolve(e.data);
+            worker.postMessage('go');
+          });
+          return { server, afterServer, page, afterPage, fromWorker };
+        });
+        // The server's fetch: no page cookie sent, and its answer's from=server not set in the page.
+        expect(seen.server).toBe('cookie=');
+        expect(seen.afterServer).toBe('sess=browser');
+        // The page's own request: its cookie sent, and the answer's cookie set.
+        expect(seen.page).toBe('cookie=sess=browser');
+        expect(seen.afterPage).toBe('sess=browser; from=page');
+        // The app's own worker, though its script is named as the runtime's: the page's cookies go with its fetch().
+        expect(seen.fromWorker).toBe('cookie=sess=browser; from=page');
+      },
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
+// On the developer's machine another localhost port is another origin: a module script from it runs
+// only as its server's CORS headers allow (the page's own port is the page's origin, see above). A
+// server's own fetch() is Node's, which checks no CORS.
+test("a module script from another localhost port runs as its server's CORS headers allow; a server's fetch() checks none", async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'cross-port-cors', private: true, scripts: { dev: 'node server.js' } }),
+      'server.js': [
+        "const run = (id) => \"document.querySelector('#\" + id + \"').textContent = 'ran';\";",
+        "const cors = {",
+        "  '/denied.js': {},",
+        "  '/allowed.js': { origin: true },",
+        "  '/star.js': { star: true },",
+        "  '/creds-missing.js': { origin: true },",
+        "  '/creds.js': { origin: true, credentials: true },",
+        "  '/twice.js': { twice: true },",
+        "};",
+        "require('node:http').createServer(async (q, s) => {",
+        "  if (q.url === '/probe') return s.end(await (await fetch('http://localhost:3001/denied.js')).text());",
+        "  const m = (file, extra = '') => '<script type=\"module\"' + extra + ' src=\"http://localhost:3001/' + file + '.js\"></script>';",
+        "  const ids = ['denied', 'allowed', 'star', 'creds-missing', 'creds', 'twice', 'deployment'];",
+        // The page's real (deployment) origin, which only the page knows: a server that names it grants nothing.
+        "  const deployment = '<script type=\"module\">const s = document.createElement(\"script\"); s.type = \"module\"; s.src = \"http://localhost:3001/deployment.js?o=\" + encodeURIComponent(location.origin); document.head.append(s);</script>';",
+        "  s.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><html><head>' +",
+        "    m('denied') + m('allowed') + m('star') + m('creds-missing', ' crossorigin=\"use-credentials\"') + m('creds', ' crossorigin=\"use-credentials\"') + m('twice') + deployment +",
+        "    '</head><body><h1>cors</h1>' + ids.map((id) => '<p id=\"' + id + '\"></p>').join('') + '</body></html>');",
+        "}).listen(3000);",
+        // Another server, started after the page's (the first to listen is the app's).
+        "let seenOrigin = '';",
+        "require('node:http').createServer((q, s) => {",
+        "  const url = new URL(q.url, 'http://localhost');",
+        "  if (url.pathname === '/deployment.js') return s.writeHead(200, { 'content-type': 'text/javascript', 'access-control-allow-origin': url.searchParams.get('o') }).end(run('deployment'));",
+        "  const rule = cors[q.url] || {};",
+        "  if (q.url === '/allowed.js') seenOrigin = q.headers.origin || '';",
+        "  const headers = { 'content-type': 'text/javascript' };",
+        "  if (rule.origin) headers['access-control-allow-origin'] = q.headers.origin;",
+        "  if (rule.star) headers['access-control-allow-origin'] = '*';",
+        "  if (rule.credentials) headers['access-control-allow-credentials'] = 'true';",
+        // The page's origin, twice: a browser reads the field as both values, which match no origin.
+        "  if (rule.twice) headers['access-control-allow-origin'] = [q.headers.origin, q.headers.origin];",
+        "  if (q.url === '/origin') return s.writeHead(200, { 'access-control-allow-origin': '*' }).end(seenOrigin);",
+        "  s.writeHead(200, headers).end(run(q.url.slice(1, -3)));",
+        "}).listen(3001);",
+      ].join('\n'),
+    },
+    { name: 'cross-port-cors', path: 'cross-port-cors' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: {
+      cors: async ({ app, expect }) => {
+        await expect(app.getByRole('heading', { level: 1 })).toHaveText('cors');
+        await expect(app.locator('#allowed')).toHaveText('ran');
+        await expect(app.locator('#star')).toHaveText('ran');
+        await expect(app.locator('#creds')).toHaveText('ran');
+        // Not allowed by their server's headers: not run (none at all; credentials without allow-credentials).
+        await expect(app.locator('#denied')).toHaveText('');
+        await expect(app.locator('#creds-missing')).toHaveText('');
+        // Allow-Origin sent twice, and one naming the page's real origin rather than the localhost one it was sent with.
+        await expect(app.locator('#twice')).toHaveText('');
+        await expect(app.locator('#deployment')).toHaveText('');
+        // The server saw the page's localhost origin, as on the developer's machine.
+        expect(await app.evaluate(async () => (await fetch('http://localhost:3001/origin')).text())).toBe('http://localhost:3000');
+        // A server's own fetch() of a URL that sends no CORS headers gets its answer.
+        expect(await app.evaluate(async () => (await fetch('/probe')).text())).toContain("textContent = 'ran'");
+      },
+    },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 test('a server that runs synchronous commands as it starts (node -p, a git revision with a fallback) runs', async () => {
   const project = projectFromFiles(
     {

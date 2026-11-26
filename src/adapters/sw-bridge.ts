@@ -12,6 +12,8 @@ export interface BridgedRequest {
   url: string;
   headers: [string, string][];
   body: ArrayBuffer | null;
+  /** Sent by the program itself (its fetch() of a server's localhost URL), not by the app's page. */
+  fromProgram?: boolean;
 }
 
 /** Where the answer to a request goes: start, chunk, end, full or error messages (see sw.js). */

@@ -141,6 +141,8 @@ self.sandburgHooks = {
     return false;
   },
   isHost: (url) => url.pathname === scope.pathname || url.pathname === scope.pathname + 'index.html',
+  // The runtime's workers: node-worker.js and node-spare.js from the demo's __sandburg/ (demo.js), not the app's.
+  isRuntime: (url) => url.pathname === scope.pathname + '__sandburg/node-worker.js' || url.pathname === scope.pathname + '__sandburg/node-spare.js',
   appPath(url) {
     const inApp = url.pathname === appPrefix || url.pathname.startsWith(appPrefix + '/');
     return (inApp ? url.pathname.slice(appPrefix.length) || '/' : url.pathname) + url.search;

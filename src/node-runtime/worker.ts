@@ -715,7 +715,7 @@ function start(msg: Extract<ToWorker, { type: 'run' }>) {
     // goes on (its timers fire). An ES module's evaluation is a promise there: its throw comes once
     // the current microtasks ran, as a rejection.
     // process.exit() there ends the process at once, whatever the entry.
-    if (e instanceof ExitError || !moduleSystem.Module.mainModule?.esm) return void uncaught.uncaught(e, 'uncaughtException');
+    if (e instanceof ExitError || !moduleSystem.Module.entryModule?.esm) return void uncaught.uncaught(e, 'uncaughtException');
     void Promise.resolve().then(() => uncaught.uncaught(e, 'unhandledRejection'));
   }
 }

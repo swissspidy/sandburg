@@ -156,6 +156,8 @@ export function createModuleSystem(host: LoaderHost) {
     globalPaths: string[];
     /** The program's module (require.main), once it loads. */
     mainModule?: Mod;
+    /** The module the program started with, also one given as text (which has no require.main). */
+    entryModule?: Mod;
   };
 
   Module._cache = Object.create(null);
@@ -329,7 +331,7 @@ export function createModuleSystem(host: LoaderHost) {
     }
     const mod = new Module(filename, parent);
     if (isMain) {
-      Module.mainModule = mod;
+      Module.mainModule = Module.entryModule = mod;
       mod.id = '.';
     }
     Module._cache[filename] = mod;
@@ -406,7 +408,8 @@ export function createModuleSystem(host: LoaderHost) {
     const mod = new Module(name, null);
     mod.filename = filename;
     mod.paths = Module._nodeModulePaths(cwd);
-    Module.mainModule = mod;
+    // As in Node: code given as text is no require.main (it is undefined there).
+    Module.entryModule = mod;
     loadJs(mod, filename, file);
     mod.loaded = true;
     awaitableWhileEvaluating(mod.exports);

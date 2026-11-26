@@ -1352,3 +1352,24 @@ test('url: a parsed query and a formatted one, as in Node', async () => {
     formatted: formats.map((o) => nodeUrl.format(o)),
   });
 });
+
+test('require.main of a program given as text (node -e/-p, stdin, a worker\'s eval) is undefined, as in Node; a file\'s is its module', async () => {
+  const out = await h.run({ 'main.js': `const cp = require('child_process');
+const { once } = require('events');
+const { Worker } = require('worker_threads');
+const probe = 'JSON.stringify([require.main === module, typeof require.main, module.id])';
+(async () => {
+  const out = { file: [require.main === module, module.id] };
+  out.e = JSON.parse(cp.execSync(\`node -e "console.log(\${probe})"\`, { encoding: 'utf8' }));
+  out.p = JSON.parse(cp.execSync(\`node -p "\${probe}"\`, { encoding: 'utf8' }));
+  out.stdin = JSON.parse(cp.execSync('node -', { input: \`console.log(\${probe})\`, encoding: 'utf8' }));
+  const w = new Worker(\`require('worker_threads').parentPort.postMessage(\${probe})\`, { eval: true });
+  [out.worker] = await once(w, 'message');
+  out.worker = JSON.parse(out.worker);
+  await w.terminate();
+  console.log(JSON.stringify(out));
+})();` }, '/app/main.js');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  // Expected: what Node 24 prints for main.js.
+  assert.deepEqual(JSON.parse(out.stdout), {"file":[true,"."],"e":[false,"undefined","[eval]"],"p":[false,"undefined","[eval]"],"stdin":[false,"undefined","[stdin]"],"worker":[false,"undefined","[worker eval]"]});
+});
