@@ -264,3 +264,39 @@ test('a WAL-mode database written right before process.exit() is written back in
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.deepEqual(JSON.parse(out.stdout.trim().split('\n').pop()!), { err: null, names: ['ONE', 'two', 'three'], header: [2, 2], wal: 0 });
 });
+
+test("a WAL-mode database is written back whole, its -wal emptied, though the app's watcher of the file throws as it is written (#174)", async () => {
+  const files = walDatabases();
+  const out = await h.run(
+    {
+      ...fakePackage('better-sqlite3'),
+      'main.js': `
+        const fs = require('fs');
+        const files = ${JSON.stringify(files)};
+        fs.writeFileSync('live.sqlite', Buffer.from(files.live, 'base64'));
+        fs.writeFileSync('live.sqlite-wal', Buffer.from(files.liveWal, 'base64'));
+        const db = new (require('better-sqlite3'))('live.sqlite');
+        db.prepare("INSERT INTO items (name) VALUES ('three')").run();
+        fs.watchFile('live.sqlite', () => { throw new Error('the watcher throws'); });
+        let thrown = null;
+        try { db.close(); } catch (e) { thrown = e.message; }
+        // As the files are now, with nothing written after: a process that exits here leaves them so.
+        console.log(JSON.stringify({ thrown, file: fs.readFileSync('live.sqlite').toString('base64'), wal: fs.readFileSync('live.sqlite-wal').toString('base64') }));`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  const r = JSON.parse(out.stdout.trim().split('\n').pop()!);
+  assert.equal(r.thrown, 'the watcher throws');
+  // The host's SQLite reads the pair as the next process would: everything, the -wal's old frames not replayed over it.
+  const dir = mkdtempSync(join(tmpdir(), 'sandburg-wal-'));
+  try {
+    writeFileSync(join(dir, 'back.sqlite'), Buffer.from(r.file, 'base64'));
+    writeFileSync(join(dir, 'back.sqlite-wal'), Buffer.from(r.wal, 'base64'));
+    const back = new DatabaseSync(join(dir, 'back.sqlite'));
+    assert.deepEqual(back.prepare('SELECT name FROM items ORDER BY id').all().map((row) => row.name), ['ONE', 'two', 'three']);
+    back.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

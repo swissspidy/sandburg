@@ -124,15 +124,34 @@ const shared = new Map<string, Shared>();
 /**
  * Writes a database back to its file: the whole image first, then, for a WAL-mode file, its emptied
  * -wal and -shm (else SQLite on the developer's machine would replay their frames over it), as after
- * SQLite's own checkpoint; back in WAL mode, as it was. Clean only once all of it is written: a write
- * that fails leaves it dirty, for the next flush.
+ * SQLite's own checkpoint; back in WAL mode, as it was. The app's own watchers of these files
+ * (fs.watch, fs.watchFile) run as each is written and may throw once it is: the rest is written all the
+ * same, so the file and its sidecars never disagree, and the first error is thrown after. A write that
+ * did not happen stops it, and leaves the database dirty, for the next flush.
  */
 function writeBack(s: Shared, path: string): void {
   const bytes = sqlite().capi.sqlite3_js_db_export(s.db.pointer);
   if (s.wal) bytes[18] = bytes[19] = 2;
-  s.files.write(path, bytes);
-  if (s.wal) for (const sidecar of [`${path}-wal`, `${path}-shm`]) if (s.files.exists(sidecar)) s.files.write(sidecar, new Uint8Array());
+  const failures: unknown[] = [];
+  const write = (file: string, data: Uint8Array) => {
+    try {
+      s.files.write(file, data);
+    } catch (error) {
+      if (!holds(s.files, file, data)) throw error;
+      failures.push(error);
+    }
+  };
+  write(path, bytes);
+  if (s.wal) for (const sidecar of [`${path}-wal`, `${path}-shm`]) if (s.files.exists(sidecar)) write(sidecar, new Uint8Array());
   s.dirty = false;
+  if (failures.length) throw failures[0];
+}
+
+/** Whether a file holds these bytes: a write that threw happened all the same (a watcher threw), or did not. */
+function holds(files: FileAccess, path: string, data: Uint8Array): boolean {
+  if (!files.exists(path)) return false;
+  const held = files.read(path);
+  return held === data || (held.length === data.length && held.every((byte, i) => byte === data[i]));
 }
 
 /**
