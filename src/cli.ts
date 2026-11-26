@@ -21,6 +21,8 @@ Commands:
   open <project>       Load a project in a visible browser tab and keep it open
   snapshot <project>   Store a project in the snapshot store and print its id
   compare <dir>        Run projects in the browser and in a Docker reference; report agreement
+  serve <project>      Serve a project for your own browser (no Playwright, no sandbox, no checks;
+                       sandburg serve --help)
 
 <project> is a directory, a .zip, a JSON file tree, or snapshot:<id-or-prefix>.
 
@@ -131,6 +133,8 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 async function command(argv: string[]): Promise<number> {
+  // Its own options; bin/sandburg.js loads it without this module (no Playwright).
+  if (argv[0] === 'serve') return (await import('./serve.ts')).serveMain(argv.slice(1));
   let parsed;
   try {
     parsed = parseCommandLine(argv);

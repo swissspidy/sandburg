@@ -165,4 +165,7 @@ test('installed without Playwright, the browser runtime is there for an embedder
   assert.equal(failed.code, 2);
   // The embedder has Sandburg in its dependencies: the peers go there too, and Sandburg stays a production dependency.
   assert.match(failed.stderr, /needs Playwright, which is not installed \((?:playwright-core|@playwright\/test)\)\. Run: npm install @playwright\/test@\S+ playwright-core@\S+$/m);
+  // sandburg serve needs no Playwright (ADR 0075).
+  const help = await run(join(bare, 'node_modules/.bin/sandburg'), ['serve', '--help'], { cwd: bare });
+  assert.match(help.stdout, /^Usage: sandburg serve <project>/);
 });

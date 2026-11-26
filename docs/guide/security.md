@@ -40,6 +40,15 @@ prove it ([ADR 0001](../adr/0001-runtime-adapters-serving-results.md),
 [ADR 0054](../adr/0054-security-review-round-4.md) maps every boundary an app can reach and how the
 host holds it, with the tests that check each one.
 
+## Outside the sandbox: `serve` and the browser runtime
+
+`sandburg serve` ([CLI](cli.md#serve)) and the embedded browser runtime
+([Embedding the browser runtime](browser-runtime.md)) run an app in your own browser, without the layers
+above: no egress gateway or allowlist (the app's requests are the browser's), the app on the serving
+page's origin, and the browser's own process isolation only. They are for looking at an app you are
+willing to run in your browser, not for testing untrusted code: use `sandburg run` for that. `serve`
+listens on `127.0.0.1` by default, and while it does, answers only requests for a loopback host name.
+
 ## The browser sandbox
 
 The sandbox needs a host that allows it. On Linux it needs unprivileged user namespaces, which

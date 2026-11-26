@@ -10,6 +10,9 @@ generator page runs on the same files.
 npm install sandburg   # Playwright is not needed for this
 ```
 
+To look at a project in your browser without writing a page, `sandburg serve <project>` serves one on
+this runtime ([CLI](cli.md#serve)).
+
 ## Serve the directory
 
 Serve `node_modules/sandburg/dist/browser-runtime/` as static files, for example at `/sandburg/`. In

@@ -15,6 +15,12 @@ process.on('warning', (w) => {
   if (w.name !== 'ExperimentalWarning' && w.code !== 'MODULE_TYPELESS_PACKAGE_JSON') console.warn(w);
 });
 const installed = import.meta.dirname.split(sep).includes('node_modules');
+const args = process.argv.slice(2);
+// serve needs no Playwright (ADR 0075): its module is loaded on its own, without the CLI's.
+if (args[0] === 'serve') {
+  const { serveMain } = await import(installed ? '../dist/serve.js' : '../src/serve.ts');
+  process.exit(await serveMain(args.slice(1)));
+}
 let cli;
 try {
   cli = await import(installed ? '../dist/cli.js' : '../src/cli.ts');
@@ -27,7 +33,7 @@ try {
   console.error(`error: Sandburg's CLI needs Playwright, which is not installed (${missing}). Run: ${installCommand(version, playwright)}`);
   process.exit(2);
 }
-process.exitCode = await cli.main(process.argv.slice(2));
+process.exitCode = await cli.main(args);
 
 /**
  * What installs Playwright beside this copy of Sandburg. A copy npx runs from its cache does not see

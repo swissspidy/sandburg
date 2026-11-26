@@ -108,7 +108,7 @@ where it is read.
 
 | layer | paths | what | may import |
 | --- | --- | --- | --- |
-| api | `src/index.ts`, `src/cli.ts` | the package's exports and the CLI | compare, reference, orchestrator, adapters-registry, page-checks, core |
+| api | `src/index.ts`, `src/cli.ts`, `src/serve.ts` | the package's exports and the CLI | compare, reference, orchestrator, adapters-registry, page-checks, core |
 | compare | `src/compare/` | comparisons with the Docker reference | reference, orchestrator, core |
 | reference | `src/reference/` | the Docker reference runtime | orchestrator, adapters, host, core |
 | orchestrator | `src/orchestrator/` | the session, Chromium, the host server, egress, checks | adapters-registry, page-checks, host, core |
@@ -122,7 +122,7 @@ where it is read.
 
 | environment | entries | what |
 | --- | --- | --- |
-| host | `index.ts`, `cli.ts` | Node.js: the session, the host server, installs, compiles, caches |
+| host | `index.ts`, `cli.ts`, `serve.ts` | Node.js: the session, the host server, installs, compiles, caches; sandburg serve |
 | page | `host/host.ts`, `adapters/node/browser.ts` | the host page in a sandbox tab (one per run): the adapter's browser half |
 | runtime | `node-runtime/worker.ts`, `node-runtime/globals-shim.ts`, `node-runtime/lib-globals.js`, `node-runtime/process-alias.cjs`, `node-runtime/url-querystring.cjs` | a Node.js runtime's Web Worker (and its threads and child processes) |
 | compile-worker | `adapters/node/compile-worker.ts` | the page's compiler on esbuild-wasm (stubs `node:crypto`, `esbuild`) |

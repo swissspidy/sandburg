@@ -78,3 +78,4 @@ Each decision, with its status, as its own header gives them (a new ADR adds its
 | [0072](0072-pnpm-undeclared-imports.md) | Strict layouts (pnpm's isolated node_modules, Yarn's Plug'n'Play, Bun workspaces; not Nuxt): an import of a package the project does not declare fails, as there | Accepted |
 | [0073](0073-git-dependencies.md) | Git dependencies, fetched by the host and linked | Accepted |
 | [0074](0074-browser-runtime-export.md) | The browser runtime as a subpath export; Playwright an optional peer dependency | Accepted |
+| [0075](0075-serve.md) | `sandburg serve`: a project in your own browser, outside the sandbox | Accepted |
