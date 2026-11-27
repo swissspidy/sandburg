@@ -294,6 +294,9 @@ export function createAdapter(): RuntimeAdapter {
       let resolved = host.resolved;
       let bins: Record<string, string> = {};
       if (host.browserInstall) {
+        // Their scripts are the service worker's (hostBase()), as the prepared runtime's are (prepare): a
+        // page isolated by its own headers runs a project before the worker it just registered is up (#192).
+        await registerServiceWorker().catch(() => {});
         // Opt-in: the install happens here (in a worker), from the npm registry (see npm/install.ts), and the runtime
         // compiles in the page (compile-worker.ts), not on the host. Its esbuild loads meanwhile.
         if (!compiler) {
