@@ -273,8 +273,13 @@ const writeOutput = (result, write) => {
   return rest;
 };
 // Relative entry points and output paths are the working directory's, as under Node (the browser build's
-// default is /, #194), also when absWorkingDir is given as undefined or ''.
-const inMemory = (options) => ({ ...options, absWorkingDir: options.absWorkingDir || process.cwd(), write: false });
+// default is /, #194), also when absWorkingDir is given as undefined or ''. Only a POSIX path: the
+// WebAssembly build takes no other (the runtime's always is; a Windows host's, in the tests, is not).
+const cwd = () => {
+  const dir = process.cwd();
+  return dir.startsWith('/') ? dir : undefined;
+};
+const inMemory = (options) => ({ ...options, absWorkingDir: options.absWorkingDir || cwd(), write: false });
 const build = (options = {}) => init().then(() => esbuild.build(inMemory(options))).then((r) => writeOutput(r, options.write !== false));
 const context = (options = {}) =>
   init().then(() => esbuild.context(inMemory(options))).then((ctx) => ({
