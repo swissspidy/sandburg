@@ -9,7 +9,7 @@ import { dedupedPath } from './bundle-dedupe.ts';
 import { dirname, join, relative, sep } from 'node:path';
 import { source } from '../sources.ts';
 import { CRYPTO_KEYS_KEY, LIBS_KEY, MODULES_KEY, RUNTIME_LIBS, type RuntimeLib } from './libs.ts';
-import { SPARE_NAME, SPARE_WAKE } from './names.ts';
+import { SPARE_NAME, SPARE_UP, SPARE_WAKE } from './names.ts';
 
 const here = (p: string) => source(`node-runtime/${p}`);
 
@@ -18,11 +18,12 @@ const here = (p: string) => source(`node-runtime/${p}`);
  * costs a runtime 150-250 ms of CPU, and most programs that could start a thread (Vite loads
  * esbuild, which loads worker_threads; rollup comes with a napi-rs WebAssembly build) start none. A
  * spare compiles the script and waits; its first message loads the script again to run it, and is
- * handed on unless it was the wake-up. The runtime stays an immediately invoked function, which V8
+ * handed on unless it was the wake-up. It says when it is up (SPARE_UP, see threads.ts' sparesStarting). The runtime stays an immediately invoked function, which V8
  * compiles at once: wrapping it in a function to call later had every runtime parse it twice.
  */
 const SPARE_BANNER = `"use strict";
 if (self.name === ${JSON.stringify(SPARE_NAME)} && !self.__sandburgSpareTaken) {
+  postMessage({ type: ${JSON.stringify(SPARE_UP)} });
   self.addEventListener('message', function first(e) {
     self.removeEventListener('message', first);
     self.__sandburgSpareTaken = true;
@@ -40,6 +41,7 @@ if (self.name === ${JSON.stringify(SPARE_NAME)} && !self.__sandburgSpareTaken) {
  * node-worker.js) gets the behaviour from before.
  */
 export const SPARE_SCRIPT = `"use strict";
+postMessage({ type: ${JSON.stringify(SPARE_UP)} });
 self.addEventListener('message', function first(e) {
   self.removeEventListener('message', first);
   self.__sandburgSpareTaken = true;

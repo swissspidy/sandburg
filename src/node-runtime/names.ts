@@ -9,6 +9,8 @@ export const ESM_MARKER = '/*sandburg:esm*/';
 /** The name of a runtime worker started as a spare for a later thread, and the message that wakes one (threads.ts; bundle.ts's spare script). */
 export const SPARE_NAME = 'sandburg-spare';
 export const SPARE_WAKE = 'sandburg-spare-wake';
+/** What a spare posts once its script runs: its parent's messages reach it from then on (threads.ts' sparesStarting). */
+export const SPARE_UP = 'sandburg-spare-up';
 
 /** Node's conditions for `require`, and for `import` (ES modules are converted to CommonJS, but resolve as imports): the runtime's loader, and the host's prefetcher. */
 export const REQUIRE_CONDITIONS: readonly string[] = ['require', 'node', 'module-sync', 'node-addons', 'default'];
