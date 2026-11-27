@@ -1,5 +1,11 @@
 # sandburg
 
+## 0.5.2
+
+### Patch Changes
+
+- [#185](https://github.com/swissspidy/sandburg/pull/185) [`ea82942`](https://github.com/swissspidy/sandburg/commit/ea829424e6a28376f8c2829ad1d297600c442548) Thanks [@swissspidy](https://github.com/swissspidy)! - In a project with top-level `await`, ES modules that import each other (a cycle, as `@remix-run/route-pattern`'s, which `react-router` 8 loads) no longer fail with "Cannot access '__sandburg_tla' before initialization": a module reached again while it is still evaluating its imports is not waited for, as in Node.
+
 ## 0.5.1
 
 ### Patch Changes
