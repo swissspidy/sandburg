@@ -3058,3 +3058,32 @@ test("http.STATUS_CODES is Node's: ws answers a plain request with 426 Upgrade R
   const { STATUS_CODES } = await import('node:http');
   assert.deepEqual(JSON.parse(out.stdout.trim()), STATUS_CODES);
 });
+
+test("an unref'd worker thread no longer keeps its process alive; a ref'd MessagePort does until it is unref'd or closed, here or by its peer (napi-rs' WebAssembly threads, #187)", async () => {
+  const out = await h.run(
+    {
+      // The issue's: a thread that never ends on its own, unref'd. In Node the process exits at once.
+      'unref.js': "const { Worker } = require('worker_threads');\nconst w = new Worker('setInterval(() => {}, 1000);', { eval: true });\nw.unref();\nconsole.log('main done');\n",
+      // As emnapi keeps a process alive while async work runs on its unref'd threads.
+      'port.js': "const { port1 } = new MessageChannel();\nport1.ref();\nsetTimeout(() => console.log('still here'), 0);\nlet n = 0;\nconst check = () => (++n < 20 ? setImmediate(check) : (console.log('work done'), port1.unref()));\nqueueMicrotask(() => setTimeout(check, 400).unref());\n",
+      // A closed port keeps nothing alive, ref'd after or closed by its peer (which closes it too).
+      'closed.js': "const { port1 } = new MessageChannel();\nport1.close();\nport1.ref();\nconsole.log('closed then ref');\n",
+      'peer.js': "const { port1, port2 } = new MessageChannel();\nport1.ref();\nport1.on('close', () => console.log('port1 close'));\nsetTimeout(() => port2.close(), 100);\n",
+      // A ref'd thread still does: it ends the process by ending itself.
+      'ref.js': "const { Worker } = require('worker_threads');\nconst w = new Worker('setTimeout(() => process.exit(0), 400);', { eval: true });\nw.unref();\nw.ref();\nw.on('exit', () => console.log('thread exited'));\n",
+      'main.js': `
+        const { execFile } = require('child_process');
+        const run = (file) => new Promise((resolve) => execFile(process.execPath, [file], { timeout: 10000 }, (err, stdout) => resolve([err ? err.code ?? err.signal ?? 'error' : null, stdout.trim()])));
+        (async () => console.log(JSON.stringify([await run('unref.js'), await run('port.js'), await run('closed.js'), await run('peer.js'), await run('ref.js')])))();`,
+    },
+    '/app/main.js',
+  );
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout.trim().split('\n').pop()!), [
+    [null, 'main done'],
+    [null, 'still here\nwork done'],
+    [null, 'closed then ref'],
+    [null, 'port1 close'],
+    [null, 'thread exited'],
+  ]);
+});

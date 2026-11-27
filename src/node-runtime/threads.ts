@@ -740,11 +740,14 @@ export function createWorkerThreads(host: ThreadHost) {
     }
 
     ref() {
+      if (!this.exited) liveRuntimes.add(this.worker);
       return this;
     }
-    // A thread keeps its process alive even when unref'd: napi-rs unrefs its WebAssembly threads, and in
-    // Node their pending async work keeps the event loop alive instead, which this runtime cannot see.
+    // As in Node, an unref'd thread no longer keeps its process alive (#187): napi-rs (emnapi) unrefs its
+    // idle WebAssembly threads, and keeps the process alive while their async work runs with a ref'd
+    // MessagePort instead (refdPorts, message-ports.ts).
     unref() {
+      liveRuntimes.delete(this.worker);
       return this;
     }
     getHeapSnapshot(): never {

@@ -19,7 +19,7 @@ import { createSqlite3 } from './builtins/sqlite/sqlite3.ts';
 import pathBrowserify from 'path-browserify';
 import { installAsyncContext } from './async-context.ts';
 import { trackPending } from './track-pending.ts';
-import { adoptMailboxes, installNodeMessagePorts } from './message-ports.ts';
+import { adoptMailboxes, closedByPeer, installNodeMessagePorts, refdPorts } from './message-ports.ts';
 import { servers, serverConnections, serverEvents, STREAMED, type Dispatched, type UpgradeSocket } from './builtins/http.ts';
 import { initProcessTree, serversChanged } from './process-tree.ts';
 import { ExitError, WARNING_PRINTER, createProcess, pendingWork, received, stopTimers, timers, timersActive } from './builtins/process.ts';
@@ -645,7 +645,7 @@ const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
 
 /**
  * A child process ends when its event loop has nothing left to do, as in Node: no ref'd timers or
- * immediates, servers, sockets, IPC channel, threads or children, or in-flight fetches. Work the
+ * immediates, servers, sockets, IPC channel, ref'd threads, children or message ports, or in-flight fetches. Work the
  * runtime cannot see (a pending WebAssembly compile, say) is covered by waiting for the loop to stay
  * idle for a while.
  */
@@ -654,7 +654,7 @@ function exitWhenIdle() {
   globalThis.fetch = track(globalThis.fetch.bind(globalThis));
   const wasm = WebAssembly as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
   for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) if (wasm[name]) wasm[name] = track(wasm[name].bind(WebAssembly));
-  const busy = () => timersActive() || [...servers.values()].some((s) => s.keepsAlive) || serverConnections.count > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0;
+  const busy = () => timersActive() || [...servers.values()].some((s) => s.keepsAlive) || serverConnections.count > 0 || netServers.size > 0 || netConns.size > 0 || sockets.size > 0 || !!proc.connected || liveRuntimes.size > 0 || (closedByPeer(), refdPorts.size > 0);
   let idle = 0;
   const timer = nativeSetInterval(() => {
     if (hasExited) return nativeClearInterval(timer);
