@@ -27,7 +27,7 @@ console.log('ready');`);
   assert.match(out, /let a, c, count, Store, __sandburg_default;/);
   assert.match(out, /export \{ count, Store, __sandburg_default as default \};/);
   assert.match(out, /const __sandburg_pending = \[__sandburg_dep_0\.__sandburg_tla, __sandburg_dep_1\.__sandburg_tla, __sandburg_dep_2\.__sandburg_tla\]\.filter\(\(p\) => p\);/);
-  assert.match(out, /export let __sandburg_tla = \(async \(\) => \{\nif \(__sandburg_pending\.length\) await Promise\.all\(__sandburg_pending\);/);
+  assert.match(out, /export var __sandburg_tla = \(async \(\) => \{\nif \(__sandburg_pending\.length\) await Promise\.all\(__sandburg_pending\);/);
   assert.match(out, /\(\{ a, b: \[c\] \} = await open\(\)\);/);
   assert.match(out, /Store = class Store \{\};/);
   assert.match(out, /__sandburg_default = \(await fs\.promises\.readFile\('x'\)\);/);
@@ -84,4 +84,39 @@ test('an async module waits for an import still evaluating, then nothing is left
   const failing = run(compileForRuntime(`await Promise.reject(new Error('boom'));`, '/app/c.mjs', 'esm'));
   await assert.rejects(failing.__sandburg_tla as Promise<unknown>, /boom/);
   assert.notEqual(failing.__sandburg_tla, undefined);
+});
+
+/** Runs compiled CommonJS modules that require each other, by path, with a cache as the runtime's loader has (a cycle gets a module's exports so far). */
+function runGraph(sources: Record<string, string>, entry: string) {
+  const cache: Record<string, { exports: Record<string, unknown> }> = {};
+  const load = (id: string): Record<string, unknown> => {
+    if (cache[id]) return cache[id].exports;
+    const module: { exports: Record<string, unknown> } = (cache[id] = { exports: {} });
+    new Function('module', 'exports', 'require', compileForRuntime(sources[id], `/app/${id.slice(2)}`, 'esm', { asyncModules: true }))(module, module.exports, load);
+    return module.exports;
+  };
+  return load(entry);
+}
+
+test('async modules that import each other (a cycle) evaluate as ES modules do, without reading an export before it exists (#184)', async () => {
+  // As @remix-run/route-pattern's route-pattern.js and route-pattern/parse.js.
+  const a = runGraph(
+    {
+      './a.js': `import { parse } from './b.js';\nexport class Foo {\n  constructor(s) { this.s = s; }\n  static parse(s) { return parse(s); }\n}\n`,
+      './b.js': `import { Foo } from './a.js';\nexport function parse(s) { return new Foo(s); }\n`,
+    },
+    './a.js',
+  );
+  assert.equal(a.__sandburg_tla, undefined);
+  assert.equal(((a.Foo as { parse(s: string): { s: string } }).parse('x')).s, 'x');
+  // One of them with an await of its own: the other does not wait for it (it is still evaluating, and waits for it), as in Node.
+  const own = runGraph(
+    {
+      './a.js': `import { read } from './b.js';\nexport const value = await Promise.resolve(42);\nexport const seen = read();\n`,
+      './b.js': `import { value } from './a.js';\nexport function read() { return value; }\n`,
+    },
+    './a.js',
+  );
+  await own.__sandburg_tla;
+  assert.equal(own.seen, 42);
 });

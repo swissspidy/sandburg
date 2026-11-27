@@ -14,7 +14,7 @@
  *                                             let db;
  *                                             export { db };
  *                                             const pending = [__sandburg_dep_0.__sandburg_tla].filter(…);
- *                                             export let __sandburg_tla = (async () => {
+ *                                             export var __sandburg_tla = (async () => {
  *                                               await Promise.all(pending);
  *                                               db = await open();
  *                                             })();
@@ -28,6 +28,11 @@
  * __sandburg_tla is undefined), so a CommonJS package's synchronous require()
  * of it gets it evaluated. An async module's __sandburg_tla becomes undefined
  * once it has finished.
+ *
+ * __sandburg_tla is a `var`: in a cycle (a imports b, which imports a), b reads
+ * a's while a is still evaluating its imports, before its declaration has run.
+ * Undefined then, not a binding read before it exists (a ReferenceError), so b
+ * does not wait for a, which waits for b: as Node evaluates a cycle (#184).
  */
 import * as acorn from 'acorn';
 
@@ -123,10 +128,10 @@ export function toAsyncModule(code: string): string {
   const pending = `const ${PENDING} = [${unique.map((_, i) => `__sandburg_dep_${i}.${TLA_EXPORT}`).join(', ')}].filter((p) => p);`;
   const ownAwait = (ast.body as Node[]).some((stmt) => containsTopLevelAwait(stmt));
   const evaluation = ownAwait
-    ? `export let ${TLA_EXPORT} = (async () => {\nif (${PENDING}.length) await Promise.all(${PENDING});\n${body.join('\n')}\n})();`
+    ? `export var ${TLA_EXPORT} = (async () => {\nif (${PENDING}.length) await Promise.all(${PENDING});\n${body.join('\n')}\n})();`
     : // No await of its own: its body runs at once when nothing it imports is still evaluating, as an ES
       // module's does, so a synchronous require() of it (a CommonJS package's) gets it evaluated.
-      `function ${BODY}() {\n${body.join('\n')}\n}\nexport let ${TLA_EXPORT} = ${PENDING}.length ? Promise.all(${PENDING}).then(${BODY}) : ${BODY}();`;
+      `function ${BODY}() {\n${body.join('\n')}\n}\nexport var ${TLA_EXPORT} = ${PENDING}.length ? Promise.all(${PENDING}).then(${BODY}) : ${BODY}();`;
   return [
     ...head,
     ...deps,
