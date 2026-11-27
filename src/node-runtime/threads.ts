@@ -11,7 +11,7 @@
 import { EventEmitter } from 'events';
 import { FsError, Vfs, norm, parent, type VStat } from './vfs.ts';
 import { adoptMailboxes, mailboxesFor, receiveMessageOnPort } from './message-ports.ts';
-import { SPARE_NAME, SPARE_WAKE } from './names.ts';
+import { SPARE_NAME, SPARE_UP, SPARE_WAKE } from './names.ts';
 import { nestedEnded, nestedStarted } from './process-tree.ts';
 import type { ToParent, VfsCall, ThreadInit, VfsOp, ProjectSnapshot, ToWorker } from './messages.ts';
 import { allOf } from '../framework.ts';
@@ -512,7 +512,7 @@ export const liveRuntimes = new Set<globalThis.Worker>();
  * program's runtime start its spares before its init message (the 'spares' message), and a program
  * that loads worker_threads starts them then.
  */
-const warm: { worker: globalThis.Worker; woken: boolean }[] = [];
+const warm: { worker: globalThis.Worker; woken: boolean; up: boolean }[] = [];
 let warmTarget = 0;
 let warmBase = '';
 let awake = false;
@@ -552,7 +552,10 @@ function refill(): void {
   // A worker created earlier starts on its own, even if this thread is busy or blocked by then; it
   // takes its init message whenever it is ready.
   while (warm.length < warmTarget) {
-    const spare = { worker: new globalThis.Worker(`${warmBase}/node-spare.js`, { name: SPARE_NAME }), woken: false };
+    const spare = { worker: new globalThis.Worker(`${warmBase}/node-spare.js`, { name: SPARE_NAME }), woken: false, up: false };
+    spare.worker.onmessage = (e) => {
+      if ((e.data as { type?: string } | null)?.type === SPARE_UP) spare.up = true;
+    };
     // One whose script failed to load is dropped: a thread gets a new runtime instead (startRuntime).
     spare.worker.onerror = (e) => {
       e.preventDefault?.();
@@ -562,6 +565,17 @@ function refill(): void {
     warm.push(spare);
   }
   wakeAhead();
+}
+
+/**
+ * Whether a spare has not said it is up yet (SPARE_UP). Until its parent has handled a message from it,
+ * the parent's messages to it are held (see `warm`): a program that blocks before then (a napi-rs
+ * WebAssembly build that starts its first thread from a synchronous call, as @tailwindcss/oxide's
+ * Scanner.scan()) waits forever for the thread it gives a spare (#190). The runtime starts its program
+ * once its spares are up (worker.ts' run).
+ */
+export function sparesStarting(): boolean {
+  return warm.some((s) => !s.up);
 }
 
 /** A spare for a new thread: a woken one first. */
@@ -578,6 +592,8 @@ export function startRuntime(host: ThreadHost, init: ThreadInit, onMessage: (m: 
   if (warmTarget) queueMicrotask(refill);
   worker.onmessage = (e: MessageEvent<ToParent>) => {
     const m = e.data;
+    // A spare taken before its SPARE_UP was handled.
+    if ((m.type as string) === SPARE_UP) return;
     if (m.type === 'wt-message') adoptMailboxes(e.ports, m.mailboxes);
     if (m.type === 'vfs-rpc') serveVfsCall(host.vfs(), m);
     else if (!host.relay(m, worker)) onMessage(m);

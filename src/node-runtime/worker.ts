@@ -10,7 +10,7 @@ import { flushDatabases, loadSqlite, type FileAccess } from './builtins/sqlite/c
 import { WsClientCodec } from './websocket.ts';
 import { bundleCache, listCache } from './cache-tree.ts';
 import type { FromWorker, NetMessage, ToParent, ThreadInit, ToWorker, SharedPreload } from './messages.ts';
-import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, projectSnapshot, runtimePorts, trackNodeModulesWrites, warmRuntimes, type ThreadHost } from './threads.ts';
+import { ThreadVfs, WASM_CRASH_CHANNEL, createWorkerThreads, liveRuntimes, projectSnapshot, runtimePorts, sparesStarting, trackNodeModulesWrites, warmRuntimes, type ThreadHost } from './threads.ts';
 import { syncParent } from './sync-child.ts';
 import { createChildProcess, nodeOptions } from './child-process.ts';
 import { installNodeFetchClasses } from './fetch-classes.ts';
@@ -677,12 +677,21 @@ function exitWhenIdle() {
 
 /** How long a main runtime waits for its helper before it runs its program (see run). */
 const HELPER_PATIENCE_MS = 500;
+/** How long a runtime waits for its spares to be up before it runs its program (see run). */
+const SPARES_PATIENCE_MS = 1000;
 
 function run(msg: Extract<ToWorker, { type: 'run' }>, since = performance.now()) {
   // The helper started with this runtime gets its messages only once this thread has run a task
   // after the helper's start, and a program may block (execSync) before it runs one: it waits for the
   // helper (one the page prepared is up long before). A thread uses its parent's.
   if (!thread && helperStarting() && performance.now() - since < HELPER_PATIENCE_MS) {
+    nativeSetTimeout(() => run(msg, since), 1);
+    return;
+  }
+  // A process's spares too (WebAssembly threads may start while the program blocks, see sparesStarting),
+  // as the page has the main runtime's start before its init: a child process starts them in its init.
+  // Not a worker thread's: its parent may be blocked until it runs.
+  if ((!thread || thread.process) && sparesStarting() && performance.now() - since < SPARES_PATIENCE_MS) {
     nativeSetTimeout(() => run(msg, since), 1);
     return;
   }
