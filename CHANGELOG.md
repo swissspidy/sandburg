@@ -1,5 +1,13 @@
 # sandburg
 
+## 0.5.3
+
+### Patch Changes
+
+- [#191](https://github.com/swissspidy/sandburg/pull/191) [`ec7c1c7`](https://github.com/swissspidy/sandburg/commit/ec7c1c783113482367fadd38bac2c95f3902917d) Thanks [@swissspidy](https://github.com/swissspidy)! - A short-lived CLI that starts napi-rs WebAssembly threads from a synchronous call, in a dev script's child process, no longer hangs: the Tailwind CLI (`tailwindcss -i … -o …`, whose `@tailwindcss/oxide` scans with threads) writes its CSS and exits, and the next command runs. A process starts its program once the spare runtimes its threads take are up, as the main program does; until then, a new thread's first message to its spare waited for the blocked program to run a task.
+
+- [#188](https://github.com/swissspidy/sandburg/pull/188) [`9014061`](https://github.com/swissspidy/sandburg/commit/9014061d7ded168fc899d84dbf3833a185e09083) Thanks [@swissspidy](https://github.com/swissspidy)! - An unref'd worker thread no longer keeps its process alive, as in Node: a short-lived CLI whose napi-rs WebAssembly package unrefs its idle threads (emnapi does) exits once its work is done, and the dev script's next command runs. A `MessagePort` the program `ref()`s keeps its process alive until it is unref'd or closed, which is how emnapi keeps it alive while async work runs on those threads.
+
 ## 0.5.2
 
 ### Patch Changes
