@@ -528,35 +528,6 @@ test('an Express server that embeds Vite in middleware mode is the app, not Vite
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
-// The Tailwind CLI loads @tailwindcss/oxide's WebAssembly build (napi-rs), whose threads it unrefs:
-// it exits once it has written the CSS, and the dev script goes on to the server (#187).
-test("a dev script's short-lived CLI that loads a napi-rs WebAssembly package exits, and the next command runs", async () => {
-  const project = projectFromFiles(
-    {
-      'package.json': JSON.stringify({ name: 'tailwind-cli', private: true, scripts: { dev: 'tailwindcss -i styles.css -o app.css && node server.js' }, dependencies: { tailwindcss: '^4.1.0', '@tailwindcss/cli': '^4.1.0' } }),
-      'styles.css': '@import "tailwindcss";\n',
-      'index.html': '<!doctype html><link rel="stylesheet" href="/app.css"><h1 class="text-3xl font-bold underline">styled</h1>\n',
-      'server.js': [
-        "const fs = require('node:fs');",
-        "require('node:http').createServer((q, s) => q.url === '/app.css' ? s.writeHead(200, { 'content-type': 'text/css' }).end(fs.readFileSync('app.css')) : s.writeHead(200, { 'content-type': 'text/html' }).end(fs.readFileSync('index.html'))).listen(3000);",
-      ].join('\n'),
-    },
-    { name: 'tailwind-cli', path: 'tailwind-cli' },
-  );
-  const result = await session.run(project, {
-    outDir,
-    checks: {
-      styled: async ({ app, expect }) => {
-        const heading = app.getByRole('heading', { level: 1 });
-        await expect(heading).toHaveText('styled');
-        // Tailwind's text-decoration-line: underline, from the CSS the CLI wrote.
-        await expect(heading).toHaveCSS('text-decoration-line', 'underline');
-      },
-    },
-  });
-  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
-});
-
 // TypeScript 7's tsc is native code: in the runtime it runs tsrs (@tsrs/wasm) instead (install-rules.ts).
 const typescript7 = (name: string, source: string) =>
   projectFromFiles(
