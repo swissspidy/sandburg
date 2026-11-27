@@ -258,7 +258,9 @@ export class NodeProcess {
         skipped.add(port);
         continue;
       }
-      return (await this.othersStarting()) ? this.pagePort() : port;
+      // Another server that listened meanwhile (the page's, as the launcher's count fell to 0) is weighed too.
+      const starting = await this.othersStarting();
+      return starting || this.ports.some((p) => p !== port && !skipped.has(p)) ? this.pagePort() : port;
     }
   }
 
