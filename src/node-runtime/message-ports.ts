@@ -31,6 +31,7 @@ const H_READ_AT = 3; // byte offset of the next entry to read
 const H_SEQ = 4; // last sequence number given out (by the writer)
 const H_FULL = 5; // the inbox is full: later messages go through the event loop only
 const H_DONE = 6; // the last sequence number read or delivered
+const H_CLOSED = 7; // the other port closed (see closedByPeer)
 const GAP = -1; // an entry for a message that is not in the mailbox
 const UNDEFINED = -2;
 
@@ -136,7 +137,8 @@ export function adoptMailboxes(ports: readonly MessagePort[] | undefined, list: 
 }
 
 /** A port message as sent: the message, its sequence number and the mailboxes of transferred ports. */
-type Wrapped = { [MARK]: { seq: number; mailboxes?: (Mailbox | null)[] }; data: unknown };
+/** `closed`: its sender closed it, and so does its receiver (see close in installNodeMessagePorts). */
+type Wrapped = { [MARK]: { seq: number; mailboxes?: (Mailbox | null)[]; closed?: true }; data: unknown };
 const isWrapped = (d: unknown): d is Wrapped => typeof d === 'object' && d !== null && MARK in d;
 
 /** A MessageChannel whose ports have mailboxes (when shared memory is available). */
@@ -166,6 +168,22 @@ export const nativePostMessage = MessagePort.prototype.postMessage as (this: Mes
  * runtime's own ports and those programs leave open would keep every process alive.
  */
 export const refdPorts = new Set<MessagePort>();
+/** Ports closed, here or by their peer: ref() keeps none of them. */
+const closedPorts = new WeakSet<MessagePort>();
+
+/**
+ * Drops the ref'd ports whose peer closed, which close too, as in Node: a ref'd port that does not listen
+ * gets no message to say so, but its channel's shared memory does (H_CLOSED). For the process's idle check.
+ */
+export function closedByPeer(): void {
+  for (const port of refdPorts) {
+    const mb = mailboxes.get(port);
+    if (mb && Atomics.load(inbox(mb.sab, mb.side).h, H_CLOSED)) peerClosed(port);
+  }
+}
+
+/** Closes a port whose peer closed (set by installNodeMessagePorts). */
+let peerClosed: (port: MessagePort) => void = () => {};
 
 export function installNodeMessagePorts(): void {
   const P = MessagePort.prototype as unknown as Record<string, unknown> & { __sandburg?: boolean };
@@ -190,6 +208,11 @@ export function installNodeMessagePorts(): void {
     let out: MessageEvent | null = e;
     if (isWrapped(e.data)) {
       const meta = e.data[MARK];
+      if (meta.closed) {
+        peerClosed(port);
+        seen.set(e, null);
+        return null;
+      }
       adoptMailboxes(e.ports, meta.mailboxes);
       out = arrived(port, meta.seq) ? new MessageEvent('message', { data: e.data.data, ports: [...e.ports] }) : null;
     }
@@ -276,7 +299,7 @@ export function installNodeMessagePorts(): void {
   };
   // Only a port ref()'d explicitly keeps its process alive (see refdPorts).
   P.ref = function (this: MessagePort) {
-    refdPorts.add(this);
+    if (!closedPorts.has(this)) refdPorts.add(this);
     return this;
   };
   P.unref = function (this: MessagePort) {
@@ -291,9 +314,25 @@ export function installNodeMessagePorts(): void {
   };
   B.hasRef = () => true;
   const close = MessagePort.prototype.close;
+  const closed = (port: MessagePort) => {
+    closedPorts.add(port);
+    refdPorts.delete(port);
+    close.call(port);
+    queueMicrotask(() => emitters.get(port)?.emit('close'));
+  };
   P.close = function (this: MessagePort) {
-    refdPorts.delete(this);
-    close.call(this);
-    queueMicrotask(() => emitters.get(this)?.emit('close'));
+    if (closedPorts.has(this)) return;
+    // Its peer closes too, as in Node; the browser tells it nothing (no 'close' event), so this does, in
+    // the channel: a peer that listens closes once it gets there. Only the program's channels (those with
+    // a mailbox): the runtime's own ports may go to code that does not know the message.
+    const mb = mailboxes.get(this);
+    if (mb) {
+      Atomics.store(inbox(mb.sab, mb.side === 0 ? 1 : 0).h, H_CLOSED, 1);
+      postMessage.call(this, { [MARK]: { seq: 0, closed: true }, data: undefined } satisfies Wrapped, []);
+    }
+    closed(this);
+  };
+  peerClosed = (port) => {
+    if (!closedPorts.has(port)) closed(port);
   };
 }
