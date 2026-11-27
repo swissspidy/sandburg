@@ -680,21 +680,23 @@ const HELPER_PATIENCE_MS = 500;
 /** How long a runtime waits for its spares to be up before it runs its program (see run). */
 const SPARES_PATIENCE_MS = 1000;
 
-function run(msg: Extract<ToWorker, { type: 'run' }>, since = performance.now()) {
+function run(msg: Extract<ToWorker, { type: 'run' }>, since = performance.now(), waiting = false) {
   // The helper started with this runtime gets its messages only once this thread has run a task
   // after the helper's start, and a program may block (execSync) before it runs one: it waits for the
   // helper (one the page prepared is up long before). A thread uses its parent's.
-  if (!thread && helperStarting() && performance.now() - since < HELPER_PATIENCE_MS) {
-    nativeSetTimeout(() => run(msg, since), 1);
-    return;
-  }
+  const forHelper = !thread && helperStarting() && performance.now() - since < HELPER_PATIENCE_MS;
   // A process's spares too (WebAssembly threads may start while the program blocks, see sparesStarting),
   // as the page has the main runtime's start before its init: a child process starts them in its init.
   // Not a worker thread's: its parent may be blocked until it runs.
-  if ((!thread || thread.process) && sparesStarting() && performance.now() - since < SPARES_PATIENCE_MS) {
-    nativeSetTimeout(() => run(msg, since), 1);
+  const forSpares = (!thread || thread.process) && sparesStarting() && performance.now() - since < SPARES_PATIENCE_MS;
+  if (forHelper || forSpares) {
+    // Work in progress, as SQLite's load below: a child process that has not started its program yet is
+    // not idle (see exitWhenIdle, which a child process starts in its init).
+    if (!waiting) pendingWork.count++;
+    nativeSetTimeout(() => run(msg, since, true), 1);
     return;
   }
+  if (waiting) pendingWork.count--;
   if (msg.track) vfs.track(msg.track.map((d) => `${projectRoot}/${d}`));
   if (!usesSqlite) return start(msg);
   // Work in progress: a child process that has not started its program yet is not idle (see
