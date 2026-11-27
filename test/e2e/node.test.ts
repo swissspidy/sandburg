@@ -559,6 +559,31 @@ test("the Tailwind CLI writes its CSS in a dev script's first command, and exits
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+// "dev": "node dev.mjs", which starts an API and then a page's dev server that listens only once it
+// has compiled (ng serve): the page's server is the app, not the API that listened first (#193).
+test('a single-command dev script that starts an API, then a slower page server, shows the page', async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'dev-launcher', private: true, type: 'module', scripts: { dev: 'node dev.mjs' } }),
+      'dev.mjs': [
+        "import { spawn } from 'node:child_process';",
+        "spawn(process.execPath, ['api.mjs'], { env: { ...process.env, PORT: '3001' }, stdio: 'inherit' });",
+        "spawn(process.execPath, ['front.mjs'], { env: { ...process.env }, stdio: 'inherit' });",
+      ].join('\n'),
+      // An API: GET / is not one of its routes.
+      'api.mjs': "import { createServer } from 'node:http';\ncreateServer((q, s) => s.writeHead(404, { 'content-type': 'text/plain' }).end('Cannot GET ' + q.url)).listen(Number(process.env.PORT), () => console.log('API listening'));\n",
+      // A page server that compiles first (ng serve takes 20-30 s here).
+      'front.mjs': "import { createServer } from 'node:http';\nsetTimeout(() => createServer((q, s) => s.writeHead(200, { 'content-type': 'text/html' }).end('<h1>the page</h1>')).listen(Number(process.env.PORT || 3000)), 3000);\n",
+    },
+    { name: 'dev-launcher', path: 'dev-launcher' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: { renders: async ({ app, expect }) => expect(app.getByRole('heading', { level: 1 })).toHaveText('the page') },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 // TypeScript 7's tsc is native code: in the runtime it runs tsrs (@tsrs/wasm) instead (install-rules.ts).
 const typescript7 = (name: string, source: string) =>
   projectFromFiles(

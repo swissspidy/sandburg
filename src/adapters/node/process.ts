@@ -245,16 +245,33 @@ export class NodeProcess {
   /**
    * The port of the program's server: the first to listen, but for a WebSocket-only server's (it answers
    * GET / with 426 Upgrade Required). An Express app that embeds Vite in middleware mode listens after
-   * Vite's HMR server has, on 24678 (#181).
+   * Vite's HMR server has, on 24678 (#181). While another of the program's processes is still starting,
+   * the page's server may be still to come: a dev.mjs that starts an API and then ng serve, which
+   * listens once it has compiled (#193). Then the page's port is the app's (pagePort).
    */
   async serverPort(): Promise<number> {
     const skipped = new Set<number>();
     for (;;) {
       await this.until(() => this.ports.some((port) => !skipped.has(port)));
       const port = this.ports.find((p) => !skipped.has(p))!;
-      if ((await this.probeStatus(port)) !== UPGRADE_REQUIRED) return port;
-      skipped.add(port);
+      if ((await this.probeStatus(port)) === UPGRADE_REQUIRED) {
+        skipped.add(port);
+        continue;
+      }
+      return (await this.othersStarting()) ? this.pagePort() : port;
     }
+  }
+
+  /**
+   * Whether a process of the program is still starting once its first server listens (process-tree.ts in
+   * the runtime). Its report may come just after the port's: it is waited for, SETTLED_MS at most. A
+   * program that serves its port and starts nothing else counts 0; a launcher that serves none, or a
+   * child that is still compiling, counts on. A runtime that does not report counts as none.
+   */
+  private async othersStarting(): Promise<boolean> {
+    const deadline = Date.now() + SETTLED_MS;
+    while (this.starting && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    return !!this.starting;
   }
 
   /** The status a server answers GET / with: null when it fails, or has not answered within SERVER_PROBE_MS. */
