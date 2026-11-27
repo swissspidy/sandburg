@@ -159,6 +159,14 @@ function makeMessageChannel(Native: typeof MessageChannel): typeof MessageChanne
 export const NativeMessageChannel = globalThis.MessageChannel;
 export const nativePostMessage = MessagePort.prototype.postMessage as (this: MessagePort, message: unknown, transfer: Transferable[]) => void;
 
+/**
+ * Ports the program ref()'d (and has not unref()'d or closed): they keep its process alive, as a ref'd
+ * MessagePort keeps Node's event loop alive. emnapi (napi-rs' WebAssembly builds) refs one while async
+ * work runs on its threads, which it unrefs. A port only listened to does not count, unlike in Node: the
+ * runtime's own ports and those programs leave open would keep every process alive.
+ */
+export const refdPorts = new Set<MessagePort>();
+
 export function installNodeMessagePorts(): void {
   const P = MessagePort.prototype as unknown as Record<string, unknown> & { __sandburg?: boolean };
   if (P.__sandburg) return;
@@ -266,7 +274,13 @@ export function installNodeMessagePorts(): void {
   P.listeners = function (this: MessagePort, event: string) {
     return emitters.get(this)?.listeners(event) ?? [];
   };
-  P.ref = P.unref = function (this: MessagePort) {
+  // Only a port ref()'d explicitly keeps its process alive (see refdPorts).
+  P.ref = function (this: MessagePort) {
+    refdPorts.add(this);
+    return this;
+  };
+  P.unref = function (this: MessagePort) {
+    refdPorts.delete(this);
     return this;
   };
   P.hasRef = () => true;
@@ -278,6 +292,7 @@ export function installNodeMessagePorts(): void {
   B.hasRef = () => true;
   const close = MessagePort.prototype.close;
   P.close = function (this: MessagePort) {
+    refdPorts.delete(this);
     close.call(this);
     queueMicrotask(() => emitters.get(this)?.emit('close'));
   };
