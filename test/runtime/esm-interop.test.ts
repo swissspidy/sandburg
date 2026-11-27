@@ -72,3 +72,22 @@ test("a CommonJS package's synchronous require() of an ES module gets it evaluat
   assert.equal(out.fatal, null, out.fatal ?? out.stderr);
   assert.equal(out.stdout.trim(), 'wasm:function');
 });
+
+test('in a project with top-level await, an installed package whose modules import each other loads (@remix-run/route-pattern\'s cycle, #184)', async () => {
+  const esm = (path: string, source: string) => compileForRuntime(source, path, 'esm', { asyncModules: true });
+  const install = {
+    files: {
+      'node_modules/route-pattern/package.json': JSON.stringify({ name: 'route-pattern', type: 'module', exports: { '.': './index.js' } }),
+      'node_modules/route-pattern/index.js': esm('/app/node_modules/route-pattern/index.js', `export { RoutePattern } from './route-pattern.js';\n`),
+      'node_modules/route-pattern/route-pattern.js': esm(
+        '/app/node_modules/route-pattern/route-pattern.js',
+        `import { parse } from './parse.js';\nexport class RoutePattern {\n  constructor(source) { this.source = source; }\n  static parse(source) { return parse(source); }\n}\n`,
+      ),
+      'node_modules/route-pattern/parse.js': esm('/app/node_modules/route-pattern/parse.js', `import { RoutePattern } from './route-pattern.js';\nexport function parse(source) { return new RoutePattern(source); }\n`),
+    },
+    bundled: [],
+  };
+  const out = await h.runInstalled({ 'main.mjs': `await Promise.resolve();\nconst { RoutePattern } = await import('route-pattern');\nconsole.log(RoutePattern.parse('/users/:id').source);\n` }, install, '/app/main.mjs');
+  assert.equal(out.fatal, null, out.fatal ?? out.stderr);
+  assert.equal(out.stdout.trim(), '/users/:id');
+});
