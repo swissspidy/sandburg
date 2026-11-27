@@ -90,7 +90,12 @@ const PAGES: Record<string, string> = {
   // The runtime at the site's root; the scope given without its trailing slash.
   '/root/': page('/', { base: '/', scope: '/root', pass: ['/root/own/'] }, '/root/own/file.txt'),
   '/git/': gitPage,
+  // A page its server makes cross-origin isolated itself (ISOLATED): no reload, and the project starts at once.
+  '/isolated/': page('/sandburg/', { base: '/sandburg/', scope: '/isolated/', pass: ['/isolated/own/'] }, '/isolated/own/file.txt'),
 };
+
+/** Pages served with the headers that make them cross-origin isolated: isolate() resolves at once. */
+const ISOLATED = new Set(['/isolated/']);
 
 let dir: string;
 let server: Server;
@@ -113,8 +118,11 @@ before(async () => {
       res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', ...(path === '/sandburg/sw.js' && { 'service-worker-allowed': '/' }) });
       return void res.end(body);
     }
-    if (Object.hasOwn(PAGES, path)) return void res.writeHead(200, { 'content-type': 'text/html' }).end(PAGES[path]);
-    if (/^\/(play|root)\/own\/file\.txt$/.test(path)) return void res.writeHead(200, { 'content-type': 'text/plain' }).end('the embedder');
+    if (Object.hasOwn(PAGES, path)) {
+      const isolation = ISOLATED.has(path) ? { 'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp' } : {};
+      return void res.writeHead(200, { 'content-type': 'text/html', ...isolation }).end(PAGES[path]);
+    }
+    if (/^\/(play|root|isolated)\/own\/file\.txt$/.test(path)) return void res.writeHead(200, { 'content-type': 'text/plain' }).end('the embedder');
     res.writeHead(404).end();
   }
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -162,3 +170,5 @@ test("an embedder's fetcher (EmbedOptions.git) gives a project its git dependenc
     await tab.close();
   }
 });
+
+test('a page served cross-origin isolated (its own headers) runs a project at once: its workers wait for the service worker it registers (#192)', () => runsInPage('/isolated/'));
