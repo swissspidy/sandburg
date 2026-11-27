@@ -584,6 +584,28 @@ test('a single-command dev script that starts an API, then a slower page server,
   assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
 });
 
+// esbuild runs its WebAssembly build in the runtime (install-rules.ts): relative entry points and
+// output paths are the working directory's, as under Node, not / (#194).
+test("esbuild.build() with relative entry points and packages: 'external' builds into the project", async () => {
+  const project = projectFromFiles(
+    {
+      'package.json': JSON.stringify({ name: 'esbuild-build', private: true, type: 'module', scripts: { dev: 'node build.mjs && node dist/server.mjs' }, dependencies: { esbuild: '^0.28.0' } }),
+      'build.mjs': [
+        "import * as esbuild from 'esbuild';",
+        "await esbuild.build({ entryPoints: ['src/server/index.ts'], bundle: true, platform: 'node', format: 'esm', target: 'node24', outfile: 'dist/server.mjs', packages: 'external' });",
+      ].join('\n'),
+      'src/server/index.ts': "import { createServer } from 'node:http';\nimport { greeting } from './greeting.ts';\ncreateServer((q, s) => s.writeHead(200, { 'content-type': 'text/html' }).end(`<h1>${greeting}</h1>`)).listen(3000);\n",
+      'src/server/greeting.ts': "export const greeting: string = 'bundled';\n",
+    },
+    { name: 'esbuild-build', path: 'esbuild-build' },
+  );
+  const result = await session.run(project, {
+    outDir,
+    checks: { renders: async ({ app, expect }) => expect(app.getByRole('heading', { level: 1 })).toHaveText('bundled') },
+  });
+  assert.equal(result.status, 'passed', JSON.stringify(result.failure ?? result.checks.filter((c) => c.status !== 'passed'), null, 2));
+});
+
 // TypeScript 7's tsc is native code: in the runtime it runs tsrs (@tsrs/wasm) instead (install-rules.ts).
 const typescript7 = (name: string, source: string) =>
   projectFromFiles(
