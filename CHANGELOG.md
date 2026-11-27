@@ -1,5 +1,15 @@
 # sandburg
 
+## 0.5.4
+
+### Patch Changes
+
+- [#196](https://github.com/swissspidy/sandburg/pull/196) [`6fc3bc7`](https://github.com/swissspidy/sandburg/commit/6fc3bc737d1728611d6bbb2f991496b8890987b6) Thanks [@swissspidy](https://github.com/swissspidy)! - `sandburg/browser-runtime`: a page served cross-origin isolated by its own headers (`Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`) runs a project however soon it starts one. The page's installer and compiler workers wait for the service worker it registers, as its runtime does, instead of failing with "install failed: the page's installer failed: worker error" (their scripts got 404 from the page's server).
+
+- [#197](https://github.com/swissspidy/sandburg/pull/197) [`dc34f81`](https://github.com/swissspidy/sandburg/commit/dc34f81c12a2426d0ac5c90ebe0e7c891567f6e3) Thanks [@swissspidy](https://github.com/swissspidy)! - A dev script that is one command starting several servers (`"dev": "node dev.mjs"`, which starts an API and then `ng serve`) shows the page's server, not the API that listened first: while another of the program's processes is still starting, the app's port is the one that answers with a page. A single server still is the app as soon as it listens, whatever it answers.
+
+- [#195](https://github.com/swissspidy/sandburg/pull/195) [`70808a5`](https://github.com/swissspidy/sandburg/commit/70808a570d9471951218a72fd464ea9c9e9a33a3) Thanks [@swissspidy](https://github.com/swissspidy)! - `esbuild.build()` and `esbuild.context()` resolve relative entry points and output paths against the working directory, as under Node: `absWorkingDir` defaults to `process.cwd()`, not esbuild-wasm's `/`. A build with `entryPoints: ['src/server/index.ts']` and `packages: 'external'` no longer fails with "The entry point … cannot be marked as external".
+
 ## 0.5.3
 
 ### Patch Changes
